@@ -2,40 +2,102 @@
 
 TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并进一步进行可解性认证、难度纠偏和模型边界搜索的框架。
 
+## 开始之前
+
+新开发会话必须依次阅读：
+
+1. [AGENTS.md](AGENTS.md)：唯一开发规范；
+2. [背景与目标](docs/background-and-goals.md)：问题背景、数据事实、目标和主张边界；
+3. [总体实施计划](docs/overall-plan.md)：架构、模块、数据契约、阶段和验收；
+4. [R01 回流处理实施规格](docs/r01-processing-spec.md)：当前模块的输入、契约、输出与停止线；
+5. [参考仓库处理逻辑](docs/reference-repositories.md)：已有项目的真实处理链、采用方式和禁止照搬项；
+6. [M1 实现来源与迁移记录](docs/implementation-sources.md)：旧轨迹审核代码的逐文件来源、采用项和剥离项。
+7. [R01 M1 全量验收报告](docs/r01-m1-validation.md)：真实全量运行、确定性、资源和隐私验收证据。
+
 ## 核心链路
 
 ```text
-原始回流 JSONL
-→ 事件账本
-→ InteractionTurn
+真实回流 JSONL
+→ SourceRecordRef / RequestBoundary
+→ Immutable Visible EventLog
+→ RequestLineageForest / QueryTurn
 → TaskEpisode DAG
-→ 任务与环境重建
-→ 可解性认证
-→ 难度纠偏
-→ 模型边界校准
+→ ObservedTaskDistribution
+  + EnvironmentExposureProfile
+→ ReconstructionCandidate
+→ TaskWorldCandidateRevision
+→ Truth / Reference / Verifier
+→ G0–G5 + G7
+→ RunnableTaskWorldCandidateBundle
+→ Rollout / G6
+→ 六维难度与模型边界
+→ CertifiedTaskWorldRelease
 ```
 
 ## 当前阶段
 
-项目处于框架初始化阶段。第一阶段将先冻结整体模块边界和数据契约，同时完成轨迹结构化模块：
+项目开始实施 M1 Trajectory Compiler。当前开发会话只完成 M1A Source Adapter 和 M1B Structural Compiler。
+
+当前实现边界：
 
 ```text
-Raw JSONL
-→ Immutable EventLog
-→ InteractionTurn
-→ TaskEpisode DAG
-→ GoalGraph
+R01 JSONL
+→ SourceRecordRef
+→ NormalizedCapture / RequestBoundary
+→ Immutable Visible EventLog
+→ ActionBatch / ToolPairing
 ```
 
-其余模块先建立清晰边界，随后按模块逐步实现，不迁移无关历史包袱。
+完成 M1A、M1B 并通过全量验收和审核前，不实现跨 capture 建图、QueryTurn、TaskEpisode、任务画像、World、认证、难度或 Harbor 接入。
+
+## 运行当前编译器
+
+```bash
+uv sync --dev --python 3.12
+uv run traceforge trajectory compile \
+  --input <R01.jsonl> \
+  --dataset-id r01-four-batch-202607-v1 \
+  --source-schema traceforge.restored-long-capture.v1 \
+  --expected-sha256 <frozen_sha256> \
+  --output artifacts/r01
+```
+
+运行单元测试和静态检查：
+
+```bash
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
+```
+
+编译结果采用内容寻址目录。确定性业务产物、私有事件表与公共聚合报告物理分离；真实产物已由 `.gitignore` 排除。
+
+编译器和 validator 不内置 R01 的路径、摘要或统计值。`source_schema` 显式声明语义输入契约：当前只有一个 restored-long adapter，不会猜测或尝试多种 JSON 结构。不支持的 schema 在读取来源和创建 staging 前整批失败。validator 只重算并检查已发布 run 的通用契约：
+
+```bash
+uv run python scripts/validate_m1_run.py <content_addressed_run_dir>
+```
+
+R01 摘要和统计只作为文档化的外部验收基线。若后续需要机器比较，必须由调用方显式提供独立 expectation/profile，不能把特定数据常量写进核心或通用 validator。
+
+M1 不保存旧轨迹的 reasoning 原文，也不把它作为语义输入；assistant event 只保留存在性、UTF-8 字节数、SHA-256 和来源 JSON pointer 组成的审计摘要。
+
+## 核心边界
+
+- 回流提供生成约束，不提供 Ground Truth；
+- 一条 capture 不等于一个 Session 或任务；
+- R01 是来源 cohort，不是业务 Domain；
+- 合成 World 不声称恢复用户原环境；
+- Task 与 World 必须绑定后共同认证；
+- 强模型 rollout 不通过多数投票产生 GT；
+- TraceForge 核心不依赖 Harbor；Harbor/AGS 只能作为仓内独立可选集成接入稳定契约；
+- 真实数据、运行结果、模型缓存和参考仓库不进入本仓库；
+- `claw-eval` 不属于项目范围。
 
 ## 开发规范
 
-所有开发工作遵循 [AGENTS.md](AGENTS.md)。该文件是开发原则、代码风格、测试纪律和 Git 规范的唯一事实来源。
+所有开发工作遵循 [AGENTS.md](AGENTS.md)。README 和设计文档不重复定义代码风格、测试纪律或 Git 规则。
 
-## 范围约束
+## 参考资源
 
-- 旧 `seed2traj`、`river-world`、TRACE、ASTRA、AgentRx 仅作为只读参考来源。
-- 采用契约优先的选择性重写，不整体复制参考仓库。
-- 真实回流数据、运行结果、模型缓存和研究资料不进入本仓库。
-- `claw-eval` 不属于本项目范围。
+`refer_repo` 当前可见的旧 `seed2traj`、TRACE、ASTRA、AgentRx、EnvHarness、QC_postprocess、固定任务 artifact、相关论文与运行指南仅作为只读参考。项目采用选择性重写，不整体复制历史实现。此前讨论但当前快照缺失的 AgentHER、CSO 和 GameCraft-Bench 暂不作为实现依据。具体文件和处理边界见 [参考仓库处理逻辑](docs/reference-repositories.md)。
