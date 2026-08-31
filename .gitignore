@@ -1,0 +1,16 @@
+.DS_Store
+.env
+.env.*
+config.yaml
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+*.egg-info/
+
+# 真实回流、运行产物和模型缓存不得进入仓库。
+artifacts/
+runs/
+.cache/
+data/raw/
