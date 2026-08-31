@@ -12,7 +12,8 @@ TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并
 4. [R01 回流处理实施规格](docs/r01-processing-spec.md)：当前模块的输入、契约、输出与停止线；
 5. [参考仓库处理逻辑](docs/reference-repositories.md)：已有项目的真实处理链、采用方式和禁止照搬项；
 6. [M1 实现来源与迁移记录](docs/implementation-sources.md)：旧轨迹审核代码的逐文件来源、采用项和剥离项。
-7. [R01 M1 v1 历史验收报告（结论已撤销）](docs/r01-m1-validation.md)：保留正常路径历史事实，不作为当前完成证据。
+7. [R01 M1 v2 全量验收报告](docs/r01-m1-v2-validation.md)：当前正式验收结论与 R01 observed episode distribution；
+8. [R01 M1 v1 历史验收报告（结论已撤销）](docs/r01-m1-validation.md)：保留正常路径历史事实，不作为当前完成证据。
 
 ## 核心链路
 
@@ -36,7 +37,7 @@ TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并
 
 ## 当前阶段
 
-当前代码是 M1A/M1B v2 候选实现，正在重新执行全量 R01 编译、独立验证和对抗回归；门禁完成前不得宣称 M1A/M1B 正式完成。输入 `source_schema` 仍是 `traceforge.restored-long-capture.v1`，v2 指输出契约与 compiler contract。
+M1A/M1B v2 已在提交 `9e0c6a5` 上通过两次 R01 全量编译、独立验证、确定性比较和对抗回归。输入 `source_schema` 仍是 `traceforge.restored-long-capture.v1`，v2 指输出契约与 compiler contract。
 
 当前实现边界：
 
@@ -48,7 +49,7 @@ R01 JSONL
 → ActionBatch / ToolPairing
 ```
 
-完成 M1A、M1B 并通过全量验收和审核前，不实现跨 capture 建图、QueryTurn、TaskEpisode、任务画像、World、认证、难度或 Harbor 接入。进入 M2 前还必须单独冻结并审核最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`。
+当前实现仍停止在 M1B；尚未实现跨 capture 建图、QueryTurn、TaskEpisode、任务画像、World、认证、难度或 Harbor 接入。进入 M2 前必须单独冻结并审核最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`。
 
 ## 运行当前编译器
 

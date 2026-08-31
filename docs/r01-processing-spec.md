@@ -4,7 +4,7 @@
 
 日期：2026-08-31
 
-状态：M1A、M1B v2 候选契约与重新验收基线；不是完成声明
+状态：M1A、M1B v2 冻结契约；全量验收已通过
 
 本文是 R01 回流处理的实施事实来源。项目背景见 [`background-and-goals.md`](background-and-goals.md)，总体阶段与下游边界见 [`overall-plan.md`](overall-plan.md)，开发纪律只引用 [`../AGENTS.md`](../AGENTS.md)。
 
@@ -26,7 +26,7 @@ M1B Structural Compiler
 - World、Truth、Reference、Verifier；
 - Harbor、AGS 或模型 rollout。
 
-M1A、M1B 全量验收完成并审核后，才能为 M1C 及之后阶段制定实施规格；进入 M2 前还必须单独冻结并审核最小来源注解投影。
+M1A、M1B v2 已完成全量验收，证据见 [`r01-m1-v2-validation.md`](r01-m1-v2-validation.md)。M1C 及之后阶段仍需另行制定和审核实施规格；进入 M2 前还必须单独冻结并审核最小来源注解投影。
 
 ## 2. 冻结输入
 
@@ -333,9 +333,9 @@ validator 独立读取已发布文件，不调用 compiler 重建期望结果。
 
 validator 的信任边界只到已发布来源账本和派生产物。对于已解析但无法仅由派生产物重现的 adapter 结构错误，只允许核对带来源证明的 `processing_error`，不能把它表述为 validator 独立恢复了原始语义。
 
-### 7.2 R01 v1 历史外部 oracle
+### 7.2 R01 外部 oracle 与 v2 结果
 
-下列数字来自已撤销完成结论的 v1 正常路径，不参与 compiler 分支或通用 validator 逻辑。它们只作为 v2 重编译时检查是否静默漏数的历史 oracle；v2 正式结果必须另行发布，并补充 `input_truncation_unknown_capture_count`：
+下列数字不参与 compiler 分支或通用 validator 逻辑。它们最初来自 v1 正常路径，本次已经由 v2 全量重编译和独立 validator 重新确认；完整执行证据见验收报告：
 
 ```text
 physical lines                   = 1,683
@@ -363,6 +363,7 @@ captures with inferred schemas   = 280
 inferred tool name annotations   = 566
 compaction captures              = 119
 truncated input captures         = 35
+unknown input truncation         = 0
 terminal text outcomes           = 472
 terminal tool-call pending       = 1,211
 compiler COMPLETE                = 1,683
