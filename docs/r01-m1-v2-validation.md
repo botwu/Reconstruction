@@ -8,6 +8,8 @@
 
 > 后续审计确认通用 typed payload 自洽性、公共报告 dataset slug 边界和异常一对一 pairing 仍可被重签绕过。现存 run 的正常路径事实继续有效，但必须修复并重新完成双运行留证后才能发布新的正式结论。
 
+当前正式结论见 [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md)。
+
 ## 1. 结论
 
 提交 `9e0c6a5c821a1d648931cab54430f6dc92c3cf48` 已闭合本轮审计要求的语义验收、递归隐私、极端输入、Data URL、数值表示和版本契约。冻结 R01 以 M1 v2 完成两次独立全量编译，两份已发布 run 均通过独立 validator，排除非确定性的 `run_receipt.json` 后所有文件逐字节一致。

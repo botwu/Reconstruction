@@ -103,4 +103,4 @@ v1 当时的 `run_receipt.json` 只包含运行时间、路径、Python 和版�
 
 ## 7. 当时的停止线
 
-在该 v1 报告被撤销时，M1A、M1B 尚未达到正式完成条件。当前状态与 v2 证据以 [`r01-m1-v2-validation.md`](r01-m1-v2-validation.md) 为准；进入 M2 前仍须另过来源注解投影阶段门。
+该 v1 报告只保留历史事实。当前正式状态与证据以 [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md) 为准；进入 M2 前仍须另过来源注解投影阶段门。

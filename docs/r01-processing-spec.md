@@ -4,7 +4,7 @@
 
 日期：2026-09-01
 
-状态：M1A、M1B 验收未通过；v3 候选契约等待全量重新验收
+状态：M1A、M1B v3 正式通过；M1C 尚未启动
 
 本文是 R01 回流处理的实施事实来源。项目背景见 [`background-and-goals.md`](background-and-goals.md)，总体阶段与下游边界见 [`overall-plan.md`](overall-plan.md)，开发纪律只引用 [`../AGENTS.md`](../AGENTS.md)。
 
@@ -26,7 +26,7 @@ M1B Structural Compiler
 - World、Truth、Reference、Verifier；
 - Harbor、AGS 或模型 rollout。
 
-现存 v2 R01 run 的物理与主要结构事实闭合，但正式结论已经撤销。v3 必须修复 typed payload、dataset slug 和异常 pairing 后重新留证；M1C 及之后阶段继续冻结，进入 M2 前还必须单独冻结并审核最小来源注解投影。
+v2 正常路径的物理与主要结构事实闭合，但其正式结论已经撤销。v3 已修复 typed payload、dataset slug 和异常 pairing，并完成双全量运行、独立验证、确定性对比与轻量留证。M1C 及之后阶段继续冻结；进入 M2 前还必须单独冻结并审核最小来源注解投影。
 
 ## 2. 冻结输入
 
@@ -198,7 +198,7 @@ TOOL_RESULT
 
 `visible_payload_utf8_byte_length` 是去除 reasoning 审计摘要后的可见 payload 经 canonical JSON 编码后的 UTF-8 字节数，不是原始 JSONL 行长，也不是 assistant content 字符数。`visible_payload_sha256` 对同一份 canonical bytes 求摘要。M1 v3 只有在该事件的可见 payload 已完整映射时才产出事件，因此 `integrity_status` 固定为 `COMPLETE`；它不表示原始 wire 日志完整、任务完成、工具成功或不存在 compaction。
 
-下游只能通过 `event_payload.py` 的 typed reader 读取五种 event payload，不能各自重新解释 JSON。reader 对普通 TEXT 与无效 JSON 文本独立重算 UTF-8 长度和 SHA-256；脱敏文本只接受严格 privacy envelope 并核对内外审计字段。tool arguments 的 pointer 必须精确为 `/messages/<index>/tool_calls/<sub_index>/function/arguments`，validator 还要将两个 index 与 event 位置比较。任一字段集合、类型、审计值或绑定不匹配都必须 fail-closed。
+下游只能通过 `event_payload.py` 的 typed reader 读取五种 event payload，不能各自重新解释 JSON。reader 对普通 TEXT 与无效 JSON 文本独立重算 UTF-8 长度和 SHA-256；脱敏文本只接受正长度的严格 privacy envelope 并核对内外审计字段。terminal 判空必须由发布的 value 形态重算：普通字符串使用实际值，两类合法 Data URL envelope 恒表示非空原文，不能依赖可同步重签的审计长度。tool arguments 的 pointer 必须精确为 `/messages/<index>/tool_calls/<sub_index>/function/arguments`，validator 还要将两个 index 与 event 位置比较。任一字段集合、类型、审计值或绑定不匹配都必须 fail-closed。
 
 assistant message 和它的 tool calls 拆成不同事件，通过 tool call payload 的 `assistant_event_id` 关联。同一个 assistant decision 中的一个或多个 tool call 形成一个 `ActionBatch`。来源没有明确并行证据，因此 `execution_semantics=UNKNOWN`；result 到达顺序不能用来推断 tool call 的并行或因果顺序。
 
@@ -335,9 +335,9 @@ validator 独立读取已发布文件，不调用 compiler 重建期望结果。
 
 validator 的信任边界只到已发布来源账本和派生产物。对于已解析但无法仅由派生产物重现的 adapter 结构错误，只允许核对带来源证明的 `processing_error`，不能把它表述为 validator 独立恢复了原始语义。
 
-### 7.2 R01 外部 oracle 与 v2 结果
+### 7.2 R01 外部 oracle 与 v3 结果
 
-下列数字不参与 compiler 分支或通用 validator 逻辑。它们最初来自 v1 正常路径，本次已经由 v2 全量重编译和独立 validator 重新确认；完整执行证据见验收报告：
+下列数字不参与 compiler 分支或通用 validator 逻辑。它们最初来自 v1 正常路径，现已由 v3 双全量重编译和两次独立 validator 重新确认；完整执行证据见 [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md)：
 
 ```text
 physical lines                   = 1,683

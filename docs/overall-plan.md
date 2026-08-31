@@ -118,7 +118,7 @@ DomainKit + WorldTemplate ────────┤
 
 ## 4. 轨迹结构化设计
 
-当前精确算法、契约、CLI 和全量验收只在 [`r01-processing-spec.md`](r01-processing-spec.md) 定义。本阶段依次为 M1A Source Adapter、M1B Structural Compiler、M1C Request/Capture Graph 和 M1D QueryTurn；当前实现门只开放 M1A、M1B。
+当前精确算法、契约、CLI 和全量验收只在 [`r01-processing-spec.md`](r01-processing-spec.md) 定义。本阶段依次为 M1A Source Adapter、M1B Structural Compiler、M1C Request/Capture Graph 和 M1D QueryTurn；M1A、M1B v3 已通过，当前代码停止在 M1B，M1C 实现门尚未开放。
 
 M1A 必须将物理格式与语义 schema 分开：`jsonl` 只负责字节账本，`traceforge.restored-long-capture.v1` 是当前唯一显式来源契约。它通过单一 adapter 产生 typed envelope，不做 schema 猜测、fallback、注册表或配置 DSL。未来只有在第二种真实输入出现后才新增 adapter。
 
@@ -174,7 +174,7 @@ TOOL_RESULT
 - content 形态和长度；
 - 完整性、冲突和推断状态。
 
-M1 v2 的每个 event 都保存 `visible_payload_utf8_byte_length`、`visible_payload_sha256` 和 `integrity_status=COMPLETE`。前两者来自去除 reasoning 摘要后的可见 payload 的 canonical JSON bytes；`COMPLETE` 只表示该可见事件完整映射到当前契约，不代表原始 wire 日志、任务结果或环境状态完整。
+M1 v3 的每个 event 都保存 `visible_payload_utf8_byte_length`、`visible_payload_sha256` 和 `integrity_status=COMPLETE`。前两者来自去除 reasoning 摘要后的可见 payload 的 canonical JSON bytes；`COMPLETE` 只表示该可见事件完整映射到当前契约，不代表原始 wire 日志、任务结果或环境状态完整。
 
 只按显式 ID 建立确定 pairing。基于位置推断的关系必须单独标记，不能进入认证任务的硬证据。
 
@@ -888,7 +888,7 @@ M1 按以下门依次实施：
 - M1C：`RequestLineageForest` 与 `CaptureRelationGraph`；
 - M1D：`UserBlock`、`QueryTurn` 与 `ThreadTurnGraph`。
 
-当前只开放 M1A、M1B，精确契约和验收见 [`r01-processing-spec.md`](r01-processing-spec.md)。它们完成后必须停止审核，不能提前实现 M1C、M1D。
+M1A、M1B v3 已正式通过，精确契约和验收见 [`r01-processing-spec.md`](r01-processing-spec.md) 与 [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md)。当前必须停止在 M1B；M1C 的输入、输出、关系等级和独立验收规格未经审核前，不能实现 M1C 或 M1D。
 
 M1 总体验收：
 
