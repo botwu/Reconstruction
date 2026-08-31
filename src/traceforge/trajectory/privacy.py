@@ -464,11 +464,13 @@ def _is_data_url_summary_envelope(value: dict[Any, Any]) -> bool:
         return False
     start = value.get("source_character_start")
     end = value.get("source_character_end")
+    byte_length = value.get("utf8_byte_length")
     return (
         isinstance(value.get("mime_type"), str)
         and bool(value["mime_type"])
         and value.get("encoding") in {"base64", "percent-encoded"}
-        and _is_nonnegative_integer(value.get("utf8_byte_length"))
+        and _is_nonnegative_integer(byte_length)
+        and byte_length > 0
         and _is_sha256(value.get("sha256"))
         and _is_json_pointer(value.get("source_json_pointer"))
         and _is_nonnegative_integer(start)
@@ -487,6 +489,7 @@ def _is_segmented_text_envelope(value: dict[Any, Any]) -> bool:
     }:
         return False
     segments = value.get("segments")
+    byte_length = value.get("utf8_byte_length")
     return (
         isinstance(segments, list)
         and bool(segments)
@@ -495,7 +498,8 @@ def _is_segmented_text_envelope(value: dict[Any, Any]) -> bool:
             for segment in segments
         )
         and any(privacy_envelope_kind(segment) == DATA_URL_SUMMARY_V1 for segment in segments)
-        and _is_nonnegative_integer(value.get("utf8_byte_length"))
+        and _is_nonnegative_integer(byte_length)
+        and byte_length > 0
         and _is_sha256(value.get("sha256"))
         and _is_json_pointer(value.get("source_json_pointer"))
     )

@@ -1141,7 +1141,11 @@ def _content_nonempty(content: TextContent | ContentBlocks) -> bool:
     """从 typed content 恢复 compiler 的终态空值语义。"""
 
     if isinstance(content, TextContent):
-        return content.utf8_byte_length > 0
+        if isinstance(content.value, str):
+            return bool(content.value)
+        # typed reader 只允许两类包含 Data URL 的严格 envelope；它们在语义上
+        # 必然代表非空原文，不能依赖可被重签的长度摘要来判空。
+        return True
     return content.block_count > 0
 
 

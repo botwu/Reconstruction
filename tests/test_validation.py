@@ -8,6 +8,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from traceforge.trajectory.json_codec import canonical_json_bytes, canonical_json_line
 from traceforge.trajectory.source_adapter import RESTORED_LONG_CAPTURE_SCHEMA
 from traceforge.trajectory.validation import validate_compiled_run
@@ -124,6 +126,61 @@ def test_validator_rejects_synced_terminal_quality_from_forged_text_length(
     def forge_event(record: dict[str, Any]) -> None:
         record["payload"]["content"]["utf8_byte_length"] = 0
         visible = {"content": record["payload"]["content"]}
+        encoded = canonical_json_bytes(visible)
+        record["visible_payload_utf8_byte_length"] = len(encoded)
+        record["visible_payload_sha256"] = hashlib.sha256(encoded).hexdigest()
+
+    _rewrite_jsonl_record(run / event_path, forge_event)
+    _resign_artifact(run, event_path)
+
+    quality_path = "private/capture_quality.jsonl"
+
+    def forge_quality(record: dict[str, Any]) -> None:
+        record["terminal_status"] = "EMPTY_OUTCOME"
+        record["reason_codes"] = ["TERMINAL_EMPTY_OUTCOME"]
+
+    _rewrite_jsonl_record(run / quality_path, forge_quality)
+    _resign_artifact(run, quality_path)
+
+    report_path = "reports/attrition_report.json"
+    report = json.loads((run / report_path).read_text(encoding="utf-8"))
+    report["counts"]["terminal_text_outcome_capture_count"] = 0
+    report["counts"]["terminal_empty_outcome_capture_count"] = 1
+    (run / report_path).write_bytes(canonical_json_line(report))
+    _resign_artifact(run, report_path)
+
+    result = validate_compiled_run(run)
+
+    assert not result.ok
+    assert "EVENT_PAYLOAD_INVALID" in {issue.code for issue in result.issues}
+
+
+@pytest.mark.parametrize(
+    "terminal_content",
+    [
+        "data:image/png;base64,U0VDUkVU",
+        "前文 data:image/png;base64,U0VDUkVU 后文",
+    ],
+)
+def test_validator_rejects_resigned_empty_data_url_terminal(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+    terminal_content: str,
+) -> None:
+    capture = capture_factory(
+        messages=[{"role": "assistant", "content": terminal_content}],
+        terminal_prefix_depths=[1],
+    )
+    run = compile_dataset([capture], label="validation-forged-data-url-terminal")
+    event_path = "private/event_occurrences.jsonl"
+
+    def forge_event(record: dict[str, Any]) -> None:
+        content = record["payload"]["content"]
+        content["utf8_byte_length"] = 0
+        content["sha256"] = "0" * 64
+        content["value"]["utf8_byte_length"] = 0
+        content["value"]["sha256"] = "0" * 64
+        visible = {"content": content}
         encoded = canonical_json_bytes(visible)
         record["visible_payload_utf8_byte_length"] = len(encoded)
         record["visible_payload_sha256"] = hashlib.sha256(encoded).hexdigest()
