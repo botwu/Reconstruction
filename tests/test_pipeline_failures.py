@@ -114,6 +114,74 @@ def test_unsafe_json_lines_are_quarantined_and_later_capture_still_compiles(
     assert len(read_private(run, "captures")) == 1
 
 
+def test_extreme_json_nesting_has_terminal_quality_and_later_capture_compiles(
+    tmp_path: Path,
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    valid_capture = capture_factory(
+        messages=[{"role": "assistant", "content": "虚构完成。"}],
+        terminal_prefix_depths=[1],
+    )
+    deeply_nested = b"[" * 20_000 + b"0" + b"]" * 20_000 + b"\n"
+    run = _compile_raw(
+        tmp_path,
+        deeply_nested + json_line(valid_capture),
+        "extreme-json-nesting",
+    )
+
+    source_records = read_private(run, "source_records")
+    qualities = read_private(run, "capture_quality")
+    assert [record["ingestion_status"] for record in source_records] == [
+        "QUARANTINED",
+        "PARSED",
+    ]
+    assert [quality["processing_status"] for quality in qualities] == [
+        "QUARANTINED",
+        "COMPLETE",
+    ]
+    assert source_records[0]["parse_error"]["code"] == "JSON_NESTING_TOO_DEEP"
+    assert qualities[0]["processing_error"]["code"] == "JSON_NESTING_TOO_DEEP"
+    assert len(source_records) == len(qualities) == 2
+    assert len(read_private(run, "captures")) == 1
+
+
+@pytest.mark.parametrize("depth", [86, 180])
+def test_deep_derived_value_is_quarantined_and_later_capture_compiles(
+    tmp_path: Path,
+    capture_factory: Callable[..., dict[str, Any]],
+    depth: int,
+) -> None:
+    deeply_nested: object = "安全值"
+    for index in range(depth):
+        key = "data:image/png;base64,U0VDUkVUX0tFWQ==" if index == 0 else f"level-{index}"
+        deeply_nested = {key: deeply_nested}
+
+    bad_capture = capture_factory(
+        messages=[
+            {"role": "user", "content": [{"metadata": deeply_nested}]},
+            {"role": "assistant", "content": "坏行后仍应继续。"},
+        ],
+        terminal_prefix_depths=[2],
+    )
+    valid_capture = capture_factory(
+        messages=[{"role": "assistant", "content": "虚构完成。"}],
+        terminal_prefix_depths=[1],
+    )
+    raw = json_line(bad_capture) + json_line(valid_capture)
+    run = _compile_raw(tmp_path, raw, f"derived-depth-{depth}")
+
+    qualities = read_private(run, "capture_quality")
+    assert [quality["processing_status"] for quality in qualities] == [
+        "QUARANTINED",
+        "COMPLETE",
+    ]
+    assert qualities[0]["processing_error"]["code"] == ("PRIVACY_TRANSFORM_DEPTH_EXCEEDED")
+    assert len(read_private(run, "captures")) == 1
+    assert b"U0VDUkVUX0tFWQ==" not in b"".join(
+        path.read_bytes() for path in sorted(run.rglob("*")) if path.is_file()
+    )
+
+
 def test_valid_json_with_invalid_capture_contract_has_structural_quarantine(
     compile_dataset: Callable[..., Path],
     capture_factory: Callable[..., dict[str, Any]],

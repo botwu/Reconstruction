@@ -24,10 +24,11 @@ from traceforge.trajectory.contracts import (
     ATTRITION_REPORT_SCHEMA,
     CAPTURE_QUALITY_SCHEMA,
     COMPILER_CONTRACT_VERSION,
+    RUN_RECEIPT_SCHEMA,
     ArtifactManifestV1,
-    AttritionReportV1,
+    AttritionReportV2,
     BoundaryStatus,
-    CaptureQualityV1,
+    CaptureQualityV2,
     CompactionStatus,
     PrivacyStatus,
     ProcessingStatus,
@@ -35,6 +36,7 @@ from traceforge.trajectory.contracts import (
     ToolSchemaStatus,
 )
 from traceforge.trajectory.json_codec import stable_id
+from traceforge.trajectory.provenance import collect_git_provenance
 from traceforge.trajectory.source import iter_verified_records, scan_jsonl_source
 from traceforge.trajectory.source_adapter import (
     RESTORED_LONG_CAPTURE_SCHEMA,
@@ -90,6 +92,7 @@ _ZERO_COUNTS = (
     "schema_invalid_capture_count",
     "compaction_capture_count",
     "input_truncated_capture_count",
+    "input_truncation_unknown_capture_count",
     "terminal_text_outcome_capture_count",
     "terminal_tool_call_pending_capture_count",
     "terminal_empty_outcome_capture_count",
@@ -101,7 +104,7 @@ _ZERO_COUNTS = (
 
 
 class _AttritionAccumulator:
-    """只累积公共聚合计数，不持有业务原文或原始 ID。"""
+    """累积公共计数；为精确去重保留请求 ID 集合，不保留原始消息或记录。"""
 
     def __init__(self) -> None:
         self.counts: Counter[str] = Counter({key: 0 for key in _ZERO_COUNTS})
@@ -177,8 +180,10 @@ class _AttritionAccumulator:
         self.counts[schema_key] += 1
         if result.quality.compaction_status == "UNLOCALIZED_COMPACTION_EVIDENCE":
             self.counts["compaction_capture_count"] += 1
-        if "INPUT_TRUNCATED" in result.quality.reason_codes:
+        if result.capture.input_truncation_status == "OBSERVED_TRUNCATED":
             self.counts["input_truncated_capture_count"] += 1
+        elif result.capture.input_truncation_status == "UNKNOWN":
+            self.counts["input_truncation_unknown_capture_count"] += 1
 
         terminal_key = {
             "TEXT_OUTCOME": "terminal_text_outcome_capture_count",
@@ -203,8 +208,8 @@ def _quarantined_quality(
     source_record_id: str,
     reason_code: str,
     processing_error: dict[str, Any],
-) -> CaptureQualityV1:
-    return CaptureQualityV1(
+) -> CaptureQualityV2:
+    return CaptureQualityV2(
         schema_version=CAPTURE_QUALITY_SCHEMA,
         source_record_id=source_record_id,
         capture_occurrence_id=None,
@@ -274,6 +279,7 @@ def compile_trajectory(
             "不支持该 source_schema；当前编译器只接受显式 restored-long v1 契约"
         )
     started_at = datetime.now(UTC)
+    git_provenance = collect_git_provenance()
     source_path = Path(input_path)
     scan = scan_jsonl_source(
         source_path,
@@ -335,7 +341,7 @@ def compile_trajectory(
             accumulator.add_capture(result)
 
         entries.extend(_close_writers(writers))
-        report = AttritionReportV1(
+        report = AttritionReportV2(
             schema_version=ATTRITION_REPORT_SCHEMA,
             dataset_id=scan.manifest.dataset_id,
             dataset_sha256=scan.manifest.dataset_sha256,
@@ -364,6 +370,12 @@ def compile_trajectory(
             "artifact_manifest.json",
             artifact_manifest.to_dict(),
         )
+        completion_git_provenance = collect_git_provenance()
+        git_provenance_verified_at_completion = (
+            git_provenance.available
+            and completion_git_provenance.available
+            and git_provenance == completion_git_provenance
+        )
         completed_at = datetime.now(UTC)
         write_json_artifact(
             workspace.staging_path,
@@ -372,11 +384,11 @@ def compile_trajectory(
                 "artifact_manifest_sha256": manifest_entry.sha256,
                 "completed_at": completed_at.isoformat(),
                 "duration_seconds": (completed_at - started_at).total_seconds(),
-                "input_path": str(source_path.resolve()),
-                "output_path": str(workspace.final_path.resolve()),
+                "git_provenance": git_provenance.to_dict(),
+                "git_provenance_verified_at_completion": (git_provenance_verified_at_completion),
                 "python": platform.python_version(),
                 "run_id": run_id,
-                "schema_version": "traceforge.run-receipt.v1",
+                "schema_version": RUN_RECEIPT_SCHEMA,
                 "traceforge_version": __version__,
             },
         )

@@ -76,6 +76,50 @@ def test_source_stream_quarantines_unsafe_json_without_stopping_the_batch(tmp_pa
     assert records[-1].value == {"sequence": 2}
 
 
+def test_source_stream_quarantines_extreme_nesting_without_stopping_the_batch(
+    tmp_path: Path,
+) -> None:
+    deeply_nested = b"[" * 20_000 + b"0" + b"]" * 20_000 + b"\n"
+    source = tmp_path / "deeply-nested.jsonl"
+    source.write_bytes(deeply_nested + b'{"sequence":2}\n')
+
+    scan = scan_jsonl_source(
+        source,
+        dataset_id="fixture-deeply-nested-v1",
+        source_schema=RESTORED_LONG_CAPTURE_SCHEMA,
+    )
+    records = list(iter_verified_records(source, scan))
+
+    assert [record.reference.ingestion_status for record in records] == [
+        "QUARANTINED",
+        "PARSED",
+    ]
+    assert records[0].reference.parse_error["code"] == "JSON_NESTING_TOO_DEEP"
+    assert records[0].value is None
+    assert records[1].value == {"sequence": 2}
+
+
+@pytest.mark.parametrize("field", ["dataset_id", "source_schema"])
+def test_source_scan_rejects_data_url_in_manifest_identity_without_echoing_payload(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    source = tmp_path / "identity.jsonl"
+    source.write_bytes(b"{}\n")
+    secret = "U0VDUkVUX0lERU5USVRZ"
+    arguments = {
+        "dataset_id": "fixture-dataset-v1",
+        "source_schema": RESTORED_LONG_CAPTURE_SCHEMA,
+    }
+    arguments[field] = f"prefix-data:image/png;base64 ,{secret}"
+
+    with pytest.raises(ValueError) as captured:
+        scan_jsonl_source(source, **arguments)
+
+    assert "Data URL" in str(captured.value)
+    assert secret not in str(captured.value)
+
+
 def test_source_scan_rejects_wrong_frozen_digest(tmp_path: Path) -> None:
     source = tmp_path / "source.jsonl"
     source.write_bytes(b"{}\n")

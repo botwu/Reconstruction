@@ -2,22 +2,23 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, fields
 from enum import StrEnum
 from typing import Any
 
 SOURCE_MANIFEST_SCHEMA = "traceforge.source-manifest.v1"
 SOURCE_RECORD_SCHEMA = "traceforge.source-record.v1"
-CAPTURE_SCHEMA = "traceforge.normalized-capture.v1"
+CAPTURE_SCHEMA = "traceforge.normalized-capture.v2"
 REQUEST_BOUNDARY_SCHEMA = "traceforge.request-boundary.v1"
-EVENT_SCHEMA = "traceforge.event-occurrence.v1"
-ACTION_BATCH_SCHEMA = "traceforge.action-batch.v1"
-TOOL_PAIRING_SCHEMA = "traceforge.tool-pairing.v1"
-TOOL_CATALOG_SCHEMA = "traceforge.tool-catalog.v1"
-CAPTURE_QUALITY_SCHEMA = "traceforge.capture-quality.v1"
+EVENT_SCHEMA = "traceforge.event-occurrence.v2"
+ACTION_BATCH_SCHEMA = "traceforge.action-batch.v2"
+TOOL_PAIRING_SCHEMA = "traceforge.tool-pairing.v2"
+TOOL_CATALOG_SCHEMA = "traceforge.tool-catalog.v2"
+CAPTURE_QUALITY_SCHEMA = "traceforge.capture-quality.v2"
 ARTIFACT_MANIFEST_SCHEMA = "traceforge.artifact-manifest.v1"
-ATTRITION_REPORT_SCHEMA = "traceforge.attrition-report.v1"
-COMPILER_CONTRACT_VERSION = "trajectory-compiler-m1ab-v1"
+ATTRITION_REPORT_SCHEMA = "traceforge.attrition-report.v2"
+RUN_RECEIPT_SCHEMA = "traceforge.run-receipt.v2"
+COMPILER_CONTRACT_VERSION = "trajectory-compiler-m1ab-v2"
 
 
 class ProcessingStatus(StrEnum):
@@ -89,10 +90,18 @@ class CompactionStatus(StrEnum):
     UNLOCALIZED_COMPACTION_EVIDENCE = "UNLOCALIZED_COMPACTION_EVIDENCE"
 
 
+class InputTruncationStatus(StrEnum):
+    OBSERVED_TRUNCATED = "OBSERVED_TRUNCATED"
+    OBSERVED_NOT_TRUNCATED = "OBSERVED_NOT_TRUNCATED"
+    UNKNOWN = "UNKNOWN"
+
+
 @dataclass(frozen=True, slots=True)
 class SerializableContract:
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        """只展开当前契约字段，嵌套值由编译器统一预检和编码。"""
+
+        return {field.name: getattr(self, field.name) for field in fields(self)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,7 +130,7 @@ class SourceRecordRefV1(SerializableContract):
 
 
 @dataclass(frozen=True, slots=True)
-class NormalizedCaptureV1(SerializableContract):
+class NormalizedCaptureV2(SerializableContract):
     schema_version: str
     capture_occurrence_id: str
     source_record_id: str
@@ -147,6 +156,7 @@ class NormalizedCaptureV1(SerializableContract):
     usage: Any
     protocol_adapters: Any
     sequence_repairs: Any
+    input_truncation_status: str
     has_compaction: bool
     compaction_count: int
     compaction_hashes: Any
@@ -168,7 +178,7 @@ class RequestBoundaryV1(SerializableContract):
 
 
 @dataclass(frozen=True, slots=True)
-class EventOccurrenceV1(SerializableContract):
+class EventOccurrenceV2(SerializableContract):
     schema_version: str
     event_occurrence_id: str
     capture_occurrence_id: str
@@ -187,7 +197,7 @@ class EventOccurrenceV1(SerializableContract):
 
 
 @dataclass(frozen=True, slots=True)
-class ActionBatchV1(SerializableContract):
+class ActionBatchV2(SerializableContract):
     schema_version: str
     action_batch_id: str
     capture_occurrence_id: str
@@ -198,7 +208,7 @@ class ActionBatchV1(SerializableContract):
 
 
 @dataclass(frozen=True, slots=True)
-class ToolPairingRecordV1(SerializableContract):
+class ToolPairingRecordV2(SerializableContract):
     schema_version: str
     pairing_id: str
     capture_occurrence_id: str
@@ -211,18 +221,19 @@ class ToolPairingRecordV1(SerializableContract):
 
 
 @dataclass(frozen=True, slots=True)
-class ToolCatalogV1(SerializableContract):
+class ToolCatalogV2(SerializableContract):
     schema_version: str
     tool_catalog_id: str
     capture_occurrence_id: str
     definitions: tuple[dict[str, Any], ...]
     definition_conflict: bool
     inferred_tool_names: tuple[str, ...]
+    catalog_input_valid: bool
     catalog_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
-class CaptureQualityV1(SerializableContract):
+class CaptureQualityV2(SerializableContract):
     schema_version: str
     source_record_id: str
     capture_occurrence_id: str | None
@@ -246,7 +257,7 @@ class CaptureQualityV1(SerializableContract):
 
 
 @dataclass(frozen=True, slots=True)
-class AttritionReportV1(SerializableContract):
+class AttritionReportV2(SerializableContract):
     schema_version: str
     dataset_id: str
     dataset_sha256: str

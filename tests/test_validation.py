@@ -43,6 +43,34 @@ def _resign_artifact(run: Path, relative_path: str) -> None:
     receipt_path.write_bytes(canonical_json_line(receipt))
 
 
+def _one_to_one_capture(
+    capture_factory: Callable[..., dict[str, Any]],
+) -> dict[str, Any]:
+    return capture_factory(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fixture-matched-call",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": {"query": "fixture"}},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "lookup",
+                "tool_call_id": "fixture-matched-call",
+                "content": "虚构结果",
+            },
+            {"role": "assistant", "content": "虚构完成。"},
+        ],
+        terminal_prefix_depths=[3],
+    )
+
+
 def test_full_run_validator_accepts_compiler_output(
     compile_dataset: Callable[..., Path],
     two_boundary_capture: dict[str, Any],
@@ -80,6 +108,30 @@ def test_validator_accepts_reasoning_summary_in_non_assistant_extensions(
     result = validate_compiled_run(run)
 
     assert result.ok, result.errors
+
+
+def test_validator_reports_deep_resigned_catalog_instead_of_raising(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    capture = capture_factory(
+        messages=[{"role": "assistant", "content": "虚构完成。"}],
+        terminal_prefix_depths=[1],
+    )
+    run = compile_dataset([capture], label="validation-deep-catalog")
+    nested: dict[str, Any] = {}
+    for _ in range(90):
+        nested = {"deep": nested}
+
+    relative_path = "private/tool_catalogs.jsonl"
+
+    def deepen_catalog(record: dict[str, Any]) -> None:
+        record["definitions"][0]["definition"]["function"]["parameters"] = nested
+
+    _rewrite_jsonl_record(run / relative_path, deepen_catalog)
+    _resign_artifact(run, relative_path)
+
+    assert "CATALOG_VISIBLE_PROJECTION_INVALID" in _issue_codes(run)
 
 
 def test_validator_binds_source_records_to_manifest_identity_and_format(
@@ -159,6 +211,259 @@ def test_validator_detects_graph_edge_break_after_valid_resigning(
     assert "ACTION_TOOL_CALL_EDGE_MISMATCH" in codes
 
 
+def test_validator_recomputes_boundary_owned_message_start(
+    compile_dataset: Callable[..., Path],
+    two_boundary_capture: dict[str, Any],
+) -> None:
+    run = compile_dataset([two_boundary_capture], label="validation-boundary-semantics")
+    relative_path = "private/request_boundaries.jsonl"
+    _rewrite_jsonl_record(
+        run / relative_path,
+        lambda record: record.update(owned_message_start_index=999),
+    )
+    _resign_artifact(run, relative_path)
+
+    assert "BOUNDARY_WINDOW_SEMANTICS_MISMATCH" in _issue_codes(run)
+
+
+def test_validator_requires_exact_matched_pairing_edges(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    run = compile_dataset(
+        [_one_to_one_capture(capture_factory)],
+        label="validation-pairing-matched-edges",
+    )
+    relative_path = "private/tool_pairings.jsonl"
+    _rewrite_jsonl_record(
+        run / relative_path,
+        lambda record: record.update(
+            matched_call_event_id=None,
+            matched_result_event_id=None,
+        ),
+    )
+    _resign_artifact(run, relative_path)
+
+    codes = _issue_codes(run)
+    assert "PAIRING_MATCHED_CALL_SEMANTICS_MISMATCH" in codes
+    assert "PAIRING_MATCHED_RESULT_SEMANTICS_MISMATCH" in codes
+
+
+def test_validator_rejects_invalid_quality_enums(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    run = compile_dataset(
+        [_one_to_one_capture(capture_factory)],
+        label="validation-quality-enums",
+    )
+    relative_path = "private/capture_quality.jsonl"
+
+    def corrupt(record: dict[str, Any]) -> None:
+        record["boundary_status"] = "B0GUS"
+        record["privacy_status"] = "B0GUS"
+        record["compaction_status"] = "B0GUS"
+
+    _rewrite_jsonl_record(run / relative_path, corrupt)
+    _resign_artifact(run, relative_path)
+
+    codes = _issue_codes(run)
+    assert "QUALITY_BOUNDARY_STATUS_INVALID" in codes
+    assert "QUALITY_PRIVACY_STATUS_INVALID" in codes
+    assert "QUALITY_COMPACTION_STATUS_INVALID" in codes
+
+
+def test_validator_recomputes_pairing_status_despite_synced_self_reports(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    run = compile_dataset(
+        [_one_to_one_capture(capture_factory)],
+        label="validation-pairing-status-semantics",
+    )
+    pairing_path = "private/tool_pairings.jsonl"
+    _rewrite_jsonl_record(
+        run / pairing_path,
+        lambda record: record.update(statuses=["RESULT_NOT_OBSERVED"]),
+    )
+    _resign_artifact(run, pairing_path)
+
+    quality_path = "private/capture_quality.jsonl"
+
+    def rewrite_quality(record: dict[str, Any]) -> None:
+        record["tool_pairing_statuses"] = ["RESULT_NOT_OBSERVED"]
+        record["missing_result_count"] = 1
+        record["reason_codes"] = ["TOOL_PAIRING_RESULT_NOT_OBSERVED"]
+
+    _rewrite_jsonl_record(run / quality_path, rewrite_quality)
+    _resign_artifact(run, quality_path)
+
+    report_path = "reports/attrition_report.json"
+    report = json.loads((run / report_path).read_text(encoding="utf-8"))
+    report["counts"]["matched_one_to_one_pairing_count"] = 0
+    report["counts"]["unobserved_call_id_count"] = 1
+    report["counts"]["captures_with_unobserved_results"] = 1
+    (run / report_path).write_bytes(canonical_json_line(report))
+    _resign_artifact(run, report_path)
+
+    assert "PAIRING_STATUS_SEMANTICS_MISMATCH" in _issue_codes(run)
+
+
+def test_validator_recomputes_all_capture_quality_axes_and_report_counts(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    run = compile_dataset(
+        [_one_to_one_capture(capture_factory)],
+        label="validation-quality-derived-facts",
+    )
+    quality_path = "private/capture_quality.jsonl"
+
+    def falsify_quality(record: dict[str, Any]) -> None:
+        record.update(
+            processing_status="PARTIAL",
+            boundary_status="INVALID",
+            tool_pairing_applicable=False,
+            tool_pairing_statuses=[],
+            tool_schema_status="INVALID",
+            terminal_status="EMPTY_OUTCOME",
+            privacy_status="NOT_EVALUATED",
+            compaction_status="UNLOCALIZED_COMPACTION_EVIDENCE",
+            reason_codes=[
+                "TOOL_SCHEMA_INVALID",
+                "TERMINAL_EMPTY_OUTCOME",
+                "UNLOCALIZED_COMPACTION_EVIDENCE",
+            ],
+            event_count=999,
+        )
+
+    _rewrite_jsonl_record(run / quality_path, falsify_quality)
+    _resign_artifact(run, quality_path)
+
+    report_path = "reports/attrition_report.json"
+    report = json.loads((run / report_path).read_text(encoding="utf-8"))
+    counts = report["counts"]
+    counts.update(
+        processing_complete_count=0,
+        processing_partial_count=1,
+        schema_consistent_capture_count=0,
+        schema_invalid_capture_count=1,
+        terminal_text_outcome_capture_count=0,
+        terminal_empty_outcome_capture_count=1,
+        compaction_capture_count=1,
+        matched_one_to_one_pairing_count=0,
+    )
+    (run / report_path).write_bytes(canonical_json_line(report))
+    _resign_artifact(run, report_path)
+
+    codes = _issue_codes(run)
+    assert {
+        "QUALITY_PROCESSING_STATUS_MISMATCH",
+        "QUALITY_BOUNDARY_STATUS_MISMATCH",
+        "QUALITY_PAIRING_APPLICABILITY_MISMATCH",
+        "QUALITY_PAIRING_STATUS_MISMATCH",
+        "QUALITY_TOOL_SCHEMA_STATUS_MISMATCH",
+        "QUALITY_TERMINAL_STATUS_MISMATCH",
+        "QUALITY_PRIVACY_STATUS_MISMATCH",
+        "QUALITY_COMPACTION_STATUS_MISMATCH",
+        "QUALITY_COUNT_MISMATCH",
+        "QUALITY_REASON_CODES_MISMATCH",
+        "ATTRITION_COUNT_MISMATCH",
+    } <= codes
+
+
+def test_validator_derives_input_truncation_and_invalid_schema_from_v2_facts(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    capture = _one_to_one_capture(capture_factory)
+    capture["domain_meta"]["input_audit"]["input_truncated"] = True
+    capture["meta"]["inferred_tool_definitions"] = {"损坏": "形态"}
+    run = compile_dataset([capture], label="validation-v2-quality-evidence")
+
+    result = validate_compiled_run(run)
+
+    semantic_codes = {
+        issue.code for issue in result.issues if not issue.code.startswith("RUN_RECEIPT_")
+    }
+    assert not semantic_codes, result.errors
+    assert result.observed_counts["input_truncated_capture_count"] == 1
+    assert result.observed_counts["schema_invalid_capture_count"] == 1
+
+
+def test_validator_recomputes_complete_pairing_status_rule_set(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    capture = capture_factory(
+        messages=[
+            {
+                "role": "tool",
+                "name": "lookup",
+                "tool_call_id": "fixture-before",
+                "content": "先到结果",
+            },
+            {
+                "role": "tool",
+                "name": "lookup",
+                "tool_call_id": "fixture-orphan",
+                "content": "孤立结果",
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fixture-before",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": {}},
+                    },
+                    {
+                        "id": "fixture-duplicate",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "[]"},
+                    },
+                    {
+                        "id": "fixture-duplicate",
+                        "type": "function",
+                        "function": {"name": "other", "arguments": {}},
+                    },
+                ],
+            },
+            {
+                "role": "tool",
+                "name": "lookup",
+                "tool_call_id": "fixture-duplicate",
+                "content": "第一份结果",
+            },
+            {
+                "role": "tool",
+                "name": "third",
+                "tool_call_id": "fixture-duplicate",
+                "content": "第二份结果",
+            },
+            {"role": "assistant", "content": "虚构完成。"},
+        ],
+        terminal_prefix_depths=[6],
+    )
+    run = compile_dataset([capture], label="validation-pairing-complete-rules")
+
+    result = validate_compiled_run(run)
+    pairing_codes = {
+        issue.code
+        for issue in result.issues
+        if issue.code.startswith("PAIRING_") or issue.code.startswith("QUALITY_PAIRING_")
+    }
+
+    assert not pairing_codes, result.errors
+    assert result.observed_counts["result_before_call_group_count"] == 1
+    assert result.observed_counts["orphan_result_group_count"] == 1
+    assert result.observed_counts["duplicate_call_id_group_count"] == 1
+    assert result.observed_counts["duplicate_result_group_count"] == 1
+    assert result.observed_counts["name_mismatch_group_count"] == 1
+    assert result.observed_counts["invalid_call_arguments_group_count"] == 1
+
+
 def test_validator_detects_stable_id_tampering_after_valid_resigning(
     compile_dataset: Callable[..., Path],
     two_boundary_capture: dict[str, Any],
@@ -205,16 +510,20 @@ def test_validator_rejects_public_report_fields_outside_allowlist(
     assert "PUBLIC_REPORT_ALLOWLIST_MISMATCH" in _issue_codes(run)
 
 
-def test_validator_detects_base64_marker_across_hashing_chunk_boundary(
+def test_validator_does_not_treat_plain_base64_fragment_as_data_url(
     compile_dataset: Callable[..., Path],
     two_boundary_capture: dict[str, Any],
 ) -> None:
-    run = compile_dataset([two_boundary_capture], label="validation-chunk-boundary")
-    event_path = run / "private/event_occurrences.jsonl"
-    chunk_size = 8 * 1024 * 1024
-    event_path.write_bytes(b"x" * (chunk_size - 4) + b";BaSe64," + b"x\n")
+    run = compile_dataset([two_boundary_capture], label="validation-plain-base64-fragment")
+    relative_path = "private/event_occurrences.jsonl"
 
-    assert "BASE64_DATA_URL_OBSERVED" in _issue_codes(run)
+    def add_plain_fragment(record: dict[str, Any]) -> None:
+        record["payload"]["extensions"] = {"note": "普通文本只提到 ;base64, 并非 Data URL"}
+
+    _rewrite_jsonl_record(run / relative_path, add_plain_fragment)
+    _resign_artifact(run, relative_path)
+
+    assert "BASE64_DATA_URL_OBSERVED" not in _issue_codes(run)
 
 
 def test_validator_rejects_unknown_artifact_source_schema(

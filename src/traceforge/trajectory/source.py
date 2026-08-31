@@ -23,6 +23,7 @@ from traceforge.trajectory.json_codec import (
     source_record_id,
     strict_json_loads,
 )
+from traceforge.trajectory.privacy import contains_data_url
 
 
 class SourceError(RuntimeError):
@@ -264,11 +265,15 @@ def _require_same_signature(
 def _validate_dataset_id(dataset_id: str) -> None:
     if not isinstance(dataset_id, str) or not dataset_id:
         raise ValueError("dataset_id 必须是非空字符串")
+    if contains_data_url(dataset_id):
+        raise ValueError("dataset_id 不得包含 Data URL")
 
 
 def _validate_source_schema(source_schema: str) -> None:
     if not isinstance(source_schema, str) or not source_schema:
         raise ValueError("source_schema 必须是非空字符串")
+    if contains_data_url(source_schema):
+        raise ValueError("source_schema 不得包含 Data URL")
 
 
 def _normalize_expected_sha256(expected_sha256: str | None) -> str | None:

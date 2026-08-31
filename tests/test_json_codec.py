@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import math
+import sys
 
 import pytest
 
 from traceforge.trajectory.json_codec import (
+    MAX_JSON_INTEGER_DIGITS,
+    MAX_JSON_NESTING_DEPTH,
     StrictJsonError,
     canonical_json_bytes,
     source_record_id,
@@ -48,6 +51,73 @@ def test_strict_json_converts_unsafe_values_to_stable_errors(
 
     assert captured.value.code == expected_code
     assert captured.value.to_dict()["code"] == expected_code
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"value":1e-400}',
+        b'{"value":9007199254740993.0}',
+    ],
+)
+def test_strict_json_rejects_float_values_changed_by_python_canonical_roundtrip(
+    raw: bytes,
+) -> None:
+    with pytest.raises(StrictJsonError) as captured:
+        strict_json_loads(raw)
+
+    assert captured.value.code == "LOSSY_NUMBER"
+
+
+def test_json_nesting_depth_has_an_explicit_inclusive_boundary() -> None:
+    accepted = b"[" * MAX_JSON_NESTING_DEPTH + b"0" + b"]" * MAX_JSON_NESTING_DEPTH
+    value = strict_json_loads(accepted)
+    for _ in range(MAX_JSON_NESTING_DEPTH):
+        assert isinstance(value, list) and len(value) == 1
+        value = value[0]
+    assert value == 0
+
+    rejected = b"[" + accepted + b"]"
+    with pytest.raises(StrictJsonError) as captured:
+        strict_json_loads(rejected)
+
+    assert captured.value.to_dict() == {
+        "code": "JSON_NESTING_TOO_DEEP",
+        "message": "JSON 嵌套深度超过契约上限",
+        "maximum_depth": MAX_JSON_NESTING_DEPTH,
+        "observed_depth": MAX_JSON_NESTING_DEPTH + 1,
+    }
+
+
+def test_integer_limit_is_independent_of_python_global_digit_limit() -> None:
+    previous_limit = sys.get_int_max_str_digits()
+    oversized = b'{"value":' + b"9" * 700 + b"}"
+    errors: list[dict[str, object]] = []
+    try:
+        for global_limit in (0, sys.int_info.str_digits_check_threshold):
+            sys.set_int_max_str_digits(global_limit)
+            with pytest.raises(StrictJsonError) as captured:
+                strict_json_loads(oversized)
+            errors.append(captured.value.to_dict())
+
+        sys.set_int_max_str_digits(sys.int_info.str_digits_check_threshold)
+        boundary = b'{"value":' + b"9" * MAX_JSON_INTEGER_DIGITS + b"}"
+        assert canonical_json_bytes(strict_json_loads(boundary)) == boundary
+    finally:
+        sys.set_int_max_str_digits(previous_limit)
+
+    assert (
+        errors
+        == [
+            {
+                "code": "INTEGER_TOO_LONG",
+                "message": "JSON 整数位数超过上限",
+                "digit_count": 700,
+                "maximum_digit_count": MAX_JSON_INTEGER_DIGITS,
+            }
+        ]
+        * 2
+    )
 
 
 def test_strict_json_accepts_a_valid_surrogate_pair() -> None:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from itertools import pairwise
@@ -16,22 +15,24 @@ from traceforge.trajectory.contracts import (
     REQUEST_BOUNDARY_SCHEMA,
     TOOL_CATALOG_SCHEMA,
     TOOL_PAIRING_SCHEMA,
-    ActionBatchV1,
+    ActionBatchV2,
     BoundaryStatus,
-    CaptureQualityV1,
+    CaptureQualityV2,
     CompactionStatus,
     EventIntegrityStatus,
     EventKind,
-    EventOccurrenceV1,
+    EventOccurrenceV2,
     EventScope,
-    NormalizedCaptureV1,
+    InputTruncationStatus,
+    NormalizedCaptureV2,
     PrivacyStatus,
     ProcessingStatus,
     RequestBoundaryV1,
+    SerializableContract,
     SourceRecordRefV1,
     TerminalStatus,
-    ToolCatalogV1,
-    ToolPairingRecordV1,
+    ToolCatalogV2,
+    ToolPairingRecordV2,
     ToolPairingStatus,
     ToolSchemaStatus,
 )
@@ -42,21 +43,18 @@ from traceforge.trajectory.json_codec import (
     stable_id,
     strict_json_loads,
 )
+from traceforge.trajectory.privacy import (
+    REASONING_FIELD,
+    PrivacyTransformError,
+    contains_data_url,
+    preflight_derived_value,
+    sanitize_value,
+    summarize_reasoning_value,
+    visible_value_without_reasoning,
+)
 from traceforge.trajectory.source_adapter import RestoredLongCaptureV1
 
-_DATA_URL_HEADER = re.compile(
-    r"data:"
-    r"(?P<mime>[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+)?"
-    r"(?P<parameters>(?:;[a-z0-9!#$&^_.+-]+(?:=[^;,\s\"'<>]*)?)*)"
-    r"\s*,",
-    flags=re.IGNORECASE,
-)
-_BASE64_CHARACTERS = frozenset(
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=_-"
-)
-_DATA_URL_DELIMITERS = frozenset(" \t\r\n\"'<>)]}")
 _PAIRING_STATUS_ORDER = tuple(ToolPairingStatus)
-_REASONING_FIELD = "reasoning_content"
 
 
 class CaptureCompileError(ValueError):
@@ -72,13 +70,13 @@ class CaptureCompileError(ValueError):
 class CompiledCapture:
     """一个 capture 的全部 M1B 派生对象。"""
 
-    capture: NormalizedCaptureV1
+    capture: NormalizedCaptureV2
     request_boundaries: tuple[RequestBoundaryV1, ...]
-    event_occurrences: tuple[EventOccurrenceV1, ...]
-    action_batches: tuple[ActionBatchV1, ...]
-    tool_pairings: tuple[ToolPairingRecordV1, ...]
-    tool_catalog: ToolCatalogV1
-    quality: CaptureQualityV1
+    event_occurrences: tuple[EventOccurrenceV2, ...]
+    action_batches: tuple[ActionBatchV2, ...]
+    tool_pairings: tuple[ToolPairingRecordV2, ...]
+    tool_catalog: ToolCatalogV2
+    quality: CaptureQualityV2
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,15 +94,21 @@ class _BoundaryFacts:
     terminal_prefix_depths: tuple[int, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class _DataUrlSpan:
-    start: int
-    end: int
-    mime_type: str
-    encoding: str
-
-
 def compile_capture(
+    source_ref: SourceRecordRefV1,
+    envelope: RestoredLongCaptureV1,
+) -> CompiledCapture:
+    """编译并整体预检一条 capture；失败时不返回任何可写对象。"""
+
+    try:
+        result = _compile_capture(source_ref, envelope)
+        _preflight_compiled_capture(result)
+    except PrivacyTransformError as exc:
+        raise CaptureCompileError(exc.reason_code, exc.detail) from exc
+    return result
+
+
+def _compile_capture(
     source_ref: SourceRecordRefV1,
     envelope: RestoredLongCaptureV1,
 ) -> CompiledCapture:
@@ -166,10 +170,11 @@ def compile_capture(
         if has_compaction or compaction_count > 0 or raw_compaction_hashes
         else CompactionStatus.NOT_OBSERVED
     )
+    input_truncation_status = _input_truncation_status(domain_meta)
     terminal_status = _terminal_status(messages[-1])
     pairing_statuses = _aggregate_pairing_statuses(tool_pairings)
     reason_codes = _quality_reason_codes(
-        domain_meta=domain_meta,
+        input_truncation_status=input_truncation_status,
         pairing_statuses=pairing_statuses,
         tool_schema_status=tool_schema_status,
         terminal_status=terminal_status,
@@ -177,7 +182,7 @@ def compile_capture(
     )
 
     boundary_ids = tuple(item.request_boundary_id for item in request_boundaries)
-    capture = NormalizedCaptureV1(
+    capture = NormalizedCaptureV2(
         schema_version=CAPTURE_SCHEMA,
         capture_occurrence_id=capture_occurrence_id,
         source_record_id=source_ref.source_record_id,
@@ -186,55 +191,57 @@ def compile_capture(
         thread_id=thread_id,
         account_id=account_id,
         representation=representation,
-        adapter=_sanitize_value(meta.get("adapter"), "/meta/adapter"),
-        normalization_version=_sanitize_value(
+        adapter=sanitize_value(meta.get("adapter"), "/meta/adapter"),
+        normalization_version=sanitize_value(
             meta.get("normalization_version"),
             "/meta/normalization_version",
         ),
-        model=_sanitize_value(meta.get("model"), "/meta/model"),
-        source_models=_sanitize_value(meta.get("source_models"), "/meta/source_models"),
+        model=sanitize_value(meta.get("model"), "/meta/model"),
+        source_models=sanitize_value(meta.get("source_models"), "/meta/source_models"),
         source_request_count=len(boundary_facts.source_request_ids),
         request_boundary_ids=boundary_ids,
         message_count=len(messages),
         tool_catalog_id=tool_catalog.tool_catalog_id,
-        request_time_start=_sanitize_value(
+        request_time_start=sanitize_value(
             meta.get("request_time_start"),
             "/meta/request_time_start",
         ),
-        request_time_end=_sanitize_value(
+        request_time_end=sanitize_value(
             meta.get("request_time_end"),
             "/meta/request_time_end",
         ),
-        response_time_end=_sanitize_value(
+        response_time_end=sanitize_value(
             meta.get("response_time_end"),
             "/meta/response_time_end",
         ),
-        raw_request_hash=_sanitize_value(
+        raw_request_hash=sanitize_value(
             meta.get("raw_request_hash"),
             "/meta/raw_request_hash",
         ),
-        target_hash=_sanitize_value(meta.get("target_hash"), "/meta/target_hash"),
-        leaf_response_status=_sanitize_value(
+        target_hash=sanitize_value(meta.get("target_hash"), "/meta/target_hash"),
+        leaf_response_status=sanitize_value(
             meta.get("leaf_response_status"),
             "/meta/leaf_response_status",
         ),
-        usage=_sanitize_value(meta.get("usage"), "/meta/usage"),
-        protocol_adapters=_sanitize_value(
+        usage=sanitize_value(meta.get("usage"), "/meta/usage"),
+        protocol_adapters=sanitize_value(
             meta.get("protocol_adapters"),
             "/meta/protocol_adapters",
         ),
-        sequence_repairs=_sanitize_value(
+        sequence_repairs=sanitize_value(
             meta.get("sequence_repairs"),
             "/meta/sequence_repairs",
         ),
+        input_truncation_status=input_truncation_status,
         has_compaction=has_compaction,
         compaction_count=compaction_count,
-        compaction_hashes=_sanitize_value(
+        compaction_hashes=sanitize_value(
             raw_compaction_hashes,
             "/meta/compaction_hashes",
         ),
-        domain_meta_sha256=sha256_bytes(canonical_json_bytes(domain_meta)),
-        meta_sha256=sha256_bytes(canonical_json_bytes(meta)),
+        # 这两个摘要仅用于来源审计，不参与任务或工具目录的语义身份。
+        domain_meta_sha256=_source_audit_sha256(domain_meta),
+        meta_sha256=_source_audit_sha256(meta),
     )
 
     missing_result_count = sum(
@@ -243,7 +250,7 @@ def compile_capture(
     duplicate_result_count = sum(
         max(0, len(pairing.result_event_ids) - 1) for pairing in tool_pairings
     )
-    quality = CaptureQualityV1(
+    quality = CaptureQualityV2(
         schema_version=CAPTURE_QUALITY_SCHEMA,
         source_record_id=source_ref.source_record_id,
         capture_occurrence_id=capture_occurrence_id,
@@ -398,10 +405,10 @@ def _compile_tool_catalog(
     capture_occurrence_id: str,
     tools: Sequence[Any],
     meta: Mapping[str, Any],
-) -> tuple[ToolCatalogV1, ToolSchemaStatus]:
+) -> tuple[ToolCatalogV2, ToolSchemaStatus]:
     raw_inferred_names = meta.get("inferred_tool_definitions", [])
     if not isinstance(raw_inferred_names, list) or not all(
-        isinstance(item, str) and item for item in raw_inferred_names
+        _is_nonblank_string(item) for item in raw_inferred_names
     ):
         inferred_names: tuple[str, ...] = ()
         schema_invalid = True
@@ -419,13 +426,13 @@ def _compile_tool_catalog(
     for index, definition in enumerate(tools):
         pointer = f"/tools/{index}"
         name = _tool_definition_name(definition)
-        if name is None:
+        if name is None or not _tool_definition_has_minimum_structure(definition):
             schema_invalid = True
         else:
             _reject_data_url_in_control_string(name, f"{pointer}/function/name")
         definitions.append(
             {
-                "definition": _sanitize_value(definition, pointer),
+                "definition": sanitize_value(definition, pointer),
                 "provenance": (
                     "NORMALIZER_INFERRED"
                     if name is not None and name in inferred_set
@@ -449,7 +456,9 @@ def _compile_tool_catalog(
     else:
         schema_status = ToolSchemaStatus.CONSISTENT
 
-    catalog_sha256 = sha256_bytes(canonical_json_bytes(definitions))
+    # 目录指纹只描述可见定义，不能让隐藏 reasoning 的摘要改变身份。
+    visible_definitions = visible_value_without_reasoning(definitions)
+    catalog_sha256 = sha256_bytes(canonical_json_bytes(visible_definitions))
     catalog_id = stable_id(
         "tool-catalog-v1",
         {
@@ -458,13 +467,14 @@ def _compile_tool_catalog(
         },
     )
     return (
-        ToolCatalogV1(
+        ToolCatalogV2(
             schema_version=TOOL_CATALOG_SCHEMA,
             tool_catalog_id=catalog_id,
             capture_occurrence_id=capture_occurrence_id,
             definitions=tuple(definitions),
             definition_conflict=conflict,
             inferred_tool_names=inferred_names,
+            catalog_input_valid=not schema_invalid,
             catalog_sha256=catalog_sha256,
         ),
         schema_status,
@@ -477,13 +487,13 @@ def _compile_events(
     messages: Sequence[Any],
     ownership: Sequence[tuple[EventScope, str | None]],
 ) -> tuple[
-    tuple[EventOccurrenceV1, ...],
-    tuple[ActionBatchV1, ...],
+    tuple[EventOccurrenceV2, ...],
+    tuple[ActionBatchV2, ...],
     tuple[_ToolEvent, ...],
     tuple[_ToolEvent, ...],
 ]:
-    events: list[EventOccurrenceV1] = []
-    batches: list[ActionBatchV1] = []
+    events: list[EventOccurrenceV2] = []
+    batches: list[ActionBatchV2] = []
     call_events: list[_ToolEvent] = []
     result_events: list[_ToolEvent] = []
 
@@ -600,7 +610,7 @@ def _compile_events(
                 tool_call_event_ids.append(event.event_occurrence_id)
             if tool_call_event_ids:
                 batches.append(
-                    ActionBatchV1(
+                    ActionBatchV2(
                         schema_version=ACTION_BATCH_SCHEMA,
                         action_batch_id=stable_id(
                             "action-batch-v1",
@@ -614,7 +624,7 @@ def _compile_events(
                         request_boundary_id=boundary_id,
                         assistant_event_id=assistant_id,
                         tool_call_event_ids=tuple(tool_call_event_ids),
-                        execution_semantics="UNORDERED_WITHIN_ASSISTANT_DECISION",
+                        execution_semantics="UNKNOWN",
                     )
                 )
             continue
@@ -652,7 +662,7 @@ def _compile_tool_call_event(
     sub_index: int,
     assistant_event_id: str,
     tool_call: Any,
-) -> tuple[EventOccurrenceV1, _ToolEvent]:
+) -> tuple[EventOccurrenceV2, _ToolEvent]:
     pointer = f"/messages/{message_index}/tool_calls/{sub_index}"
     if not isinstance(tool_call, dict):
         raise CaptureCompileError(
@@ -700,13 +710,13 @@ def _compile_tool_call_event(
     payload = {
         "assistant_event_id": assistant_event_id,
         "tool_call_id": call_id,
-        "tool_type": _sanitize_value(tool_call.get("type"), f"{pointer}/type"),
+        "tool_type": sanitize_value(tool_call.get("type"), f"{pointer}/type"),
         "function": function_payload,
     }
     visible_payload = {
         "assistant_event_id": assistant_event_id,
         "tool_call_id": call_id,
-        "tool_type": _sanitize_value(tool_call.get("type"), f"{pointer}/type"),
+        "tool_type": sanitize_value(tool_call.get("type"), f"{pointer}/type"),
         "function": visible_function_payload,
     }
     if extensions is not None:
@@ -744,7 +754,7 @@ def _compile_tool_result_event(
     request_boundary_id: str | None,
     message_index: int,
     message: Mapping[str, Any],
-) -> tuple[EventOccurrenceV1, _ToolEvent]:
+) -> tuple[EventOccurrenceV2, _ToolEvent]:
     pointer = f"/messages/{message_index}"
     call_id = message.get("tool_call_id")
     if not isinstance(call_id, str) or not call_id:
@@ -801,7 +811,7 @@ def _compile_tool_pairings(
     capture_occurrence_id: str,
     call_events: Sequence[_ToolEvent],
     result_events: Sequence[_ToolEvent],
-) -> tuple[ToolPairingRecordV1, ...]:
+) -> tuple[ToolPairingRecordV2, ...]:
     calls_by_id: dict[str, list[_ToolEvent]] = {}
     results_by_id: dict[str, list[_ToolEvent]] = {}
     first_sequence: dict[str, int] = {}
@@ -815,12 +825,13 @@ def _compile_tool_pairings(
     for event in result_events:
         results_by_id.setdefault(event.tool_call_id, []).append(event)
 
-    records: list[ToolPairingRecordV1] = []
+    records: list[ToolPairingRecordV2] = []
     for call_id in sorted(first_sequence, key=lambda item: (first_sequence[item], item)):
         calls = calls_by_id.get(call_id, [])
         results = results_by_id.get(call_id, [])
-        matched_call = calls[0] if calls and results else None
-        matched_result = results[0] if calls and results else None
+        has_unambiguous_match = len(calls) == 1 and len(results) == 1
+        matched_call = calls[0] if has_unambiguous_match else None
+        matched_result = results[0] if has_unambiguous_match else None
         observed_statuses: set[ToolPairingStatus] = set()
         if len(calls) > 1:
             observed_statuses.add(ToolPairingStatus.DUPLICATE_CALL_ID)
@@ -830,11 +841,11 @@ def _compile_tool_pairings(
             observed_statuses.add(ToolPairingStatus.RESULT_NOT_OBSERVED)
         if results and not calls:
             observed_statuses.add(ToolPairingStatus.ORPHAN_RESULT)
-        if matched_call is not None and matched_result is not None:
+        if calls and results:
             observed_names = {event.tool_name for event in (*calls, *results)}
             if len(observed_names) > 1:
                 observed_statuses.add(ToolPairingStatus.NAME_MISMATCH)
-            if matched_result.sequence_number < matched_call.sequence_number:
+            if results[0].sequence_number < calls[0].sequence_number:
                 observed_statuses.add(ToolPairingStatus.RESULT_BEFORE_CALL)
         if any(event.arguments_valid is False for event in calls):
             observed_statuses.add(ToolPairingStatus.INVALID_CALL_ARGUMENTS)
@@ -843,7 +854,7 @@ def _compile_tool_pairings(
 
         statuses = tuple(status for status in _PAIRING_STATUS_ORDER if status in observed_statuses)
         records.append(
-            ToolPairingRecordV1(
+            ToolPairingRecordV2(
                 schema_version=TOOL_PAIRING_SCHEMA,
                 pairing_id=stable_id(
                     "tool-pairing-v1",
@@ -877,10 +888,12 @@ def _new_event(
     source_json_pointer: str,
     payload: dict[str, Any],
     visible_payload: dict[str, Any] | None = None,
-) -> EventOccurrenceV1:
-    fingerprint_payload = visible_payload if visible_payload is not None else payload
+) -> EventOccurrenceV2:
+    fingerprint_payload = visible_value_without_reasoning(
+        visible_payload if visible_payload is not None else payload
+    )
     encoded_fingerprint_payload = canonical_json_bytes(fingerprint_payload)
-    return EventOccurrenceV1(
+    return EventOccurrenceV2(
         schema_version=EVENT_SCHEMA,
         event_occurrence_id=_event_id(
             capture_occurrence_id,
@@ -925,16 +938,15 @@ def _compile_content(content: Any, pointer: str) -> dict[str, Any]:
     if isinstance(content, str):
         return {
             "kind": "TEXT",
-            "value": _sanitize_value(content, pointer),
+            "value": sanitize_value(content, pointer),
             "utf8_byte_length": len(content.encode("utf-8")),
             "sha256": sha256_bytes(content.encode("utf-8")),
         }
     if isinstance(content, list):
         return {
             "kind": "CONTENT_BLOCKS",
-            "blocks": _sanitize_value(content, pointer),
+            "blocks": sanitize_value(content, pointer),
             "block_count": len(content),
-            "sha256": sha256_bytes(canonical_json_bytes(content)),
         }
     raise CaptureCompileError(
         "MESSAGE_CONTENT_INVALID",
@@ -944,13 +956,10 @@ def _compile_content(content: Any, pointer: str) -> dict[str, Any]:
 
 def _compile_arguments(arguments: Any, pointer: str) -> tuple[dict[str, Any], bool]:
     if isinstance(arguments, dict):
-        canonical = canonical_json_bytes(arguments)
         return (
             {
                 "kind": "JSON_OBJECT",
-                "value": _sanitize_value(arguments, pointer),
-                "canonical_utf8_byte_length": len(canonical),
-                "canonical_sha256": sha256_bytes(canonical),
+                "value": sanitize_value(arguments, pointer),
                 "source_json_pointer": pointer,
             },
             True,
@@ -959,7 +968,7 @@ def _compile_arguments(arguments: Any, pointer: str) -> tuple[dict[str, Any], bo
         return (
             {
                 "kind": "INVALID",
-                "value": _sanitize_value(arguments, pointer),
+                "value": sanitize_value(arguments, pointer),
                 "source_json_pointer": pointer,
             },
             False,
@@ -971,7 +980,7 @@ def _compile_arguments(arguments: Any, pointer: str) -> tuple[dict[str, Any], bo
         return (
             {
                 "kind": "INVALID_JSON_TEXT",
-                "value": _sanitize_value(arguments, pointer),
+                "value": sanitize_value(arguments, pointer),
                 "utf8_byte_length": len(raw_bytes),
                 "sha256": sha256_bytes(raw_bytes),
                 "source_json_pointer": pointer,
@@ -981,9 +990,7 @@ def _compile_arguments(arguments: Any, pointer: str) -> tuple[dict[str, Any], bo
     return (
         {
             "kind": "JSON_VALUE",
-            "value": _sanitize_value(parsed, pointer),
-            "raw_utf8_byte_length": len(raw_bytes),
-            "raw_sha256": sha256_bytes(raw_bytes),
+            "value": sanitize_value(parsed, pointer),
             "source_json_pointer": pointer,
         },
         isinstance(parsed, dict),
@@ -999,22 +1006,7 @@ def _reasoning_summary(message: Mapping[str, Any], message_index: int) -> dict[s
             "sha256": None,
             "source_json_pointer": None,
         }
-    return _reasoning_value_summary(message["reasoning_content"], pointer)
-
-
-def _reasoning_value_summary(reasoning: Any, pointer: str) -> dict[str, Any]:
-    """仅保留 reasoning 的存在性与来源审计摘要。"""
-
-    if isinstance(reasoning, str):
-        raw = reasoning.encode("utf-8")
-    else:
-        raw = canonical_json_bytes(reasoning)
-    return {
-        "present": True,
-        "utf8_byte_length": len(raw),
-        "sha256": sha256_bytes(raw),
-        "source_json_pointer": pointer,
-    }
+    return summarize_reasoning_value(message["reasoning_content"], pointer)
 
 
 def _compile_extensions(
@@ -1029,153 +1021,13 @@ def _compile_extensions(
     for key, value in source.items():
         if key in consumed_keys:
             continue
-        if key == _REASONING_FIELD:
-            retained[key] = _reasoning_value_summary(
-                value,
-                f"{pointer}/{_REASONING_FIELD}",
-            )
-            continue
         retained[key] = value
-        visible[key] = value
+        if key != REASONING_FIELD:
+            visible[key] = value
     return (
-        _sanitize_value(retained, pointer) if retained else None,
-        _sanitize_value(visible, pointer) if visible else None,
+        sanitize_value(retained, pointer) if retained else None,
+        sanitize_value(visible, pointer) if visible else None,
     )
-
-
-def _sanitize_value(value: Any, pointer: str) -> Any:
-    if isinstance(value, str):
-        return _sanitize_string(value, pointer)
-    if isinstance(value, list):
-        return [_sanitize_value(item, f"{pointer}/{index}") for index, item in enumerate(value)]
-    if isinstance(value, dict):
-        if any(isinstance(key, str) and _find_data_url_spans(key) for key in value):
-            return {
-                "kind": "OBJECT_ENTRIES",
-                "entries": [
-                    {
-                        "key": _sanitize_value(
-                            key,
-                            f"{pointer}/@entries/{index}/key",
-                        ),
-                        "value": _sanitize_value(
-                            item,
-                            f"{pointer}/@entries/{index}/value",
-                        ),
-                    }
-                    for index, (key, item) in enumerate(value.items())
-                ],
-                "entry_count": len(value),
-                "source_json_pointer": pointer,
-            }
-        return {
-            key: _sanitize_value(item, f"{pointer}/{_escape_json_pointer(key)}")
-            for key, item in value.items()
-        }
-    return value
-
-
-def _sanitize_string(value: str, pointer: str) -> str | dict[str, Any]:
-    spans = _find_data_url_spans(value)
-    if not spans:
-        return value
-    if len(spans) == 1 and spans[0].start == 0 and spans[0].end == len(value):
-        return _data_url_summary(value, spans[0], pointer)
-
-    segments: list[dict[str, Any]] = []
-    cursor = 0
-    for span in spans:
-        if cursor < span.start:
-            segments.append(_text_segment(value[cursor : span.start], cursor, span.start))
-        segments.append(_data_url_summary(value, span, pointer))
-        cursor = span.end
-    if cursor < len(value):
-        segments.append(_text_segment(value[cursor:], cursor, len(value)))
-
-    raw = value.encode("utf-8")
-    return {
-        "kind": "TEXT_WITH_DATA_URL_SEGMENTS",
-        "segments": segments,
-        "utf8_byte_length": len(raw),
-        "sha256": sha256_bytes(raw),
-        "source_json_pointer": pointer,
-    }
-
-
-def _find_data_url_spans(value: str) -> tuple[_DataUrlSpan, ...]:
-    spans: list[_DataUrlSpan] = []
-    cursor = 0
-    while match := _DATA_URL_HEADER.search(value, cursor):
-        parameters = match.group("parameters")
-        encoding = (
-            "base64"
-            if any(part.casefold() == "base64" for part in parameters.split(";") if part)
-            else "percent-encoded"
-        )
-        payload_cursor = match.end()
-        while payload_cursor < len(value) and value[payload_cursor].isspace():
-            payload_cursor += 1
-        end = payload_cursor
-        if encoding == "base64":
-            # Base64 Data URL 常被日志或序列化器折行。连续消费内部空白与后续
-            # Base64 字符，避免只摘要首段后把余段当成普通文本写出。
-            last_payload_end = end
-            while end < len(value):
-                if value[end] in _BASE64_CHARACTERS:
-                    end += 1
-                    last_payload_end = end
-                    continue
-                if value[end].isspace():
-                    whitespace_end = end
-                    while whitespace_end < len(value) and value[whitespace_end].isspace():
-                        whitespace_end += 1
-                    if (
-                        any(character in "\r\n" for character in value[end:whitespace_end])
-                        and whitespace_end < len(value)
-                        and value[whitespace_end] in _BASE64_CHARACTERS
-                    ):
-                        end = whitespace_end
-                        continue
-                break
-            end = last_payload_end
-        else:
-            while end < len(value) and value[end] not in _DATA_URL_DELIMITERS:
-                end += 1
-        span_end = max(match.end(), end)
-        spans.append(
-            _DataUrlSpan(
-                start=match.start(),
-                end=span_end,
-                mime_type=(match.group("mime") or "text/plain").casefold(),
-                encoding=encoding,
-            )
-        )
-        cursor = span_end
-    return tuple(spans)
-
-
-def _data_url_summary(value: str, span: _DataUrlSpan, pointer: str) -> dict[str, Any]:
-    raw = value[span.start : span.end].encode("utf-8")
-    return {
-        "kind": "DATA_URL_SUMMARY",
-        "mime_type": span.mime_type,
-        "encoding": span.encoding,
-        "utf8_byte_length": len(raw),
-        "sha256": sha256_bytes(raw),
-        "source_json_pointer": pointer,
-        "source_character_start": span.start,
-        "source_character_end": span.end,
-    }
-
-
-def _text_segment(value: str, start: int, end: int) -> dict[str, Any]:
-    return {
-        "kind": "TEXT",
-        "value": value,
-        "utf8_byte_length": len(value.encode("utf-8")),
-        "source_character_start": start,
-        "source_character_end": end,
-    }
 
 
 def _terminal_status(last_message: Any) -> TerminalStatus:
@@ -1193,7 +1045,7 @@ def _terminal_status(last_message: Any) -> TerminalStatus:
 
 
 def _aggregate_pairing_statuses(
-    pairings: Sequence[ToolPairingRecordV1],
+    pairings: Sequence[ToolPairingRecordV2],
 ) -> tuple[str, ...]:
     observed = {status for pairing in pairings for status in pairing.statuses}
     return tuple(status for status in _PAIRING_STATUS_ORDER if status in observed)
@@ -1201,7 +1053,7 @@ def _aggregate_pairing_statuses(
 
 def _quality_reason_codes(
     *,
-    domain_meta: Mapping[str, Any],
+    input_truncation_status: InputTruncationStatus,
     pairing_statuses: Sequence[str],
     tool_schema_status: ToolSchemaStatus,
     terminal_status: TerminalStatus,
@@ -1219,9 +1071,10 @@ def _quality_reason_codes(
         reasons.append(f"TERMINAL_{terminal_status}")
     if compaction_status == CompactionStatus.UNLOCALIZED_COMPACTION_EVIDENCE:
         reasons.append("UNLOCALIZED_COMPACTION_EVIDENCE")
-    input_audit = domain_meta.get("input_audit")
-    if isinstance(input_audit, dict) and input_audit.get("input_truncated") is True:
+    if input_truncation_status == InputTruncationStatus.OBSERVED_TRUNCATED:
         reasons.append("INPUT_TRUNCATED")
+    elif input_truncation_status == InputTruncationStatus.UNKNOWN:
+        reasons.append("INPUT_TRUNCATION_UNKNOWN")
     return tuple(reasons)
 
 
@@ -1232,7 +1085,60 @@ def _tool_definition_name(definition: Any) -> str | None:
     if not isinstance(function, dict):
         return None
     name = function.get("name")
-    return name if isinstance(name, str) and name else None
+    return name if _is_nonblank_string(name) else None
+
+
+def _tool_definition_has_minimum_structure(definition: Any) -> bool:
+    """校验冻结目录所需的最小结构，不声称完成 JSON Schema 语义校验。"""
+
+    if not isinstance(definition, dict) or definition.get("type") != "function":
+        return False
+    function = definition.get("function")
+    return (
+        isinstance(function, dict)
+        and _is_nonblank_string(function.get("name"))
+        and isinstance(function.get("parameters"), dict)
+    )
+
+
+def _is_nonblank_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _input_truncation_status(domain_meta: Mapping[str, Any]) -> InputTruncationStatus:
+    input_audit = domain_meta.get("input_audit")
+    if not isinstance(input_audit, dict):
+        return InputTruncationStatus.UNKNOWN
+    observed = input_audit.get("input_truncated")
+    if observed is True:
+        return InputTruncationStatus.OBSERVED_TRUNCATED
+    if observed is False:
+        return InputTruncationStatus.OBSERVED_NOT_TRUNCATED
+    return InputTruncationStatus.UNKNOWN
+
+
+def _preflight_compiled_capture(result: CompiledCapture) -> None:
+    """逐个预检全部待发布视图，保证流水线不会写出半条 capture。"""
+
+    groups: tuple[tuple[SerializableContract, ...], ...] = (
+        (result.capture,),
+        result.request_boundaries,
+        result.event_occurrences,
+        result.action_batches,
+        result.tool_pairings,
+        (result.tool_catalog,),
+        (result.quality,),
+    )
+    for group in groups:
+        for contract in group:
+            preflight_derived_value(contract.to_dict())
+
+
+def _source_audit_sha256(value: Any) -> str:
+    """在统一深度和编码边界内生成来源审计摘要。"""
+
+    preflight_derived_value(value)
+    return sha256_bytes(canonical_json_bytes(value))
 
 
 def _required_string(value: Mapping[str, Any], key: str) -> str:
@@ -1246,7 +1152,7 @@ def _required_string(value: Mapping[str, Any], key: str) -> str:
 def _reject_data_url_in_control_string(value: str, pointer: str) -> None:
     """控制字符串不能降级为摘要，因此发现 Data URL 时隔离整条记录。"""
 
-    if _find_data_url_spans(value):
+    if contains_data_url(value):
         raise CaptureCompileError(
             "CONTROL_STRING_CONTAINS_DATA_URL",
             f"{pointer} 包含禁止写出的 Data URL",
@@ -1269,7 +1175,3 @@ def _required_nonnegative_integer(value: Mapping[str, Any], key: str) -> int:
 
 def _is_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _escape_json_pointer(value: Any) -> str:
-    return str(value).replace("~", "~0").replace("/", "~1")

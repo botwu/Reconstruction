@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from conftest import read_private
+
+from traceforge.trajectory.compiler import compile_capture
+from traceforge.trajectory.contracts import SOURCE_RECORD_SCHEMA, SourceRecordRefV1
+from traceforge.trajectory.source_adapter import adapt_source_record
 
 
 def _events_at(
@@ -23,6 +28,22 @@ def _events_at(
 
 def _pairings_by_call_id(run_dir: Path) -> dict[str, dict[str, Any]]:
     return {pairing["tool_call_id"]: pairing for pairing in read_private(run_dir, "tool_pairings")}
+
+
+def _compile_with_fixed_source(capture: dict[str, Any]):
+    source_ref = SourceRecordRefV1(
+        schema_version=SOURCE_RECORD_SCHEMA,
+        source_record_id="a" * 64,
+        dataset_id="fixture-dataset-v1",
+        dataset_sha256="b" * 64,
+        line_number=1,
+        byte_offset=0,
+        byte_length=1,
+        line_sha256="c" * 64,
+        ingestion_status="PARSED",
+        parse_error=None,
+    )
+    return compile_capture(source_ref, adapt_source_record(capture))
 
 
 def test_two_boundaries_assign_only_observed_ownership(
@@ -76,7 +97,7 @@ def test_assistant_decisions_split_tool_events_and_form_action_batches(
     for batch in batches:
         assert batch["assistant_event_id"] in event_ids
         assert set(batch["tool_call_event_ids"]) <= event_ids
-        assert batch["execution_semantics"] == "UNORDERED_WITHIN_ASSISTANT_DECISION"
+        assert batch["execution_semantics"] == "UNKNOWN"
     for event in events:
         assert event["integrity_status"] == "COMPLETE"
         assert event["visible_payload_utf8_byte_length"] > 0
@@ -148,8 +169,8 @@ def test_mixed_data_urls_preserve_surrounding_text_without_leaking_payload(
         ensure_ascii=False,
         sort_keys=True,
     )
-    assert "TEXT_WITH_DATA_URL_SEGMENTS" in encoded_events
-    assert "OBJECT_ENTRIES" in encoded_events
+    assert "traceforge.privacy.text-with-data-url-segments.v1" in encoded_events
+    assert "traceforge.privacy.escaped-object.v1" in encoded_events
 
 
 def test_wrapped_base64_data_url_does_not_leak_later_lines(
@@ -365,6 +386,142 @@ def test_unknown_visible_fields_are_preserved_as_sanitized_extensions(
     assert all(event["integrity_status"] == "COMPLETE" for event in events)
 
 
+def test_nested_reasoning_and_percent_escaped_data_url_are_sanitized(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    block_sentinel = "内容块深层推理哨兵"
+    vendor_sentinel = "助手供应商深层推理哨兵"
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": "前文 DATA:image/png;BaSe64 ,QUJD%0AREVG%3D 后文",
+                    "metadata": {
+                        "kept": "内容块可见元数据",
+                        "reasoning_content": block_sentinel,
+                    },
+                }
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": "普通文本只提到 ;base64, 不构成 Data URL",
+            "vendor_extension": {
+                "nested": {
+                    "kept": "供应商可见元数据",
+                    "reasoning_content": {"secret": vendor_sentinel},
+                }
+            },
+        },
+    ]
+    capture = capture_factory(messages=messages, terminal_prefix_depths=[len(messages)])
+    run_dir = compile_dataset([capture], label="nested-privacy")
+    events = read_private(run_dir, "event_occurrences")
+    output = b"".join(path.read_bytes() for path in sorted(run_dir.rglob("*")) if path.is_file())
+
+    assert block_sentinel.encode() not in output
+    assert vendor_sentinel.encode() not in output
+    assert b"QUJD" not in output
+    assert b"REVG" not in output
+    assert b";base64," in output
+
+    user_summary = events[0]["payload"]["content"]["blocks"][0]["metadata"]["reasoning_content"]
+    assistant_summary = events[1]["payload"]["extensions"]["vendor_extension"]["nested"][
+        "reasoning_content"
+    ]
+    assert user_summary["source_json_pointer"] == (
+        "/messages/0/content/0/metadata/reasoning_content"
+    )
+    assert assistant_summary["source_json_pointer"] == (
+        "/messages/1/vendor_extension/nested/reasoning_content"
+    )
+
+
+def test_nested_reasoning_does_not_change_visible_fingerprints_or_catalog_identity(
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    capture = capture_factory(
+        messages=[
+            {
+                "role": "user",
+                "content": [{"metadata": {"reasoning_content": "隐藏版本甲"}}],
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "dict-arguments",
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "arguments": {"reasoning_content": "隐藏版本甲"},
+                        },
+                    },
+                    {
+                        "id": "text-arguments",
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "arguments": '{"reasoning_content":"隐藏版本甲"}',
+                        },
+                    },
+                ],
+            },
+            {"role": "assistant", "content": "完成。"},
+        ],
+        terminal_prefix_depths=[3],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "parameters": {},
+                    "vendor": {"reasoning_content": "隐藏版本甲"},
+                },
+            }
+        ],
+    )
+    changed = copy.deepcopy(capture)
+    changed["messages"][0]["content"][0]["metadata"]["reasoning_content"] = "隐藏版本乙"
+    changed["messages"][1]["tool_calls"][0]["function"]["arguments"]["reasoning_content"] = (
+        "隐藏版本乙"
+    )
+    changed["messages"][1]["tool_calls"][1]["function"]["arguments"] = (
+        '{"reasoning_content":"隐藏版本乙"}'
+    )
+    changed["tools"][0]["function"]["vendor"]["reasoning_content"] = "隐藏版本乙"
+
+    original_result = _compile_with_fixed_source(capture)
+    changed_result = _compile_with_fixed_source(changed)
+
+    assert [event.visible_payload_sha256 for event in original_result.event_occurrences] == [
+        event.visible_payload_sha256 for event in changed_result.event_occurrences
+    ]
+    assert original_result.tool_catalog.catalog_sha256 == (
+        changed_result.tool_catalog.catalog_sha256
+    )
+
+    user_content = original_result.event_occurrences[0].payload["content"]
+    assert set(user_content) == {"kind", "blocks", "block_count"}
+    tool_calls = [
+        event for event in original_result.event_occurrences if event.event_kind == "TOOL_CALL"
+    ]
+    assert set(tool_calls[0].payload["function"]["arguments"]) == {
+        "kind",
+        "value",
+        "source_json_pointer",
+    }
+    assert set(tool_calls[1].payload["function"]["arguments"]) == {
+        "kind",
+        "value",
+        "source_json_pointer",
+    }
+
+
 def test_invalid_tool_names_quarantine_the_capture(
     compile_dataset: Callable[..., Path],
     capture_factory: Callable[..., dict[str, Any]],
@@ -470,6 +627,60 @@ def test_schema_quality_combines_inference_and_reported_conflict(
     assert quality["tool_schema_status"] == "INFERRED_AND_CONFLICT"
 
 
+def test_input_truncation_uses_three_explicit_states(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    captures = []
+    for suffix in ("not-truncated", "truncated", "unknown"):
+        capture = capture_factory(
+            messages=[{"role": "assistant", "content": "完成。"}],
+            terminal_prefix_depths=[1],
+            request_ids=[f"fixture-{suffix}"],
+        )
+        captures.append(capture)
+    captures[1]["domain_meta"]["input_audit"]["input_truncated"] = True
+    del captures[2]["domain_meta"]["input_audit"]["input_truncated"]
+
+    run_dir = compile_dataset(captures, label="input-truncation-three-states")
+    normalized = read_private(run_dir, "captures")
+    qualities = read_private(run_dir, "capture_quality")
+    report = json.loads((run_dir / "reports/attrition_report.json").read_text())
+
+    assert [capture["input_truncation_status"] for capture in normalized] == [
+        "OBSERVED_NOT_TRUNCATED",
+        "OBSERVED_TRUNCATED",
+        "UNKNOWN",
+    ]
+    assert "INPUT_TRUNCATED" in qualities[1]["reason_codes"]
+    assert "INPUT_TRUNCATION_UNKNOWN" in qualities[2]["reason_codes"]
+    assert report["counts"]["input_truncated_capture_count"] == 1
+    assert report["counts"]["input_truncation_unknown_capture_count"] == 1
+
+
+def test_tool_catalog_marks_invalid_minimum_structure(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    capture = capture_factory(
+        messages=[{"role": "assistant", "content": "完成。"}],
+        terminal_prefix_depths=[1],
+        tools=[
+            {"type": "function", "function": {"name": "   ", "parameters": {}}},
+            {"type": "custom", "function": {"name": "lookup", "parameters": {}}},
+            {"type": "function", "function": {"name": "lookup", "parameters": []}},
+        ],
+    )
+
+    run_dir = compile_dataset([capture], label="invalid-tool-catalog-minimum")
+    [catalog] = read_private(run_dir, "tool_catalogs")
+    [quality] = read_private(run_dir, "capture_quality")
+
+    assert catalog["catalog_input_valid"] is False
+    assert quality["tool_schema_status"] == "INVALID"
+    assert "TOOL_SCHEMA_INVALID" in quality["reason_codes"]
+
+
 def test_terminal_tool_call_takes_precedence_over_nonempty_text(
     compile_dataset: Callable[..., Path], two_boundary_capture: dict[str, Any]
 ) -> None:
@@ -524,14 +735,12 @@ def test_pairing_preserves_every_occurrence_and_classifies_anomalies(
     assert "INVALID_CALL_ARGUMENTS" in pairings["call-invalid"]["statuses"]
     assert "DUPLICATE_CALL_ID" in pairings["call-duplicate"]["statuses"]
     assert len(pairings["call-duplicate"]["call_event_ids"]) == 2
-    assert (
-        pairings["call-duplicate-result"]["matched_call_event_id"]
-        == (pairings["call-duplicate-result"]["call_event_ids"][0])
-    )
-    assert (
-        pairings["call-duplicate-result"]["matched_result_event_id"]
-        == (pairings["call-duplicate-result"]["result_event_ids"][0])
-    )
+    assert pairings["call-one"]["matched_call_event_id"] is not None
+    assert pairings["call-one"]["matched_result_event_id"] is not None
+    assert pairings["call-duplicate-result"]["matched_call_event_id"] is None
+    assert pairings["call-duplicate-result"]["matched_result_event_id"] is None
+    assert pairings["call-duplicate"]["matched_call_event_id"] is None
+    assert pairings["call-duplicate"]["matched_result_event_id"] is None
 
 
 def _call(call_id: str, *, arguments: str = '{"query":"fixture"}') -> dict[str, Any]:

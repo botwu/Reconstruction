@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "traceforge"
-version = "0.1.0"
+version = "0.2.0"
 description = "将真实回流轨迹编译为可审计任务与环境约束"
 readme = "README.md"
 requires-python = ">=3.12"

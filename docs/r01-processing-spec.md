@@ -1,10 +1,10 @@
 # R01 回流处理实施规格
 
-版本：v1.0
+版本：v2.0
 
 日期：2026-08-31
 
-状态：M1A、M1B 实施基线；后续阶段必须另行审核
+状态：M1A、M1B v2 候选契约与重新验收基线；不是完成声明
 
 本文是 R01 回流处理的实施事实来源。项目背景见 [`background-and-goals.md`](background-and-goals.md)，总体阶段与下游边界见 [`overall-plan.md`](overall-plan.md)，开发纪律只引用 [`../AGENTS.md`](../AGENTS.md)。
 
@@ -26,7 +26,7 @@ M1B Structural Compiler
 - World、Truth、Reference、Verifier；
 - Harbor、AGS 或模型 rollout。
 
-M1A、M1B 全量验收完成并审核后，才能为 M1C 及之后阶段制定实施规格。
+M1A、M1B 全量验收完成并审核后，才能为 M1C 及之后阶段制定实施规格；进入 M2 前还必须单独冻结并审核最小来源注解投影。
 
 ## 2. 冻结输入
 
@@ -147,7 +147,9 @@ parse_error: null | {code, message}
 - 每条 JSONL 使用一个 LF 结束；
 - 文件通过临时文件、`fsync` 和原子替换发布。
 
-运行时间、机器和本地绝对路径只能进入非确定性的 `run_receipt.json`，不得影响业务 artifact digest。
+严格 JSON 与派生结构同时设置确定性资源边界：来源 JSON 嵌套深度上限为 256，派生隐私变换深度上限为 80，超限只隔离当前物理行并继续处理下一行。整数最多 640 位；浮点数只有在二进制浮点往返不会改变其十进制语义时才接受。下溢、超出安全整数语义的浮点数和超长整数使用稳定错误码拒绝，不得静默改值，也不得依赖进程级 `int_max_str_digits` 配置。
+
+`run_receipt.json` v2 只保存运行时间、时长、Python/TraceForge 版本、run ID、artifact manifest 摘要、最小 Git provenance `{available, commit, tree, dirty}` 及完成时一致性标志。它不得保存输入/输出绝对路径、文件名或 diff 内容，也不得影响业务 artifact digest。
 
 ### 4.5 通用实现与 R01 oracle 的边界
 
@@ -192,22 +194,24 @@ TOOL_RESULT
 
 每个事件保存 occurrence ID、source/capture 引用、JSON pointer、消息和调用位置、request boundary、typed content、`visible_payload_utf8_byte_length`、`visible_payload_sha256` 和 `integrity_status`。
 
-`visible_payload_utf8_byte_length` 是去除 reasoning 审计摘要后的可见 payload 经 canonical JSON 编码后的 UTF-8 字节数，不是原始 JSONL 行长，也不是 assistant content 字符数。`visible_payload_sha256` 对同一份 canonical bytes 求摘要。M1 v1 只有在该事件的可见 payload 已完整映射时才产出事件，因此 `integrity_status` 固定为 `COMPLETE`；它不表示原始 wire 日志完整、任务完成、工具成功或不存在 compaction。
+`visible_payload_utf8_byte_length` 是去除 reasoning 审计摘要后的可见 payload 经 canonical JSON 编码后的 UTF-8 字节数，不是原始 JSONL 行长，也不是 assistant content 字符数。`visible_payload_sha256` 对同一份 canonical bytes 求摘要。M1 v2 只有在该事件的可见 payload 已完整映射时才产出事件，因此 `integrity_status` 固定为 `COMPLETE`；它不表示原始 wire 日志完整、任务完成、工具成功或不存在 compaction。
 
-assistant message 和它的 tool calls 拆成不同事件，通过 tool call payload 的 `assistant_event_id` 关联。同一个 assistant decision 中的一个或多个 tool call 形成一个 `ActionBatch`。result 到达顺序不能用来推断 tool call 的并行或因果顺序。
+下游只能通过 `event_payload.py` 的 typed reader 读取五种 event payload，不能各自重新解释 JSON。reader 对 content、tool arguments 和 result 形态执行唯一的封闭解析，并拒绝字段集合或类型不匹配。
 
-list 型 content 必须保留 content block，禁止转成字符串。所有派生 artifact 都不得输出 Base64 Data URL；只允许保存 mime、长度、hash 和原始 JSON pointer。公共报告连这些逐条摘要也不输出，只保存聚合计数。
+assistant message 和它的 tool calls 拆成不同事件，通过 tool call payload 的 `assistant_event_id` 关联。同一个 assistant decision 中的一个或多个 tool call 形成一个 `ActionBatch`。来源没有明确并行证据，因此 `execution_semantics=UNKNOWN`；result 到达顺序不能用来推断 tool call 的并行或因果顺序。
+
+list 型 content 必须保留 content block，禁止转成字符串。所有派生 artifact 都不得输出 Base64 Data URL；大小写、参数空白、换行、百分号转义以及 RFC 2231 参数形态由同一个结构扫描器识别，只允许保存 mime、长度、hash 和原始 JSON pointer。普通文本中的孤立 `;base64,` 不是 Data URL。compiler 与 validator 共用这一条规则，公共报告连逐条摘要也不输出，只保存聚合计数。
 
 ### 5.3 reasoning_content
 
-旧回流 `reasoning_content`：
+旧回流任意层级的 `reasoning_content`：
 
 - 原文不复制进 EventLog；
 - 不参与 lineage、任务识别、环境画像、难度、GT 或模型输入；
 - 只保存存在性、长度、SHA-256 和原始 JSON pointer；
 - 原文仅通过受控的原始行引用保留审计能力。
 
-assistant event 的 payload 中虽然保留字段名 `reasoning_content`，其值是固定的摘要对象 `{present, utf8_byte_length, sha256, source_json_pointer}`，不是原始 reasoning。事件的 visible byte length 和 visible hash 明确排除该摘要对象。
+派生 payload 中虽然可以保留字段名 `reasoning_content`，其值只能是固定摘要对象 `{present, utf8_byte_length, sha256, source_json_pointer}`，不是原始 reasoning。递归 sanitizer 处理 content block、tool definition、tool arguments、result 和 vendor extension；内部隐私 envelope 使用保留标记并对来源中的同名对象转义，不能与普通业务对象碰撞。事件的 visible byte length/hash 和 tool catalog identity 明确排除 reasoning 摘要，隐藏原文变化不得改变这些可见指纹。
 
 这与下游 Harbor 的无损采集不冲突。Harbor 可以保存新 rollout 实际返回的 thinking，但任何任务生成、Truth 和 Verifier 都不得依赖它。
 
@@ -228,6 +232,8 @@ INVALID_CALL_ARGUMENTS
 
 所有 call 和 result 都以 occurrence 保存，禁止使用单值字典覆盖重复 ID。`RESULT_NOT_OBSERVED` 只表示当前 capture 未观察到结果，不能解释成工具没有执行。
 
+只有 call/result 数量均为一且其余规则成立时才填写 `matched_call_event_id` 与 `matched_result_event_id`。出现重复 call 或重复 result 时只能保存完整 occurrence 集合和异常状态，两个 `matched_*` 字段必须为 `null`，不得任意选择第一条伪造精确配对。
+
 ### 5.5 多维质量状态
 
 禁止产生一个全局 `valid`：
@@ -243,13 +249,17 @@ tool_schema_status
 terminal_status
 privacy_status
 compaction_status
+NormalizedCapture.input_truncation_status:
+  OBSERVED_TRUNCATED | OBSERVED_NOT_TRUNCATED | UNKNOWN
 processing_error
 reason_codes[]
 ```
 
 `leaf_response_status=completed` 只说明捕获响应结束，不能解释为任务完成或回答正确。
 
-`processing_status` 只描述编译器是否忠实产出可见结构，不评价原轨迹质量。缺失 observation、schema conflict、inferred schema、pending tool call、compaction 和 input truncation 都进入独立质量轴；只要可见结构完整落盘，仍为 `COMPLETE`。JSON 或关键 boundary envelope 无法可信编译时为 `QUARANTINED`，且不得产出伪造 capture/event。`PARTIAL` 只保留给未来确有安全子树可落盘、但当前契约明确允许缺失另一子树的情况；M1 v1 不用它掩盖异常。
+`processing_status` 只描述编译器是否忠实产出可见结构，不评价原轨迹质量。缺失 observation、schema conflict、inferred schema、pending tool call、compaction 和 input truncation 都进入独立质量轴；只要可见结构完整落盘，仍为 `COMPLETE`。输入没有明确截断证据时必须为 `UNKNOWN`，不能伪报“未截断”。JSON 或关键 boundary envelope 无法可信编译时为 `QUARANTINED`，且不得产出伪造 capture/event。`PARTIAL` 只保留给未来确有安全子树可落盘、但当前契约明确允许缺失另一子树的情况；M1 v2 不用它掩盖异常。
+
+工具目录只验证可冻结的最小结构：definition 是对象、`type=function`、function 是对象、name 为非空白字符串、parameters 是对象。`catalog_input_valid` 记录该来源结构是否满足最小条件；它不等于完整 JSON Schema 校验，也不证明生产环境真实提供了该工具。
 
 `processing_error` 在 `COMPLETE` 时必须为 `null`。在 `QUARANTINED` 时保存稳定 `code` 和诊断 `message`：严格 JSON 错误与 `SourceRecordRef.parse_error` 对齐；capture 结构错误使用 `CaptureCompileError` 的 reason code。`reason_codes` 保存同一稳定 code，供聚合和筛选使用。错误终态只写 `source_records.jsonl` 与 `capture_quality.jsonl`，不得伪造 `NormalizedCapture`、boundary 或 event。
 
@@ -303,7 +313,9 @@ artifacts/r01/<content_addressed_run_id>/
 
 `source_manifest.json` 和 `artifact_manifest.json` 都保存 `source_schema`，内容寻址 run ID 也绑定该字段，防止同一原始字节被不同语义契约误用为同一个 run。
 
-`artifact_manifest.json` 的 `files` 只列出十个确定性业务文件：`source_manifest.json`、八个 `private/*.jsonl` 和 `reports/attrition_report.json`。它不列出自身，以避免自引用摘要；也不列出含时间、机器和绝对路径的 `run_receipt.json`，避免非确定信息改变业务清单。`run_receipt.json` 反向保存 `artifact_manifest.json` 的 SHA-256。独立 validator 仍会检查这两个文件以及完整目录 inventory；“不进入 files”不表示不校验。
+本次发生输出字段或语义变化的契约统一为 v2：NormalizedCapture、EventOccurrence、ActionBatch、ToolPairingRecord、ToolCatalog、CaptureQuality 和 AttritionReport。来源账本、RequestBoundary 与 ArtifactManifest 的字段未改变，继续使用各自 v1 schema。稳定 ID 的身份字段和公式也未改变，因此 ID namespace 继续使用 v1；schema 版本和身份算法版本不得混为一谈。
+
+`artifact_manifest.json` 的 `files` 只列出十个确定性业务文件：`source_manifest.json`、八个 `private/*.jsonl` 和 `reports/attrition_report.json`。它不列出自身，以避免自引用摘要；也不列出含时间和运行环境的 `run_receipt.json`，避免非确定信息改变业务清单。`run_receipt.json` 反向保存 `artifact_manifest.json` 的 SHA-256，并记录 Git commit/tree/dirty 状态；正式运行必须在结束时确认 Git 来源没有变化。独立 validator 仍会检查这两个文件以及完整目录 inventory；“不进入 files”不表示不校验。
 
 真实输出不进入 Git。Git 只保存重新构造的虚构 fixture。
 
@@ -317,11 +329,13 @@ artifacts/r01/<content_addressed_run_id>/
 uv run python scripts/validate_m1_run.py <content_addressed_run_dir>
 ```
 
-validator 独立读取已发布文件，不调用 compiler 重建期望结果。它校验目录 inventory、manifest digest/size/record count、稳定 ID、source/capture/boundary/event/ActionBatch/pairing 外键、event visible length/hash/integrity、reasoning 摘要形态、公共计数重算以及 `run_receipt` 到 artifact manifest 的绑定。该命令对所有同契约 run 使用同一逻辑，不包含 R01 分支或常量。
+validator 独立读取已发布文件，不调用 compiler 重建期望结果。它从事件、边界和目录本体重算 boundary ownership、event 顺序与 scope、ActionBatch 成员、pairing occurrence/status/matched 语义、tool catalog 最小结构与状态、全部 quality 轴/reason code 以及公共聚合计数；同时校验目录 inventory、manifest digest/size/record count、稳定 ID、typed payload、可见指纹、递归隐私和 `run_receipt` 绑定。自报 quality/report 即使同步篡改也不能覆盖结构事实。该命令对所有同契约 run 使用同一逻辑，不包含 R01 分支或常量。
 
-### 7.2 R01 外部 oracle
+validator 的信任边界只到已发布来源账本和派生产物。对于已解析但无法仅由派生产物重现的 adapter 结构错误，只允许核对带来源证明的 `processing_error`，不能把它表述为 validator 独立恢复了原始语义。
 
-下列数字不参与 compiler 分支或通用 validator 逻辑，只用于确认冻结 R01 的完整运行没有静默漏数：
+### 7.2 R01 v1 历史外部 oracle
+
+下列数字来自已撤销完成结论的 v1 正常路径，不参与 compiler 分支或通用 validator 逻辑。它们只作为 v2 重编译时检查是否静默漏数的历史 oracle；v2 正式结果必须另行发布，并补充 `input_truncation_unknown_capture_count`：
 
 ```text
 physical lines                   = 1,683
@@ -364,6 +378,8 @@ compiler QUARANTINED             = 0
 - 冻结 R01 全量运行峰值内存低于 512 MiB，且实现不保留全部原始行或全部解析对象；
 - 私有 artifact 与公共报告物理分离；
 - 派生内容不包含 reasoning 原文；
+- 对重签后的 boundary、pairing、quality/report 语义破坏必须报错；
+- 深层 JSON、递归 reasoning、Data URL 变体和不可忠实表示数值必须有稳定逐行终态；
 - 测试、静态检查和全量不变量全部通过。
 
 ## 8. 后续阶段边界
@@ -379,6 +395,8 @@ compiler QUARANTINED             = 0
 M1D 先确定性区分真实 query、附件上下文、Harness 包装、系统注入、工具反馈和中断控制，只输出 `UserBlock`、`QueryTurn` 与结构性 `ThreadTurnGraph`。
 
 ### 8.3 M2：TaskEpisode 与画像
+
+进入 M2 前必须先提供最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`，只暴露经审核的 task/rubric/risk 先验。M2 不得绕过 M1 artifact，按绝对路径私下重新解析原始 JSONL。
 
 M2 才允许通过两次独立、封闭枚举的语义提取建立：
 

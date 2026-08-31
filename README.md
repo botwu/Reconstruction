@@ -12,7 +12,7 @@ TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并
 4. [R01 回流处理实施规格](docs/r01-processing-spec.md)：当前模块的输入、契约、输出与停止线；
 5. [参考仓库处理逻辑](docs/reference-repositories.md)：已有项目的真实处理链、采用方式和禁止照搬项；
 6. [M1 实现来源与迁移记录](docs/implementation-sources.md)：旧轨迹审核代码的逐文件来源、采用项和剥离项。
-7. [R01 M1 全量验收报告](docs/r01-m1-validation.md)：真实全量运行、确定性、资源和隐私验收证据。
+7. [R01 M1 v1 历史验收报告（结论已撤销）](docs/r01-m1-validation.md)：保留正常路径历史事实，不作为当前完成证据。
 
 ## 核心链路
 
@@ -36,7 +36,7 @@ TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并
 
 ## 当前阶段
 
-项目开始实施 M1 Trajectory Compiler。当前开发会话只完成 M1A Source Adapter 和 M1B Structural Compiler。
+当前代码是 M1A/M1B v2 候选实现，正在重新执行全量 R01 编译、独立验证和对抗回归；门禁完成前不得宣称 M1A/M1B 正式完成。输入 `source_schema` 仍是 `traceforge.restored-long-capture.v1`，v2 指输出契约与 compiler contract。
 
 当前实现边界：
 
@@ -48,7 +48,7 @@ R01 JSONL
 → ActionBatch / ToolPairing
 ```
 
-完成 M1A、M1B 并通过全量验收和审核前，不实现跨 capture 建图、QueryTurn、TaskEpisode、任务画像、World、认证、难度或 Harbor 接入。
+完成 M1A、M1B 并通过全量验收和审核前，不实现跨 capture 建图、QueryTurn、TaskEpisode、任务画像、World、认证、难度或 Harbor 接入。进入 M2 前还必须单独冻结并审核最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`。
 
 ## 运行当前编译器
 
@@ -78,9 +78,9 @@ uv run ruff format --check .
 uv run python scripts/validate_m1_run.py <content_addressed_run_dir>
 ```
 
-R01 摘要和统计只作为文档化的外部验收基线。若后续需要机器比较，必须由调用方显式提供独立 expectation/profile，不能把特定数据常量写进核心或通用 validator。
+R01 摘要和统计只作为文档化的外部验收基线。若后续需要机器比较，必须由调用方显式提供独立 expectation/profile，不能把特定数据常量写进核心或通用 validator。validator 只依据已发布结构独立重算 boundary ownership、message/event 覆盖、ActionBatch、完整 pairing 状态、CaptureQuality 和 attrition report，不信任 pairing、quality 或 report 的自报语义。
 
-M1 不保存旧轨迹的 reasoning 原文，也不把它作为语义输入；assistant event 只保留存在性、UTF-8 字节数、SHA-256 和来源 JSON pointer 组成的审计摘要。
+M1 v2 不保存旧轨迹任意深度的 `reasoning_content` 原文，也不把它作为语义输入；只保留固定审计摘要，并从可见指纹中递归排除。完整 Base64 Data URL 使用版本化隐私 envelope 摘要，孤立的普通文本 `;base64,` 不视为 Data URL。
 
 ## 核心边界
 

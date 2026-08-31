@@ -6,9 +6,13 @@ import hashlib
 import json
 import math
 from collections.abc import Iterable
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
-_MAX_INTEGER_DIGITS = 4_300
+# 深度按当前同时打开的对象和数组层数计算：根标量为 0，根容器为 1。
+MAX_JSON_NESTING_DEPTH = 256
+# Python 对十进制整数转换保证不检查的阈值；冻结为项目契约以隔离全局配置。
+MAX_JSON_INTEGER_DIGITS = 640
 
 
 class StrictJsonError(ValueError):
@@ -36,24 +40,46 @@ def _reject_constant(_value: str) -> None:
 
 
 def _parse_float(value: str) -> float:
-    parsed = float(value)
+    try:
+        parsed = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise StrictJsonError(
+            "JSON_VALUE_ERROR",
+            "JSON 数值无法稳定解析",
+            {"number_character_length": len(value)},
+        ) from exc
     if not math.isfinite(parsed):
         raise StrictJsonError(
             "NON_FINITE_NUMBER",
             "JSON 不允许非有限数值",
+        )
+    canonical = json.dumps(parsed, allow_nan=False, separators=(",", ":"))
+    try:
+        is_lossless = Decimal(value) == Decimal(canonical)
+    except InvalidOperation as exc:
+        raise StrictJsonError(
+            "JSON_VALUE_ERROR",
+            "JSON 数值无法稳定解析",
+            {"number_character_length": len(value)},
+        ) from exc
+    if not is_lossless:
+        raise StrictJsonError(
+            "LOSSY_NUMBER",
+            "JSON 数值无法由 Python canonical JSON 忠实往返",
+            {"number_character_length": len(value)},
         )
     return parsed
 
 
 def _parse_integer(value: str) -> int:
     digits = value.removeprefix("-")
-    if len(digits) > _MAX_INTEGER_DIGITS:
+    if len(digits) > MAX_JSON_INTEGER_DIGITS:
         raise StrictJsonError(
             "INTEGER_TOO_LONG",
             "JSON 整数位数超过上限",
             {
                 "digit_count": len(digits),
-                "maximum_digit_count": _MAX_INTEGER_DIGITS,
+                "maximum_digit_count": MAX_JSON_INTEGER_DIGITS,
             },
         )
     try:
@@ -109,6 +135,41 @@ def _find_surrogate_offset(value: str) -> int | None:
     return None
 
 
+def _validate_json_nesting(text: str) -> int:
+    """在递归 parser 前执行确定性的词法深度门控，并返回观测最大深度。"""
+
+    depth = 0
+    maximum_observed_depth = 0
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            maximum_observed_depth = max(maximum_observed_depth, depth)
+            if depth > MAX_JSON_NESTING_DEPTH:
+                raise StrictJsonError(
+                    "JSON_NESTING_TOO_DEEP",
+                    "JSON 嵌套深度超过契约上限",
+                    {
+                        "maximum_depth": MAX_JSON_NESTING_DEPTH,
+                        "observed_depth": depth,
+                    },
+                )
+        elif character in "]}" and depth > 0:
+            depth -= 1
+    return maximum_observed_depth
+
+
 def strict_json_loads(raw: bytes) -> Any:
     """解析严格 JSON，拒绝非确定或无法安全表示的值。"""
 
@@ -120,6 +181,7 @@ def strict_json_loads(raw: bytes) -> Any:
             "JSON 输入必须使用 UTF-8 编码",
             {"byte_end": exc.end, "byte_start": exc.start},
         ) from exc
+    maximum_observed_depth = _validate_json_nesting(text)
     try:
         value = json.loads(
             text,
@@ -130,6 +192,15 @@ def strict_json_loads(raw: bytes) -> Any:
         )
     except StrictJsonError:
         raise
+    except RecursionError as exc:
+        raise StrictJsonError(
+            "JSON_NESTING_TOO_DEEP",
+            "JSON 嵌套深度超过契约上限",
+            {
+                "maximum_depth": MAX_JSON_NESTING_DEPTH,
+                "observed_depth": maximum_observed_depth,
+            },
+        ) from exc
     except json.JSONDecodeError as exc:
         raise StrictJsonError(
             "JSON_SYNTAX_ERROR",

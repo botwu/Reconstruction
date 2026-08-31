@@ -174,7 +174,7 @@ TOOL_RESULT
 - content 形态和长度；
 - 完整性、冲突和推断状态。
 
-M1 v1 的每个 event 都保存 `visible_payload_utf8_byte_length`、`visible_payload_sha256` 和 `integrity_status=COMPLETE`。前两者来自去除 reasoning 摘要后的可见 payload 的 canonical JSON bytes；`COMPLETE` 只表示该可见事件完整映射到当前契约，不代表原始 wire 日志、任务结果或环境状态完整。
+M1 v2 的每个 event 都保存 `visible_payload_utf8_byte_length`、`visible_payload_sha256` 和 `integrity_status=COMPLETE`。前两者来自去除 reasoning 摘要后的可见 payload 的 canonical JSON bytes；`COMPLETE` 只表示该可见事件完整映射到当前契约，不代表原始 wire 日志、任务结果或环境状态完整。
 
 只按显式 ID 建立确定 pairing。基于位置推断的关系必须单独标记，不能进入认证任务的硬证据。
 
