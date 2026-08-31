@@ -8,10 +8,12 @@ from pathlib import Path
 import pytest
 
 from traceforge.trajectory.source import (
+    DATASET_ID_MAX_LENGTH,
     SourceChangedError,
     SourceDigestMismatchError,
     iter_verified_records,
     scan_jsonl_source,
+    validate_dataset_id,
 )
 from traceforge.trajectory.source_adapter import RESTORED_LONG_CAPTURE_SCHEMA
 
@@ -116,8 +118,55 @@ def test_source_scan_rejects_data_url_in_manifest_identity_without_echoing_paylo
     with pytest.raises(ValueError) as captured:
         scan_jsonl_source(source, **arguments)
 
-    assert "Data URL" in str(captured.value)
+    expected_message = "安全 slug" if field == "dataset_id" else "Data URL"
+    assert expected_message in str(captured.value)
     assert secret not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    "dataset_id",
+    [
+        "a",
+        "r01-four-batch-202607-v1",
+        "fixture_batch-v2",
+        "a" * DATASET_ID_MAX_LENGTH,
+    ],
+)
+def test_dataset_id_accepts_frozen_safe_slug_contract(dataset_id: str) -> None:
+    validate_dataset_id(dataset_id)
+
+
+@pytest.mark.parametrize(
+    "dataset_id",
+    [
+        "",
+        "a" * (DATASET_ID_MAX_LENGTH + 1),
+        "Uppercase-v1",
+        "-leading",
+        "trailing-",
+        "含中文-v1",
+        "https://example.test/data",
+        "../private/data",
+        r"C:\private\data",
+        "dataset?token=secret",
+        "user:password@example.test",
+        "dataset#fragment",
+        "dataset name",
+    ],
+)
+def test_dataset_id_rejects_non_slug_identity_without_echoing_value(
+    dataset_id: str,
+) -> None:
+    with pytest.raises(ValueError) as captured:
+        validate_dataset_id(dataset_id)
+
+    assert dataset_id not in str(captured.value) or not dataset_id
+
+
+@pytest.mark.parametrize("dataset_id", [None, 7, b"fixture-v1"])
+def test_dataset_id_rejects_non_string_values(dataset_id: object) -> None:
+    with pytest.raises(ValueError, match="dataset_id"):
+        validate_dataset_id(dataset_id)
 
 
 def test_source_scan_rejects_wrong_frozen_digest(tmp_path: Path) -> None:

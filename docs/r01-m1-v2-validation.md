@@ -4,13 +4,15 @@
 
 范围：M1A Source Adapter、M1B Structural Compiler
 
-状态：**正式通过。M1C、M1D、M2 及之后阶段未启动。**
+状态：**结论已撤销，不得作为 M1A/M1B 完成证据。**
+
+> 后续审计确认通用 typed payload 自洽性、公共报告 dataset slug 边界和异常一对一 pairing 仍可被重签绕过。现存 run 的正常路径事实继续有效，但必须修复并重新完成双运行留证后才能发布新的正式结论。
 
 ## 1. 结论
 
 提交 `9e0c6a5c821a1d648931cab54430f6dc92c3cf48` 已闭合本轮审计要求的语义验收、递归隐私、极端输入、Data URL、数值表示和版本契约。冻结 R01 以 M1 v2 完成两次独立全量编译，两份已发布 run 均通过独立 validator，排除非确定性的 `run_receipt.json` 后所有文件逐字节一致。
 
-因此 M1A/M1B 可以认定完成，但该结论只证明来源账本与可见结构忠实、可审计，不表示任务完成、工具成功、轨迹优质或已经得到可重建任务。
+本节是已经撤销的历史结论。现存 run 只证明该批正常输入下的来源账本与主要可见结构闭合，不能证明通用 M1A/M1B 契约已经通过验收。
 
 ## 2. 输入、版本与运行身份
 
@@ -68,7 +70,7 @@
 
 正式 run 保存在本地 `artifacts/r01/5525b6a49dd9b4111bcd0e1732bc1b6aa909b55e669c1c13e3c28a1b2c8daac6/`，真实产物不进入 Git。
 
-## 5. R01 observed episode distribution
+## 5. R01 capture 结构与损耗画像
 
 主要守恒关系在 v2 中继续闭合：事件类型与 scope 分别求和均为 175,858；56,424 个 call 与 50,140 个 result 的差额 6,284，等于 6,474 个未观测 result 减去 190 个额外 result occurrence。
 
@@ -91,7 +93,7 @@
 
 使用最保守的纯结构筛选：`TEXT_OUTCOME`、无 missing/duplicate result、schema `CONSISTENT`、无 compaction、明确未截断，只剩 353 个 capture，占 20.97%。这些 capture 仍然不是任务，只是进入 lineage、QueryTurn 和重建资格判断的候选。
 
-`COMPLETE=1,683` 只表示可见结构被忠实编译，不表示用户任务完成。以上结果统一称为 **R01 observed episode distribution**，不能伪称为生产任务或不可观测用户环境的无偏真值。
+`COMPLETE=1,683` 只表示可见结构被忠实编译，不表示用户任务完成。TaskEpisode 属于 M2，因此以上结果只能称为 **R01 capture 结构与损耗画像**，不能伪称为 episode distribution、生产任务分布或不可观测用户环境的无偏真值。
 
 ## 6. 停止线
 

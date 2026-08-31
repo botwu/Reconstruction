@@ -741,6 +741,9 @@ def test_pairing_preserves_every_occurrence_and_classifies_anomalies(
     assert pairings["call-duplicate-result"]["matched_result_event_id"] is None
     assert pairings["call-duplicate"]["matched_call_event_id"] is None
     assert pairings["call-duplicate"]["matched_result_event_id"] is None
+    for anomalous_call_id in ("call-name-mismatch", "call-before", "call-invalid"):
+        assert pairings[anomalous_call_id]["matched_call_event_id"] is None
+        assert pairings[anomalous_call_id]["matched_result_event_id"] is None
 
 
 def _call(call_id: str, *, arguments: str = '{"query":"fixture"}') -> dict[str, Any]:

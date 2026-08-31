@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -24,6 +25,12 @@ from traceforge.trajectory.json_codec import (
     strict_json_loads,
 )
 from traceforge.trajectory.privacy import contains_data_url
+
+DATASET_ID_MAX_LENGTH = 128
+_DATASET_ID_PATTERN = re.compile(
+    r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?",
+    flags=re.ASCII,
+)
 
 
 class SourceError(RuntimeError):
@@ -78,7 +85,7 @@ def scan_jsonl_source(
     """流式扫描 JSONL，建立数据集及物理行的不可变字节账本。"""
 
     source_path = Path(path)
-    _validate_dataset_id(dataset_id)
+    validate_dataset_id(dataset_id)
     _validate_source_schema(source_schema)
     normalized_expected_sha256 = _normalize_expected_sha256(expected_sha256)
 
@@ -262,11 +269,17 @@ def _require_same_signature(
         raise SourceChangedError(f"来源在{phase}发生变化：期望={expected}，实际={observed}")
 
 
-def _validate_dataset_id(dataset_id: str) -> None:
-    if not isinstance(dataset_id, str) or not dataset_id:
-        raise ValueError("dataset_id 必须是非空字符串")
-    if contains_data_url(dataset_id):
-        raise ValueError("dataset_id 不得包含 Data URL")
+def validate_dataset_id(dataset_id: object) -> None:
+    """冻结安全 slug：小写 ASCII、有限长度且不含路径或凭据分隔符。"""
+
+    if not isinstance(dataset_id, str):
+        raise ValueError("dataset_id 必须是字符串")
+    if not 1 <= len(dataset_id) <= DATASET_ID_MAX_LENGTH:
+        raise ValueError(f"dataset_id 长度必须在 1 到 {DATASET_ID_MAX_LENGTH} 个字符之间")
+    if _DATASET_ID_PATTERN.fullmatch(dataset_id) is None:
+        raise ValueError(
+            "dataset_id 必须是小写 ASCII 字母或数字组成的安全 slug，内部只允许连字符或下划线"
+        )
 
 
 def _validate_source_schema(source_schema: str) -> None:

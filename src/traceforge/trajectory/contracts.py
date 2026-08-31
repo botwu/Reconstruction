@@ -12,13 +12,13 @@ CAPTURE_SCHEMA = "traceforge.normalized-capture.v2"
 REQUEST_BOUNDARY_SCHEMA = "traceforge.request-boundary.v1"
 EVENT_SCHEMA = "traceforge.event-occurrence.v2"
 ACTION_BATCH_SCHEMA = "traceforge.action-batch.v2"
-TOOL_PAIRING_SCHEMA = "traceforge.tool-pairing.v2"
+TOOL_PAIRING_SCHEMA = "traceforge.tool-pairing.v3"
 TOOL_CATALOG_SCHEMA = "traceforge.tool-catalog.v2"
 CAPTURE_QUALITY_SCHEMA = "traceforge.capture-quality.v2"
 ARTIFACT_MANIFEST_SCHEMA = "traceforge.artifact-manifest.v1"
 ATTRITION_REPORT_SCHEMA = "traceforge.attrition-report.v2"
 RUN_RECEIPT_SCHEMA = "traceforge.run-receipt.v2"
-COMPILER_CONTRACT_VERSION = "trajectory-compiler-m1ab-v2"
+COMPILER_CONTRACT_VERSION = "trajectory-compiler-m1ab-v3"
 
 
 class ProcessingStatus(StrEnum):
@@ -208,7 +208,7 @@ class ActionBatchV2(SerializableContract):
 
 
 @dataclass(frozen=True, slots=True)
-class ToolPairingRecordV2(SerializableContract):
+class ToolPairingRecordV3(SerializableContract):
     schema_version: str
     pairing_id: str
     capture_occurrence_id: str

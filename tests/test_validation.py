@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from traceforge.trajectory.json_codec import canonical_json_line
+from traceforge.trajectory.json_codec import canonical_json_bytes, canonical_json_line
 from traceforge.trajectory.source_adapter import RESTORED_LONG_CAPTURE_SCHEMA
 from traceforge.trajectory.validation import validate_compiled_run
 
@@ -108,6 +108,102 @@ def test_validator_accepts_reasoning_summary_in_non_assistant_extensions(
     result = validate_compiled_run(run)
 
     assert result.ok, result.errors
+
+
+def test_validator_rejects_synced_terminal_quality_from_forged_text_length(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    capture = capture_factory(
+        messages=[{"role": "assistant", "content": "非空终态"}],
+        terminal_prefix_depths=[1],
+    )
+    run = compile_dataset([capture], label="validation-forged-text-audit")
+    event_path = "private/event_occurrences.jsonl"
+
+    def forge_event(record: dict[str, Any]) -> None:
+        record["payload"]["content"]["utf8_byte_length"] = 0
+        visible = {"content": record["payload"]["content"]}
+        encoded = canonical_json_bytes(visible)
+        record["visible_payload_utf8_byte_length"] = len(encoded)
+        record["visible_payload_sha256"] = hashlib.sha256(encoded).hexdigest()
+
+    _rewrite_jsonl_record(run / event_path, forge_event)
+    _resign_artifact(run, event_path)
+
+    quality_path = "private/capture_quality.jsonl"
+
+    def forge_quality(record: dict[str, Any]) -> None:
+        record["terminal_status"] = "EMPTY_OUTCOME"
+        record["reason_codes"] = ["TERMINAL_EMPTY_OUTCOME"]
+
+    _rewrite_jsonl_record(run / quality_path, forge_quality)
+    _resign_artifact(run, quality_path)
+
+    report_path = "reports/attrition_report.json"
+    report = json.loads((run / report_path).read_text(encoding="utf-8"))
+    report["counts"]["terminal_text_outcome_capture_count"] = 0
+    report["counts"]["terminal_empty_outcome_capture_count"] = 1
+    (run / report_path).write_bytes(canonical_json_line(report))
+    _resign_artifact(run, report_path)
+
+    result = validate_compiled_run(run)
+
+    assert not result.ok
+    assert "EVENT_PAYLOAD_INVALID" in {issue.code for issue in result.issues}
+
+
+def test_validator_binds_tool_arguments_pointer_to_event_position(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    run = compile_dataset(
+        [_one_to_one_capture(capture_factory)],
+        label="validation-tool-arguments-pointer",
+    )
+    event_path = "private/event_occurrences.jsonl"
+    records = [
+        json.loads(line) for line in (run / event_path).read_text(encoding="utf-8").splitlines()
+    ]
+    [tool_call] = [record for record in records if record["event_kind"] == "TOOL_CALL"]
+    tool_call["payload"]["function"]["arguments"]["source_json_pointer"] = (
+        "/messages/99/tool_calls/7/function/arguments"
+    )
+    encoded = canonical_json_bytes(tool_call["payload"])
+    tool_call["visible_payload_utf8_byte_length"] = len(encoded)
+    tool_call["visible_payload_sha256"] = hashlib.sha256(encoded).hexdigest()
+    (run / event_path).write_bytes(b"".join(canonical_json_line(record) for record in records))
+    _resign_artifact(run, event_path)
+
+    assert "TOOL_ARGUMENT_POINTER_MISMATCH" in _issue_codes(run)
+
+
+def test_validator_rejects_unsafe_dataset_id_even_when_identity_is_consistent(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+    monkeypatch: Any,
+) -> None:
+    unsafe_dataset_id = "https://user-secret@example.test/private?token=x"
+    monkeypatch.setattr(
+        "traceforge.trajectory.source.validate_dataset_id",
+        lambda _value: None,
+    )
+    capture = capture_factory(
+        messages=[{"role": "assistant", "content": "虚构完成。"}],
+        terminal_prefix_depths=[1],
+    )
+    run = compile_dataset(
+        [capture],
+        label="validation-unsafe-dataset-id",
+        dataset_id=unsafe_dataset_id,
+    )
+
+    report_text = (run / "reports/attrition_report.json").read_text(encoding="utf-8")
+    result = validate_compiled_run(run)
+
+    assert unsafe_dataset_id in report_text
+    assert not result.ok
+    assert "DATASET_ID_INVALID" in {issue.code for issue in result.issues}
 
 
 def test_validator_reports_deep_resigned_catalog_instead_of_raising(
@@ -242,6 +338,48 @@ def test_validator_requires_exact_matched_pairing_edges(
             matched_result_event_id=None,
         ),
     )
+    _resign_artifact(run, relative_path)
+
+    codes = _issue_codes(run)
+    assert "PAIRING_MATCHED_CALL_SEMANTICS_MISMATCH" in codes
+    assert "PAIRING_MATCHED_RESULT_SEMANTICS_MISMATCH" in codes
+
+
+def test_validator_rejects_forged_matched_edges_for_anomalous_one_to_one_pair(
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    capture = capture_factory(
+        messages=[
+            {
+                "role": "tool",
+                "name": "lookup",
+                "tool_call_id": "fixture-result-before-call",
+                "content": "提前出现的虚构结果",
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "fixture-result-before-call",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": {}},
+                    }
+                ],
+            },
+            {"role": "assistant", "content": "虚构完成。"},
+        ],
+        terminal_prefix_depths=[3],
+    )
+    run = compile_dataset([capture], label="validation-anomalous-matched-edges")
+    relative_path = "private/tool_pairings.jsonl"
+
+    def forge_matched_edges(record: dict[str, Any]) -> None:
+        record["matched_call_event_id"] = record["call_event_ids"][0]
+        record["matched_result_event_id"] = record["result_event_ids"][0]
+
+    _rewrite_jsonl_record(run / relative_path, forge_matched_edges)
     _resign_artifact(run, relative_path)
 
     codes = _issue_codes(run)

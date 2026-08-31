@@ -32,7 +32,7 @@ from traceforge.trajectory.contracts import (
     SourceRecordRefV1,
     TerminalStatus,
     ToolCatalogV2,
-    ToolPairingRecordV2,
+    ToolPairingRecordV3,
     ToolPairingStatus,
     ToolSchemaStatus,
 )
@@ -74,7 +74,7 @@ class CompiledCapture:
     request_boundaries: tuple[RequestBoundaryV1, ...]
     event_occurrences: tuple[EventOccurrenceV2, ...]
     action_batches: tuple[ActionBatchV2, ...]
-    tool_pairings: tuple[ToolPairingRecordV2, ...]
+    tool_pairings: tuple[ToolPairingRecordV3, ...]
     tool_catalog: ToolCatalogV2
     quality: CaptureQualityV2
 
@@ -811,7 +811,7 @@ def _compile_tool_pairings(
     capture_occurrence_id: str,
     call_events: Sequence[_ToolEvent],
     result_events: Sequence[_ToolEvent],
-) -> tuple[ToolPairingRecordV2, ...]:
+) -> tuple[ToolPairingRecordV3, ...]:
     calls_by_id: dict[str, list[_ToolEvent]] = {}
     results_by_id: dict[str, list[_ToolEvent]] = {}
     first_sequence: dict[str, int] = {}
@@ -825,13 +825,10 @@ def _compile_tool_pairings(
     for event in result_events:
         results_by_id.setdefault(event.tool_call_id, []).append(event)
 
-    records: list[ToolPairingRecordV2] = []
+    records: list[ToolPairingRecordV3] = []
     for call_id in sorted(first_sequence, key=lambda item: (first_sequence[item], item)):
         calls = calls_by_id.get(call_id, [])
         results = results_by_id.get(call_id, [])
-        has_unambiguous_match = len(calls) == 1 and len(results) == 1
-        matched_call = calls[0] if has_unambiguous_match else None
-        matched_result = results[0] if has_unambiguous_match else None
         observed_statuses: set[ToolPairingStatus] = set()
         if len(calls) > 1:
             observed_statuses.add(ToolPairingStatus.DUPLICATE_CALL_ID)
@@ -849,12 +846,19 @@ def _compile_tool_pairings(
                 observed_statuses.add(ToolPairingStatus.RESULT_BEFORE_CALL)
         if any(event.arguments_valid is False for event in calls):
             observed_statuses.add(ToolPairingStatus.INVALID_CALL_ARGUMENTS)
-        if len(calls) == 1 and len(results) == 1 and not observed_statuses:
+        has_strict_match = (
+            len(calls) == 1
+            and len(results) == 1
+            and calls[0].tool_name == results[0].tool_name
+            and results[0].sequence_number >= calls[0].sequence_number
+            and calls[0].arguments_valid is True
+        )
+        if has_strict_match:
             observed_statuses.add(ToolPairingStatus.MATCHED_ONE_TO_ONE)
 
         statuses = tuple(status for status in _PAIRING_STATUS_ORDER if status in observed_statuses)
         records.append(
-            ToolPairingRecordV2(
+            ToolPairingRecordV3(
                 schema_version=TOOL_PAIRING_SCHEMA,
                 pairing_id=stable_id(
                     "tool-pairing-v1",
@@ -867,8 +871,8 @@ def _compile_tool_pairings(
                 tool_call_id=call_id,
                 call_event_ids=tuple(item.event_id for item in calls),
                 result_event_ids=tuple(item.event_id for item in results),
-                matched_call_event_id=matched_call.event_id if matched_call else None,
-                matched_result_event_id=matched_result.event_id if matched_result else None,
+                matched_call_event_id=calls[0].event_id if has_strict_match else None,
+                matched_result_event_id=results[0].event_id if has_strict_match else None,
                 statuses=statuses,
             )
         )
@@ -1045,7 +1049,7 @@ def _terminal_status(last_message: Any) -> TerminalStatus:
 
 
 def _aggregate_pairing_statuses(
-    pairings: Sequence[ToolPairingRecordV2],
+    pairings: Sequence[ToolPairingRecordV3],
 ) -> tuple[str, ...]:
     observed = {status for pairing in pairings for status in pairing.statuses}
     return tuple(status for status in _PAIRING_STATUS_ORDER if status in observed)

@@ -41,7 +41,7 @@ from traceforge.trajectory.contracts import (
     SourceRecordRefV1,
     TerminalStatus,
     ToolCatalogV2,
-    ToolPairingRecordV2,
+    ToolPairingRecordV3,
     ToolPairingStatus,
     ToolSchemaStatus,
 )
@@ -70,6 +70,7 @@ from traceforge.trajectory.privacy import (
     find_privacy_violations,
     visible_value_without_reasoning,
 )
+from traceforge.trajectory.source import validate_dataset_id
 from traceforge.trajectory.source_adapter import RESTORED_LONG_CAPTURE_SCHEMA
 
 _PRIVATE_CONTRACTS = {
@@ -78,7 +79,7 @@ _PRIVATE_CONTRACTS = {
     "private/request_boundaries.jsonl": (REQUEST_BOUNDARY_SCHEMA, RequestBoundaryV1),
     "private/event_occurrences.jsonl": (EVENT_SCHEMA, EventOccurrenceV2),
     "private/action_batches.jsonl": (ACTION_BATCH_SCHEMA, ActionBatchV2),
-    "private/tool_pairings.jsonl": (TOOL_PAIRING_SCHEMA, ToolPairingRecordV2),
+    "private/tool_pairings.jsonl": (TOOL_PAIRING_SCHEMA, ToolPairingRecordV3),
     "private/tool_catalogs.jsonl": (TOOL_CATALOG_SCHEMA, ToolCatalogV2),
     "private/capture_quality.jsonl": (CAPTURE_QUALITY_SCHEMA, CaptureQualityV2),
 }
@@ -507,6 +508,11 @@ def _check_public_report(report: dict[str, Any] | None, issues: _Issues) -> None
         issues,
     ):
         return
+    _check_dataset_id(
+        report.get("dataset_id"),
+        "reports/attrition_report.json/dataset_id",
+        issues,
+    )
     counts = report.get("counts")
     if not isinstance(counts, dict) or frozenset(counts) != _COUNT_KEYS:
         issues.add(
@@ -521,6 +527,15 @@ def _check_public_report(report: dict[str, Any] | None, issues: _Issues) -> None
             "reports/attrition_report.json/counts",
             "公共报告计数必须是非负整数",
         )
+
+
+def _check_dataset_id(value: Any, location: str, issues: _Issues) -> None:
+    """复用冻结 slug 契约，错误不得回显不可信标识。"""
+
+    try:
+        validate_dataset_id(value)
+    except ValueError:
+        issues.add("DATASET_ID_INVALID", location, "dataset_id 不满足安全 slug 契约")
 
 
 def _check_receipt(
@@ -596,6 +611,12 @@ def _check_run_identity(
 ) -> None:
     if not isinstance(source, dict) or not isinstance(artifact, dict):
         return
+    _check_dataset_id(source.get("dataset_id"), "source_manifest.json/dataset_id", issues)
+    _check_dataset_id(
+        artifact.get("dataset_id"),
+        "artifact_manifest.json/dataset_id",
+        issues,
+    )
     if source.get("source_schema") != RESTORED_LONG_CAPTURE_SCHEMA:
         issues.add(
             "SOURCE_SCHEMA_UNSUPPORTED",
@@ -1001,6 +1022,15 @@ def _read_events(root: Path, state: _State, issues: _Issues) -> None:
             assistant_id = typed_payload.assistant_event_id
             tool_name = typed_payload.function.name
             arguments = typed_payload.function.arguments
+            if (
+                arguments.source_message_index != message_index
+                or arguments.source_sub_index != sub_index
+            ):
+                issues.add(
+                    "TOOL_ARGUMENT_POINTER_MISMATCH",
+                    location,
+                    "arguments 来源指针与 tool call 事件位置不一致",
+                )
             arguments_valid = isinstance(arguments, JsonObjectArguments) or (
                 isinstance(arguments, JsonValueArguments) and isinstance(arguments.value, dict)
             )
@@ -1134,9 +1164,6 @@ def _derive_pairing_facts(state: _State) -> None:
         result_ids = tuple(state.result_event_ids_by_group.get(group, []))
         calls = [state.events[event_id] for event_id in call_ids]
         results = [state.events[event_id] for event_id in result_ids]
-        exact_pair = len(calls) == 1 and len(results) == 1
-        matched_call_id = call_ids[0] if exact_pair else None
-        matched_result_id = result_ids[0] if exact_pair else None
         observed: set[str] = set()
         if len(calls) > 1:
             observed.add(ToolPairingStatus.DUPLICATE_CALL_ID)
@@ -1160,14 +1187,15 @@ def _derive_pairing_facts(state: _State) -> None:
                 observed.add(ToolPairingStatus.RESULT_BEFORE_CALL)
         if any(event.arguments_valid is False for event in calls):
             observed.add(ToolPairingStatus.INVALID_CALL_ARGUMENTS)
-        if len(calls) == 1 and len(results) == 1 and not observed:
+        has_strict_match = len(calls) == 1 and len(results) == 1 and not observed
+        if has_strict_match:
             observed.add(ToolPairingStatus.MATCHED_ONE_TO_ONE)
         statuses = tuple(status for status in _PAIRING_ORDER if status in observed)
         facts = _PairingFacts(
             call_event_ids=call_ids,
             result_event_ids=result_ids,
-            matched_call_event_id=matched_call_id,
-            matched_result_event_id=matched_result_id,
+            matched_call_event_id=call_ids[0] if has_strict_match else None,
+            matched_result_event_id=result_ids[0] if has_strict_match else None,
             statuses=statuses,
         )
         state.pairing_facts[group] = facts

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import FrozenInstanceError
@@ -26,17 +27,19 @@ from traceforge.trajectory.event_payload import (
     UserPayload,
     read_event_payload,
 )
+from traceforge.trajectory.privacy import sanitize_value
 
 _DIGEST = "a" * 64
 _ARGUMENT_POINTER = "/messages/3/tool_calls/0/function/arguments"
 
 
-def _text_content(value: Any = "可见文本") -> dict[str, Any]:
+def _text_content(value: str = "可见文本") -> dict[str, Any]:
+    raw = value.encode("utf-8")
     return {
         "kind": "TEXT",
         "value": value,
-        "utf8_byte_length": 12,
-        "sha256": _DIGEST,
+        "utf8_byte_length": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
     }
 
 
@@ -110,7 +113,7 @@ def test_reader_explicitly_dispatches_all_compiler_event_payloads(
                 "kind": "INVALID_JSON_TEXT",
                 "value": "not-json",
                 "utf8_byte_length": 8,
-                "sha256": _DIGEST,
+                "sha256": hashlib.sha256(b"not-json").hexdigest(),
                 "source_json_pointer": _ARGUMENT_POINTER,
             },
             InvalidJsonTextArguments,
@@ -124,6 +127,106 @@ def test_reader_accepts_only_the_four_frozen_argument_kinds(
 
     assert isinstance(payload, ToolCallPayload)
     assert isinstance(payload.function.arguments, expected_type)
+    assert payload.function.arguments.source_json_pointer == _ARGUMENT_POINTER
+    assert payload.function.arguments.source_message_index == 3
+    assert payload.function.arguments.source_sub_index == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "path"),
+    [
+        ("utf8_byte_length", 999, "/payload/content/utf8_byte_length"),
+        ("sha256", _DIGEST, "/payload/content/sha256"),
+    ],
+)
+def test_reader_recomputes_plain_text_audit_fields(
+    field: str,
+    value: Any,
+    path: str,
+) -> None:
+    content = _text_content()
+    content[field] = value
+
+    with pytest.raises(EventPayloadReadError) as error:
+        read_event_payload("SYSTEM", {"content": content})
+
+    assert error.value.reason_code == "VALUE_INVALID"
+    assert error.value.path == path
+
+
+def test_reader_accepts_only_self_consistent_sanitized_text_envelope() -> None:
+    raw_text = "data:image/png;base64,U0VDUkVU"
+    raw = raw_text.encode("utf-8")
+    content = {
+        "kind": "TEXT",
+        "value": sanitize_value(raw_text, "/messages/0/content"),
+        "utf8_byte_length": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+    payload = read_event_payload("SYSTEM", {"content": content})
+
+    assert isinstance(payload, SystemPayload)
+    assert isinstance(payload.content, TextContent)
+    assert isinstance(payload.content.value, dict)
+
+    content["sha256"] = _DIGEST
+    with pytest.raises(EventPayloadReadError) as error:
+        read_event_payload("SYSTEM", {"content": content})
+    assert error.value.path == "/payload/content/sha256"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "path"),
+    [
+        ("utf8_byte_length", 999, "/payload/function/arguments/utf8_byte_length"),
+        ("sha256", _DIGEST, "/payload/function/arguments/sha256"),
+    ],
+)
+def test_reader_recomputes_invalid_json_text_audit_fields(
+    field: str,
+    value: Any,
+    path: str,
+) -> None:
+    raw = b"not-json"
+    arguments = {
+        "kind": "INVALID_JSON_TEXT",
+        "value": raw.decode(),
+        "utf8_byte_length": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "source_json_pointer": _ARGUMENT_POINTER,
+    }
+    arguments[field] = value
+
+    with pytest.raises(EventPayloadReadError) as error:
+        read_event_payload("TOOL_CALL", _tool_call_payload(arguments))
+
+    assert error.value.reason_code == "VALUE_INVALID"
+    assert error.value.path == path
+
+
+@pytest.mark.parametrize(
+    "pointer",
+    [
+        "/messages/03/tool_calls/0/function/arguments",
+        "/messages/3/tool_calls/-1/function/arguments",
+        "/messages/3/tool_calls/0/function/name",
+        "/messages/3/tool_calls/0/arguments",
+        f"/messages/{'9' * 5000}/tool_calls/0/function/arguments",
+    ],
+)
+def test_reader_rejects_noncanonical_tool_arguments_pointer(pointer: str) -> None:
+    arguments = {
+        "kind": "JSON_OBJECT",
+        "value": {"query": "alpha"},
+        "source_json_pointer": pointer,
+    }
+
+    with pytest.raises(EventPayloadReadError) as error:
+        read_event_payload("TOOL_CALL", _tool_call_payload(arguments))
+
+    assert error.value.reason_code == "VALUE_INVALID"
+    assert error.value.path == "/payload/function/arguments/source_json_pointer"
 
 
 def test_reader_accepts_absent_reasoning_summary_without_inference() -> None:

@@ -1,10 +1,10 @@
 # R01 回流处理实施规格
 
-版本：v2.0
+版本：v3.0
 
-日期：2026-08-31
+日期：2026-09-01
 
-状态：M1A、M1B v2 冻结契约；全量验收已通过
+状态：M1A、M1B 验收未通过；v3 候选契约等待全量重新验收
 
 本文是 R01 回流处理的实施事实来源。项目背景见 [`background-and-goals.md`](background-and-goals.md)，总体阶段与下游边界见 [`overall-plan.md`](overall-plan.md)，开发纪律只引用 [`../AGENTS.md`](../AGENTS.md)。
 
@@ -26,7 +26,7 @@ M1B Structural Compiler
 - World、Truth、Reference、Verifier；
 - Harbor、AGS 或模型 rollout。
 
-M1A、M1B v2 已完成全量验收，证据见 [`r01-m1-v2-validation.md`](r01-m1-v2-validation.md)。M1C 及之后阶段仍需另行制定和审核实施规格；进入 M2 前还必须单独冻结并审核最小来源注解投影。
+现存 v2 R01 run 的物理与主要结构事实闭合，但正式结论已经撤销。v3 必须修复 typed payload、dataset slug 和异常 pairing 后重新留证；M1C 及之后阶段继续冻结，进入 M2 前还必须单独冻结并审核最小来源注解投影。
 
 ## 2. 冻结输入
 
@@ -88,6 +88,8 @@ traceforge trajectory compile \
 M1 不提供模型、并发、resume 或兼容模式参数。
 
 `source_format=jsonl` 只表示物理编码；`source_schema=traceforge.restored-long-capture.v1` 才表示单条记录的语义契约。`trajectory/source_adapter.py` 负责校验精确的 `domain_meta/messages/meta/tools` envelope 及 `representation=restored_long`，再交给不解释任意 JSON 的 Structural Compiler。
+
+`dataset_id` 是会进入 source/artifact manifest 和公共 attrition report 的控制字段，必须是 1–128 字符的小写 ASCII slug：首尾为字母或数字，内部只允许 `[a-z0-9_-]`。URL、路径、query、fragment、凭据形式和其他字符一律拒绝，错误信息不得回显原值。compiler 在创建 artifact 前校验，validator 对已发布 manifest 和 report 再次校验同一冻结规则。
 
 这些字段是版本化 schema，不是对 R01 样本值的硬编码。路径、dataset ID、digest、rubric、Domain、模型名、工具名和统计值不参与 adapter 分支。不支持的 `source_schema` 在读文件和创建 staging 前失败；已声明 schema 中的单条坏 envelope 进入该行 `QUARANTINED` 终态。
 
@@ -194,9 +196,9 @@ TOOL_RESULT
 
 每个事件保存 occurrence ID、source/capture 引用、JSON pointer、消息和调用位置、request boundary、typed content、`visible_payload_utf8_byte_length`、`visible_payload_sha256` 和 `integrity_status`。
 
-`visible_payload_utf8_byte_length` 是去除 reasoning 审计摘要后的可见 payload 经 canonical JSON 编码后的 UTF-8 字节数，不是原始 JSONL 行长，也不是 assistant content 字符数。`visible_payload_sha256` 对同一份 canonical bytes 求摘要。M1 v2 只有在该事件的可见 payload 已完整映射时才产出事件，因此 `integrity_status` 固定为 `COMPLETE`；它不表示原始 wire 日志完整、任务完成、工具成功或不存在 compaction。
+`visible_payload_utf8_byte_length` 是去除 reasoning 审计摘要后的可见 payload 经 canonical JSON 编码后的 UTF-8 字节数，不是原始 JSONL 行长，也不是 assistant content 字符数。`visible_payload_sha256` 对同一份 canonical bytes 求摘要。M1 v3 只有在该事件的可见 payload 已完整映射时才产出事件，因此 `integrity_status` 固定为 `COMPLETE`；它不表示原始 wire 日志完整、任务完成、工具成功或不存在 compaction。
 
-下游只能通过 `event_payload.py` 的 typed reader 读取五种 event payload，不能各自重新解释 JSON。reader 对 content、tool arguments 和 result 形态执行唯一的封闭解析，并拒绝字段集合或类型不匹配。
+下游只能通过 `event_payload.py` 的 typed reader 读取五种 event payload，不能各自重新解释 JSON。reader 对普通 TEXT 与无效 JSON 文本独立重算 UTF-8 长度和 SHA-256；脱敏文本只接受严格 privacy envelope 并核对内外审计字段。tool arguments 的 pointer 必须精确为 `/messages/<index>/tool_calls/<sub_index>/function/arguments`，validator 还要将两个 index 与 event 位置比较。任一字段集合、类型、审计值或绑定不匹配都必须 fail-closed。
 
 assistant message 和它的 tool calls 拆成不同事件，通过 tool call payload 的 `assistant_event_id` 关联。同一个 assistant decision 中的一个或多个 tool call 形成一个 `ActionBatch`。来源没有明确并行证据，因此 `execution_semantics=UNKNOWN`；result 到达顺序不能用来推断 tool call 的并行或因果顺序。
 
@@ -232,7 +234,7 @@ INVALID_CALL_ARGUMENTS
 
 所有 call 和 result 都以 occurrence 保存，禁止使用单值字典覆盖重复 ID。`RESULT_NOT_OBSERVED` 只表示当前 capture 未观察到结果，不能解释成工具没有执行。
 
-只有 call/result 数量均为一且其余规则成立时才填写 `matched_call_event_id` 与 `matched_result_event_id`。出现重复 call 或重复 result 时只能保存完整 occurrence 集合和异常状态，两个 `matched_*` 字段必须为 `null`，不得任意选择第一条伪造精确配对。
+只有 call/result 数量均为一、工具名一致、result 不早于 call 且 call arguments 有效时，才填写 `matched_call_event_id` 与 `matched_result_event_id` 并标记 `MATCHED_ONE_TO_ONE`。任一异常或重复组只能保存完整 occurrence 集合和异常状态，两个 `matched_*` 字段必须为 `null`，不得伪造精确配对。
 
 ### 5.5 多维质量状态
 
@@ -257,7 +259,7 @@ reason_codes[]
 
 `leaf_response_status=completed` 只说明捕获响应结束，不能解释为任务完成或回答正确。
 
-`processing_status` 只描述编译器是否忠实产出可见结构，不评价原轨迹质量。缺失 observation、schema conflict、inferred schema、pending tool call、compaction 和 input truncation 都进入独立质量轴；只要可见结构完整落盘，仍为 `COMPLETE`。输入没有明确截断证据时必须为 `UNKNOWN`，不能伪报“未截断”。JSON 或关键 boundary envelope 无法可信编译时为 `QUARANTINED`，且不得产出伪造 capture/event。`PARTIAL` 只保留给未来确有安全子树可落盘、但当前契约明确允许缺失另一子树的情况；M1 v2 不用它掩盖异常。
+`processing_status` 只描述编译器是否忠实产出可见结构，不评价原轨迹质量。缺失 observation、schema conflict、inferred schema、pending tool call、compaction 和 input truncation 都进入独立质量轴；只要可见结构完整落盘，仍为 `COMPLETE`。输入没有明确截断证据时必须为 `UNKNOWN`，不能伪报“未截断”。JSON 或关键 boundary envelope 无法可信编译时为 `QUARANTINED`，且不得产出伪造 capture/event。`PARTIAL` 只保留给未来确有安全子树可落盘、但当前契约明确允许缺失另一子树的情况；M1 v3 不用它掩盖异常。
 
 工具目录只验证可冻结的最小结构：definition 是对象、`type=function`、function 是对象、name 为非空白字符串、parameters 是对象。`catalog_input_valid` 记录该来源结构是否满足最小条件；它不等于完整 JSON Schema 校验，也不证明生产环境真实提供了该工具。
 
@@ -313,7 +315,7 @@ artifacts/r01/<content_addressed_run_id>/
 
 `source_manifest.json` 和 `artifact_manifest.json` 都保存 `source_schema`，内容寻址 run ID 也绑定该字段，防止同一原始字节被不同语义契约误用为同一个 run。
 
-本次发生输出字段或语义变化的契约统一为 v2：NormalizedCapture、EventOccurrence、ActionBatch、ToolPairingRecord、ToolCatalog、CaptureQuality 和 AttritionReport。来源账本、RequestBoundary 与 ArtifactManifest 的字段未改变，继续使用各自 v1 schema。稳定 ID 的身份字段和公式也未改变，因此 ID namespace 继续使用 v1；schema 版本和身份算法版本不得混为一谈。
+NormalizedCapture、EventOccurrence、ActionBatch、ToolCatalog、CaptureQuality 和 AttritionReport 保持 v2；严格 matched 语义发生变化的 ToolPairingRecord 升为 v3，compiler contract 升为 `trajectory-compiler-m1ab-v3`。来源账本、RequestBoundary 与 ArtifactManifest 的字段未改变，继续使用各自 v1 schema。稳定 ID 的身份字段和公式也未改变，因此 ID namespace 继续使用 v1；schema 版本和身份算法版本不得混为一谈。
 
 `artifact_manifest.json` 的 `files` 只列出十个确定性业务文件：`source_manifest.json`、八个 `private/*.jsonl` 和 `reports/attrition_report.json`。它不列出自身，以避免自引用摘要；也不列出含时间和运行环境的 `run_receipt.json`，避免非确定信息改变业务清单。`run_receipt.json` 反向保存 `artifact_manifest.json` 的 SHA-256，并记录 Git commit/tree/dirty 状态；正式运行必须在结束时确认 Git 来源没有变化。独立 validator 仍会检查这两个文件以及完整目录 inventory；“不进入 files”不表示不校验。
 
@@ -329,7 +331,7 @@ artifacts/r01/<content_addressed_run_id>/
 uv run python scripts/validate_m1_run.py <content_addressed_run_dir>
 ```
 
-validator 独立读取已发布文件，不调用 compiler 重建期望结果。它从事件、边界和目录本体重算 boundary ownership、event 顺序与 scope、ActionBatch 成员、pairing occurrence/status/matched 语义、tool catalog 最小结构与状态、全部 quality 轴/reason code 以及公共聚合计数；同时校验目录 inventory、manifest digest/size/record count、稳定 ID、typed payload、可见指纹、递归隐私和 `run_receipt` 绑定。自报 quality/report 即使同步篡改也不能覆盖结构事实。该命令对所有同契约 run 使用同一逻辑，不包含 R01 分支或常量。
+validator 独立读取已发布文件，不调用 compiler 重建期望结果。它从事件、边界和目录本体重算 boundary ownership、event 顺序与 scope、ActionBatch 成员、严格 pairing occurrence/status/matched 语义、tool catalog 最小结构与状态、全部 quality 轴/reason code 以及公共聚合计数；同时校验 dataset slug、typed text 审计、arguments pointer/event 绑定、目录 inventory、manifest digest/size/record count、稳定 ID、可见指纹、递归隐私和 `run_receipt` 绑定。自报 payload 元数据、quality 或 report 即使同步篡改也不能覆盖这些可重算事实。该命令对所有同契约 run 使用同一逻辑，不包含 R01 分支或常量。
 
 validator 的信任边界只到已发布来源账本和派生产物。对于已解析但无法仅由派生产物重现的 adapter 结构错误，只允许核对带来源证明的 `processing_error`，不能把它表述为 validator 独立恢复了原始语义。
 
@@ -386,6 +388,13 @@ compiler QUARANTINED             = 0
 ## 8. 后续阶段边界
 
 ### 8.1 M1C：Request/Capture Graph
+
+M1C 启动前必须先冻结以下硬门：
+
+- `candidate_group_id` 只允许标记为 `BLOCKING_HINT_ONLY`，不能直接成为 lineage 证据；
+- Grade-A 显式关系不得受候选组边界限制；
+- M1C validator 必须独立重算候选组公式；
+- `raw_request_hash` 只有满足届时冻结的格式契约才可作为证据，否则一律为 `UNKNOWN`。
 
 高可信 Grade A 关系来自共享 source request、显式 request successor、相同 raw request hash 或完整重复 capture。
 

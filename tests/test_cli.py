@@ -206,7 +206,7 @@ def test_run_receipt_verifies_git_snapshot_at_completion_without_paths(
             "--input",
             str(source),
             "--dataset-id",
-            f"cli-provenance-{head_changed!s}-v1",
+            f"cli-provenance-{str(head_changed).lower()}-v1",
             "--source-schema",
             RESTORED_LONG_CAPTURE_SCHEMA,
             "--expected-sha256",

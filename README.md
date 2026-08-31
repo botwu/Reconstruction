@@ -12,7 +12,7 @@ TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并
 4. [R01 回流处理实施规格](docs/r01-processing-spec.md)：当前模块的输入、契约、输出与停止线；
 5. [参考仓库处理逻辑](docs/reference-repositories.md)：已有项目的真实处理链、采用方式和禁止照搬项；
 6. [M1 实现来源与迁移记录](docs/implementation-sources.md)：旧轨迹审核代码的逐文件来源、采用项和剥离项。
-7. [R01 M1 v2 全量验收报告](docs/r01-m1-v2-validation.md)：当前正式验收结论与 R01 observed episode distribution；
+7. [R01 M1 v2 历史验收报告（结论已撤销）](docs/r01-m1-v2-validation.md)：保留全量运行事实，不作为当前完成证据；
 8. [R01 M1 v1 历史验收报告（结论已撤销）](docs/r01-m1-validation.md)：保留正常路径历史事实，不作为当前完成证据。
 
 ## 核心链路
@@ -37,7 +37,7 @@ TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并
 
 ## 当前阶段
 
-M1A/M1B v2 已在提交 `9e0c6a5` 上通过两次 R01 全量编译、独立验证、确定性比较和对抗回归。输入 `source_schema` 仍是 `traceforge.restored-long-capture.v1`，v2 指输出契约与 compiler contract。
+M1A/M1B v2 的正式通过结论已经撤销。三项 P1 已在 v3 候选代码中修复，但完成新的双全量运行、独立验证和轻量留证前仍不得宣称正式通过。输入 `source_schema` 仍是 `traceforge.restored-long-capture.v1`。
 
 当前实现边界：
 
