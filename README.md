@@ -12,6 +12,7 @@ TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并
 4. [总体实施计划](docs/overall-plan.md)：架构、模块、数据契约、阶段和验收；
 5. [R01 回流处理实施规格](docs/r01-processing-spec.md)：当前模块的输入、契约、输出与停止线；
 6. [R01 M1 v3 验收报告](docs/r01-m1-v3-validation.md)：当前 M1A/M1B 正式验收事实来源；
+   [M1C 处理规格](docs/m1c-processing-spec.md) 与 [R01 M1C 全量验收报告](docs/r01-m1c-validation.md)：M1C 契约与正式验收事实来源；
 7. [参考仓库处理逻辑](docs/reference-repositories.md)：已有项目的真实处理链、采用方式和禁止照搬项；
 8. [M1 实现来源与迁移记录](docs/implementation-sources.md)：旧轨迹审核代码的逐文件来源、采用项和剥离项；
 9. [R01 M1 v2 历史验收报告（结论已撤销）](docs/r01-m1-v2-validation.md)：保留全量运行事实，不作为当前完成证据；
@@ -39,7 +40,9 @@ TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并
 
 ## 当前阶段
 
-M1A/M1B v3 已正式通过。三项 P1 及脱敏 Data URL 终态的同步重签变体已经闭合；冻结 R01 已在干净代码冻结点完成两次独立全量编译、两次 validator、确定性对比和轻量留证。输入 `source_schema` 仍是 `traceforge.restored-long-capture.v1`。当前仍停止在 M1B，M1C 尚未启动。
+M1A/M1B v3 已正式通过。三项 P1 及脱敏 Data URL 终态的同步重签变体已经闭合；冻结 R01 已在干净代码冻结点完成两次独立全量编译、两次 validator、确定性对比和轻量留证。输入 `source_schema` 仍是 `traceforge.restored-long-capture.v1`。
+
+M1C 已正式通过（[R01 M1C 全量验收报告](docs/r01-m1c-validation.md)）：在冻结 M1B run 之上两次独立建图、两次独立 validator、确定性对比与门②/森林拓扑独立复算均通过；本次只实现 4 类 Grade-A 关系，Grade-B `NORMALIZED_VISIBLE_PREFIX_OF` 按规格缓做。当前正式停点在 M1C；M1D 规格处于评审稿，其实现尚未验收。
 
 当前实现边界：
 
@@ -49,9 +52,17 @@ R01 JSONL
 → NormalizedCapture / RequestBoundary
 → Immutable Visible EventLog
 → ActionBatch / ToolPairing
+→ RequestLineageForest / CaptureRelationGraph（M1C，只读派生于已发布 M1B run）
 ```
 
-当前实现仍停止在 M1B；尚未实现跨 capture 建图、QueryTurn、TaskEpisode、任务画像、World、认证、难度或 Harbor 接入。进入 M2 前必须单独冻结并审核最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`。
+已验收实现停止在 M1C；尚未验收 QueryTurn，也未实现 TaskEpisode、任务画像、World、认证、难度或 Harbor 接入。进入 M2 前必须单独冻结并审核最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`。
+
+在一个已发布 M1B run 之上构建并验收 M1C 关系图：
+
+```bash
+uv run traceforge lineage build --m1b-run <m1b_run_dir> --output artifacts/r01/lineage
+uv run python scripts/validate_m1c_run.py <lineage_run_dir> <m1b_run_dir>
+```
 
 ## 运行当前编译器
 

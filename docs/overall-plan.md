@@ -118,7 +118,7 @@ DomainKit + WorldTemplate ────────┤
 
 ## 4. 轨迹结构化设计
 
-当前精确算法、契约、CLI 和全量验收只在 [`r01-processing-spec.md`](r01-processing-spec.md) 定义。本阶段依次为 M1A Source Adapter、M1B Structural Compiler、M1C Request/Capture Graph 和 M1D QueryTurn；M1A、M1B v3 已通过，当前代码停止在 M1B，M1C 实现门尚未开放。
+当前精确算法、契约、CLI 和全量验收只在 [`r01-processing-spec.md`](r01-processing-spec.md) 定义。本阶段依次为 M1A Source Adapter、M1B Structural Compiler、M1C Request/Capture Graph 和 M1D QueryTurn；M1A、M1B v3 与 M1C 已通过（M1C 契约见 [`m1c-processing-spec.md`](m1c-processing-spec.md)，验收见 [`r01-m1c-validation.md`](r01-m1c-validation.md)），已验收代码停止在 M1C，M1D 规格处于评审稿。
 
 M1A 必须将物理格式与语义 schema 分开：`jsonl` 只负责字节账本，`traceforge.restored-long-capture.v1` 是当前唯一显式来源契约。它通过单一 adapter 产生 typed envelope，不做 schema 猜测、fallback、注册表或配置 DSL。未来只有在第二种真实输入出现后才新增 adapter。
 
@@ -152,7 +152,7 @@ CaptureRelationGraph      → Grade A 重复/共享关系
                          + Grade B 可见前缀投影
 ```
 
-不得直接选最长 capture 后丢弃其他记录。Grade B 不能用于因果继承或主分布硬去重。无法判定关系时保留 `UNKNOWN_LINEAGE`。
+不得直接选最长 capture 后丢弃其他记录。Grade B 不能用于因果继承或主分布硬去重。边只承载已成立的正向关系，不存在"无法判定"的边；`raw_request_hash` 不满足格式契约时以逐 capture 的 `raw_request_hash_status=UNKNOWN` 表达缺席，不产生占位关系值（见 [`m1c-processing-spec.md`](m1c-processing-spec.md) §5）。
 
 ### 4.3 EventLog
 
@@ -888,7 +888,7 @@ M1 按以下门依次实施：
 - M1C：`RequestLineageForest` 与 `CaptureRelationGraph`；
 - M1D：`UserBlock`、`QueryTurn` 与 `ThreadTurnGraph`。
 
-M1A、M1B v3 已正式通过，精确契约和验收见 [`r01-processing-spec.md`](r01-processing-spec.md) 与 [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md)。当前必须停止在 M1B；M1C 的输入、输出、关系等级和独立验收规格未经审核前，不能实现 M1C 或 M1D。
+M1A、M1B v3 已正式通过，精确契约和验收见 [`r01-processing-spec.md`](r01-processing-spec.md) 与 [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md)。M1C 已正式通过，契约与验收见 [`m1c-processing-spec.md`](m1c-processing-spec.md) 与 [`r01-m1c-validation.md`](r01-m1c-validation.md)；本次只实现 Grade-A 关系，Grade-B 可见前缀投影缓做。M1D 在其规格评审通过并单独验收前，不得宣称完成。
 
 M1 总体验收：
 
