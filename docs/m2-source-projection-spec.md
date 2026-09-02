@@ -1,12 +1,14 @@
-# M2 前置：来源投影处理规格（草案 v0.2，评审修订稿）
+# M2 前置：来源投影处理规格（v0.3，冻结）
 
-版本：v0.2（吸收 [`m2-source-projection-review-20260903.md`](m2-source-projection-review-20260903.md) P1–P8 / D6–D9；**未冻结、未实现**）
+版本：v0.3（**冻结**；实现依据）
 
-日期：2026-09-02（v0.1）；2026-09-03（v0.2）
+日期：2026-09-02（v0.1 草案）；2026-09-03（v0.2 吸收 [`m2-source-projection-review-20260903.md`](m2-source-projection-review-20260903.md) P1–P8 / D6–D9；v0.3 依 §8 探针在 v4 run 上的结果冻结白名单与验收向量）
 
-状态：**规格评审中，待 §8 探针在 v4 run 上复跑后冻结为 v0.3**。本文兑现 [`r01-processing-spec.md`](r01-processing-spec.md) §8.3 的 M2 前置硬门（v0.2 起该硬门措辞同步修订：`UserTextProjection` 必做；`SourceAnnotationProjection`/`SourceResolver` 在 M2 首次消费 `domain_meta` 前必做）。只定义 I/O 与确定性算法，冻结前不写代码，不在 M1B/M1C/M1D 预埋任何结构（[`../AGENTS.md`](../AGENTS.md) §1 YAGNI）。
+状态：**已冻结**，进入测试先行实现。本文兑现 [`r01-processing-spec.md`](r01-processing-spec.md) §8.3 的 M2 前置硬门（`UserTextProjection` 必做；`SourceAnnotationProjection`/`SourceResolver` 在 M2 首次消费 `domain_meta` 前必做）。只定义 I/O 与确定性算法，不在 M1B/M1C/M1D 预埋任何结构（[`../AGENTS.md`](../AGENTS.md) §1 YAGNI）。
 
 v0.2 相对 v0.1 的变化：删除无生产者的 `QUARANTINED`，新增透传字段 `content_form` 与类别 `NO_LEADING_TEXT`（§2.2/§2.3）；冻结开头标签文法（§2.3）；`UNKNOWN_TAGGED` 恒不输出标签名（§2.3/§3）；M1D 回指从"可空"改为"提供即必须可解析"（§2.1/§3）；报告增加第三个分母（§2.4）；白名单准入规则（§2.3）；validator 改为与 M1D 同构的两层信任边界（§3）；包名、契约版本、run ID 绑定（§4）；只读探针固定程序（§8）。
+
+v0.3 相对 v0.2 的变化：§0 换为 v4 run `6be45e01…` 的完整探针结果；白名单 A/B/C 成员冻结，删除无成员的白名单 D 与无生产者的 `ATTACHMENT_MARKER`；新增 `EMPTY_TEXT`（去空白后为空的正文，R01 有 4 条生产者，且使分母定义精确）；准入规则 ② 明确"单一通用英文单词须能引用注入协议出处"，`skill`（41 次）暂不准入并登记为首个扩展候选（§7 D10）；§6 写入验收向量。
 
 阅读前置：[`../AGENTS.md`](../AGENTS.md)、[`background-and-goals.md`](background-and-goals.md) §3/§5、[`overall-plan.md`](overall-plan.md) §4.6/§5/§6、[`r01-processing-spec.md`](r01-processing-spec.md) §8.2/§8.3、[`m1d-processing-spec.md`](m1d-processing-spec.md) §0/§3。
 
@@ -14,20 +16,39 @@ v0.2 相对 v0.1 的变化：删除无生产者的 `QUARANTINED`，新增透传�
 
 ## 0. 实测地基（人工 sanity 观测，不写进代码）
 
-> v0.2 注：下表数字来自 M1B **v3** run `519a86d3…e06d1d`。M1B v4 对 USER 事件的 `event_scope`、`content` 字节中性（[`r01-m1d-validation.md`](r01-m1d-validation.md) §4 已证 M1D 计数在 v3/v4 上完全一致），预期数字不变，但**冻结前必须按 §8 在 v4 run `6be45e01…` 上复跑并补全完整标签频表**（v0.1 只列了部分标签）。表中"`content.value` 非字符串 2 条"在 v0.2 不再视为异常：它们是合法的隐私 envelope（§2.3 `content_form`）。
-
-对冻结 M1B run `519a86d3…e06d1d` 的已发布 `private/event_occurrences.jsonl` 做纯结构探针（只看 `event_kind`、`event_scope`、`payload.content.kind` 与正文**开头标签名**，不读正文语义）：
+2026-09-03 按 §8 程序对已验收 M1B **v4** run `6be45e01…` 的 `private/event_occurrences.jsonl` 做只读结构探针（只看 `event_kind`、`event_scope`、`content.kind`、`value` 形态与正文**开头标签名**，不读正文语义）。v0.1 在 v3 run 上的数字与之逐项一致（v4 对 USER 事件字节中性）。
 
 | 观察 | 数值 | 含义 |
 | --- | ---: | --- |
-| USER 事件总数 | 14,407 | 全部 `content.kind=TEXT` |
-| 其中落在 `PRE_FIRST_OBSERVED_TERMINAL` 前缀 | 13,225（91.8%） | M1D 规格 §0 已确认：前缀不可定位到 request boundary，不成回合 |
-| 开头无标签的普通文本 | 11,696 | 真实用户 query 的候选主体 |
-| 开头为 `<environment_context>` | 2,222 | Harness 注入的环境上下文，伪装成 user 消息 |
-| 开头为 `<in-app-browser-context>` / `<system-reminder>` / `<skill>` / `<recommended_plugins>` / `<codex_delegation>` 等 | 约 400 | Harness 包装、系统注入、插件与委派上下文 |
-| 开头为 `<turn_aborted>` / `<user_interjection>` / `<subagent_notification>` | 约 95 | 中断与控制信号 |
-| `content.value` 非字符串 | 2 | 合法隐私 envelope（Data URL 摘要或分段文本），v0.2 起按 `content_form` 透传（§2.3），不是异常 |
-| **至少含一条普通用户文本的 capture** | **1,680 / 1,683** | 意图分母可以覆盖几乎全部 capture，但其中约 80% 的文本只存在于不可定位前缀 |
+| USER 事件总数 | 14,407 | 全部 `content.kind=TEXT`；`value` 为字符串 14,405、为隐私 envelope 2 |
+| 其中落在 `PRE_FIRST_OBSERVED_TERMINAL` 前缀 | 13,225（91.8%） | M1D 规格 §0 已确认：前缀不可定位到 request boundary，不成回合；`OBSERVED` 事件的 `request_boundary_id` 无一为空、前缀无一非空 |
+| 去空白后开头不是开标签的普通文本 | 11,694 | 真实用户 query 的候选主体（含 2 条分段 envelope，其首段为普通文本） |
+| 去空白后为空 | 4 | 全在前缀；v0.3 单列为 `EMPTY_TEXT` |
+| `<` 开头但不满足开标签文法（`</x>`、`<3` 等）、前置 BOM/零宽字符 | 0 | 文法边界在 R01 上无争议样本 |
+| 开头为开标签 | 2,709 | 出现 ≥ 2 次的标签名 15 个（下表），只出现 1 次的标签名 7 个（名字不落盘） |
+| **至少含一条普通用户文本的 capture** | **1,680 / 1,683** | 其中 1,350 个的普通文本全部位于前缀；仅 330 个在观测窗口内有普通文本（≤ M1D 有 `UserBlock` 的 342 个 capture） |
+
+开标签名频表（≥ 2 次；形态 bare = `<tag>`，attrs = `<tag attr=…>`）：
+
+| 标签名 | 总数 | 前缀 | 观测 | 形态 | v0.3 处置 |
+| --- | ---: | ---: | ---: | --- | --- |
+| `environment_context` | 2,222 | 1,974 | 248 | bare | A |
+| `in-app-browser-context` | 203 | 192 | 11 | attrs | A |
+| `turn_aborted` | 91 | 78 | 13 | bare | C |
+| `system-reminder` | 66 | 56 | 10 | bare 63 / attrs 3 | A |
+| `skill` | 41 | 40 | 1 | bare | 不准入（规则 ②，D10） |
+| `recommended_plugins` | 35 | 35 | 0 | bare | B |
+| `codex_delegation` | 23 | 22 | 1 | bare | B |
+| `codex_internal_context` | 4 | 2 | 2 | attrs | A |
+| `task` | 3 | 3 | 0 | bare | 不准入（规则 ②） |
+| `subagent_notification` | 3 | 1 | 2 | bare | C |
+| `image` | 3 | 3 | 0 | attrs | 不准入（规则 ②） |
+| `user_interjection` | 2 | 0 | 2 | bare | C |
+| `system-conventions` | 2 | 2 | 0 | bare | A |
+| `available-deferred-tools` | 2 | 2 | 0 | bare | A |
+| `local-command-caveat` | 2 | 2 | 0 | bare | A |
+
+v0.1 暂列白名单 A 的 `session_context_files` 只出现 1 次，依规则 ① 不准入。两条隐私 envelope 均为 `text-with-data-url-segments.v1`（3 段：文本 / `text/html` Data URL / 文本），首段为普通文本，故归 `PLAIN_USER_TEXT`；R01 上 `DATA_URL_SUMMARY` 与 `CONTENT_BLOCKS` 形态为 0，但二者是 M1B 契约合法形态，契约必须覆盖。
 
 两个结论决定本规格的定位：
 
@@ -72,7 +93,7 @@ request_boundary_id:        # OBSERVED 时非空且与 M1B 一致；PREFIX_UNLOC
 user_block_id:              # 未提供 M1D run 恒空；提供时 OBSERVED 必非空、PREFIX_UNLOCALIZED 必空
 content_form:               # TEXT_STRING | TEXT_WITH_DATA_URL_SEGMENTS | DATA_URL_SUMMARY | CONTENT_BLOCKS
 text_class:                 # 见 2.3 封闭枚举
-leading_tag:                # 仅 HARNESS_CONTEXT / HARNESS_CAPABILITY / CONTROL_SIGNAL / ATTACHMENT_MARKER 时为白名单内标签名字面量；其余（含 UNKNOWN_TAGGED）恒空
+leading_tag:                # 仅 HARNESS_CONTEXT / HARNESS_CAPABILITY / CONTROL_SIGNAL 时为白名单内标签名字面量；其余（含 UNKNOWN_TAGGED）恒空
 utf8_byte_length:           # TEXT 时透传 TextContent.utf8_byte_length（envelope 时为脱敏前原文长度）；CONTENT_BLOCKS 时为 null
 ```
 
@@ -97,24 +118,25 @@ LEADING_TAG = ^<([A-Za-z_][A-Za-z0-9_.:-]*)(?=[\s>/])      # 作用于去空白�
 
 标签名大小写敏感，与白名单精确匹配；允许属性与自闭合（`<task id="x">`、`<x/>`）；不解析 XML、不看闭合、不读标签内容。去空白后以 `<` 开头但不匹配 `LEADING_TAG` 者（`</x>`、`<3`、`<<`、`<-`、`< x`）**不是**开标签。
 
-**`text_class`**：
+**`text_class`**（v0.3 冻结）：
 
 ```text
-PLAIN_USER_TEXT       有开头文本，且去空白后开头不是一个匹配 LEADING_TAG 的开标签（含全空白正文）
-HARNESS_CONTEXT       开标签名 ∈ 冻结白名单 A（暂定：environment_context, in-app-browser-context,
-                      system-reminder, system-conventions, codex_internal_context,
-                      session_context_files, local-command-caveat, available-deferred-tools）
-HARNESS_CAPABILITY    开标签名 ∈ 冻结白名单 B（暂定：skill, recommended_plugins, codex_delegation）
-CONTROL_SIGNAL        开标签名 ∈ 冻结白名单 C（暂定：turn_aborted, user_interjection, subagent_notification）
-ATTACHMENT_MARKER     开标签名 ∈ 冻结白名单 D（暂定：空，见准入规则）
-UNKNOWN_TAGGED        匹配 LEADING_TAG 但标签名不在 A–D 任一白名单；leading_tag 恒空
+PLAIN_USER_TEXT       有开头文本，去空白后非空，且开头不是一个匹配 LEADING_TAG 的开标签
+EMPTY_TEXT            有开头文本，但去空白后为空
+HARNESS_CONTEXT       开标签名 ∈ 白名单 A：environment_context, in-app-browser-context, system-reminder,
+                      system-conventions, codex_internal_context, local-command-caveat,
+                      available-deferred-tools
+HARNESS_CAPABILITY    开标签名 ∈ 白名单 B：recommended_plugins, codex_delegation
+CONTROL_SIGNAL        开标签名 ∈ 白名单 C：turn_aborted, user_interjection, subagent_notification
+UNKNOWN_TAGGED        匹配 LEADING_TAG 但标签名不在 A–C 任一白名单；leading_tag 恒空
 NO_LEADING_TEXT       无开头文本：DATA_URL_SUMMARY、首段为 Data URL 摘要的分段 envelope、CONTENT_BLOCKS
 ```
 
 规则：
 
 - 白名单标签名写进契约常量，**新标签只能通过修订本规格进入白名单**，代码不得自动学习；
-- **白名单准入规则**（三条同时满足）：① 在 §8 探针（v4 run）中出现 ≥ 2 次；② 标签名是 Harness 专有词汇（下划线/连字符复合词或产品专名），通用英文单词名词（`task`、`image`、`file`、`irc`）不准入，因为它们可能是用户自写标记；③ 语义可由标签名自证。v0.1 列入 B 的 `task` 与 D 的 `image` 依 ② 移出暂定名单，最终成员表在 v0.3 依探针结果冻结；
+- **白名单准入规则**（三条同时满足）：① 在 §8 探针（v4 run）中出现 ≥ 2 次；② 标签名是 Harness 专有词汇——下划线/连字符复合词或产品专名直接满足；单一通用英文单词（`skill`、`task`、`image`、`file`、`irc`）不满足，除非本规格能引用其所属 Harness 注入协议的出处且探针中形态一致，因为它们可能是用户自写标记；③ 语义可由标签名自证。据此 v0.3：`session_context_files`（1 次）依 ① 不准入；`skill`（41 次，全 bare）、`task`、`image` 依 ② 不准入，均落 `UNKNOWN_TAGGED`；无成员的白名单 D 与 `ATTACHMENT_MARKER` 删除（无生产者）。`skill` 登记为首个扩展候选（§7 D10）；
+- `EMPTY_TEXT` 单列而不并入 `PLAIN_USER_TEXT`，是为了让门④三个分母精确表示"有非空普通文本"；`NO_LEADING_TEXT` 在 R01 上为 0，但由输入契约合法形态定义，保留；
 - `PLAIN_USER_TEXT` 不再细分（D1）。它仍可能含有 Harness 拼接文本，这是 M2 语义层的问题，本层不猜；
 - `UNKNOWN_TAGGED` 是 fail-closed 的默认落点，其计数进入公共报告；但**标签名不得出现在任何产物或报告中**（可能是用户文本），白名单扩展评审只能经 §8 的 Control 侧离线探针；
 - `<user_interjection>` 归 `CONTROL_SIGNAL` 而非 `PLAIN_USER_TEXT`：它是 Harness 对用户插话的包装，实际插话正文是否可用留 M2（D2）；
@@ -130,7 +152,7 @@ NO_LEADING_TEXT       无开头文本：DATA_URL_SUMMARY、首段为 Data URL �
 
 ### 2.5 M2 消费约定（写入本规格，作为 M2 规格的前置约束）
 
-- M2 语义提取只允许把 `text_class=PLAIN_USER_TEXT` 的事件作为**任务意图证据**（空/全空白正文也在此类，`utf8_byte_length` 已透传，由 M2 过滤）；`HARNESS_*` 事件可作为**环境暴露证据**（system/harness fingerprint、工具可用性）但不得进入意图；`CONTROL_SIGNAL` 只作为中断/取消线索；`UNKNOWN_TAGGED` 与 `NO_LEADING_TEXT` 不作任何证据，只计数；
+- M2 语义提取只允许把 `text_class=PLAIN_USER_TEXT` 的事件作为**任务意图证据**；`HARNESS_*` 事件可作为**环境暴露证据**（system/harness fingerprint、工具可用性）但不得进入意图；`CONTROL_SIGNAL` 只作为中断/取消线索；`EMPTY_TEXT`、`UNKNOWN_TAGGED` 与 `NO_LEADING_TEXT` 不作任何证据，只计数；
 - 由 `PREFIX_UNLOCALIZED` 证据得出的 Episode 或意图必须携带 `intent_locality=PREFIX_ONLY`，进入 `ObservedTaskDistribution` 时单列，不与有根 Episode 混算；
 - M2 不得因为前缀证据无法绑定 boundary 而回退到"按绝对路径重解析原始 JSONL 找上下文"。
 
@@ -145,7 +167,7 @@ NO_LEADING_TEXT       无开头文本：DATA_URL_SUMMARY、首段为 Data URL �
   - **USER 事件双向 bijection**：M1B 每个 USER 事件恰有一条注解，无遗漏无幻影；主键 `event_occurrence_id` 唯一；
   - `locality ⇔ event_scope` 一一映射；`request_boundary_id` 与 M1B 事件逐行一致；`PREFIX_UNLOCALIZED ⇒ request_boundary_id = null`；
   - `content_form` 与 typed reader 读出的 `ContentPayload` 类型及 envelope kind 一致；`utf8_byte_length` 与 `TextContent.utf8_byte_length` 一致、`CONTENT_BLOCKS ⇒ null`；
-  - `leading_tag ≠ null ⇔ text_class ∈ {HARNESS_CONTEXT, HARNESS_CAPABILITY, CONTROL_SIGNAL, ATTACHMENT_MARKER}`，且 `leading_tag` 恒在对应白名单内；`text_class = NO_LEADING_TEXT ⇔ content_form ∈ {DATA_URL_SUMMARY, CONTENT_BLOCKS} ∨ 分段 envelope 首段为 Data URL 摘要`；
+  - `leading_tag ≠ null ⇔ text_class ∈ {HARNESS_CONTEXT, HARNESS_CAPABILITY, CONTROL_SIGNAL}`，且 `leading_tag` 恒在对应类别的白名单内；`text_class = NO_LEADING_TEXT ⇔ content_form ∈ {DATA_URL_SUMMARY, CONTENT_BLOCKS} ∨ 分段 envelope 首段为 Data URL 摘要`（分段 envelope 首段若为文本段，其正文可能全为空白，此时归 `EMPTY_TEXT`）；
   - M1D 绑定时：`OBSERVED ⇒ user_block_id ≠ null` 且该 `UserBlock.event_ids` 含此事件、`UserBlock.capture_occurrence_id` 一致；`PREFIX_UNLOCALIZED ⇒ user_block_id = null`；未绑定时全表 `user_block_id = null`；
   - 报告的 `(locality, text_class)`、`content_form` 计数与三个分母由已发布注解表重算一致；M1D 绑定时 `captures_with_observed_plain_user_text ≤ |{UserBlock.capture_occurrence_id}|`；
   - `private/` 值域闭合：稳定 ID、枚举、白名单标签名字面量、整数、null；沿用 M1C 两层隐私与 `_scan_control_pathlike`。
@@ -187,12 +209,24 @@ run ID = `stable_id(contract_version, m1b_run_id, m1b_artifact_manifest_sha256, 
 
 ## 6. 完成条件
 
-- USER 事件全覆盖 bijection；`locality`/`content_form`/`text_class`/`leading_tag` 经 §3 两层校验；`UNKNOWN_TAGGED` 与 `NO_LEADING_TEXT` 计数进入公共报告；
+- USER 事件全覆盖 bijection；`locality`/`content_form`/`text_class`/`leading_tag` 经 §3 两层校验；`EMPTY_TEXT`、`UNKNOWN_TAGGED` 与 `NO_LEADING_TEXT` 计数进入公共报告；
 - 三个分母可由已发布注解表独立重算；M1D 绑定时跨模块不变量成立；
 - 纯结构、零 LLM、逐字节确定；两次独立构建一致；两层隐私通过；
-- 单元测试含：普通文本、每类白名单标签（含带属性与自闭合形态）、未知标签（断言 `leading_tag` 为空）、`</x>`/`<3`/`<<` 开头、前置空白与 BOM、空正文、Data URL 摘要 envelope、分段 envelope 首段为文本/为 Data URL、`CONTENT_BLOCKS`、M1D 回指有/无、M1D 绑定但事件无归属（构建失败）、错误 oracle fail-closed、篡改重签与置空篡改检测后不变量层仍 fail-closed；
-- 验收向量：§8 探针在 v4 run 上得到的 `(locality, text_class)`、`content_form` 计数与三个分母，写入本节后作为 `docs/r01-user-text-projection-validation.md` 的对照；
-- 无 R01 硬编码常量（§0/§8 数字不入代码）、无语义占位、无 M2 预埋。
+- 单元测试含：普通文本、每类白名单标签（含带属性与自闭合形态）、未知标签（断言 `leading_tag` 为空）、`</x>`/`<3`/`<<` 开头、前置空白与 BOM、空正文、Data URL 摘要 envelope、分段 envelope 首段为文本/为 Data URL/为全空白文本、`CONTENT_BLOCKS`、M1D 回指有/无、M1D 绑定但事件无归属（构建失败）、错误 oracle fail-closed、篡改重签与置空篡改检测后不变量层仍 fail-closed；
+- 无 R01 硬编码常量（§0/§6 数字不入代码）、无语义占位、无 M2 预埋。
+
+**验收向量**（§8 探针按 v0.3 规则在 v4 run `6be45e01…` 上的参考计算；`docs/r01-user-text-projection-validation.md` 逐项对照）：
+
+| 计数 | 值 |
+| --- | ---: |
+| 注解行数 = USER 事件数 | 14,407 |
+| `content_form`：`TEXT_STRING` / `TEXT_WITH_DATA_URL_SEGMENTS` / `DATA_URL_SUMMARY` / `CONTENT_BLOCKS` | 14,405 / 2 / 0 / 0 |
+| `OBSERVED`：`PLAIN_USER_TEXT` / `HARNESS_CONTEXT` / `HARNESS_CAPABILITY` / `CONTROL_SIGNAL` / `UNKNOWN_TAGGED` / `EMPTY_TEXT` / `NO_LEADING_TEXT` | 892 / 271 / 1 / 17 / 1 / 0 / 0（合计 1,182） |
+| `PREFIX_UNLOCALIZED`：同序 | 10,802 / 2,230 / 57 / 79 / 53 / 4 / 0（合计 13,225） |
+| 全体：同序 | 11,694 / 2,501 / 58 / 96 / 54 / 4 / 0 |
+| 白名单标签计数 | `environment_context` 2,222；`in-app-browser-context` 203；`system-reminder` 66；`codex_internal_context` 4；`system-conventions` 2；`available-deferred-tools` 2；`local-command-caveat` 2；`recommended_plugins` 35；`codex_delegation` 23；`turn_aborted` 91；`subagent_notification` 3；`user_interjection` 2 |
+| `captures_with_plain_user_text` / `…_only_in_prefix` / `captures_with_observed_plain_user_text` | 1,680 / 1,350 / 330 |
+| 绑定 M1D run `84d826b3…` 时 | 全部 1,182 个 `OBSERVED` 事件回指非空；330 ≤ 342 |
 
 ---
 
@@ -204,7 +238,9 @@ run ID = `stable_id(contract_version, m1b_run_id, m1b_artifact_manifest_sha256, 
 | D2 | `<user_interjection>` 内的插话正文是否可作意图证据 | 本层归 `CONTROL_SIGNAL`；M2 规格再决定是否剥壳，剥壳规则须是结构性的 |
 | D3 | 是否实现 `SourceAnnotationProjection`/`SourceResolver` | 缓做（§5）；M2 v1 不消费 domain_meta；§8.3 硬门措辞同步修订 |
 | D4 | 是否把 M1D run 作为必填输入 | 否。可选；但提供即必须全部可解析（§2.1），不是"能填则填" |
-| D5 | 白名单 A–D 的初始成员 | 按 §2.3 准入三规则，在 §8 探针（v4 run）结果上于 v0.3 冻结；`task`、`image`、`irc` 依规则 ② 不准入 |
+| D5 | 白名单的初始成员 | v0.3 依 §0 探针与 §2.3 准入三规则冻结：A 7 个、B 2 个、C 3 个；`session_context_files` 依 ①、`skill`/`task`/`image` 依 ② 不准入；白名单 D 与 `ATTACHMENT_MARKER` 删除 |
+| D10（v0.3） | `skill`（41 次、全 bare、40 前缀 / 1 观测）是否准入 B | **暂不**。它是单一通用英文单词，本规格目前不能引用其注入协议出处；安全性质不受影响（`UNKNOWN_TAGGED` 本就不作意图证据），代价只是 M2 v1 少 41 条能力暴露证据。登记为首个白名单扩展候选：一旦在 Control 侧核实其注入格式出处，经规格修订准入 |
+| D11（v0.3） | 全空白正文归 `PLAIN_USER_TEXT` 还是单列 | 单列 `EMPTY_TEXT`（R01 有 4 条生产者），使三个分母精确表示"有非空普通文本" |
 | D6（v0.2） | `QUARANTINED` 的替代 | `content_form` 透传 + `NO_LEADING_TEXT`；reader 失败抛异常，不设枚举值 |
 | D7（v0.2） | validator 是否复刻分类函数以求"独立" | 否。共用 `classify_leading_text`；独立性来自 §3 正交不变量层（与 M1D D-g 同理） |
 | D8（v0.2） | 包名、契约版本、CLI | `source_projection/`、`user-text-projection-v1`、`source-projection build` |
@@ -226,4 +262,4 @@ run ID = `stable_id(contract_version, m1b_run_id, m1b_artifact_manifest_sha256, 
 4. 开标签名频表：`标签名 × (前缀计数, 观测计数) × 形态(bare/attrs/selfclose)`，只列出现 ≥ 2 次者的名字，出现 1 次的只报"不同标签名个数"（单例标签名可能是用户自造文本，不落盘）；
 5. 三个分母（§2.4 门④）。
 
-结果以表格形式更新 §0 并作为 §6 验收向量；探针脚本本身放在仓外临时目录，用后删除。本会话已按此程序编写探针但因执行审批渠道不可用未能运行，v0.3 冻结前必须补跑。
+结果以表格形式更新 §0 并作为 §6 验收向量；探针脚本本身放在仓外临时目录，用后删除。v0.3 已按此程序在 v4 run 上执行（2026-09-03），结果见 §0 与 §6；白名单扩展评审（如 D10）时重复执行。

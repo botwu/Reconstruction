@@ -1,6 +1,6 @@
 # M2 前置来源投影规格 v0.1 评审意见（2026-09-03）
 
-状态：只读评审，对象为 [`m2-source-projection-spec.md`](m2-source-projection-spec.md) v0.1。对照代码为 HEAD `6a7475e`（M1B v4 `8f6f65c`、M1D `1c588be`）的 `trajectory/contracts.py`、`event_payload.py`、`privacy.py`、`validation.py` 与 `query_turns/`；对照数据为已验收 M1B v4 run `6be45e01…` 与 M1D run `84d826b3…` 的已发布聚合计数。本文不写代码；采纳项已同步进规格 v0.2，未决项在 §4 列为冻结前置。
+状态：只读评审，对象为 [`m2-source-projection-spec.md`](m2-source-projection-spec.md) v0.1。对照代码为 HEAD `6a7475e`（M1B v4 `8f6f65c`、M1D `1c588be`）的 `trajectory/contracts.py`、`event_payload.py`、`privacy.py`、`validation.py` 与 `query_turns/`；对照数据为已验收 M1B v4 run `6be45e01…` 与 M1D run `84d826b3…` 的已发布聚合计数。本文不写代码；采纳项已同步进规格 v0.2，§4 冻结前置已于同日完成并冻结 v0.3。
 
 ## 1. 确认正确
 
@@ -35,13 +35,17 @@
 | D8（新） | 包与契约命名 | 包 `src/traceforge/source_projection/`（容纳 `UserTextProjection`，日后 `SourceAnnotationProjection` 可加入而不改名），契约版本 `user-text-projection-v1`，CLI `source-projection build --m1b-run … [--m1d-run …] --output …`，脚本 `scripts/validate_user_text_projection_run.py` |
 | D9（新） | 行级 ID | 不造新 ID：`user_text_annotations.jsonl` 以 `event_occurrence_id` 键控（bijection 使其天然唯一）；run ID = `stable_id(contract_version, m1b_run_id, m1b_manifest_sha256, m1d_run_id?, m1d_manifest_sha256?)` |
 
-## 4. 冻结前置（v0.2 → v0.3 冻结的必做项）
+## 4. 冻结前置（v0.2 → v0.3）——已完成（2026-09-03）
 
-1. 在 v4 run `6be45e01…` 上执行规格 §8 的只读结构探针，产出完整标签频表与 P1 所述 `content_form` 分布、`<` 后非标签的形态分布、前置 BOM/零宽字符计数，更新 §0；探针只输出标签名与整数，不输出正文。
-2. 依 P8 规则定白名单 A–D 成员，写入 §2.3；`UNKNOWN_TAGGED` 预期计数一并记录为验收向量。
-3. 用探针复算三个分母，作为验收向量写入 §6。
-4. 修订 `r01-processing-spec.md` §8.2/§8.3（P4）。
-5. 之后按 [`../AGENTS.md`](../AGENTS.md) 顺序：冻结规格 → 先写正常+失败测试 → 最小实现 → 独立 validator → 在 `6be45e01…`（+ `84d826b3…` 作可选输入）上双跑验收 → `docs/r01-user-text-projection-validation.md`。
+1. ✅ 在 v4 run `6be45e01…` 上执行规格 §8 只读结构探针（同日晚些时候执行审批恢复）。结果与 v0.1 的 v3 数字逐项一致；补全 15 个 ≥ 2 次标签名频表、7 个单例；`<` 后非标签形态、前置 BOM/零宽字符均为 0；两条 dict 值均为 `text-with-data-url-segments.v1`（首段普通文本），证实 P1 判断。写入规格 §0。
+2. ✅ 依 P8 规则定白名单：A 7 个、B 2 个、C 3 个。数据带来两处规则层面的收口，记录如下：
+   - `session_context_files` 仅 1 次 → 依 ① 不准入（v0.1 曾列入 A）。
+   - `skill` 41 次、全 bare（40 前缀 / 1 观测）：单一通用英文单词，依 ② 字面不准入；但它的频次与形态一致性是强结构证据。**决定**：规则 ② 明确为"单一通用英文单词须能引用注入协议出处且形态一致"，本规格目前不能引用 `<skill>` 的注入协议出处，故 v0.3 **暂不准入**并登记为首个扩展候选（规格 D10）。安全性质不依赖白名单（`UNKNOWN_TAGGED` 本就不作意图证据），代价只是 M2 v1 少 41 条能力暴露证据；不为迁就一个成员而事后放宽规则。
+   - 白名单 D 无成员 → 删除 D 与 `ATTACHMENT_MARKER`（无生产者）。
+   - 4 条去空白后为空的正文 → 新增 `EMPTY_TEXT`（规格 D11），使三个分母精确表示"有非空普通文本"。
+3. ✅ 三个分母 1,680 / 1,350 / 330 与完整 `(locality, text_class)` 矩阵写入规格 §6 作为验收向量；330 ≤ 342（M1D 有 `UserBlock` 的 capture 数）跨模块不变量成立。
+4. ✅ `r01-processing-spec.md` §8.2/§8.3 已修订（P4）。
+5. 规格已冻结为 v0.3。之后按 [`../AGENTS.md`](../AGENTS.md) 顺序：先写正常+失败测试 → 最小实现 → 独立 validator → 在 `6be45e01…`（+ `84d826b3…` 作可选输入）上双跑验收 → `docs/r01-user-text-projection-validation.md`。
 
 ## 5. 明确不做
 
