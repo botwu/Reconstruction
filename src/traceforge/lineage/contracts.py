@@ -57,8 +57,9 @@ class LineageRelation(StrEnum):
 
 
 class RelationGrade(StrEnum):
+    # 本迭代仅物化 Grade-A（4 类关系）。Grade-B（如 NORMALIZED_VISIBLE_PREFIX_OF）按授权门缓做，
+    # 不预留枚举占位；将来实现时再新增成员并扩展 `_RELATION_PROPERTIES`。
     A = "A"
-    B = "B"
 
 
 class RelationDirectionality(StrEnum):
