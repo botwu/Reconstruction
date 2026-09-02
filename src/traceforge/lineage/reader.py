@@ -12,8 +12,8 @@ validator 做门③分区一致性与报告聚合计数取用，**绝不传入 b
 
 注：M1B validator 只校验字段集合与 canonical，不逐值校验透传标量的 Python 类型。为把下游对不可
 哈希/错类型值的裸 `TypeError` 前移为 fail-closed 的 `LineageInputError`，本模块对入图所需标量
-（capture/boundary/event 的 ID、序数、指纹）另做类型守卫；契约里为 `Any` 的 `raw_request_hash` /
-`target_hash`（可为 null）不在此列，由下游 `classify_raw_request_hash` 与 `isinstance` 过滤兜底。
+（capture/boundary/event 的 ID、序数、指纹）另做类型守卫；契约里为 `Any` 的 `target_hash`
+（可为 null）只供 validator 断言不入 evidence，不做类型守卫、不进 builder。
 """
 
 from __future__ import annotations
@@ -44,7 +44,6 @@ class M1bRunView:
     m1b_artifact_manifest_sha256: str
     source_schema: str
     capture_ids: tuple[str, ...]
-    raw_request_hash_by_capture: dict[str, Any]
     # 每 capture 的 target_hash，仅供 validator 断言「无边以 target_hash 为 evidence」（§5.5）。
     target_hash_by_capture: dict[str, Any]
     # 每 capture 的 (boundary_ordinal, source_request_id)，按 ordinal 升序。
@@ -119,7 +118,6 @@ def load_m1b_run_view(m1b_run_dir: str | Path) -> M1bRunView:
         raise LineageInputError("输入 M1B run 目录名与已发布 run_id 不一致")
     m1b_artifact_manifest_sha256 = sha256_bytes(manifest_bytes)
 
-    raw_request_hash_by_capture: dict[str, Any] = {}
     target_hash_by_capture: dict[str, Any] = {}
     candidate_group_by_capture: dict[str, str] = {}
     thread_account_by_capture: dict[str, tuple[str, str]] = {}
@@ -128,8 +126,7 @@ def load_m1b_run_view(m1b_run_dir: str | Path) -> M1bRunView:
         capture_id = _require_str(
             record["capture_occurrence_id"], "capture_occurrence_id", captures_rel
         )
-        # raw_request_hash / target_hash 契约为 Any（可为 null），不强制类型，由下游兜底。
-        raw_request_hash_by_capture[capture_id] = record["raw_request_hash"]
+        # target_hash 契约为 Any（可为 null），不强制类型；只供 validator 排除，不进 builder。
         target_hash_by_capture[capture_id] = record["target_hash"]
         candidate_group_by_capture[capture_id] = _require_str(
             record["candidate_group_id"], "candidate_group_id", captures_rel
@@ -180,8 +177,7 @@ def load_m1b_run_view(m1b_run_dir: str | Path) -> M1bRunView:
         m1b_run_id=m1b_run_id,
         m1b_artifact_manifest_sha256=m1b_artifact_manifest_sha256,
         source_schema=source_schema,
-        capture_ids=tuple(sorted(raw_request_hash_by_capture)),
-        raw_request_hash_by_capture=raw_request_hash_by_capture,
+        capture_ids=tuple(sorted(candidate_group_by_capture)),
         target_hash_by_capture=target_hash_by_capture,
         boundaries_by_capture=boundaries_by_capture,
         fingerprint_chain_by_capture=fingerprint_chain_by_capture,

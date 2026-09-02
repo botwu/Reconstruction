@@ -53,7 +53,7 @@ def valid_run(
     capture_factory: Callable[..., dict[str, Any]],
     tmp_path: Path,
 ) -> tuple[Path, Path]:
-    """建一个含 SHARED + IDENTICAL + successor 边的合法 lineage run，返回 (lineage, m1b)。"""
+    """建一个含 SHARED + successor 边的合法 lineage run，返回 (lineage, m1b)。"""
 
     m1b_run = compile_dataset(
         [
@@ -133,14 +133,16 @@ def _group_capture(
     *,
     thread_id: str,
     account_id: str,
-    raw_request_hash: str = "b" * 64,
 ) -> dict[str, Any]:
-    """一个落在指定 (thread_id, account_id) 候选组、可控 raw_request_hash 的多回合 capture。"""
+    """一个落在指定 (thread_id, account_id) 候选组的多回合 capture。
+
+    正文带上 thread_id，使不同组的 capture 可见指纹链不同，测试只观察目标关系。
+    """
 
     messages: list[dict[str, Any]] = []
     for index in range(len(request_ids)):
-        messages.append({"role": "user", "content": f"用户回合 {index}"})
-        messages.append({"role": "assistant", "content": f"助手回合 {index}"})
+        messages.append({"role": "user", "content": f"{thread_id} 用户回合 {index}"})
+        messages.append({"role": "assistant", "content": f"{thread_id} 助手回合 {index}"})
     depths = [2 * (index + 1) for index in range(len(request_ids))]
     return capture_factory(
         messages=messages,
@@ -148,7 +150,6 @@ def _group_capture(
         request_ids=request_ids,
         thread_id=thread_id,
         account_id=account_id,
-        raw_request_hash=raw_request_hash,
     )
 
 
@@ -159,12 +160,16 @@ def cross_group_run(
     capture_factory: Callable[..., dict[str, Any]],
     tmp_path: Path,
 ) -> tuple[Path, Path]:
-    """两个分属不同候选组、共享同一合格 raw_request_hash 的 capture：IDENTICAL 边应跨组建立。"""
+    """两个分属不同候选组、却共享同一 source_request_id 的 capture：SHARED 边必须跨组建立。
+
+    这是门②的唯一实证形态：关系由已发布的可见事实（srid）重算得出，而 (thread_id, account_id)
+    只是上游元数据；若以候选组裁剪 Grade-A，这条真实关系会被漏掉。
+    """
 
     m1b_run = compile_dataset(
         [
-            _group_capture(capture_factory, ["cga1"], thread_id="thread-a", account_id="acct-a"),
-            _group_capture(capture_factory, ["cgb1"], thread_id="thread-b", account_id="acct-b"),
+            _group_capture(capture_factory, ["cgx"], thread_id="thread-a", account_id="acct-a"),
+            _group_capture(capture_factory, ["cgx"], thread_id="thread-b", account_id="acct-b"),
         ],
         label="crossgroup",
     )
@@ -209,11 +214,8 @@ def test_validator_accepts_freshly_built_run(valid_run: tuple[Path, Path]) -> No
     assert counts["request_node_count"] == 3
     assert counts["candidate_group_count"] == 1
     assert counts["shared_source_request_edge_count"] == 1
-    assert counts["identical_raw_request_hash_edge_count"] == 1
     assert counts["explicit_request_successor_edge_count"] == 2
     assert counts["complete_duplicate_capture_edge_count"] == 0
-    assert counts["raw_request_hash_qualified_count"] == 2
-    assert counts["raw_request_hash_unknown_count"] == 0
 
 
 # --- 对抗 fail-closed -------------------------------------------------------
@@ -318,22 +320,6 @@ def test_data_url_in_evidence_is_caught(valid_run: tuple[Path, Path]) -> None:
     assert "BASE64_DATA_URL_OBSERVED" in _codes(lineage_run, m1b_run)
 
 
-def test_unknown_hash_in_identical_edge_is_caught(valid_run: tuple[Path, Path]) -> None:
-    """把 IDENTICAL 边证据改成非 QUALIFIED 哈希并重签 → 门④拦截。"""
-
-    lineage_run, m1b_run = valid_run
-
-    def tamper(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        index = _index_of(records, LineageRelation.IDENTICAL_RAW_REQUEST_HASH)
-        records[index]["evidence"] = {"raw_request_hash": "B" * 64}  # 大写 → UNKNOWN
-        return records
-
-    _rewrite(lineage_run / _EDGES, tamper)
-    _resign(lineage_run, _EDGES)
-
-    assert "LINEAGE_IDENTICAL_UNKNOWN_ENDPOINT" in _codes(lineage_run, m1b_run)
-
-
 def test_unsigned_sha_tamper_is_caught(valid_run: tuple[Path, Path]) -> None:
     """篡改私有表但不重签 → 逐文件重哈希抓 ARTIFACT_SHA256_MISMATCH。"""
 
@@ -347,8 +333,8 @@ def test_unsigned_sha_tamper_is_caught(valid_run: tuple[Path, Path]) -> None:
 # --- 门②/门③：跨候选组 Grade-A 与候选组分区（组盲设计的实证）--------------------
 
 
-def test_identical_edge_spans_candidate_groups(cross_group_run: tuple[Path, Path]) -> None:
-    """headline：两个不同候选组、同一合格 hash 的 capture → 1 条跨组 IDENTICAL 边（门②）。"""
+def test_shared_edge_spans_candidate_groups(cross_group_run: tuple[Path, Path]) -> None:
+    """headline：两个不同候选组、同一 srid 的 capture → 1 条跨组 SHARED 边（门②）。"""
 
     lineage_run, m1b_run = cross_group_run
     result = validate_lineage_run(lineage_run, m1b_run)
@@ -356,8 +342,7 @@ def test_identical_edge_spans_candidate_groups(cross_group_run: tuple[Path, Path
     assert result.ok, result.errors
     counts = result.observed_counts
     assert counts["candidate_group_count"] == 2
-    assert counts["identical_raw_request_hash_edge_count"] == 1
-    assert counts["shared_source_request_edge_count"] == 0
+    assert counts["shared_source_request_edge_count"] == 1
     assert counts["explicit_request_successor_edge_count"] == 0
     assert counts["complete_duplicate_capture_edge_count"] == 0
     # 门③正例：多组 run 通过分区核验，不误报 1:1 双射不符。
@@ -368,8 +353,8 @@ def test_identical_edge_spans_candidate_groups(cross_group_run: tuple[Path, Path
         for record in _m1b_captures(m1b_run)
     }
     edges = _lineage_records(lineage_run, _EDGES)
-    identical = edges[_index_of(edges, LineageRelation.IDENTICAL_RAW_REQUEST_HASH)]
-    left, right = identical["endpoint_capture_ids"]
+    shared = edges[_index_of(edges, LineageRelation.SHARED_SOURCE_REQUEST)]
+    left, right = shared["endpoint_capture_ids"]
     assert group_by_capture[left] != group_by_capture[right]
 
 

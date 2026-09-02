@@ -59,7 +59,6 @@ def capture_factory() -> Callable[..., dict[str, Any]]:
         has_compaction: bool = False,
         thread_id: str = "fixture-thread",
         account_id: str = "fixture-account",
-        raw_request_hash: str = "b" * 64,
     ) -> dict[str, Any]:
         ids = request_ids or [
             f"fixture-request-{index + 1}" for index in range(len(terminal_prefix_depths))
@@ -87,7 +86,7 @@ def capture_factory() -> Callable[..., dict[str, Any]]:
                 "model": "fixture-model",
                 "normalization_version": "fixture-normalizer-v1",
                 "protocol_adapters": ["fixture-protocol"],
-                "raw_request_hash": raw_request_hash,
+                "raw_request_hash": "b" * 64,
                 "representation": "restored_long",
                 "request_time_end": "2026-01-01T00:00:01+00:00",
                 "request_time_start": "2026-01-01T00:00:00+00:00",

@@ -1,4 +1,4 @@
-"""M1C 关系派生的纯函数内核：RequestNode + 4 类 Grade-A 边。
+"""M1C 关系派生的纯函数内核：RequestNode + 3 类 Grade-A 边。
 
 本模块**无任何 IO**，只吃 `reader.M1bRunView` 抽好的结构/指纹字段，输出内存中的
 ``LineageGraph``。它**根本不接收 ``candidate_group_id`` 参数**——因此在类型层面就不可能把「同
@@ -22,11 +22,9 @@ from traceforge.lineage.contracts import (
     REQUEST_SUCCESSOR_EDGE_SCHEMA,
     CaptureRelationEdgeV1,
     LineageRelation,
-    RawRequestHashStatus,
     RequestNodeV1,
     RequestSuccessorEdgeV1,
     capture_relation_edge_id,
-    classify_raw_request_hash,
     request_node_id,
     request_successor_edge_id,
 )
@@ -42,8 +40,6 @@ class LineageGraph:
     capture_relation_edges: tuple[CaptureRelationEdgeV1, ...]
     capture_count: int
     request_node_count: int
-    raw_request_hash_qualified_count: int
-    raw_request_hash_unknown_count: int
     edge_counts_by_relation: dict[LineageRelation, int]
 
 
@@ -125,46 +121,6 @@ def _build_shared_source_request_edges(
             )
         )
     return tuple(sorted(edges, key=lambda edge: edge.edge_id))
-
-
-def _build_identical_raw_request_hash_edges(
-    *,
-    m1b_run_id: str,
-    raw_request_hash_by_capture: Mapping[str, Any],
-) -> tuple[tuple[CaptureRelationEdgeV1, ...], int, int]:
-    """全局哈希桶：仅 §7 QUALIFIED 值参与；桶内两两建边。返回 (边, qualified 数, unknown 数)。"""
-
-    qualified_count = 0
-    unknown_count = 0
-    captures_by_hash: dict[str, list[str]] = defaultdict(list)
-    for capture_id, raw_request_hash in raw_request_hash_by_capture.items():
-        if classify_raw_request_hash(raw_request_hash) is RawRequestHashStatus.QUALIFIED:
-            qualified_count += 1
-            captures_by_hash[raw_request_hash].append(capture_id)
-        else:
-            unknown_count += 1
-
-    edges = []
-    for raw_request_hash, capture_ids in captures_by_hash.items():
-        if len(capture_ids) < 2:
-            continue
-        # 桶内两两建边为 O(K²)（K=共享同一合格 hash 的 capture 数）；R01 规模下桶 K 有界。
-        for left, right in combinations(sorted(capture_ids), 2):
-            edges.append(
-                CaptureRelationEdgeV1(
-                    schema_version=CAPTURE_RELATION_EDGE_SCHEMA,
-                    edge_id=capture_relation_edge_id(
-                        m1b_run_id=m1b_run_id,
-                        relation=LineageRelation.IDENTICAL_RAW_REQUEST_HASH,
-                        endpoint_capture_ids=(left, right),
-                        evidence_key=raw_request_hash,
-                    ),
-                    relation=LineageRelation.IDENTICAL_RAW_REQUEST_HASH.value,
-                    endpoint_capture_ids=(left, right),
-                    evidence={"raw_request_hash": raw_request_hash},
-                )
-            )
-    return tuple(sorted(edges, key=lambda edge: edge.edge_id)), qualified_count, unknown_count
 
 
 def _build_complete_duplicate_capture_edges(
@@ -270,20 +226,16 @@ def build_lineage_graph(
     *,
     m1b_run_id: str,
     capture_ids: Iterable[str],
-    raw_request_hash_by_capture: Mapping[str, Any],
     boundaries_by_capture: Mapping[str, Sequence[tuple[int, str]]],
     fingerprint_chain_by_capture: Mapping[str, Sequence[tuple[str, str]]],
 ) -> LineageGraph:
-    """从已抽取的 M1B 字段派生全部 RequestNode 与 4 类 Grade-A 边（全局组盲）。"""
+    """从已抽取的 M1B 字段派生全部 RequestNode 与 3 类 Grade-A 边（全局组盲）。"""
 
     request_nodes = _build_request_nodes(
         m1b_run_id=m1b_run_id, boundaries_by_capture=boundaries_by_capture
     )
     shared_edges = _build_shared_source_request_edges(
         m1b_run_id=m1b_run_id, boundaries_by_capture=boundaries_by_capture
-    )
-    identical_edges, qualified_count, unknown_count = _build_identical_raw_request_hash_edges(
-        m1b_run_id=m1b_run_id, raw_request_hash_by_capture=raw_request_hash_by_capture
     )
     complete_duplicate_edges = _build_complete_duplicate_capture_edges(
         m1b_run_id=m1b_run_id,
@@ -296,14 +248,13 @@ def build_lineage_graph(
 
     capture_relation_edges = tuple(
         sorted(
-            (*shared_edges, *identical_edges, *complete_duplicate_edges),
+            (*shared_edges, *complete_duplicate_edges),
             key=lambda edge: edge.edge_id,
         )
     )
     edge_counts_by_relation = {
         LineageRelation.SHARED_SOURCE_REQUEST: len(shared_edges),
         LineageRelation.EXPLICIT_REQUEST_SUCCESSOR: len(successor_edges),
-        LineageRelation.IDENTICAL_RAW_REQUEST_HASH: len(identical_edges),
         LineageRelation.COMPLETE_DUPLICATE_CAPTURE: len(complete_duplicate_edges),
     }
     return LineageGraph(
@@ -312,7 +263,5 @@ def build_lineage_graph(
         capture_relation_edges=capture_relation_edges,
         capture_count=len(tuple(capture_ids)),
         request_node_count=len(request_nodes),
-        raw_request_hash_qualified_count=qualified_count,
-        raw_request_hash_unknown_count=unknown_count,
         edge_counts_by_relation=edge_counts_by_relation,
     )

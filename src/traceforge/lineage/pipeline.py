@@ -65,7 +65,6 @@ def build_lineage(*, m1b_run_dir: str | Path, output_root: str | Path) -> Path:
     graph = build_lineage_graph(
         m1b_run_id=view.m1b_run_id,
         capture_ids=view.capture_ids,
-        raw_request_hash_by_capture=view.raw_request_hash_by_capture,
         boundaries_by_capture=view.boundaries_by_capture,
         fingerprint_chain_by_capture=view.fingerprint_chain_by_capture,
     )
@@ -113,8 +112,6 @@ def build_lineage(*, m1b_run_dir: str | Path, output_root: str | Path) -> Path:
                 capture_count=graph.capture_count,
                 request_node_count=graph.request_node_count,
                 candidate_group_count=candidate_group_count,
-                raw_request_hash_qualified_count=graph.raw_request_hash_qualified_count,
-                raw_request_hash_unknown_count=graph.raw_request_hash_unknown_count,
                 edge_counts_by_relation=graph.edge_counts_by_relation,
             ),
         )

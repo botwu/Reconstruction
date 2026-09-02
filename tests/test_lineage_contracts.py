@@ -9,12 +9,10 @@ from traceforge.lineage.contracts import (
     LINEAGE_COUNT_KEYS,
     REQUEST_LEVEL_RELATIONS,
     LineageRelation,
-    RawRequestHashStatus,
     RelationDirectionality,
     RelationGrade,
     build_report_counts,
     capture_relation_edge_id,
-    classify_raw_request_hash,
     edge_count_key,
     lineage_run_id,
     relation_properties,
@@ -23,28 +21,30 @@ from traceforge.lineage.contracts import (
 )
 
 
-def test_relation_enum_is_exactly_four_grade_a() -> None:
-    """本次范围锁定：枚举恰好 4 类 Grade-A，不多不少。"""
+def test_relation_enum_is_exactly_three_grade_a() -> None:
+    """v2 范围锁定：枚举恰好 3 类 Grade-A，全部由可见事实重算，不多不少。"""
 
     assert {relation.value for relation in LineageRelation} == {
         "SHARED_SOURCE_REQUEST",
         "EXPLICIT_REQUEST_SUCCESSOR",
-        "IDENTICAL_RAW_REQUEST_HASH",
         "COMPLETE_DUPLICATE_CAPTURE",
     }
-    assert len(LineageRelation) == 4
+    assert len(LineageRelation) == 3
 
 
-@pytest.mark.parametrize("forbidden", ["NORMALIZED_VISIBLE_PREFIX_OF", "UNKNOWN_LINEAGE"])
-def test_deferred_gradeb_and_placeholder_absent(forbidden: str) -> None:
-    """守护：Grade-B 关系与任何占位值都不得提前混入枚举（YAGNI）。"""
+@pytest.mark.parametrize(
+    "forbidden",
+    ["NORMALIZED_VISIBLE_PREFIX_OF", "UNKNOWN_LINEAGE", "IDENTICAL_RAW_REQUEST_HASH"],
+)
+def test_deferred_gradeb_placeholder_and_removed_relation_absent(forbidden: str) -> None:
+    """守护：Grade-B、占位值与 v2 已删除的 raw_request_hash 关系都不得回到枚举（YAGNI / K1）。"""
 
     assert forbidden not in {relation.value for relation in LineageRelation}
     assert forbidden not in LineageRelation._value2member_map_
 
 
 def test_every_relation_is_grade_a() -> None:
-    """本次实现的四类关系分级全部为 A。"""
+    """本次实现的三类关系分级全部为 A。"""
 
     for relation in LineageRelation:
         grade, _ = relation_properties(relation)
@@ -52,14 +52,13 @@ def test_every_relation_is_grade_a() -> None:
 
 
 def test_relation_directionality_mapping() -> None:
-    """仅 EXPLICIT_REQUEST_SUCCESSOR 有向，其余三类无向（规格 §4.3）。"""
+    """仅 EXPLICIT_REQUEST_SUCCESSOR 有向，其余两类无向（规格 §4.3）。"""
 
     assert relation_properties(LineageRelation.EXPLICIT_REQUEST_SUCCESSOR)[1] is (
         RelationDirectionality.DIRECTED
     )
     for relation in (
         LineageRelation.SHARED_SOURCE_REQUEST,
-        LineageRelation.IDENTICAL_RAW_REQUEST_HASH,
         LineageRelation.COMPLETE_DUPLICATE_CAPTURE,
     ):
         assert relation_properties(relation)[1] is RelationDirectionality.UNDIRECTED
@@ -86,39 +85,6 @@ def test_capture_and_request_level_partition() -> None:
 
     assert set(LineageRelation) == CAPTURE_LEVEL_RELATIONS | REQUEST_LEVEL_RELATIONS
     assert set() == CAPTURE_LEVEL_RELATIONS & REQUEST_LEVEL_RELATIONS
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        "0" * 64,
-        "a" * 64,
-        "0123456789abcdef" * 4,
-    ],
-)
-def test_classify_raw_request_hash_qualified(value: str) -> None:
-    """恰好 64 位全小写十六进制才算合格。"""
-
-    assert classify_raw_request_hash(value) is RawRequestHashStatus.QUALIFIED
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        "A" * 64,  # 大写不合格
-        "a" * 63,  # 过短
-        "a" * 65,  # 过长
-        "g" * 64,  # 非十六进制字符
-        "",
-        None,
-        12345,
-        ["a" * 64],
-    ],
-)
-def test_classify_raw_request_hash_unknown(value: object) -> None:
-    """任何不满足格式契约的取值一律 UNKNOWN（门④排除依据）。"""
-
-    assert classify_raw_request_hash(value) is RawRequestHashStatus.UNKNOWN
 
 
 def test_request_node_id_is_deterministic_and_binds_run() -> None:
@@ -159,7 +125,7 @@ def test_capture_relation_edge_id_separates_relation_and_evidence() -> None:
     )
     other_relation = capture_relation_edge_id(
         m1b_run_id="run-x",
-        relation=LineageRelation.IDENTICAL_RAW_REQUEST_HASH,
+        relation=LineageRelation.COMPLETE_DUPLICATE_CAPTURE,
         endpoint_capture_ids=("cap-a", "cap-b"),
         evidence_key=["req-1"],
     )
@@ -205,8 +171,6 @@ def test_build_report_counts_key_set_is_closed_with_zero_fill() -> None:
         capture_count=3,
         request_node_count=2,
         candidate_group_count=1,
-        raw_request_hash_qualified_count=3,
-        raw_request_hash_unknown_count=0,
         edge_counts_by_relation={LineageRelation.SHARED_SOURCE_REQUEST: 1},
     )
     assert set(counts) == set(LINEAGE_COUNT_KEYS)

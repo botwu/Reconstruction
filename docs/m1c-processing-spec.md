@@ -1,12 +1,12 @@
 # M1C 跨 capture 关系图处理规格
 
-版本：v0.3（已批准开工；范围锁定＝全 Grade-A、缓 Grade-B）
+版本：v0.4（v2 契约：3 类 Grade-A，全部由可见事实重算；缓 Grade-B）
 
 日期：2026-09-01
 
-状态：**范围已获批准并进入实现。本次实现全部 4 类 Grade-A 关系 + `RequestLineageForest` + `CaptureRelationGraph` + 独立 validator；Grade-B `NORMALIZED_VISIBLE_PREFIX_OF` 按 YAGNI 缓做（代码枚举不含、不留占位值，仅本规格标注「预留、本次不实现」）。始终不得改动冻结 M1B 字节/代码。**
+状态：**v0.3 已实现并验收（`lineage-compiler-m1c-v1`）。v0.4 删除 `IDENTICAL_RAW_REQUEST_HASH` 与门④，契约升为 `lineage-compiler-m1c-v2`，需重新验收。当前实现 3 类 Grade-A 关系 + `RequestLineageForest` + `CaptureRelationGraph` + 独立 validator；Grade-B `NORMALIZED_VISIBLE_PREFIX_OF` 按 YAGNI 缓做（代码枚举不含、不留占位值，仅本规格标注「预留、本次不实现」）。始终不得改动冻结 M1B 字节/代码。**
 
-评审记录：v0.1 经一轮多维对抗式评审（四硬门 soundness / AGENTS 纪律 / 增量非破坏 / 证据分级自洽 / validator 完备性与隐私）。v0.2 已闭合评审确认的 2 个 blocker（§6 让 Grade-A 的 `SHARED_SOURCE_REQUEST` 默认组内枚举；`EXPLICIT_REQUEST_SUCCESSOR` 定义与 §4.4 基线互斥）与全部 major/minor。其中 `EXPLICIT_REQUEST_SUCCESSOR` 基线与请求森林拓扑已在冻结 run `519a86d3…e06d1d` 上独立复算核实（见 §4.4）。v0.3 为「批准开工」修订：(1) §5.6 纠正 v0.2 与 §1 DRY 冲突的「不 import json_codec」措辞，改为复用公开内核 + 自有命名空间；(2) 全文 Grade-B `NORMALIZED_VISIBLE_PREFIX_OF` 标注「预留、本次不实现」（代码枚举不含、不留占位）；(3) §8 补充 validator 双参（`<lineage_run> <m1b_run>`）理由与隐私扫描器盲区说明。
+评审记录：v0.1 经一轮多维对抗式评审（四硬门 soundness / AGENTS 纪律 / 增量非破坏 / 证据分级自洽 / validator 完备性与隐私）。v0.2 已闭合评审确认的 2 个 blocker（§6 让 Grade-A 的 `SHARED_SOURCE_REQUEST` 默认组内枚举；`EXPLICIT_REQUEST_SUCCESSOR` 定义与 §4.4 基线互斥）与全部 major/minor。其中 `EXPLICIT_REQUEST_SUCCESSOR` 基线与请求森林拓扑已在冻结 run `519a86d3…e06d1d` 上独立复算核实（见 §4.4）。v0.3 为「批准开工」修订：(1) §5.6 纠正 v0.2 与 §1 DRY 冲突的「不 import json_codec」措辞，改为复用公开内核 + 自有命名空间；(2) 全文 Grade-B `NORMALIZED_VISIBLE_PREFIX_OF` 标注「预留、本次不实现」（代码枚举不含、不留占位）；(3) §8 补充 validator 双参（`<lineage_run> <m1b_run>`）理由与隐私扫描器盲区说明。**v0.4（2026-09-03）：根据 [`m1c-known-items.md`](m1c-known-items.md) K1 的独立复算——同 `raw_request_hash` 的 19 组 capture 中 18 组请求输入内容不同、19 组工具目录不同——删除 `IDENTICAL_RAW_REQUEST_HASH` 关系及其门④格式契约；确立原则「上游自报的不透明摘要（`raw_request_hash`、`target_hash`）只能是元数据，不进入任何关系证据」；门②由"实证依据"改为"预防性不变量"，其跨组实证改用 `SHARED_SOURCE_REQUEST` 的合成 fixture。**
 
 本文是 M1C（Request/Capture Graph）的实施规格草案。项目背景见 [`background-and-goals.md`](background-and-goals.md)，总体阶段与下游边界见 [`overall-plan.md`](overall-plan.md) §4.2、§9，上游冻结契约见 [`r01-processing-spec.md`](r01-processing-spec.md)（M1A/M1B）与 [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md)（M1A/M1B v3 正式验收），开发纪律只引用 [`../AGENTS.md`](../AGENTS.md)。
 
@@ -19,10 +19,10 @@ M1C 只实现：
 ```text
 在一个已发布 M1B run 之上新增两类只读派生关系产物：
   RequestLineageForest    （请求级 Grade-A 显式关系）
-  CaptureRelationGraph    （capture 级 Grade-A 重复/共享；Grade-B 可见前缀投影＝预留、本次不实现）
+  CaptureRelationGraph    （capture 级 Grade-A 共享/完整重复；Grade-B 可见前缀投影＝预留、本次不实现）
 ```
 
-**本次实现范围锁定（v0.3，经批准）：** 实现全部 4 类 Grade-A（`SHARED_SOURCE_REQUEST` / `EXPLICIT_REQUEST_SUCCESSOR` / `IDENTICAL_RAW_REQUEST_HASH` / `COMPLETE_DUPLICATE_CAPTURE`）+ `RequestLineageForest` + `CaptureRelationGraph` + 独立 validator。**缓做 Grade-B `NORMALIZED_VISIBLE_PREFIX_OF`**：按 [`../AGENTS.md`](../AGENTS.md) §1 YAGNI，代码 `LineageRelation` 枚举**只放 4 个 Grade-A、不放 Grade-B、不放任何占位值**（`UNKNOWN_LINEAGE` 等一律不入代码）；本规格保留 Grade-B 的完整定义仅作「预留、本次不实现」的设计留档，待后续单独窗口再实现。下文所有标注 `NORMALIZED_VISIBLE_PREFIX_OF` 的段落均属此预留范畴。
+**实现范围（v0.4）：** 实现 3 类 Grade-A（`SHARED_SOURCE_REQUEST` / `EXPLICIT_REQUEST_SUCCESSOR` / `COMPLETE_DUPLICATE_CAPTURE`）+ `RequestLineageForest` + `CaptureRelationGraph` + 独立 validator。**缓做 Grade-B `NORMALIZED_VISIBLE_PREFIX_OF`**：按 [`../AGENTS.md`](../AGENTS.md) §1 YAGNI，代码 `LineageRelation` 枚举**只放 3 个 Grade-A、不放 Grade-B、不放任何占位值、不放已删除的 `IDENTICAL_RAW_REQUEST_HASH`**（`UNKNOWN_LINEAGE` 等一律不入代码）；本规格保留 Grade-B 的完整定义仅作「预留、本次不实现」的设计留档，待后续单独窗口再实现。下文所有标注 `NORMALIZED_VISIBLE_PREFIX_OF` 的段落均属此预留范畴。
 
 M1C 不实现，也不得声称实现：
 
@@ -63,29 +63,26 @@ traceforge lineage build \
 | | `source_record_id`、`source_capture_id` | 回溯物理行；capture 的终端 request 身份 |
 | | `candidate_group_id`、`thread_id`、`account_id` | 阻塞式比较提示（**仅 BLOCKING_HINT**，见 §3 门① / §4.4） |
 | | `request_boundary_ids`、`source_request_count` | 关联 RequestBoundary 节点 |
-| | `raw_request_hash` | `IDENTICAL_RAW_REQUEST_HASH` 候选证据（须先过 §7 格式契约） |
-| | `target_hash` | capture 身份/完整性校验（唯一，不作 lineage 键，见 §5.5） |
+| | `target_hash` | 仅供 validator 断言不入 evidence（§5.5）；`raw_request_hash` 与 `target_hash` 均为上游不透明摘要，不作任何关系键（v0.4） |
 | `RequestBoundaryV1` | `request_boundary_id`、`capture_occurrence_id` | boundary 节点与归属 |
 | | `source_request_id`、`boundary_ordinal` | 请求级 lineage 与 `SHARED_SOURCE_REQUEST` |
 | | `terminal_event_id` | 关联终端事件 |
 | `EventOccurrenceV2` | `capture_occurrence_id`、`sequence_number` | 可见时序 |
-| | `event_kind`、`visible_payload_sha256` | 可见指纹链（`NORMALIZED_VISIBLE_PREFIX_OF` 与 `COMPLETE_DUPLICATE_CAPTURE`） |
+| | `event_kind`、`visible_payload_sha256` | 可见指纹链（`COMPLETE_DUPLICATE_CAPTURE`；预留的 `NORMALIZED_VISIBLE_PREFIX_OF`） |
 | `ArtifactManifestV1` | `run_id`、`dataset_id`、`dataset_sha256`、`source_schema`、`compiler_contract_version`、`files` | 输入身份绑定与校验 |
 | `SourceManifestV1` | `dataset_id`、`dataset_sha256`、`source_schema` | 与 `ArtifactManifestV1` 交叉一致性核验（§2.1「先校验再消费」） |
 
 M1C 不读取、不解释 M1B 保存的可见正文原文、tool arguments、reasoning 审计摘要或任何 Data URL 摘要内容。它只使用上述**结构与指纹字段**建边。
 
-## 3. 四条硬门
+## 3. 三条硬门
 
-以下四门在 M1C 启动前必须先冻结，来自 [`overall-plan.md`](overall-plan.md) §4.2、[`r01-processing-spec.md`](r01-processing-spec.md) §8.1 与 [`session-handoff.md`](session-handoff.md) §11。本规格把它们细化为可校验规则：
+以下三门在 M1C 启动前已冻结（v0.3 的门④随 `IDENTICAL_RAW_REQUEST_HASH` 一并删除），来自 [`overall-plan.md`](overall-plan.md) §4.2、[`r01-processing-spec.md`](r01-processing-spec.md) §8.1 与 [`session-handoff.md`](session-handoff.md) §11。本规格把它们细化为可校验规则：
 
 **门① `candidate_group_id` 只能是 `BLOCKING_HINT_ONLY`。** 它是 `(thread_id, account_id)` 分区（§4.4 实测确认严格 1:1），只用于缩小比较范围以控制算法复杂度，**永远不作为任何关系边的证据**。任何 lineage 边都不得把“同候选组”写进 evidence，也不得因“同候选组”而建边。
 
-**门② Grade-A 显式关系不受候选组边界限制。** 全部 Grade-A 证据（§5）在**全局、组盲**范围内判定。R01 实测中 `IDENTICAL_RAW_REQUEST_HASH` 有 5 组跨候选组（§4.4），若把 Grade-A 限制在候选组内会漏掉这些真实关系。候选组只能用于 Grade-B 前缀的默认比较范围优化（§6），不能裁剪 Grade-A。
+**门② Grade-A 显式关系不受候选组边界限制（预防性不变量）。** 全部 Grade-A 证据（§5）在**全局、组盲**范围内判定。这是通用契约层面的不变量，不以任一 cohort 的实测为前提：`(thread_id, account_id)` 是上游元数据，而 Grade-A 关系由已发布的可见事实重算；一旦上游元数据与可见事实不一致（同一 `source_request_id` 出现在不同 thread/account 下），按候选组裁剪就会漏掉真实关系。R01 实测中三类 Grade-A 均无跨候选组实例（v0.3 曾以 `IDENTICAL_RAW_REQUEST_HASH` 的 5 个跨组实例为依据，v0.4 确认那是模板级碰撞而非 lineage，见 [`m1c-known-items.md`](m1c-known-items.md) K1），因此门②只能作为预防性不变量陈述，其 e2e 实证使用合成 fixture（§11.1）。候选组只能用于 Grade-B 前缀的默认比较范围优化（§6），不能裁剪 Grade-A。
 
 **门③ M1C validator 独立核验候选组分区，而非重算其 ID 字符串。** `candidate_group_id` 的派生公式（namespace 常量 + `stable_id` 序列化）只存在于 M1B 私有实现（`compiler.py`），不是已发布契约；重算该字符串必然要复刻或 import 私有约定，违反 §2.1 与 [`../AGENTS.md`](../AGENTS.md) §1/§4。因此 validator **只用已发布字段做分区一致性校验**：把 capture 按已发布的 `candidate_group_id` 分区，再按 `(thread_id, account_id)` 分区，断言两个分区**严格 1:1 双射**（等价类完全对应，§4.4 实测确认）。这恰好覆盖门①的真实目的——证明候选组无非就是 `(thread_id, account_id)` 分区、不携带任何额外 lineage 信息——且无需任何私有公式。若未来确需按值重算 `candidate_group_id`，前置条件是先由 M1B 把其稳定 ID 构造（namespace + 身份字段集）升格为已发布冻结契约。
-
-**门④ `raw_request_hash` 只有满足 §7 冻结格式契约才作证据，否则该 capture 的 `raw_request_hash_status` = `UNKNOWN`（逐 capture 资格状态，非边关系，见 §5/§7）。** R01 实测 1,683 条中 1,675 条为 64 位十六进制、8 条为 80/86 长度的异常值（§4.4）；异常值一律 `UNKNOWN`，绝不进入 `IDENTICAL_RAW_REQUEST_HASH`，即使它们恰好互相相等。
 
 ## 4. 数据层级与新增契约
 
@@ -103,8 +100,7 @@ RequestLineageForest
     RequestNode 之间的 Grade-A 显式 request 关系（EXPLICIT_REQUEST_SUCCESSOR）
 
 CaptureRelationEdge
-    capture 之间的 Grade-A（SHARED_SOURCE_REQUEST / IDENTICAL_RAW_REQUEST_HASH /
-    COMPLETE_DUPLICATE_CAPTURE）关系
+    capture 之间的 Grade-A（SHARED_SOURCE_REQUEST / COMPLETE_DUPLICATE_CAPTURE）关系
     （Grade-B NORMALIZED_VISIBLE_PREFIX_OF＝预留、本次不实现，见 §1）
 
 CaptureRelationGraph
@@ -179,11 +175,9 @@ EXPLICIT_REQUEST_SUCCESSOR（请求级，同一 capture 内 boundary_ordinal 相
 （对照观测，非本枚举）capture 请求序列的 capture 级线性严格前缀
   组内 = 0；跨组 = 0   → 说明 capture 是「共享前缀后分叉的兄弟」，不是 capture 级线性后继，故本关系落在请求级（§9 D1）
 
-IDENTICAL_RAW_REQUEST_HASH
-  raw_request_hash 64-hex 合格          = 1,675
-  raw_request_hash 异常长度(80/86)      = 8   → 一律 UNKNOWN（§7 逐 capture 资格状态，不建边）
-  被 >1 capture 共享的合格值组          = 19（涉及 47 capture）
-  其中跨候选组的组                      = 5   → 门② 的实证依据
+（v0.4 已删除）IDENTICAL_RAW_REQUEST_HASH
+  v0.3 基线：19 组 / 47 capture / 41 边，其中 5 组跨候选组
+  独立复算：18/19 组请求输入内容不同，19/19 组 tool_catalog_id 不同 → 相等不蕴含同一请求，删除
 
 COMPLETE_DUPLICATE_CAPTURE（可见事件链完全相同）
   = 0
@@ -194,26 +188,25 @@ NORMALIZED_VISIBLE_PREFIX_OF（Grade-B，可见指纹链严格前缀）
   跨组下界   ≥ 1（疑似短链偶合，正是前缀只能作投影的理由）
 ```
 
-结论：在 R01 上，`SHARED_SOURCE_REQUEST`（1,671 对，分叉森林）与 `EXPLICIT_REQUEST_SUCCESSOR`（4,994 条请求节点森林边）都大量发火；`IDENTICAL_RAW_REQUEST_HASH` 少量发火且**会跨候选组**；只有 `COMPLETE_DUPLICATE_CAPTURE` 在 R01 为 0 但仍作为通用契约保留；Grade-B 前缀极稀疏且可能跨组偶合。**注意：capture 级「线性严格前缀 = 0」是解释请求级归属的对照观测，不是 `EXPLICIT_REQUEST_SUCCESSOR` 的基线**——后者按 §5.2 的请求相邻定义大量发火，v0.1 曾把两者混为一谈，v0.2 已拆清。
+结论：在 R01 上，`SHARED_SOURCE_REQUEST`（1,671 对，分叉森林）与 `EXPLICIT_REQUEST_SUCCESSOR`（4,994 条请求节点森林边）都大量发火；`COMPLETE_DUPLICATE_CAPTURE` 在 R01 为 0 但仍作为通用契约保留；Grade-B 前缀极稀疏且可能跨组偶合。**注意：capture 级「线性严格前缀 = 0」是解释请求级归属的对照观测，不是 `EXPLICIT_REQUEST_SUCCESSOR` 的基线**——后者按 §5.2 的请求相邻定义大量发火，v0.1 曾把两者混为一谈，v0.2 已拆清。
 
 ## 5. 证据分级（冻结枚举）
 
 关系类型是封闭枚举，任何一条**边**必须恰好落在其中之一（边只承载已成立的正向关系；不成立即不建边，不存在“无法判定”的边）：
 
 ```text
-Grade A（高可信显式关系，全局组盲判定）
+Grade A（高可信显式关系，全部由 M1B 已发布可见事实重算，全局组盲判定）
   SHARED_SOURCE_REQUEST
   EXPLICIT_REQUEST_SUCCESSOR
-  IDENTICAL_RAW_REQUEST_HASH
   COMPLETE_DUPLICATE_CAPTURE
 
 Grade B（低等级可见投影，仅投影）——预留、本次不实现
   NORMALIZED_VISIBLE_PREFIX_OF        # 代码枚举不含此值，见 §1 范围锁定
 ```
 
-> 实现说明（v0.3）：代码里的 `LineageRelation` 枚举**恰好只有上列 4 个 Grade-A**。Grade-B 段落保留在本规格仅为设计留档；测试专门守护「`NORMALIZED_VISIBLE_PREFIX_OF` 与任何占位值不在枚举」以防提前引入。
+> 实现说明（v0.4）：代码里的 `LineageRelation` 枚举**恰好只有上列 3 个 Grade-A**。Grade-B 段落保留在本规格仅为设计留档；测试专门守护「`NORMALIZED_VISIBLE_PREFIX_OF` 与任何占位值不在枚举」以防提前引入。
 
-**逐 capture 资格状态（不是边关系）**：`raw_request_hash_status ∈ { QUALIFIED, UNKNOWN }` 是单个 capture 的 `raw_request_hash` 是否满足 §7 格式契约的注解。`UNKNOWN` 的 capture 不参与 `IDENTICAL_RAW_REQUEST_HASH` 建边——它不产生任何“UNKNOWN”边，只是**缺席**该关系。此状态与边关系枚举分属两个命名空间，切勿混用同一 token（v0.1 曾用悬空的 `UNKNOWN_LINEAGE` 边表述，v0.2 已移除）。
+**证据来源原则（v0.4）**：任何关系的证据只能来自 M1B 已发布、可由 validator 独立重算的可见事实（`source_request_id`、`boundary_ordinal`、`(event_kind, visible_payload_sha256)`）。上游采集层写入的不透明摘要（`raw_request_hash`、`target_hash`）TraceForge 不掌握其原像定义，只能作为元数据透传，**不得**作为任何关系的建边依据或证据字段。
 
 ### 5.1 SHARED_SOURCE_REQUEST（Grade A，无向，capture 级）
 
@@ -225,15 +218,15 @@ Grade B（低等级可见投影，仅投影）——预留、本次不实现
 
 注意：R01 中 capture 请求序列不存在 capture 级线性严格前缀（§4.4 的对照观测 = 0），因此本关系只以**请求节点相邻边**形式存在，不表述为“capture A 续 capture B”——这也是它落在请求级 RequestLineageForest 而非 capture 级图的理由（§9 D1）。
 
-### 5.3 IDENTICAL_RAW_REQUEST_HASH（Grade A，无向，capture 级）
+### 5.3 （v0.4 已删除）IDENTICAL_RAW_REQUEST_HASH
 
-两个不同 capture 的 `raw_request_hash` **均满足 §7 格式契约且相等**时建边。evidence = 该合格 hash。异常格式值（§4.4 的 8 条）一律 `UNKNOWN`，绝不建此边。全局组盲计算，可跨候选组（门②）。
+v0.3 定义为"两个 capture 的 `raw_request_hash` 均满足格式契约且相等即建边"。对冻结 run 的独立复算表明该字段相等不蕴含同一请求（[`m1c-known-items.md`](m1c-known-items.md) K1），违反上文证据来源原则，故删除。编号保留以维持既有引用。
 
 ### 5.4 COMPLETE_DUPLICATE_CAPTURE（Grade A，无向，capture 级）
 
 两个不同 capture 的**可见指纹链完全相同**：按 `sequence_number` 排序的 `(event_kind, visible_payload_sha256)` 序列逐项相等，且 `source_request_id` 序列相等。evidence = 该指纹链摘要。**全局组盲计算（门②）。** R01 中为 0，但保留为通用契约。**即使判定为完整重复，也只建边，不删除任一 capture**（禁止“删短留长”，见 §5.7）。
 
-边界澄清：若两 capture 可见指纹链逐项相等但 `source_request_id` 序列不同（等长、非前缀），则既不满足本关系（要求 srid 序列相等）、也不满足 §5.5 严格前缀（要求长度不等）——此情形**有意不建边**（两 capture 是同内容但不同请求身份，非重复亦非投影）。R01 中 `target_hash` 全 1,683 唯一，该集合为空；此处显式声明是为消除边界含糊，validator 据此断言该情形不产生任何边。
+边界澄清：若两 capture 可见指纹链逐项相等但 `source_request_id` 序列不同（等长、非前缀），则既不满足本关系（要求 srid 序列相等）、也不满足 §5.5 严格前缀（要求长度不等）——此情形**有意不建边**（两 capture 是同内容但不同请求身份，非重复亦非投影）。对冻结 run 独立复算：可见指纹链相等的 capture 分组数为 0，该集合为空（v0.3 曾以 `target_hash` 唯一性论证，属非推论，v0.4 改为直接复算）；validator 据此断言该情形不产生任何边。
 
 ### 5.5 NORMALIZED_VISIBLE_PREFIX_OF（Grade B，有向，capture 级）
 
@@ -277,25 +270,14 @@ M1C 保留全部 capture 与全部关系边。**不得**因 `COMPLETE_DUPLICATE_
 - 指纹链只由 M1B 已发布的 `EventOccurrenceV2` 字段重建：按 `sequence_number` 排序的 `(event_kind, visible_payload_sha256)` 序列。M1C 不重新计算任何 payload 摘要，也不读取正文。
 - **全部 Grade-A 关系必须全局、组盲判定（门②），一律不得默认在候选组内枚举。** 实现方式一律为**全局键桶**，而非组内枚举：
   - `SHARED_SOURCE_REQUEST`：按 `source_request_id` 建全局倒排桶，桶内 >1 capture 即两两建边；
-  - `IDENTICAL_RAW_REQUEST_HASH`：按合格 `raw_request_hash` 建全局桶（R01 有 5 组跨候选组）；
   - `COMPLETE_DUPLICATE_CAPTURE`：按 `(可见指纹链摘要, source_request_id 序列摘要)` 建全局桶；
   - `EXPLICIT_REQUEST_SUCCESSOR`：capture 内相邻关系，天然与候选组无关，全局收集去重。
   候选组对 Grade-A **至多只影响枚举顺序与性能，绝不改变边集**；validator 全局独立复算须得到**同一边集**（§8）。**不得**以 R01「`SHARED_SOURCE_REQUEST` 0 例跨候选组」这一实测巧合作为对 Grade-A 收窄比较范围的依据（[`r01-processing-spec.md`](r01-processing-spec.md) §4.5、§8.1；§4.4 数字不得写入核心分支）。
 - **（预留、本次不实现）** Grade-B 的 `NORMALIZED_VISIBLE_PREFIX_OF` 原计划默认在候选组内枚举（门① 的 BLOCKING_HINT 用法，D2 可评审是否放开为全局但标记更低置信）：Grade-B 仅投影、不要求完整性，跨组前缀漏建可接受（§4.4 跨组 ≥1 疑为短链偶合）。本次不落地此算法，仅留作后续窗口的设计依据。
 
-## 7. `raw_request_hash` 格式契约（门④，决策点 D4）
+## 7. （v0.4 已删除）`raw_request_hash` 格式契约
 
-冻结格式契约（草案，待 §9 D4 评审确认）：
-
-```text
-capture 的 raw_request_hash_status = QUALIFIED（可作 IDENTICAL_RAW_REQUEST_HASH 证据），当且仅当：
-  - 类型为字符串；
-  - 长度恰好 64；
-  - 全部字符属于小写十六进制 [0-9a-f]。
-否则 raw_request_hash_status = UNKNOWN（该 capture 不参与 IDENTICAL 建边，见 §5）。
-```
-
-R01 实测：1,675 条 `QUALIFIED`、8 条（长度 80/86）`UNKNOWN`。契约以**格式**而非 R01 具体值判定，不把任何样本 hash 写入代码。`raw_request_hash_status` 是逐 capture 资格注解，不是边关系（§5）。
+随 §5.3 一并删除。`raw_request_hash` 不再被 M1C 读取或分类；`RawRequestHashStatus`、`classify_raw_request_hash` 与报告中的 `raw_request_hash_qualified_count` / `raw_request_hash_unknown_count` 均已移除。编号保留以维持既有引用。
 
 ## 8. 独立 validator
 
@@ -313,15 +295,14 @@ R01 实测：1,675 条 `QUALIFIED`、8 条（长度 80/86）`UNKNOWN`。契约�
 
 **边集完整性（双向 bijection，不止逐条 soundness）**
 - 对每类 **Grade-A** 关系，validator 从 M1B 已发布字段**全局、组盲独立枚举出完整边集**，与 `private/` 已发布边集做**双向集合相等**断言（既无漏报、也无幻影）。逐条复核只能防「多报无效边」，唯有完整性断言能防「悄悄删边」这种来源洗白——对只在 Control 侧使用的 lineage 产物这是首要威胁。
-- `IDENTICAL_RAW_REQUEST_HASH` 必须复现全部跨候选组边；`SHARED_SOURCE_REQUEST`、`COMPLETE_DUPLICATE_CAPTURE` 同样全局复算完整边集。
-- **（预留、本次不实现）Grade-B** 前缀边：原计划逐条 soundness（每条已发布前缀边由 per-event 指纹链独立重算成立）即可，因默认组内、跨组有意漏建而**不做完整性 bijection**。本次既不产出 Grade-B 边，validator 亦无此分支；作为守护，validator 断言 `private/` 边集**不含** `NORMALIZED_VISIBLE_PREFIX_OF` 或任何非 4-Grade-A 的 relation 值。
+- `SHARED_SOURCE_REQUEST`、`COMPLETE_DUPLICATE_CAPTURE` 全局组盲复算完整边集，含任何跨候选组的边。
+- **（预留、本次不实现）Grade-B** 前缀边：原计划逐条 soundness（每条已发布前缀边由 per-event 指纹链独立重算成立）即可，因默认组内、跨组有意漏建而**不做完整性 bijection**。本次既不产出 Grade-B 边，validator 亦无此分支；作为守护，validator 断言 `private/` 边集**不含** `NORMALIZED_VISIBLE_PREFIX_OF`、已删除的 `IDENTICAL_RAW_REQUEST_HASH` 或任何非 3-Grade-A 的 relation 值。
 
 **守恒**
 - capture 节点数等于输入 M1B capture 数，无 capture 被删除或合并；
 - `RequestNode` 数等于 distinct `source_request_id` 数；每个 `RequestNode` 的 `owner_capture_ids` / `boundary_ordinals` 完整填充（§4.2「保留全部，不去重丢弃」），无遗漏。
 
 **格式契约、稳定 ID、派生属性**
-- `raw_request_hash_status` 格式契约判定与 `UNKNOWN` 计数（门④）；确认 `UNKNOWN` capture 未参与 IDENTICAL 建边；
 - 每条边 `edge_id`、每个 `request_node_id` 的稳定 ID 由 §5.6 公式独立重算一致；
 - 断言每条边的 `relation → (grade, directionality)` 与 §5 冻结映射一致（§4.3 派生而非物化）；
 - 断言无任何边以 `target_hash` 为 evidence（§5.5）。
@@ -336,9 +317,9 @@ R01 实测：1,675 条 `QUALIFIED`、8 条（长度 80/86）`UNKNOWN`。契约�
 ## 9. 待评审决策点
 
 - **D1（四类 Grade-A 归属与定义）**：推荐 `EXPLICIT_REQUEST_SUCCESSOR` 落在请求级 RequestLineageForest（capture 内相邻 boundary 的请求节点边，R01 实测 4,994 条 distinct 边、真森林拓扑，§4.4），其余三类落在 capture 级 CaptureRelationGraph。依据：capture 是「共享前缀后分叉的兄弟」，capture 级线性严格前缀 = 0（对照观测），故 successor 只能表述为请求节点相邻边、不能表述为 capture 级后继。评审需确认该归属，以及 successor 是否需要额外表达「共同祖先分叉点」。
-- **D2（前缀是否跨候选组）——推迟到 Grade-B 单独窗口**：`NORMALIZED_VISIBLE_PREFIX_OF` 本次不实现（见 §1），故其默认范围（组内 vs 全局）随 Grade-B 一并推迟评审；留档推荐为默认组内、可选全局但标记更低置信（跨组前缀在 R01 疑为短链偶合 ≥1）。Grade-A 的 `IDENTICAL_RAW_REQUEST_HASH` 必须全局（门②），不受此推迟影响。
+- **D2（前缀是否跨候选组）——推迟到 Grade-B 单独窗口**：`NORMALIZED_VISIBLE_PREFIX_OF` 本次不实现（见 §1），故其默认范围（组内 vs 全局）随 Grade-B 一并推迟评审；留档推荐为默认组内、可选全局但标记更低置信（跨组前缀在 R01 疑为短链偶合 ≥1）。Grade-A 一律全局（门②），不受此推迟影响。
 - **D3（run 布局）**：推荐独立内容寻址 lineage run，`run_id` 绑定输入 M1B run 的 `artifact_manifest` SHA-256，M1B 字节保持不变，lineage 仅 Control 侧。评审需确认目录布局（见 §10）。
-- **D4（`raw_request_hash` 格式判定式）**：推荐 §7 的“64 位小写十六进制”契约。评审需确认是否接受，以及对 `target_hash`（同为 64-hex 但全局唯一）是否只作身份校验、不建边。
+- **D4（`raw_request_hash` 格式判定式）——v0.4 随关系删除而关闭**：`raw_request_hash` 与 `target_hash` 均为上游不透明摘要，统一不作关系键、不建边、不入 evidence。
 
 ## 10. 输出布局（草案）
 
@@ -362,8 +343,8 @@ R01 实测：1,675 条 `QUALIFIED`、8 条（长度 80/86）`UNKNOWN`。契约�
 M1C 单独验收须满足：
 
 - 所有 capture 节点守恒，无删除/合并；`RequestNode` 数 = distinct `source_request_id` 数，`owner_capture_ids` 完整；
-- 四门（§3）在代码与 validator 中均可校验并通过；
-- Grade-A 全局组盲，validator 对每类 Grade-A 独立复算**完整边集并双向 bijection**，`IDENTICAL_RAW_REQUEST_HASH` 复现跨候选组边；
+- 三门（§3）在代码与 validator 中均可校验并通过；
+- Grade-A 全局组盲，validator 对每类 Grade-A 独立复算**完整边集并双向 bijection**；
 - Grade-B `NORMALIZED_VISIBLE_PREFIX_OF` 本次不实现（枚举无、代码无占位），本规格标注预留；
 - 独立 validator 重算全部边、分级、稳定 ID、**候选组分区一致性（1:1 双射）**、边集完整性与守恒计数并通过；
 - 两次独立建图产物逐字节一致，峰值内存低于冻结停止线；
@@ -376,7 +357,7 @@ M1C 单独验收须满足：
 验收门的实证方式分两类：**e2e 覆盖**（`tests/test_lineage_validation.py`：篡改**新建测试 M1B run** 或重签 lineage 产物后，断言目标 issue code fire；冻结 R01 字节不动）与**防御性不变量 tripwire**（正常输入结构上不触发，仅作 fail-closed 兜底，不强测）。
 
 **e2e 覆盖的验收门与守卫码：**
-- 门①/②组盲唯一实证 —— `IDENTICAL_RAW_REQUEST_HASH` 跨候选组边：两个分属不同 `(thread_id, account_id)` 候选组、共享同一合格 hash 的 capture 建 1 条跨组 IDENTICAL 边（`candidate_group_count==2`，边端点分属两组）。
+- 门①/②组盲实证 —— `SHARED_SOURCE_REQUEST` 跨候选组边：两个分属不同 `(thread_id, account_id)` 候选组、共享同一 `source_request_id` 的合成 capture 建 1 条跨组 SHARED 边（`candidate_group_count==2`，边端点分属两组）。
 - 门③候选组 1:1 分区 —— 正例（多组 run 过全部核验）+ 负例（篡改 M1B `captures.jsonl` 令两组共用同一 `candidate_group_id`、重签 → `LINEAGE_CANDIDATE_GROUP_PARTITION_MISMATCH`）。
 - 边集双向 bijection —— node 删/幻影/篡改（`LINEAGE_NODE_MISSING` / `LINEAGE_NODE_PHANTOM` / `LINEAGE_NODE_MISMATCH`）、successor 边删/幻影（`LINEAGE_EDGE_MISSING` / `LINEAGE_EDGE_PHANTOM`）、endpoint 不在 M1B（`LINEAGE_ENDPOINT_NOT_IN_M1B`）。
 - 分级与证据卫生 —— relation 越级（`LINEAGE_RELATION_LEVEL_MISMATCH`）、`target_hash` 混入 evidence（`LINEAGE_EVIDENCE_TARGET_HASH`，§5.5）。

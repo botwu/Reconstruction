@@ -38,13 +38,11 @@ from traceforge.lineage.contracts import (
     LineageManifestV1,
     LineageRelation,
     LineageReportV1,
-    RawRequestHashStatus,
     RelationDirectionality,
     RequestNodeV1,
     RequestSuccessorEdgeV1,
     build_report_counts,
     capture_relation_edge_id,
-    classify_raw_request_hash,
     lineage_run_id,
     relation_properties,
     request_node_id,
@@ -584,12 +582,11 @@ def _rederive_request_nodes(view: M1bRunView) -> dict[str, bytes]:
 
 
 def _rederive_capture_edges(view: M1bRunView) -> dict[str, bytes]:
-    """独立重算 3 类 capture 级 Grade-A 边（SHARED / IDENTICAL / COMPLETE_DUP）。"""
+    """独立重算 2 类 capture 级 Grade-A 边（SHARED / COMPLETE_DUP）。"""
 
     expected: dict[str, bytes] = {}
     for edge in (
         *_rederive_shared_source_request_edges(view),
-        *_rederive_identical_raw_request_hash_edges(view),
         *_rederive_complete_duplicate_capture_edges(view),
     ):
         expected[edge.edge_id] = canonical_json_bytes(edge.to_dict())
@@ -624,33 +621,6 @@ def _rederive_shared_source_request_edges(view: M1bRunView) -> list[CaptureRelat
                 evidence={"shared_source_request_ids": shared_sorted},
             )
         )
-    return edges
-
-
-def _rederive_identical_raw_request_hash_edges(view: M1bRunView) -> list[CaptureRelationEdgeV1]:
-    captures_by_hash: dict[str, list[str]] = defaultdict(list)
-    for capture_id, raw_request_hash in view.raw_request_hash_by_capture.items():
-        if classify_raw_request_hash(raw_request_hash) is RawRequestHashStatus.QUALIFIED:
-            captures_by_hash[raw_request_hash].append(capture_id)
-    edges = []
-    for raw_request_hash, capture_ids in captures_by_hash.items():
-        if len(capture_ids) < 2:
-            continue
-        for left, right in combinations(sorted(capture_ids), 2):
-            edges.append(
-                CaptureRelationEdgeV1(
-                    schema_version=CAPTURE_RELATION_EDGE_SCHEMA,
-                    edge_id=capture_relation_edge_id(
-                        m1b_run_id=view.m1b_run_id,
-                        relation=LineageRelation.IDENTICAL_RAW_REQUEST_HASH,
-                        endpoint_capture_ids=(left, right),
-                        evidence_key=raw_request_hash,
-                    ),
-                    relation=LineageRelation.IDENTICAL_RAW_REQUEST_HASH.value,
-                    endpoint_capture_ids=(left, right),
-                    evidence={"raw_request_hash": raw_request_hash},
-                )
-            )
     return edges
 
 
@@ -876,18 +846,6 @@ def _check_capture_edge_evidence(
             issues.add("LINEAGE_PRIVATE_VALUE_DOMAIN", location, "shared_source_request_ids 非法")
             return None
         return shared
-    if relation == LineageRelation.IDENTICAL_RAW_REQUEST_HASH.value:
-        if set(evidence) != {"raw_request_hash"}:
-            issues.add("LINEAGE_PRIVATE_VALUE_DOMAIN", location, "IDENTICAL evidence 字段不闭合")
-            return None
-        raw_request_hash = evidence["raw_request_hash"]
-        # 门④：仅 §7 QUALIFIED 值可作 IDENTICAL 证据（UNKNOWN 一律缺席建边）。
-        if classify_raw_request_hash(raw_request_hash) is not RawRequestHashStatus.QUALIFIED:
-            issues.add(
-                "LINEAGE_IDENTICAL_UNKNOWN_ENDPOINT", location, "raw_request_hash 非 QUALIFIED"
-            )
-            return None
-        return raw_request_hash
     if relation == LineageRelation.COMPLETE_DUPLICATE_CAPTURE.value:
         if set(evidence) != {"visible_fingerprint_sha256", "source_request_sequence_sha256"}:
             issues.add("LINEAGE_PRIVATE_VALUE_DOMAIN", location, "COMPLETE_DUP evidence 字段不闭合")
@@ -1058,12 +1016,6 @@ def _recompute_counts(
     expected_capture_edges: Mapping[str, bytes],
     expected_successor_edges: Mapping[str, bytes],
 ) -> dict[str, int]:
-    qualified = sum(
-        1
-        for value in view.raw_request_hash_by_capture.values()
-        if classify_raw_request_hash(value) is RawRequestHashStatus.QUALIFIED
-    )
-    unknown = len(view.raw_request_hash_by_capture) - qualified
     edge_counts: dict[LineageRelation, int] = {relation: 0 for relation in LineageRelation}
     edge_counts[LineageRelation.EXPLICIT_REQUEST_SUCCESSOR] = len(expected_successor_edges)
     for raw in expected_capture_edges.values():
@@ -1073,8 +1025,6 @@ def _recompute_counts(
         capture_count=len(view.capture_ids),
         request_node_count=len(expected_nodes),
         candidate_group_count=len(set(view.candidate_group_by_capture.values())),
-        raw_request_hash_qualified_count=qualified,
-        raw_request_hash_unknown_count=unknown,
         edge_counts_by_relation=edge_counts,
     )
 
