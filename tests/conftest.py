@@ -57,6 +57,9 @@ def capture_factory() -> Callable[..., dict[str, Any]]:
         definition_conflict: bool = False,
         inferred_tool_definitions: list[str] | None = None,
         has_compaction: bool = False,
+        thread_id: str = "fixture-thread",
+        account_id: str = "fixture-account",
+        raw_request_hash: str = "b" * 64,
     ) -> dict[str, Any]:
         ids = request_ids or [
             f"fixture-request-{index + 1}" for index in range(len(terminal_prefix_depths))
@@ -73,7 +76,7 @@ def capture_factory() -> Callable[..., dict[str, Any]]:
             },
             "messages": messages,
             "meta": {
-                "account_id": "fixture-account",
+                "account_id": account_id,
                 "adapter": "fixture-adapter",
                 "capture_id": final_capture_id,
                 "compaction_count": len(compaction_hashes),
@@ -84,7 +87,7 @@ def capture_factory() -> Callable[..., dict[str, Any]]:
                 "model": "fixture-model",
                 "normalization_version": "fixture-normalizer-v1",
                 "protocol_adapters": ["fixture-protocol"],
-                "raw_request_hash": "b" * 64,
+                "raw_request_hash": raw_request_hash,
                 "representation": "restored_long",
                 "request_time_end": "2026-01-01T00:00:01+00:00",
                 "request_time_start": "2026-01-01T00:00:00+00:00",
@@ -96,7 +99,7 @@ def capture_factory() -> Callable[..., dict[str, Any]]:
                 "source_request_ids": ids,
                 "target_hash": "c" * 64,
                 "terminal_prefix_depths": terminal_prefix_depths,
-                "thread_id": "fixture-thread",
+                "thread_id": thread_id,
                 "tools_definition_conflict": definition_conflict,
                 "usage": {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
             },
@@ -215,7 +218,7 @@ def stable_git_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     provenance 采集不可用时（本仓库虽是 git 仓库，但慢速网络盘上 `git status` 耗时超过
     provenance 的 5s 超时 → available=False）完成时无法核验一致，会使
     validate_compiled_run / validate_lineage_run 报 RUN_RECEIPT_GIT_PROVENANCE_UNVERIFIED，
-    掩盖测试真正要验的行为。固定为可核验值以隔离环境差异（两个 pipeline 各持一份 import 引用，
+    掩盖测试真正要验的行为。固定为可核验值以隔离环境差异（三个 pipeline 各持一份 import 引用，
     须分别 patch）。
     """
 
@@ -224,6 +227,9 @@ def stable_git_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     provenance = GitProvenance(True, "a" * 40, "b" * 40, False)
     monkeypatch.setattr("traceforge.trajectory.pipeline.collect_git_provenance", lambda: provenance)
     monkeypatch.setattr("traceforge.lineage.pipeline.collect_git_provenance", lambda: provenance)
+    monkeypatch.setattr(
+        "traceforge.query_turns.pipeline.collect_git_provenance", lambda: provenance
+    )
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:

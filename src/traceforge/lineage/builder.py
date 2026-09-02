@@ -101,6 +101,8 @@ def _build_shared_source_request_edges(
     for source_request_id, capture_ids in captures_by_srid.items():
         if len(capture_ids) < 2:
             continue
+        # 桶内两两建边为 O(K²)（K=共享该 srid 的 capture 数）；R01 规模下各桶 K 有界，
+        # 远低于 512 MiB 停止线。若未来出现病态大桶需在此加护栏。
         for left, right in combinations(sorted(capture_ids), 2):
             shared_by_pair[(left, right)].add(source_request_id)
 
@@ -146,6 +148,7 @@ def _build_identical_raw_request_hash_edges(
     for raw_request_hash, capture_ids in captures_by_hash.items():
         if len(capture_ids) < 2:
             continue
+        # 桶内两两建边为 O(K²)（K=共享同一合格 hash 的 capture 数）；R01 规模下桶 K 有界。
         for left, right in combinations(sorted(capture_ids), 2):
             edges.append(
                 CaptureRelationEdgeV1(
@@ -189,6 +192,7 @@ def _build_complete_duplicate_capture_edges(
         if len(capture_ids) < 2:
             continue
         evidence_key = [fingerprint_digest, sequence_digest]
+        # 桶内两两建边为 O(K²)（K=签名全等的 capture 数）；R01 规模下桶 K 有界。
         for left, right in combinations(sorted(capture_ids), 2):
             edges.append(
                 CaptureRelationEdgeV1(

@@ -371,6 +371,27 @@ M1C 单独验收须满足：
 - 单元测试含正常场景与关键失败场景（[`../AGENTS.md`](../AGENTS.md) §5），静态检查与差异检查通过；
 - 不含任何 R01 硬编码常量、模型调用、下游桩或 M1B 改动。
 
+### 11.1 验收门证明方式与 known-items（v0.3 补齐）
+
+验收门的实证方式分两类：**e2e 覆盖**（`tests/test_lineage_validation.py`：篡改**新建测试 M1B run** 或重签 lineage 产物后，断言目标 issue code fire；冻结 R01 字节不动）与**防御性不变量 tripwire**（正常输入结构上不触发，仅作 fail-closed 兜底，不强测）。
+
+**e2e 覆盖的验收门与守卫码：**
+- 门①/②组盲唯一实证 —— `IDENTICAL_RAW_REQUEST_HASH` 跨候选组边：两个分属不同 `(thread_id, account_id)` 候选组、共享同一合格 hash 的 capture 建 1 条跨组 IDENTICAL 边（`candidate_group_count==2`，边端点分属两组）。
+- 门③候选组 1:1 分区 —— 正例（多组 run 过全部核验）+ 负例（篡改 M1B `captures.jsonl` 令两组共用同一 `candidate_group_id`、重签 → `LINEAGE_CANDIDATE_GROUP_PARTITION_MISMATCH`）。
+- 边集双向 bijection —— node 删/幻影/篡改（`LINEAGE_NODE_MISSING` / `LINEAGE_NODE_PHANTOM` / `LINEAGE_NODE_MISMATCH`）、successor 边删/幻影（`LINEAGE_EDGE_MISSING` / `LINEAGE_EDGE_PHANTOM`）、endpoint 不在 M1B（`LINEAGE_ENDPOINT_NOT_IN_M1B`）。
+- 分级与证据卫生 —— relation 越级（`LINEAGE_RELATION_LEVEL_MISMATCH`）、`target_hash` 混入 evidence（`LINEAGE_EVIDENCE_TARGET_HASH`，§5.5）。
+- 报告闭合 —— 计数篡改（`LINEAGE_REPORT_COUNT_MISMATCH`）、白名单增删键（`LINEAGE_REPORT_ALLOWLIST_MISMATCH`）。
+- 内容寻址绑定 —— 绑错 M1B oracle（`M1B_RUN_ID_BINDING_MISMATCH` + `M1B_MANIFEST_SHA_BINDING_MISMATCH`）。
+- `COMPLETE_DUPLICATE_CAPTURE` 端到端首次产出并过 validator 重算（两条逐字节相同、仅 `line_number` 不同的 capture 记录）。
+- reader 透传字段类型守卫 —— 篡改 M1B `candidate_group_id` 为非字符串、重签 → `LineageInputError`（把下游裸 `TypeError` 前移为 fail-closed 显式错误）。
+
+**防御性不变量 tripwire（不强测）：**
+- `LINEAGE_REQUEST_NODE_CONSERVATION`（`lineage/validation.py`）：validator 复算的 `RequestNode` 集与 distinct `source_request_id` 集均源自同一 `boundaries_by_capture`，两者基数天然恒等；该码仅防将来复算逻辑回归，正常 run 永不触发。
+
+**已接受风险（known-items）：**
+1. **控制文件 host-identity 扫描的值域缺口**：`_scan_control_pathlike`（`lineage/validation.py`）只判 `startswith("/")` 或含 `"://"`，故不含 `/` 的裸主机名/属主名（如 `dev-wujian` / `wujian1`）不被拦截。缓解：三个控制文件字段均为**闭合值域**（内容寻址 run_id / 64-hex / schema 令牌 / 计数），**无任何自由文本槽**可承载主机身份，`private/` 亦为闭合值域白名单。记为已接受风险；将来若引入自由文本控制字段再补强扫描。
+2. **`RelationGrade.B` 死值已删**：实现确认 `relation_properties` / `CAPTURE_LEVEL_RELATIONS` / `REQUEST_LEVEL_RELATIONS` 均不引用 B，为兑现 §1「枚举不放 Grade-B、不放占位值」已从 `contracts.RelationGrade` 删除该成员；将来实现 Grade-B 时再新增成员并扩展 `_RELATION_PROPERTIES`（[`../AGENTS.md`](../AGENTS.md) §1 YAGNI）。
+
 ## 12. 后续边界
 
 M1C 完成并单独验收后才讨论 M1D（QueryTurn）。进入 M2 前仍须先冻结最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`（[`r01-processing-spec.md`](r01-processing-spec.md) §8.3）。M1C 不得预埋任何 M1D/M2 结构（[`../AGENTS.md`](../AGENTS.md) §1 YAGNI）。
