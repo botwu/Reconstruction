@@ -9,6 +9,11 @@ M1B validator 内部完成，M1C 侧不触碰该私有约定。
 抽取的字段全部来自冻结公开契约 `NormalizedCaptureV2` / `RequestBoundaryV1` /
 `EventOccurrenceV2`（规格 §2.2）。`candidate_group_id` 与 `(thread_id, account_id)` 仅供
 validator 做门③分区一致性与报告聚合计数取用，**绝不传入 builder**（结构性坐实门①/②）。
+
+注：M1B validator 只校验字段集合与 canonical，不逐值校验透传标量的 Python 类型。为把下游对不可
+哈希/错类型值的裸 `TypeError` 前移为 fail-closed 的 `LineageInputError`，本模块对入图所需标量
+（capture/boundary/event 的 ID、序数、指纹）另做类型守卫；契约里为 `Any` 的 `raw_request_hash` /
+`target_hash`（可为 null）不在此列，由下游 `classify_raw_request_hash` 与 `isinstance` 过滤兜底。
 """
 
 from __future__ import annotations
@@ -66,6 +71,22 @@ def _iter_published_jsonl(root: Path, relative: str) -> Iterator[dict[str, Any]]
             yield value
 
 
+def _require_str(value: Any, field: str, relative: str) -> str:
+    """入图标量必须是字符串；否则 fail-closed（M1B validator 不逐值校验透传类型）。"""
+
+    if not isinstance(value, str):
+        raise LineageInputError(f"输入 M1B 记录字段类型非法：{relative}/{field}")
+    return value
+
+
+def _require_ordinal(value: Any, field: str, relative: str) -> int:
+    """序数字段必须是非布尔整数；否则 fail-closed。"""
+
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise LineageInputError(f"输入 M1B 记录字段类型非法：{relative}/{field}")
+    return value
+
+
 def load_m1b_run_view(m1b_run_dir: str | Path) -> M1bRunView:
     """校验并读取一个已发布 M1B run；任一核验不符即整批失败，不产半份视图。"""
 
@@ -103,24 +124,48 @@ def load_m1b_run_view(m1b_run_dir: str | Path) -> M1bRunView:
     candidate_group_by_capture: dict[str, str] = {}
     thread_account_by_capture: dict[str, tuple[str, str]] = {}
     for record in _iter_published_jsonl(root, "private/captures.jsonl"):
-        capture_id = record["capture_occurrence_id"]
+        captures_rel = "private/captures.jsonl"
+        capture_id = _require_str(
+            record["capture_occurrence_id"], "capture_occurrence_id", captures_rel
+        )
+        # raw_request_hash / target_hash 契约为 Any（可为 null），不强制类型，由下游兜底。
         raw_request_hash_by_capture[capture_id] = record["raw_request_hash"]
         target_hash_by_capture[capture_id] = record["target_hash"]
-        candidate_group_by_capture[capture_id] = record["candidate_group_id"]
-        thread_account_by_capture[capture_id] = (record["thread_id"], record["account_id"])
+        candidate_group_by_capture[capture_id] = _require_str(
+            record["candidate_group_id"], "candidate_group_id", captures_rel
+        )
+        thread_account_by_capture[capture_id] = (
+            _require_str(record["thread_id"], "thread_id", captures_rel),
+            _require_str(record["account_id"], "account_id", captures_rel),
+        )
 
     boundaries_accumulator: dict[str, list[tuple[int, str]]] = defaultdict(list)
     for record in _iter_published_jsonl(root, "private/request_boundaries.jsonl"):
-        capture_id = record["capture_occurrence_id"]
+        boundaries_rel = "private/request_boundaries.jsonl"
+        capture_id = _require_str(
+            record["capture_occurrence_id"], "capture_occurrence_id", boundaries_rel
+        )
         boundaries_accumulator[capture_id].append(
-            (record["boundary_ordinal"], record["source_request_id"])
+            (
+                _require_ordinal(record["boundary_ordinal"], "boundary_ordinal", boundaries_rel),
+                _require_str(record["source_request_id"], "source_request_id", boundaries_rel),
+            )
         )
 
     fingerprint_accumulator: dict[str, list[tuple[int, str, str]]] = defaultdict(list)
     for record in _iter_published_jsonl(root, "private/event_occurrences.jsonl"):
-        capture_id = record["capture_occurrence_id"]
+        events_rel = "private/event_occurrences.jsonl"
+        capture_id = _require_str(
+            record["capture_occurrence_id"], "capture_occurrence_id", events_rel
+        )
         fingerprint_accumulator[capture_id].append(
-            (record["sequence_number"], record["event_kind"], record["visible_payload_sha256"])
+            (
+                _require_ordinal(record["sequence_number"], "sequence_number", events_rel),
+                _require_str(record["event_kind"], "event_kind", events_rel),
+                _require_str(
+                    record["visible_payload_sha256"], "visible_payload_sha256", events_rel
+                ),
+            )
         )
 
     boundaries_by_capture = {
