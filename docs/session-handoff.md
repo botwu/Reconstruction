@@ -1,10 +1,10 @@
 # TraceForge 开发会话交接
 
-版本：M1C 检查点
+版本：M1D 检查点
 
-日期：2026-09-02
+日期：2026-09-03
 
-状态：M1A、M1B v3 与 M1C 正式通过；已验收代码停止在 M1C；M1D 规格评审稿，实现未验收
+状态：M1A/M1B **v4**、M1C v2（重绑定 v4 run）与 M1D v1 正式通过；已验收代码停止在 M1D；M1 主线在 R01 上全部闭合，下一步为 M2 前置 `SourceAnnotationProjection` 规格评审
 
 ## 1. 本文用途
 
@@ -15,13 +15,14 @@
 3. [`background-and-goals.md`](background-and-goals.md)：背景、目标和主张边界；
 4. [`overall-plan.md`](overall-plan.md)：完整架构、模块和阶段门；
 5. [`r01-processing-spec.md`](r01-processing-spec.md)：M1 精确输入、算法、契约与验收；
-6. [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md)：M1A/M1B 正式验收证据；
-7. [`m1c-processing-spec.md`](m1c-processing-spec.md) 与 [`r01-m1c-validation.md`](r01-m1c-validation.md)：M1C 契约与正式验收证据；
-   [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md)（R1–R8）与 [`m1c-known-items.md`](m1c-known-items.md)（K1–K3）：已知项登记；K1/K2 已由 M1C v2 从根因关闭，**上游不透明摘要不入任何关系证据**是 v2 起的通用原则；
-8. [`m1d-processing-spec.md`](m1d-processing-spec.md)：M1D 规格评审稿；[`m1d-review-20260902.md`](m1d-review-20260902.md)：对未提交 M1D 实现的评审意见；
-9. [`reference-repositories.md`](reference-repositories.md) 与 [`implementation-sources.md`](implementation-sources.md)：参考逻辑和迁移边界。
+6. [`r01-m1b-v4-validation.md`](r01-m1b-v4-validation.md)：M1A/M1B **v4** 正式验收证据（当前有效）；[`r01-m1-v3-validation.md`](r01-m1-v3-validation.md)：v3 历史验收；
+7. [`m1c-processing-spec.md`](m1c-processing-spec.md) 与 [`r01-m1c-validation.md`](r01-m1c-validation.md)（§0′ 为当前有效结论）：M1C 契约与正式验收证据；
+   [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md)（R1–R9；R4/R5/R7/R8 随 v4 关闭，R9 随 M1D 提交关闭）与 [`m1c-known-items.md`](m1c-known-items.md)（K1–K3）：已知项登记；K1/K2 已由 M1C v2 从根因关闭，**上游不透明摘要不入任何关系证据**是 v2 起的通用原则；
+8. [`m1d-processing-spec.md`](m1d-processing-spec.md)（v0.3，实现同步稿）与 [`r01-m1d-validation.md`](r01-m1d-validation.md)：M1D 契约与正式验收证据；[`m1d-review-20260902.md`](m1d-review-20260902.md)：已处置的评审意见（存档）；
+9. [`m2-source-projection-spec.md`](m2-source-projection-spec.md)：M2 前置来源投影规格 v0.1（评审中，下一步）；
+10. [`reference-repositories.md`](reference-repositories.md) 与 [`implementation-sources.md`](implementation-sources.md)：参考逻辑和迁移边界。
 
-如果本文与模块规格冲突，以 `r01-processing-spec.md`（M1A/B）和 `m1c-processing-spec.md`（M1C）的契约为准；如果与开发纪律冲突，以 `AGENTS.md` 为准。
+如果本文与模块规格冲突，以 `r01-processing-spec.md`（M1A/B）、`m1c-processing-spec.md`（M1C）和 `m1d-processing-spec.md`（M1D）的契约为准；如果与开发纪律冲突，以 `AGENTS.md` 为准。
 
 ## 2. 背景与最终目标
 
@@ -41,24 +42,27 @@ flowchart LR
     B --> C[M1B Capture 内结构编译]
     C --> C1[EventLog / ActionBatch / Pairing]
     C1 --> D[M1C 跨 capture lineage]
-    D --> S{{当前 STOP}}
-    S -. 规格评审中 .-> E[M1D QueryTurn]
-    E --> F[M2 TaskEpisode 与画像]
+    C1 --> E[M1D 结构型 QueryTurn]
+    E --> S{{当前 STOP}}
+    S -. M2 前置规格评审中 .-> F[M2 TaskEpisode 与画像]
     F --> G[M3 Task-World 联合合成]
     G --> H[M4 认证、rollout 闭合与定向修复]
     H --> I[M5 六维难度校准]
     I --> J[CertifiedTaskWorldRelease]
 ```
 
-当前只完成实线部分。M1D 的 `src/traceforge/query_turns/` 与 `tests/test_m1d_*.py` 在 2026-09-02 由并行会话开始实现，尚未提交、未验收，不在本检查点的正式结论内。仓库中没有 M2、World、认证、难度或 Harbor 的空壳实现。
+当前只完成实线部分：M1A/B v4 → M1C v2、M1D v1 均在 R01 上正式验收，三者的 run 以内容寻址身份链式绑定（`84d826b3…` ← `6be45e01…` → `9ff708d9…`）。M1D 与 M1C 并列消费 M1B run，互不依赖（M1D 默认不启用 M1C 做跨 capture 线程图，规格 §11 D-c）。仓库中没有 M2、World、认证、难度或 Harbor 的空壳实现。
 
 ## 4. 仓库与冻结输入
 
 ```text
-本地仓库：/Users/wujian1/Downloads/traceforge
+本地仓库：/Users/wujian1/Downloads/traceforge（Mac）
+        /mnt/afs_toolcall/wujian1/Projects/workspace/traceforge（验收机，AFS 共享盘，分支 m1c-lineage）
 远程：git@gitlab.sh.sensetime.com:wujian1/traceforge.git
 分支：main
-R01：/Users/wujian1/Downloads/seed2traj/return_data/four_batch/by-rubric/R01.jsonl
+R01（Mac）：/Users/wujian1/Downloads/seed2traj/return_data/four_batch/by-rubric/R01.jsonl
+R01（验收机全量真源）：/mnt/afs_toolcall/juxiaolong1/Projects/DataFilter_v2/gpt56sol/domain/by-rubric/R01.jsonl
+  （验收机仓内 return_data/.../R01.jsonl 为 368 行截断副本，禁止用作输入）
 dataset_id：r01-four-batch-202607-v1
 source_schema：traceforge.restored-long-capture.v1
 字节数：560,481,884
@@ -75,31 +79,39 @@ SHA-256：3832d8aa4ecd577636ce67b56d8798d9fb6311662a7bbce65814e5e8d260d4d8
 
 ## 5. 当前代码冻结点与契约版本
 
-M1A/M1B 正式全量运行绑定的代码冻结点：
+M1A/M1B **v4** 正式全量运行绑定的代码冻结点（`trajectory/` 代码 = 提交 `8f6f65c`；run 在其后代 `943ba92` 上构建，二者 `trajectory/` 无差异）：
 
 ```text
-Git commit：c3c0a8fb6ed9927d5bebba55c616e1ef524c653b
-Git tree：5438c8d3e421007bcc400c30c47862945caaae55
+Git commit：943ba922270a368440ad5a81028da4beda58508b
+Git tree：aa083fbe9d46fba3b786e2d4d375967034b78576
 dirty：false
 TraceForge：0.3.0
-compiler contract：trajectory-compiler-m1ab-v3
+compiler contract：trajectory-compiler-m1ab-v4
 ToolPairing schema：traceforge.tool-pairing.v3
 ```
 
-M1C 正式全量运行绑定的代码冻结点（`src/traceforge/trajectory/` 相对 `c3c0a8f` 无变化）：
+（v3 冻结点 `c3c0a8f` / contract `trajectory-compiler-m1ab-v3` 为历史结论，v4 validator 对 v3 run 按设计 fail-closed。）
+
+M1C v2 重绑定 v4 run 的正式运行绑定同一提交 `943ba92`（`lineage/` 相对 `fcff8cf` 仅 `reader.py` 文档字符串 2 行，无运行时变化）：
 
 ```text
-Git commit：fcff8cf88e7edcd645484318fd8bd12de50b7af7
-Git tree：482b2a72c4b3b17bdb15c143f06bb5c1b48bb416
-dirty：false
 lineage contract：lineage-compiler-m1c-v2
 ```
 
-交接文档自身会形成后续纯文档提交；新会话必须用 `git log` 确认 HEAD 是上述冻结点的后代，并确认 `fcff8cf` 之后除 M1D 新增文件外没有未重新验收的 `src/trajectory/`、`src/lineage/`、`pyproject.toml` 或 `uv.lock` 变化。
+M1D v1 正式全量运行绑定的代码冻结点：
+
+```text
+Git commit：1c588bed6cfbb696611823ce427fdaa8fd06e249
+Git tree：2bc0f4bc4da4eadeb3fbcfa3a187618d3e6669f8
+dirty：false
+query-turn contract：query-turn-compiler-m1d-v1
+```
+
+交接文档自身会形成后续纯文档提交；新会话必须用 `git log` 确认 HEAD 是上述冻结点的后代，并确认 `1c588be` 之后没有未重新验收的 `src/traceforge/trajectory/`、`src/traceforge/lineage/`、`src/traceforge/query_turns/`、`pyproject.toml` 或 `uv.lock` 变化。
 
 ## 6. M1 已实现能力
 
-当前实现位于 `src/traceforge/trajectory/`，具体字段和算法只在 `r01-processing-spec.md` 定义。能力边界如下：
+M1A/B 位于 `src/traceforge/trajectory/`（字段与算法只在 `r01-processing-spec.md` 定义）；M1C 位于 `src/traceforge/lineage/`（`m1c-processing-spec.md`）；M1D 位于 `src/traceforge/query_turns/`（`m1d-processing-spec.md`）。M1A/B 能力边界如下：
 
 - 单一显式 restored-long source adapter，不对任意 JSON 猜格式；
 - 两遍流式扫描、stat/digest/字节数/行数闭合和逐行来源账本；
@@ -112,6 +124,8 @@ lineage contract：lineage-compiler-m1c-v2
 - 任意深度 reasoning 原文递归摘要，Data URL 正文不进入派生产物；
 - private 事件表与 public 聚合报告物理分离；
 - 独立 validator 重算 boundary、ActionBatch、pairing、quality、report、typed payload 与隐私不变量。
+
+M1D（`query-turn-compiler-m1d-v1`）在已发布 M1B run 之上：先跑 M1B 权威 validator 再消费；以 `sequence_number` 升序的**可观测事件流**为工作对象，boundary 只作证据锚点；键于 assistant 事件建 `AgentStep`，工具观测**按 `ToolPairingRecordV3` 配对归属**而非位置；可定位 USER 段起 `OBSERVED_ROOTED` 回合，窗口以 assistant 起头则起 `PREFIX_ROOTED` 回合（根在不可定位前缀，显式暴露）；末步有 ActionBatch 即 `INCOMPLETE`、否则按 typed reader 冻结标量判 `TEXT/EMPTY_OUTCOME`；capture 内相邻回合连 `STRUCTURAL_NEXT_TURN` 边；每 capture 一条记账（前缀/观测逐 kind 计数、孤儿观测、compaction）。零模型调用、零语义关系。validator 为两层信任边界：篡改检测（同一纯 fold 重建 + 六表双向 bijection）与不经 fold 的正交不变量（观测事件分区守恒、记账对账、末 assistant 与 M1B `terminal_status` 交叉核对、报告由表重算）。
 
 ## 7. 本轮审计闭环
 
@@ -127,52 +141,66 @@ v1、v2 验收报告的正式结论均已撤销，只保留历史正常路径事
 
 ## 8. 正式验收证据
 
+### 8.0 M1A/M1B v4（2026-09-03，当前有效）
+
 ```text
-run ID：519a86d3f48add7c37262b05db792d790aa49fccf67b7b92bbea2784e8e06d1d
-artifact manifest SHA-256：9dcdb083bd202157ab8c9e90b8c660a0e18130c62d65cafe743a7c27a5549876
-运行 A：42.648523 秒，RSS 116,637,696 bytes
-运行 B：42.540646 秒，RSS 114,098,176 bytes
+run ID：6be45e01cb97b14ce8cfeeed4b0860097a7006619a83e9a32f1284ee5775c8ed
+artifact manifest SHA-256：179b82efca85fc6132bfa806d45b081729b0d5627878b0d517e978070fe99eb1
+运行 A：回执 82.359419 秒，RSS 37,945,344 bytes
+运行 B：回执 83.436668 秒，RSS 37,851,136 bytes
 validator A/B：ok=true；10 files；1,683 lines；175,858 events
+递归 diff：排除 run_receipt.json 后无差异；与审核方会话单跑产物逐字节一致
+反向核对：v4 validator 对 v3 run 519a86d3… 报 SCHEMA/CONTRACT 版本不匹配（预期）
+v3→v4 字节差异逐文件归因于 schema 升级、枚举/字段改名，无业务逻辑变化
+```
+
+```text
+artifacts/r01/6be45e01cb97b14ce8cfeeed4b0860097a7006619a83e9a32f1284ee5775c8ed/
+artifacts/r01/acceptance/6be45e01cb97b14ce8cfeeed4b0860097a7006619a83e9a32f1284ee5775c8ed/
+```
+
+长期可提交摘要见 `r01-m1b-v4-validation.md`。v3 run `519a86d3…`（manifest `9dcdb083…`）与其证据保留为历史（`r01-m1-v3-validation.md`）。
+
+### 8.1 M1C v2 重绑定 v4 run（2026-09-03，当前有效）
+
+```text
+lineage run ID：9ff708d98773a175f9552b09ea1171f16a6ba3bbe4a4ffbcc4fdec2612acb17b
+绑定 M1B run：6be45e01…（manifest SHA-256 179b82ef…）
+lineage artifact manifest SHA-256：83934c6c4f9366dd7046e136161f78367a082f5748eb404532fa4816cef9eaeb
+运行 A：112.479697 秒，RSS 244,387,840 bytes
+运行 B：114.908946 秒，RSS 244,424,704 bytes
+validator A/B：ok=true；5 files；SHARED 1,671 / SUCCESSOR 4,994 / DUPLICATE 0，与 §4.4 逐项一致
 递归 diff：排除 run_receipt.json 后无差异
-测试：160 passed
-Ruff lint/format、离线 lock、Git diff check：通过
+相对 978c0347…（绑定 v3 run）：全部文件字节不同（ID 以 m1b_run_id 命名空间化），剥离 ID 后节点/边集合完全相同
 ```
-
-本地正式 run：
 
 ```text
-artifacts/r01/519a86d3f48add7c37262b05db792d790aa49fccf67b7b92bbea2784e8e06d1d/
+artifacts/r01/lineage/9ff708d98773a175f9552b09ea1171f16a6ba3bbe4a4ffbcc4fdec2612acb17b/
+artifacts/r01/acceptance_m1c/9ff708d98773a175f9552b09ea1171f16a6ba3bbe4a4ffbcc4fdec2612acb17b/
 ```
 
-两次 receipt、manifest、validator 输出、diff 结论和原始 RSS 日志保存在：
+长期可提交摘要见 `r01-m1c-validation.md` §0′；旧 run `978c0347…` 保留为历史。§7 登记的两项环境已知项仍有效：慢盘上 `git status` 超过 provenance 的 5 秒超时会使就地 run 被 validator 拒绝（正式 run 一律在本地盘干净克隆上执行）；验收机仓内 `return_data/.../R01.jsonl` 为不完整副本，全量真源路径见 §4。
+
+### 8.2 M1D v1（2026-09-03，当前有效）
 
 ```text
-artifacts/r01/acceptance/519a86d3f48add7c37262b05db792d790aa49fccf67b7b92bbea2784e8e06d1d/
+query-turn run ID：84d826b3d7abddffb5f8fde28d7e5592590720bd6909c24a8b17b7f0c70b66ea
+绑定 M1B run：6be45e01…（manifest SHA-256 179b82ef…）
+M1D artifact manifest SHA-256：56a3befe44bec087a52aaa680f592eb71e196c7d7bd946e47c172540cb190bfe
+运行 A：回执 211.258606 秒，RSS 244,621,312 bytes
+运行 B：回执 202.558055 秒，RSS 244,928,512 bytes
+validator A/B（双参）：ok=true；8 files；13 项计数与审核向量及 v3 run 上的 M1D 计数逐项一致
+递归 diff：排除 run_receipt.json 后无差异；五张业务表与审核方会话产物逐字节相同
+反向核对：以 v3 M1B run 作 oracle → M1B_INPUT_INVALID（fail-closed）
+测试：273 passed（M1D 55）；Ruff lint/format：通过
 ```
-
-真实 run 和证据均被 Git 忽略。长期可提交摘要见 `r01-m1-v3-validation.md`。
-
-### 8.1 M1C 正式验收证据（v2，2026-09-03）
 
 ```text
-lineage run ID：978c0347b4198223cada09ccfd7bf55cf50a42a0ee7a049d55feedf793c7e12e
-绑定 M1B run：519a86d3…e06d1d（manifest SHA-256 9dcdb083…）
-lineage artifact manifest SHA-256：837c9da7f89b16658f4eacca7ea04a0dd851c42abd9f93f2e094bddcfd9450f9
-运行 A：116.317097 秒，RSS 244,486,144 bytes
-运行 B：118.341063 秒，RSS 243,265,536 bytes
-validator A/B：ok=true；5 files；计数与 m1c-processing-spec §4.4 逐项一致
-递归 diff：排除 run_receipt.json 后无差异
-lineage 相关测试通过；Ruff lint/format：通过；v2 相对 v1 产物恰好只少 41 条 IDENTICAL 边
+artifacts/r01/query_turns/84d826b3d7abddffb5f8fde28d7e5592590720bd6909c24a8b17b7f0c70b66ea/
+artifacts/r01/acceptance_m1d/84d826b3d7abddffb5f8fde28d7e5592590720bd6909c24a8b17b7f0c70b66ea/
 ```
 
-本地正式 run 与证据：
-
-```text
-artifacts/r01/lineage/978c0347b4198223cada09ccfd7bf55cf50a42a0ee7a049d55feedf793c7e12e/
-artifacts/r01/acceptance_m1c/978c0347b4198223cada09ccfd7bf55cf50a42a0ee7a049d55feedf793c7e12e/
-```
-
-长期可提交摘要见 `r01-m1c-validation.md`，其中 §7 登记两项环境已知项：慢盘上 `git status` 超过 provenance 的 5 秒超时会使就地 run 被 validator 拒绝（正式 run 因此在本地盘干净克隆上执行）；验收机器上的 `return_data/.../R01.jsonl` 为不完整副本，任何需要原始 JSONL 的阶段开工前必须先取回完整文件并核对 SHA-256。
+长期可提交摘要见 `r01-m1d-validation.md`。真实 run 和证据均被 Git 忽略。
 
 ## 9. 当前关键数据事实
 
@@ -189,10 +217,14 @@ artifacts/r01/acceptance_m1c/978c0347b4198223cada09ccfd7bf55cf50a42a0ee7a049d55f
 | `SHARED_SOURCE_REQUEST` 边（M1C） | 1,671 | 全部为"共享前缀后分叉"的兄弟 capture，0 例跨候选组 |
 | `EXPLICIT_REQUEST_SUCCESSOR` 边（M1C） | 4,994 | 请求级真森林：入度 ≤ 1、最大出度 13、无环 |
 | `COMPLETE_DUPLICATE_CAPTURE` 边（M1C） | 0 | 契约保留，R01 无完整重复 capture |
+| `QueryTurn`（M1D） | 2,610 = 1,683 `PREFIX_ROOTED` + 927 `OBSERVED_ROOTED` | 每 capture 恒一个根在前缀的首回合；仅 927 个回合有可定位用户根 |
+| `AgentStep` / `UserBlock` / 结构边（M1D） | 14,375 / 927 / 927 | AgentStep 是唯一始终可定位的单元；边数 = 回合数 − capture 数 |
+| `COMPLETE` / `INCOMPLETE` 回合（M1D） | 1,200 / 1,410 | R01 无 `EMPTY_OUTCOME`；INCOMPLETE 全部为末步工具调用步或 USER-only 回合 |
+| 孤儿工具观测 / 含 compaction capture（M1D） | 324 / 119 | 孤儿=配对到前缀调用的观测结果，集中在少数 capture |
 
-不要将 `processing_status=COMPLETE` 解读为任务完成，也不要把 353 个结构候选直接交给任务合成。M1C 的边是 Control 侧来源解析信息，不进入任何 Public 视图，也不用于硬去重。
+不要将 `processing_status=COMPLETE` 解读为任务完成，也不要把 353 个结构候选直接交给任务合成。M1C 的边是 Control 侧来源解析信息，不进入任何 Public 视图，也不用于硬去重。M1D 的回合是**结构**分组：`PREFIX_ROOTED` 回合的用户意图不在观测窗口内，`root_status` 必须随回合一起传给下游。
 
-M1D 规格 §0 的结构探针另给出对 M2 极关键的事实：14,407 个 USER 事件中 13,225 落在不可定位的 `PRE_FIRST_OBSERVED_TERMINAL` 前缀；80% 的 capture 观测窗口内没有可定位 USER。M2 的 `SourceAnnotationProjection` 若不显式允许以带"不可定位"标记的方式读取前缀 USER 正文作为任务意图证据，`ObservedTaskDistribution` 的分母将只剩约 342 个 capture。
+M1D 规格 §0 的结构探针与正式 run 共同给出对 M2 极关键的事实：14,407 个 USER 事件中 13,225 落在不可定位的 `PRE_FIRST_OBSERVED_TERMINAL` 前缀；100% capture 存在不可定位前缀，80% 的 capture 观测窗口内没有可定位 USER，只有 927 个回合有可定位用户根。M2 的 `SourceAnnotationProjection` 若不显式允许以带"不可定位"标记的方式读取前缀 USER 正文作为任务意图证据，`ObservedTaskDistribution` 的分母将只剩约 342 个 capture。
 
 ## 10. 当前硬停止线
 
@@ -201,7 +233,7 @@ M1D 规格 §0 的结构探针另给出对 M2 极关键的事实：14,407 个 US
 - Grade-B `NORMALIZED_VISIBLE_PREFIX_OF`、已删除的 `IDENTICAL_RAW_REQUEST_HASH` 或任何非 3 类 Grade-A 的 lineage 关系；
 - 任何以上游不透明摘要（`raw_request_hash`、`target_hash`、`input_truncated` 等自报值）为依据的关系或 `OBSERVED_*` 状态；
 - 以 M1C 边为依据的 capture 硬去重、合并或"选最长丢其余"；
-- 已验收的 QueryTurn，或任何 TaskEpisode；
+- 任何语义关系（`CONTINUES/REFINES/…`）、跨 capture 线程合并、前缀内容的语义还原，或任何 TaskEpisode（M1D 只产 `STRUCTURAL_NEXT_TURN`）；
 - ObservedTaskDistribution 或 EnvironmentExposureProfile；
 - 业务 Domain、World、Truth、Reference、Verifier；
 - 可解性、难度、模型边界或自动纠正；
@@ -209,15 +241,15 @@ M1D 规格 §0 的结构探针另给出对 M2 极关键的事实：14,407 个 US
 
 Harbor 是将来 `RunnableTaskWorldCandidateBundle` 的 rollout 执行层，不是 TraceForge core，也不是当前 M1 的前置依赖。Harbor 部分由项目负责人另行负责。
 
-## 11. 下一模块：M1D 评审与验收，随后冻结 M2 前置
+## 11. 下一模块：M2 前置 `SourceAnnotationProjection` 规格评审
 
-M1C 的四门（候选组仅 `BLOCKING_HINT_ONLY`、Grade-A 组盲、validator 独立核验分区、`raw_request_hash` 格式契约）已在 [`m1c-processing-spec.md`](m1c-processing-spec.md) §3 冻结并经 [`r01-m1c-validation.md`](r01-m1c-validation.md) 验收，此处不再复述。
+M1C 的四门（候选组仅 `BLOCKING_HINT_ONLY`、Grade-A 组盲、validator 独立核验分区、`raw_request_hash` 格式契约）与 M1D 的五门（纯确定性零 LLM、只在观测窗口分类、结构信号不读正文、工具观测按配对归属、Public/Control 隔离）分别在 [`m1c-processing-spec.md`](m1c-processing-spec.md) §3、[`m1d-processing-spec.md`](m1d-processing-spec.md) §3 冻结并经各自验收报告验收，此处不再复述。
 
-M1D 当前状态：规格 [`m1d-processing-spec.md`](m1d-processing-spec.md) v0.2 为评审稿，§12 留有 D-a～D-d 四个小决策；`src/traceforge/query_turns/` 由并行会话开始实现。M1D 的验收门与 M1C 同构：在冻结 M1B run（可选加 M1C run）上两次独立构建、独立多参 validator、观测/前缀守恒、AgentStep 双向 bijection、capture 末 turn 与 `CaptureQualityV2.terminal_status` 交叉核对、两层隐私、RSS 停止线。M1D 验收报告落 `docs/r01-m1d-validation.md` 后才更新本文停点。
+**M1B v4 reopen 已闭合（2026-09-03）。** 四项已知项归两个根因一次处理：(a) 上游自报值不得渲染成观测（R4，`SOURCE_REPORTS_*`）；(b) 契约不保留无生产者的状态、业务规则只有一个定义（R7 删 `PARTIAL`、R5 严格匹配谓词抽为共用纯函数、R8 改名 `visible_payload_envelope_utf8_byte_length`）。在验收机全量真源上两次重编译复现 run `6be45e01…`，见 §8.0；M1C v2 随之重绑定（§8.1）；M1D 在 v4 run 上的 13 项计数与 v3 run 完全一致，证实 v4 对 M1D 字节中性。
 
-**M1B v4 reopen（已批准；代码已落于提交 `8f6f65c`，验收后置）。** 代码级审计的四项 M1B 已知项归为两个根因，一次 reopen 全部处理：(a) 上游自报值不得渲染成观测——`input_truncation_status` 的枚举值改为 `SOURCE_REPORTS_TRUNCATED / SOURCE_REPORTS_NOT_TRUNCATED / UNKNOWN`（R4）；(b) 契约不保留无生产者的状态、业务规则只有一个定义——删除 `ProcessingStatus.PARTIAL`（R7，三态 eligibility 属 M2）、严格匹配谓词抽为 `contracts.py` 纯函数供 compiler 与 validator 共用（R5）、`visible_payload_utf8_byte_length` 改名为 `visible_payload_envelope_utf8_byte_length`（R8）。前三项改产物字节或契约版本，compiler contract 升为 `trajectory-compiler-m1ab-v4`。本机已完成代码、153 项 M1A/B 测试与 lineage 回归；**正式验收必须在有完整 R01（560,481,884 字节、SHA `3832d8aa…`）的机器上两次全量重编译**，在此之前 `c3c0a8f` 的 v3 结论继续有效、v4 代码不得宣称已验收。**连带影响**：v4 validator 对 v3 冻结 run `519a86d3…` 按设计报 `SCHEMA_VERSION_MISMATCH` / `COMPILER_CONTRACT_VERSION_MISMATCH`（§13 检查表中该项在 v4 验收前预期失败）；M1C v2 的正式 run `978c0347…` 绑定的是 v3 M1B run，v4 重编译后须用新 M1B run 重跑 M1C（无代码变化，仅输入身份变化，产生新 lineage run ID）并补一次 M1C 验收。
+**M1D 评审整改已闭合（2026-09-03，规格 v0.3）。** [`m1d-review-20260902.md`](m1d-review-20260902.md) 的 D1–D5 与 §3 三项决定全部处置：validator 改为两层信任边界（篡改检测调用同一纯 fold；fold 缺陷由不经 fold 的正交不变量层检出，含 D1 分区守恒），删除 `processing_status` 透传与 `QUARANTINED` 死分支（D4/D5），`parallel_semantics` 无 batch 取 `null`（D2），accounting 字段以实现为准（D3），终态交叉核对对象改为末 assistant（D-f），配对重复不设 tripwire、空观测流以防御性测试固定（§3）。该评审文档保留为存档。
 
-进入 M2 前必须冻结最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`（[`r01-processing-spec.md`](r01-processing-spec.md) §8.3）。该规格必须直面 §9 末段的事实：前缀 USER 正文要能以显式"不可定位"来源标记进入任务意图证据，否则 M2 分母塌陷；同时 M2 不得按绝对路径私下重新解析原始 JSONL。
+**下一步（唯一）**：评审并冻结 [`m2-source-projection-spec.md`](m2-source-projection-spec.md)（v0.1 草案）——最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`（[`r01-processing-spec.md`](r01-processing-spec.md) §8.3）。该规格必须直面 §9 末段的事实：前缀 USER 正文要能以显式"不可定位"来源标记进入任务意图证据，否则 M2 分母塌陷（只剩约 342 个 capture / 927 个有根回合）；同时 M2 不得按绝对路径私下重新解析原始 JSONL，只能经 M1A 的来源账本（`source_records` 的 `line_sha256` / `dataset_sha256`）定位原始行。M2 的 LLM 输入单元 = M1D `QueryTurn`（带 `root_status`）+ M1B 事件冻结标量 + 该投影提供的带来源正文；批准前不写 M2 代码。
 
 ## 12. 参考资源采用边界
 
@@ -239,23 +271,26 @@ AgentHER、CSO、GameCraft-Bench 在当前本地快照中没有可审计、可�
 ```bash
 git status --short
 git log --oneline -5
-git diff c3c0a8fb6ed9927d5bebba55c616e1ef524c653b..HEAD -- \
-  src/traceforge/trajectory pyproject.toml uv.lock
+git diff 8f6f65c..HEAD -- src/traceforge/trajectory pyproject.toml uv.lock
 git diff fcff8cf88e7edcd645484318fd8bd12de50b7af7..HEAD -- src/traceforge/lineage
+git diff 1c588bed6cfbb696611823ce427fdaa8fd06e249..HEAD -- src/traceforge/query_turns
 .venv/bin/pytest -p no:cacheprovider -q
 .venv/bin/ruff check --no-cache .
 .venv/bin/ruff format --no-cache --check .
 uv lock --check --offline --no-cache
 .venv/bin/python scripts/validate_m1_run.py \
-  artifacts/r01/519a86d3f48add7c37262b05db792d790aa49fccf67b7b92bbea2784e8e06d1d
+  artifacts/r01/6be45e01cb97b14ce8cfeeed4b0860097a7006619a83e9a32f1284ee5775c8ed
 .venv/bin/python scripts/validate_m1c_run.py \
-  artifacts/r01/lineage/978c0347b4198223cada09ccfd7bf55cf50a42a0ee7a049d55feedf793c7e12e \
-  artifacts/r01/519a86d3f48add7c37262b05db792d790aa49fccf67b7b92bbea2784e8e06d1d
+  artifacts/r01/lineage/9ff708d98773a175f9552b09ea1171f16a6ba3bbe4a4ffbcc4fdec2612acb17b \
+  artifacts/r01/6be45e01cb97b14ce8cfeeed4b0860097a7006619a83e9a32f1284ee5775c8ed
+.venv/bin/python scripts/validate_m1d_run.py \
+  artifacts/r01/query_turns/84d826b3d7abddffb5f8fde28d7e5592590720bd6909c24a8b17b7f0c70b66ea \
+  artifacts/r01/6be45e01cb97b14ce8cfeeed4b0860097a7006619a83e9a32f1284ee5775c8ed
 ```
 
-预期：`lineage/` 相对 `fcff8cf` 无运行时代码变化；`trajectory/` 相对 `c3c0a8f` 有且仅有 `8f6f65c`（M1B v4，待验收）的变化；测试全部通过（M1C 检查点为 230 项，不含并行会话的 M1D 新增测试）；M1 validator 对 v3 冻结 run 在 v4 验收前**预期失败**于 schema/contract 版本不匹配（v4 重编译后应返回 `ok=true`、10 files、1,683 lines、175,858 events）；M1C validator 返回 `ok=true`、5 files、计数与 §8.1 一致。
+预期：`trajectory/` 相对 `8f6f65c`、`lineage/` 相对 `fcff8cf`（除 `reader.py` 文档字符串 2 行）、`query_turns/` 相对 `1c588be` 均无运行时代码变化；测试全部通过（M1D 检查点为 273 项）；M1 validator 返回 `ok=true`、10 files、1,683 lines、175,858 events；M1C validator 返回 `ok=true`、5 files、计数与 §8.1 一致；M1D validator 返回 `ok=true`、8 files、13 项计数与 §8.2 一致。在 AFS 慢盘上，三个 validator 各需 1–4 分钟（M1C/M1D 内含对 706 MB 上游 run 的权威重验），属先校验后消费的必要成本。
 
-若工作区含未提交的 `query_turns/` 或 `test_m1d_*.py`，它们属于进行中的 M1D 实现，不改变本检查点结论；不得把它们与 M1C 或文档改动混入同一提交。
+在 AFS 共享盘工作区**就地**构建的任何 run 会因 `git status` 超过 provenance 5 秒超时而被 validator 拒绝——正式 run 一律在本地盘干净克隆上执行（[`r01-m1c-validation.md`](r01-m1c-validation.md) §7）。
 
 ## 14. 明确禁止项
 

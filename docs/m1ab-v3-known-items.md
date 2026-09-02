@@ -1,10 +1,10 @@
 # M1A/M1B v3 已知项登记
 
-版本：v1.3
+版本：v1.4
 
-日期：2026-09-01（v1.0：R1、R4）；2026-09-02（v1.1：追加 R5–R8）；2026-09-03（v1.2：R4/R5/R7/R8 的修法已在 M1B v4 提交 `8f6f65c` 落地，待正式验收）；2026-09-03（v1.3：M1B v4 在完整 R01 上正式验收通过，R4/R5/R7/R8 **关闭**；追加 R9 测试夹具耦合未提交模块）
+日期：2026-09-01（v1.0：R1、R4）；2026-09-02（v1.1：追加 R5–R8）；2026-09-03（v1.2：R4/R5/R7/R8 的修法已在 M1B v4 提交 `8f6f65c` 落地，待正式验收）；2026-09-03（v1.3：M1B v4 在完整 R01 上正式验收通过，R4/R5/R7/R8 **关闭**；追加 R9 测试夹具耦合未提交模块）；2026-09-03（v1.4：R9 随 M1D 提交 `1c588be` 自愈并在干净克隆上实证，**关闭**）
 
-状态：M1A、M1B 已知项登记。**M1B v4 已正式验收**（run `6be45e01…`，[`r01-m1b-v4-validation.md`](r01-m1b-v4-validation.md)），R4/R5/R7/R8 关闭；R1 继续接受；R6 为 validator 能力边界登记；R9 为提交纪律缺口，随 M1D 提交自愈
+状态：M1A、M1B 已知项登记。**M1B v4 已正式验收**（run `6be45e01…`，[`r01-m1b-v4-validation.md`](r01-m1b-v4-validation.md)），R4/R5/R7/R8 关闭；R1 继续接受；R6 为 validator 能力边界登记；R9 已关闭（`1c588be` 检出上全量 pytest 273 项通过、无 `ModuleNotFoundError`）
 
 本文登记对抗审计在 `trajectory-compiler-m1ab-v3` 冻结代码上发现、但决定**带来源接受并暂不修改**的两个点（R1、R4）。它不撤销 [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md) 的正式结论，也不新增任何代码。开发纪律只引用 [`../AGENTS.md`](../AGENTS.md)；M1 契约以 [`r01-processing-spec.md`](r01-processing-spec.md) 为准。
 
@@ -20,7 +20,7 @@
 | R6 | validator 验证范围是 artifact 自洽，不是从 source 重派生 | `validation.py:794-801`、`1962-1965`、`1681-1682`、`1799-1803` | 是（范围限制，恒成立） | 主张边界 / 非缺陷 | 登记为 validator 的明确能力边界 |
 | R7 | `ProcessingStatus.PARTIAL` 全仓库无生产者 | `contracts.py:26`；`compiler.py:257` 恒写 `COMPLETE` | 是（1,683 全 `COMPLETE`，0 `PARTIAL`） | YAGNI 违反 / 下游死分支 | **v4 已修，已验收关闭**：删除 `PARTIAL` 与 `processing_partial_count`；三态 eligibility 明确归 M2 |
 | R8 | `visible_payload_utf8_byte_length` 名不符实 | `compiler.py:917` | 是（恒为 JSON 外壳长度） | 可用性陷阱 / 已致 M1D 规格勘误 | **v4 已修，已验收关闭**：改名为 `visible_payload_envelope_utf8_byte_length`，EventOccurrence 升 v3 |
-| R9 | 测试夹具耦合未提交模块（提交纪律缺口） | `tests/conftest.py` `stable_git_provenance` 自 `e50e999` 起 monkeypatch `traceforge.query_turns.pipeline` | 是（干净检出上 `test_lineage_validation.py` e2e 用例 setup 阶段 `ModuleNotFoundError`） | 提交纪律 / 不影响任何 run 级结论 | 随 M1D 提交自愈；今后 fixture 引用的模块须与 fixture 同一提交或更早落地 |
+| R9 | 测试夹具耦合未提交模块（提交纪律缺口） | `tests/conftest.py` `stable_git_provenance` 自 `e50e999` 起 monkeypatch `traceforge.query_turns.pipeline` | 是（干净检出上 `test_lineage_validation.py` e2e 用例 setup 阶段 `ModuleNotFoundError`） | 提交纪律 / 不影响任何 run 级结论 | **已关闭**：随 M1D 提交 `1c588be` 自愈，干净克隆全量 pytest 273 项通过；今后 fixture 引用的模块须与 fixture 同一提交或更早落地 |
 
 ## 2. R1：脱敏续行判定只认 CR/LF
 
