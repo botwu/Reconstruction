@@ -215,7 +215,7 @@ M1C 的四门（候选组仅 `BLOCKING_HINT_ONLY`、Grade-A 组盲、validator �
 
 M1D 当前状态：规格 [`m1d-processing-spec.md`](m1d-processing-spec.md) v0.2 为评审稿，§12 留有 D-a～D-d 四个小决策；`src/traceforge/query_turns/` 由并行会话开始实现。M1D 的验收门与 M1C 同构：在冻结 M1B run（可选加 M1C run）上两次独立构建、独立多参 validator、观测/前缀守恒、AgentStep 双向 bijection、capture 末 turn 与 `CaptureQualityV2.terminal_status` 交叉核对、两层隐私、RSS 停止线。M1D 验收报告落 `docs/r01-m1d-validation.md` 后才更新本文停点。
 
-**M1B v4 reopen（已批准，代码先行、验收后置）。** 代码级审计的四项 M1B 已知项归为两个根因，一次 reopen 全部处理：(a) 上游自报值不得渲染成观测——`input_truncation_status` 的枚举值改为 `SOURCE_REPORTS_TRUNCATED / SOURCE_REPORTS_NOT_TRUNCATED / UNKNOWN`（R4）；(b) 契约不保留无生产者的状态、业务规则只有一个定义——删除 `ProcessingStatus.PARTIAL`（R7，三态 eligibility 属 M2）、严格匹配谓词抽为 `contracts.py` 纯函数供 compiler 与 validator 共用（R5）、`visible_payload_utf8_byte_length` 改名为 `visible_payload_envelope_utf8_byte_length`（R8）。前三项改产物字节或契约版本，compiler contract 升为 `trajectory-compiler-m1ab-v4`。本机可完成代码、测试与 fixture 级确定性验证；**正式验收必须在有完整 R01（560,481,884 字节、SHA `3832d8aa…`）的机器上两次全量重编译**，在此之前 `c3c0a8f` 的 v3 结论继续有效、v4 代码不得宣称已验收。
+**M1B v4 reopen（已批准；代码已落于提交 `8f6f65c`，验收后置）。** 代码级审计的四项 M1B 已知项归为两个根因，一次 reopen 全部处理：(a) 上游自报值不得渲染成观测——`input_truncation_status` 的枚举值改为 `SOURCE_REPORTS_TRUNCATED / SOURCE_REPORTS_NOT_TRUNCATED / UNKNOWN`（R4）；(b) 契约不保留无生产者的状态、业务规则只有一个定义——删除 `ProcessingStatus.PARTIAL`（R7，三态 eligibility 属 M2）、严格匹配谓词抽为 `contracts.py` 纯函数供 compiler 与 validator 共用（R5）、`visible_payload_utf8_byte_length` 改名为 `visible_payload_envelope_utf8_byte_length`（R8）。前三项改产物字节或契约版本，compiler contract 升为 `trajectory-compiler-m1ab-v4`。本机已完成代码、153 项 M1A/B 测试与 lineage 回归；**正式验收必须在有完整 R01（560,481,884 字节、SHA `3832d8aa…`）的机器上两次全量重编译**，在此之前 `c3c0a8f` 的 v3 结论继续有效、v4 代码不得宣称已验收。**连带影响**：v4 validator 对 v3 冻结 run `519a86d3…` 按设计报 `SCHEMA_VERSION_MISMATCH` / `COMPILER_CONTRACT_VERSION_MISMATCH`（§13 检查表中该项在 v4 验收前预期失败）；M1C v2 的正式 run `978c0347…` 绑定的是 v3 M1B run，v4 重编译后须用新 M1B run 重跑 M1C（无代码变化，仅输入身份变化，产生新 lineage run ID）并补一次 M1C 验收。
 
 进入 M2 前必须冻结最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`（[`r01-processing-spec.md`](r01-processing-spec.md) §8.3）。该规格必须直面 §9 末段的事实：前缀 USER 正文要能以显式"不可定位"来源标记进入任务意图证据，否则 M2 分母塌陷；同时 M2 不得按绝对路径私下重新解析原始 JSONL。
 
@@ -253,7 +253,7 @@ uv lock --check --offline --no-cache
   artifacts/r01/519a86d3f48add7c37262b05db792d790aa49fccf67b7b92bbea2784e8e06d1d
 ```
 
-预期：`trajectory/` 相对 `c3c0a8f`、`lineage/` 相对 `fcff8cf` 均无运行时代码变化；测试全部通过（M1C 检查点为 230 项，不含并行会话的 M1D 新增测试）；M1 validator 返回 `ok=true`、10 files、1,683 lines、175,858 events；M1C validator 返回 `ok=true`、5 files、计数与 §8.1 一致。
+预期：`lineage/` 相对 `fcff8cf` 无运行时代码变化；`trajectory/` 相对 `c3c0a8f` 有且仅有 `8f6f65c`（M1B v4，待验收）的变化；测试全部通过（M1C 检查点为 230 项，不含并行会话的 M1D 新增测试）；M1 validator 对 v3 冻结 run 在 v4 验收前**预期失败**于 schema/contract 版本不匹配（v4 重编译后应返回 `ok=true`、10 files、1,683 lines、175,858 events）；M1C validator 返回 `ok=true`、5 files、计数与 §8.1 一致。
 
 若工作区含未提交的 `query_turns/` 或 `test_m1d_*.py`，它们属于进行中的 M1D 实现，不改变本检查点结论；不得把它们与 M1C 或文档改动混入同一提交。
 

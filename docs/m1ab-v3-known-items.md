@@ -1,10 +1,10 @@
 # M1A/M1B v3 已知项登记
 
-版本：v1.1
+版本：v1.2
 
-日期：2026-09-01（v1.0：R1、R4）；2026-09-02（v1.1：追加 R5–R8）
+日期：2026-09-01（v1.0：R1、R4）；2026-09-02（v1.1：追加 R5–R8）；2026-09-03（v1.2：R4/R5/R7/R8 的修法已在 M1B v4 提交 `8f6f65c` 落地，待正式验收）
 
-状态：M1A、M1B v3 正式通过前提下的已知项登记；全部条目均**已知并接受**，不在登记会话修改冻结代码
+状态：M1A、M1B **v3** 正式通过前提下的已知项登记。R1 继续接受；R4/R5/R7/R8 的根因修法已作为 M1B v4 代码提交，但 v4 **尚未在完整 R01 上验收**，v3 结论在此之前继续有效
 
 本文登记对抗审计在 `trajectory-compiler-m1ab-v3` 冻结代码上发现、但决定**带来源接受并暂不修改**的两个点（R1、R4）。它不撤销 [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md) 的正式结论，也不新增任何代码。开发纪律只引用 [`../AGENTS.md`](../AGENTS.md)；M1 契约以 [`r01-processing-spec.md`](r01-processing-spec.md) 为准。
 
@@ -15,11 +15,11 @@
 | 编号 | 类别 | 代码定位 | 是否在 R01 触发 | 严重度 | 处置 |
 | --- | --- | --- | --- | --- | --- |
 | R1 | 隐私脱敏 fail-open（潜伏） | `src/traceforge/trajectory/privacy.py:374-393` | 否（产物 0 base64、validator `ok=true`） | 概念高 / 实测零影响 | 接受并登记，修法留待非冻结窗口 |
-| R4 | 截断轴把源自报先验渲染成观测 | `src/traceforge/trajectory/compiler.py:1112-1121` | 是（全量 1,683，35 条 `OBSERVED_TRUNCATED`，0 `UNKNOWN`） | 设计张力 / 非泄漏非字节错误 | 作为规格批准的设计选择接受并登记张力 |
-| R5 | validator 严格匹配谓词与 compiler 平行实现、非同一谓词 | `compiler.py:849-857` vs `validation.py:1194` | 否（R01 两谓词结果一致） | 维护风险 / 当前零影响 | 登记；收紧时抽成单一规范谓词并共享测试向量 |
+| R4 | 截断轴把源自报先验渲染成观测 | `src/traceforge/trajectory/compiler.py:1112-1121` | 是（全量 1,683，35 条 `OBSERVED_TRUNCATED`，0 `UNKNOWN`） | 设计张力 / 非泄漏非字节错误 | **v4 已修（待验收）**：枚举值改为 `SOURCE_REPORTS_*`，reason code 与 attrition 键同步改名 |
+| R5 | validator 严格匹配谓词与 compiler 平行实现、非同一谓词 | `compiler.py:849-857` vs `validation.py:1194` | 否（R01 两谓词结果一致） | 维护风险 / 当前零影响 | **v4 已修（待验收）**：抽为 `contracts.is_strict_one_to_one_match`，compiler/validator 共用 |
 | R6 | validator 验证范围是 artifact 自洽，不是从 source 重派生 | `validation.py:794-801`、`1962-1965`、`1681-1682`、`1799-1803` | 是（范围限制，恒成立） | 主张边界 / 非缺陷 | 登记为 validator 的明确能力边界 |
-| R7 | `ProcessingStatus.PARTIAL` 全仓库无生产者 | `contracts.py:26`；`compiler.py:257` 恒写 `COMPLETE` | 是（1,683 全 `COMPLETE`，0 `PARTIAL`） | YAGNI 违反 / 下游死分支 | 登记；下一次契约 reopen 时删除或补生产路径 |
-| R8 | `visible_payload_utf8_byte_length` 名不符实 | `compiler.py:917` | 是（恒为 JSON 外壳长度） | 可用性陷阱 / 已致 M1D 规格勘误 | 登记；下一次契约 reopen 时改名或在契约 docstring 显式警告 |
+| R7 | `ProcessingStatus.PARTIAL` 全仓库无生产者 | `contracts.py:26`；`compiler.py:257` 恒写 `COMPLETE` | 是（1,683 全 `COMPLETE`，0 `PARTIAL`） | YAGNI 违反 / 下游死分支 | **v4 已修（待验收）**：删除 `PARTIAL` 与 `processing_partial_count`；三态 eligibility 明确归 M2 |
+| R8 | `visible_payload_utf8_byte_length` 名不符实 | `compiler.py:917` | 是（恒为 JSON 外壳长度） | 可用性陷阱 / 已致 M1D 规格勘误 | **v4 已修（待验收）**：改名为 `visible_payload_envelope_utf8_byte_length`，EventOccurrence 升 v3 |
 
 ## 2. R1：脱敏续行判定只认 CR/LF
 
