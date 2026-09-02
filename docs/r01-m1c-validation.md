@@ -1,12 +1,61 @@
 # R01 M1C 全量验收报告
 
-日期：2026-09-02（v1）；2026-09-03（v2）
+日期：2026-09-02（v1）；2026-09-03（v2）；2026-09-03（v2 重绑定 M1B v4）
 
 范围：M1C 跨 capture 关系图（`RequestLineageForest` + `CaptureRelationGraph`，全 Grade-A）
 
-状态：**v2（`lineage-compiler-m1c-v2`）正式通过，为当前有效结论；v1 结论由 v2 取代，其运行事实保留于 §1–§7。M1D 尚未验收。**
+状态：**v2（`lineage-compiler-m1c-v2`）在 M1B v4 run `6be45e01…` 上的 lineage run `9ff708d9…` 正式通过，为当前有效结论（§0′）。§0 的 run `978c0347…` 绑定已被 v4 取代的 M1B v3 run，保留为历史；v1 结论由 v2 取代，其运行事实保留于 §1–§7。**
 
-## 0. v2 验收（2026-09-03，当前有效）
+## 0′. v2 重绑定 M1B v4 验收（2026-09-03，当前有效）
+
+### 0′.1 动机
+
+M1B v4（[`r01-m1b-v4-validation.md`](r01-m1b-v4-validation.md)）改变了 compiler contract 与四张事件表 schema，产出新的 M1B run `6be45e01…`。M1C 代码零运行时变化（`src/traceforge/lineage/` 相对 `fcff8cf` 仅 `reader.py` 模块文档字符串中的契约名 `V2→V3` 两行），但 lineage run ID 与所有节点/边 ID 按规格 §5.6 以 `m1b_run_id` 命名空间化，因此必须在新 M1B run 上重跑并补验收。
+
+### 0′.2 运行身份
+
+| 项目 | 验收值 |
+| --- | --- |
+| 输入 M1B run | `6be45e01cb97b14ce8cfeeed4b0860097a7006619a83e9a32f1284ee5775c8ed`（manifest `179b82efca85fc6132bfa806d45b081729b0d5627878b0d517e978070fe99eb1`，contract `trajectory-compiler-m1ab-v4`） |
+| lineage contract | `lineage-compiler-m1c-v2` |
+| Git commit / tree | `943ba922270a368440ad5a81028da4beda58508b` / `aa083fbe9d46fba3b786e2d4d375967034b78576`，`dirty=false` |
+| lineage run ID | `9ff708d98773a175f9552b09ea1171f16a6ba3bbe4a4ffbcc4fdec2612acb17b` |
+| lineage `artifact_manifest` SHA-256 | `83934c6c4f9366dd7046e136161f78367a082f5748eb404532fa4816cef9eaeb` |
+
+### 0′.3 双全量运行门禁
+
+| 验收项 | 第一次 | 第二次 |
+| --- | ---: | ---: |
+| 建图回执时长 | 112.479697 秒 | 114.908946 秒 |
+| 峰值 RSS | 244,387,840 bytes | 244,424,704 bytes |
+| 512 MiB 停止线 | 通过 | 通过 |
+| 独立双参 validator | `ok=true`，5 files | `ok=true`，5 files |
+
+两次 run ID 相同；排除 `run_receipt.json` 后递归 diff 退出码 0。执行环境：本地盘干净克隆，provenance 自然 `verified`。
+
+### 0′.4 计数与 `978c0347…` 产物对照
+
+| 计数 | 观测 | 规格 §4.4 基线 |
+| --- | ---: | ---: |
+| capture / `RequestNode` / 候选组 | 1,683 / 6,301 / 956 | 同 |
+| `SHARED_SOURCE_REQUEST` 边 | 1,671 | 1,671 |
+| `EXPLICIT_REQUEST_SUCCESSOR` 边 | 4,994 | 4,994 |
+| `COMPLETE_DUPLICATE_CAPTURE` 边 | 0 | 0 |
+
+与绑定 v3 的 run `978c0347…` 对照：7 个文件**字节全部不同、字节长度全部相同**。逐字段归因——`request_node_id`、`edge_id` 及由此决定的行序随 `m1b_run_id` 改变；`lineage_manifest.json` / `lineage_report.json` / `artifact_manifest.json` 只变 `lineage_run_id`、`m1b_run_id`、`m1b_artifact_manifest_sha256` 三个绑定字段。剥离 ID 后做集合级比较：6,301 个 `RequestNode` 按 `source_request_id` 对齐后 `boundary_occurrences` 全部相同；4,994 条后继边以 `(parent, child)` 的 `source_request_id`、relation、evidence 表达后集合相同；1,671 条 capture 边以端点 capture ID、relation、evidence 表达后集合相同。即业务内容零变化，字节差异全部来自规格规定的 run 绑定。
+
+### 0′.5 证据位置
+
+```text
+artifacts/r01/lineage/9ff708d98773a175f9552b09ea1171f16a6ba3bbe4a4ffbcc4fdec2612acb17b/
+artifacts/r01/acceptance_m1c/9ff708d98773a175f9552b09ea1171f16a6ba3bbe4a4ffbcc4fdec2612acb17b/
+```
+
+`determinism.json` 额外记录相对 `978c0347…` 的重绑定归因与集合级相等结论。`978c0347…` 及其证据目录保留、只读。
+
+---
+
+## 0. v2 验收（2026-09-03，绑定 M1B v3 run，已被 §0′ 取代）
 
 ### 0.1 变更与动机
 

@@ -1,10 +1,10 @@
 # M1A/M1B v3 已知项登记
 
-版本：v1.2
+版本：v1.3
 
-日期：2026-09-01（v1.0：R1、R4）；2026-09-02（v1.1：追加 R5–R8）；2026-09-03（v1.2：R4/R5/R7/R8 的修法已在 M1B v4 提交 `8f6f65c` 落地，待正式验收）
+日期：2026-09-01（v1.0：R1、R4）；2026-09-02（v1.1：追加 R5–R8）；2026-09-03（v1.2：R4/R5/R7/R8 的修法已在 M1B v4 提交 `8f6f65c` 落地，待正式验收）；2026-09-03（v1.3：M1B v4 在完整 R01 上正式验收通过，R4/R5/R7/R8 **关闭**；追加 R9 测试夹具耦合未提交模块）
 
-状态：M1A、M1B **v3** 正式通过前提下的已知项登记。R1 继续接受；R4/R5/R7/R8 的根因修法已作为 M1B v4 代码提交，但 v4 **尚未在完整 R01 上验收**，v3 结论在此之前继续有效
+状态：M1A、M1B 已知项登记。**M1B v4 已正式验收**（run `6be45e01…`，[`r01-m1b-v4-validation.md`](r01-m1b-v4-validation.md)），R4/R5/R7/R8 关闭；R1 继续接受；R6 为 validator 能力边界登记；R9 为提交纪律缺口，随 M1D 提交自愈
 
 本文登记对抗审计在 `trajectory-compiler-m1ab-v3` 冻结代码上发现、但决定**带来源接受并暂不修改**的两个点（R1、R4）。它不撤销 [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md) 的正式结论，也不新增任何代码。开发纪律只引用 [`../AGENTS.md`](../AGENTS.md)；M1 契约以 [`r01-processing-spec.md`](r01-processing-spec.md) 为准。
 
@@ -15,11 +15,12 @@
 | 编号 | 类别 | 代码定位 | 是否在 R01 触发 | 严重度 | 处置 |
 | --- | --- | --- | --- | --- | --- |
 | R1 | 隐私脱敏 fail-open（潜伏） | `src/traceforge/trajectory/privacy.py:374-393` | 否（产物 0 base64、validator `ok=true`） | 概念高 / 实测零影响 | 接受并登记，修法留待非冻结窗口 |
-| R4 | 截断轴把源自报先验渲染成观测 | `src/traceforge/trajectory/compiler.py:1112-1121` | 是（全量 1,683，35 条 `OBSERVED_TRUNCATED`，0 `UNKNOWN`） | 设计张力 / 非泄漏非字节错误 | **v4 已修（待验收）**：枚举值改为 `SOURCE_REPORTS_*`，reason code 与 attrition 键同步改名 |
-| R5 | validator 严格匹配谓词与 compiler 平行实现、非同一谓词 | `compiler.py:849-857` vs `validation.py:1194` | 否（R01 两谓词结果一致） | 维护风险 / 当前零影响 | **v4 已修（待验收）**：抽为 `contracts.is_strict_one_to_one_match`，compiler/validator 共用 |
+| R4 | 截断轴把源自报先验渲染成观测 | `src/traceforge/trajectory/compiler.py:1112-1121` | 是（全量 1,683，35 条 `OBSERVED_TRUNCATED`，0 `UNKNOWN`） | 设计张力 / 非泄漏非字节错误 | **v4 已修，已验收关闭**：枚举值改为 `SOURCE_REPORTS_*`，reason code 与 attrition 键同步改名 |
+| R5 | validator 严格匹配谓词与 compiler 平行实现、非同一谓词 | `compiler.py:849-857` vs `validation.py:1194` | 否（R01 两谓词结果一致） | 维护风险 / 当前零影响 | **v4 已修，已验收关闭**：抽为 `contracts.is_strict_one_to_one_match`，compiler/validator 共用 |
 | R6 | validator 验证范围是 artifact 自洽，不是从 source 重派生 | `validation.py:794-801`、`1962-1965`、`1681-1682`、`1799-1803` | 是（范围限制，恒成立） | 主张边界 / 非缺陷 | 登记为 validator 的明确能力边界 |
-| R7 | `ProcessingStatus.PARTIAL` 全仓库无生产者 | `contracts.py:26`；`compiler.py:257` 恒写 `COMPLETE` | 是（1,683 全 `COMPLETE`，0 `PARTIAL`） | YAGNI 违反 / 下游死分支 | **v4 已修（待验收）**：删除 `PARTIAL` 与 `processing_partial_count`；三态 eligibility 明确归 M2 |
-| R8 | `visible_payload_utf8_byte_length` 名不符实 | `compiler.py:917` | 是（恒为 JSON 外壳长度） | 可用性陷阱 / 已致 M1D 规格勘误 | **v4 已修（待验收）**：改名为 `visible_payload_envelope_utf8_byte_length`，EventOccurrence 升 v3 |
+| R7 | `ProcessingStatus.PARTIAL` 全仓库无生产者 | `contracts.py:26`；`compiler.py:257` 恒写 `COMPLETE` | 是（1,683 全 `COMPLETE`，0 `PARTIAL`） | YAGNI 违反 / 下游死分支 | **v4 已修，已验收关闭**：删除 `PARTIAL` 与 `processing_partial_count`；三态 eligibility 明确归 M2 |
+| R8 | `visible_payload_utf8_byte_length` 名不符实 | `compiler.py:917` | 是（恒为 JSON 外壳长度） | 可用性陷阱 / 已致 M1D 规格勘误 | **v4 已修，已验收关闭**：改名为 `visible_payload_envelope_utf8_byte_length`，EventOccurrence 升 v3 |
+| R9 | 测试夹具耦合未提交模块（提交纪律缺口） | `tests/conftest.py` `stable_git_provenance` 自 `e50e999` 起 monkeypatch `traceforge.query_turns.pipeline` | 是（干净检出上 `test_lineage_validation.py` e2e 用例 setup 阶段 `ModuleNotFoundError`） | 提交纪律 / 不影响任何 run 级结论 | 随 M1D 提交自愈；今后 fixture 引用的模块须与 fixture 同一提交或更早落地 |
 
 ## 2. R1：脱敏续行判定只认 CR/LF
 
@@ -109,3 +110,9 @@ validator 不读取原始 JSONL。因此以下事实只能校验其枚举合法�
 ### 5.4 R8：`visible_payload_utf8_byte_length` 是 JSON 外壳长度
 
 `compiler.py:917` 写入的是去除 reasoning 后的可见 payload 经 canonical JSON 编码的字节数（含 `{"content":…}` 外壳），恒大于 0，不是正文长度。规格 §4.3 的描述是准确的，但字段名会误导下游把它当作"有无文本"的判据——M1D 规格 v0.2 §1 的勘误正是踩了这个坑。正文长度的权威来源是 typed reader 的 `TextContent.utf8_byte_length` / `ContentBlocks.block_count`。建议下一次 reopen 改名为 `visible_payload_envelope_utf8_byte_length`，或至少在 `EventOccurrenceV2` 的契约 docstring 写明。
+
+## 6. v1.3 追加条目（2026-09-03 M1B v4 正式验收时发现）
+
+### 6.1 R9：测试夹具引用了尚未提交的模块
+
+M1B v4 正式验收在本地盘干净克隆（HEAD `943ba92`）上执行时，`pytest` 收集正常，但 `test_lineage_validation.py` 中依赖 `stable_git_provenance` fixture 的 e2e 用例在 setup 阶段报 `ModuleNotFoundError: traceforge.query_turns.pipeline`：该 fixture 自提交 `e50e999` 起同时 monkeypatch M1A/B、M1C 与 M1D 三条 pipeline 的 `collect_git_provenance`，而 `src/traceforge/query_turns/` 当时仍是未跟踪的工作树文件。这是一次**提交纪律缺口**（fixture 改动被并行会话先于其引用的模块提交），不是 v4 代码缺陷：v4 编译与 validator 不依赖任何测试 fixture，run 级结论不受影响；完整工作树上全量测试通过。处置：M1D 提交后自愈，无需代码修法；纪律上，今后 fixture 或 conftest 引用的模块必须与之同一提交或更早落地，干净检出上的 pytest 应作为提交前检查的一部分（[`../AGENTS.md`](../AGENTS.md) §「提交前必须运行与改动风险相匹配的测试」）。
