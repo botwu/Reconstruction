@@ -100,7 +100,7 @@ def test_assistant_decisions_split_tool_events_and_form_action_batches(
         assert batch["execution_semantics"] == "UNKNOWN"
     for event in events:
         assert event["integrity_status"] == "COMPLETE"
-        assert event["visible_payload_utf8_byte_length"] > 0
+        assert event["visible_payload_envelope_utf8_byte_length"] > 0
 
 
 def test_reasoning_and_data_url_payload_are_reduced_to_auditable_summaries(
@@ -648,13 +648,13 @@ def test_input_truncation_uses_three_explicit_states(
     report = json.loads((run_dir / "reports/attrition_report.json").read_text())
 
     assert [capture["input_truncation_status"] for capture in normalized] == [
-        "OBSERVED_NOT_TRUNCATED",
-        "OBSERVED_TRUNCATED",
+        "SOURCE_REPORTS_NOT_TRUNCATED",
+        "SOURCE_REPORTS_TRUNCATED",
         "UNKNOWN",
     ]
-    assert "INPUT_TRUNCATED" in qualities[1]["reason_codes"]
+    assert "SOURCE_REPORTS_INPUT_TRUNCATED" in qualities[1]["reason_codes"]
     assert "INPUT_TRUNCATION_UNKNOWN" in qualities[2]["reason_codes"]
-    assert report["counts"]["input_truncated_capture_count"] == 1
+    assert report["counts"]["source_reports_truncated_capture_count"] == 1
     assert report["counts"]["input_truncation_unknown_capture_count"] == 1
 
 

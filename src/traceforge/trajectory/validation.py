@@ -29,11 +29,12 @@ from traceforge.trajectory.contracts import (
     ArtifactManifestV1,
     AttritionReportV2,
     BoundaryStatus,
-    CaptureQualityV2,
+    CaptureQualityV3,
     CompactionStatus,
-    EventOccurrenceV2,
+    EventOccurrenceV3,
     InputTruncationStatus,
-    NormalizedCaptureV2,
+    NormalizedCaptureV3,
+    PairingEndpointFacts,
     PrivacyStatus,
     ProcessingStatus,
     RequestBoundaryV1,
@@ -44,6 +45,7 @@ from traceforge.trajectory.contracts import (
     ToolPairingRecordV3,
     ToolPairingStatus,
     ToolSchemaStatus,
+    is_strict_one_to_one_match,
 )
 from traceforge.trajectory.event_payload import (
     AssistantMessagePayload,
@@ -75,13 +77,13 @@ from traceforge.trajectory.source_adapter import RESTORED_LONG_CAPTURE_SCHEMA
 
 _PRIVATE_CONTRACTS = {
     "private/source_records.jsonl": (SOURCE_RECORD_SCHEMA, SourceRecordRefV1),
-    "private/captures.jsonl": (CAPTURE_SCHEMA, NormalizedCaptureV2),
+    "private/captures.jsonl": (CAPTURE_SCHEMA, NormalizedCaptureV3),
     "private/request_boundaries.jsonl": (REQUEST_BOUNDARY_SCHEMA, RequestBoundaryV1),
-    "private/event_occurrences.jsonl": (EVENT_SCHEMA, EventOccurrenceV2),
+    "private/event_occurrences.jsonl": (EVENT_SCHEMA, EventOccurrenceV3),
     "private/action_batches.jsonl": (ACTION_BATCH_SCHEMA, ActionBatchV2),
     "private/tool_pairings.jsonl": (TOOL_PAIRING_SCHEMA, ToolPairingRecordV3),
     "private/tool_catalogs.jsonl": (TOOL_CATALOG_SCHEMA, ToolCatalogV2),
-    "private/capture_quality.jsonl": (CAPTURE_QUALITY_SCHEMA, CaptureQualityV2),
+    "private/capture_quality.jsonl": (CAPTURE_QUALITY_SCHEMA, CaptureQualityV3),
 }
 _DETERMINISTIC_FILES = frozenset(
     {"source_manifest.json", "reports/attrition_report.json", *_PRIVATE_CONTRACTS}
@@ -136,14 +138,13 @@ _COUNT_KEYS = frozenset(
         "schema_inferred_and_conflict_capture_count",
         "schema_invalid_capture_count",
         "compaction_capture_count",
-        "input_truncated_capture_count",
+        "source_reports_truncated_capture_count",
         "input_truncation_unknown_capture_count",
         "terminal_text_outcome_capture_count",
         "terminal_tool_call_pending_capture_count",
         "terminal_empty_outcome_capture_count",
         "terminal_invalid_capture_count",
         "processing_complete_count",
-        "processing_partial_count",
         "processing_quarantined_count",
     }
 )
@@ -183,7 +184,6 @@ _TERMINAL_COUNT_KEYS = {
 }
 _PROCESSING_COUNT_KEYS = {
     "COMPLETE": "processing_complete_count",
-    "PARTIAL": "processing_partial_count",
     "QUARANTINED": "processing_quarantined_count",
 }
 _PAIRING_ORDER = tuple(status.value for status in ToolPairingStatus)
@@ -841,8 +841,8 @@ def _read_captures(root: Path, state: _State, issues: _Issues) -> None:
         state.counts["compaction_capture_count"] += (
             has_compaction or compaction_count > 0 or bool(compaction_hashes)
         )
-        state.counts["input_truncated_capture_count"] += (
-            input_truncation_status == InputTruncationStatus.OBSERVED_TRUNCATED
+        state.counts["source_reports_truncated_capture_count"] += (
+            input_truncation_status == InputTruncationStatus.SOURCE_REPORTS_TRUNCATED
         )
         state.counts["input_truncation_unknown_capture_count"] += (
             input_truncation_status == InputTruncationStatus.UNKNOWN
@@ -991,7 +991,7 @@ def _read_events(root: Path, state: _State, issues: _Issues) -> None:
             )
             continue
         encoded = canonical_json_bytes(visible)
-        if record.get("visible_payload_utf8_byte_length") != len(encoded):
+        if record.get("visible_payload_envelope_utf8_byte_length") != len(encoded):
             issues.add("EVENT_VISIBLE_LENGTH_MISMATCH", location, "visible payload 长度不匹配")
         if record.get("visible_payload_sha256") != sha256_bytes(encoded):
             issues.add("EVENT_VISIBLE_HASH_MISMATCH", location, "visible payload hash 不匹配")
@@ -1191,7 +1191,18 @@ def _derive_pairing_facts(state: _State) -> None:
                 observed.add(ToolPairingStatus.RESULT_BEFORE_CALL)
         if any(event.arguments_valid is False for event in calls):
             observed.add(ToolPairingStatus.INVALID_CALL_ARGUMENTS)
-        has_strict_match = len(calls) == 1 and len(results) == 1 and not observed
+        # 与 compiler 共享同一判定规则（contracts.is_strict_one_to_one_match）；输入事实仍由本模块
+        # 从已发布 event 独立重建，独立性体现在输入重建而非规则复刻。
+        has_strict_match = is_strict_one_to_one_match(
+            [
+                PairingEndpointFacts(event.tool_name, event.sequence_number, event.arguments_valid)
+                for event in calls
+            ],
+            [
+                PairingEndpointFacts(event.tool_name, event.sequence_number, event.arguments_valid)
+                for event in results
+            ],
+        )
         if has_strict_match:
             observed.add(ToolPairingStatus.MATCHED_ONE_TO_ONE)
         statuses = tuple(status for status in _PAIRING_ORDER if status in observed)
@@ -1959,8 +1970,8 @@ def _check_capture_reason_codes(
         expected.append(f"TERMINAL_{terminal_status}")
     if compaction_status == CompactionStatus.UNLOCALIZED_COMPACTION_EVIDENCE:
         expected.append("UNLOCALIZED_COMPACTION_EVIDENCE")
-    if input_truncation_status == InputTruncationStatus.OBSERVED_TRUNCATED:
-        expected.append("INPUT_TRUNCATED")
+    if input_truncation_status == InputTruncationStatus.SOURCE_REPORTS_TRUNCATED:
+        expected.append("SOURCE_REPORTS_INPUT_TRUNCATED")
     elif input_truncation_status == InputTruncationStatus.UNKNOWN:
         expected.append("INPUT_TRUNCATION_UNKNOWN")
     if raw_reasons != expected:
@@ -1990,7 +2001,6 @@ def _finish_counts(state: _State, issues: _Issues) -> None:
         if capture.source_id in state.sources
     }
     state.counts["processing_complete_count"] = len(captured_sources)
-    state.counts["processing_partial_count"] = 0
     state.counts["processing_quarantined_count"] = len(state.sources) - len(captured_sources)
     _check_count_conservation(state, issues)
 

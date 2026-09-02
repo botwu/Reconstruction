@@ -28,8 +28,9 @@ from traceforge.trajectory.contracts import (
     ArtifactManifestV1,
     AttritionReportV2,
     BoundaryStatus,
-    CaptureQualityV2,
+    CaptureQualityV3,
     CompactionStatus,
+    InputTruncationStatus,
     PrivacyStatus,
     ProcessingStatus,
     TerminalStatus,
@@ -91,14 +92,13 @@ _ZERO_COUNTS = (
     "schema_inferred_and_conflict_capture_count",
     "schema_invalid_capture_count",
     "compaction_capture_count",
-    "input_truncated_capture_count",
+    "source_reports_truncated_capture_count",
     "input_truncation_unknown_capture_count",
     "terminal_text_outcome_capture_count",
     "terminal_tool_call_pending_capture_count",
     "terminal_empty_outcome_capture_count",
     "terminal_invalid_capture_count",
     "processing_complete_count",
-    "processing_partial_count",
     "processing_quarantined_count",
 )
 
@@ -180,9 +180,9 @@ class _AttritionAccumulator:
         self.counts[schema_key] += 1
         if result.quality.compaction_status == "UNLOCALIZED_COMPACTION_EVIDENCE":
             self.counts["compaction_capture_count"] += 1
-        if result.capture.input_truncation_status == "OBSERVED_TRUNCATED":
-            self.counts["input_truncated_capture_count"] += 1
-        elif result.capture.input_truncation_status == "UNKNOWN":
+        if result.capture.input_truncation_status == InputTruncationStatus.SOURCE_REPORTS_TRUNCATED:
+            self.counts["source_reports_truncated_capture_count"] += 1
+        elif result.capture.input_truncation_status == InputTruncationStatus.UNKNOWN:
             self.counts["input_truncation_unknown_capture_count"] += 1
 
         terminal_key = {
@@ -194,7 +194,6 @@ class _AttritionAccumulator:
         self.counts[terminal_key] += 1
         processing_key = {
             "COMPLETE": "processing_complete_count",
-            "PARTIAL": "processing_partial_count",
             "QUARANTINED": "processing_quarantined_count",
         }[result.quality.processing_status]
         self.counts[processing_key] += 1
@@ -208,8 +207,8 @@ def _quarantined_quality(
     source_record_id: str,
     reason_code: str,
     processing_error: dict[str, Any],
-) -> CaptureQualityV2:
-    return CaptureQualityV2(
+) -> CaptureQualityV3:
+    return CaptureQualityV3(
         schema_version=CAPTURE_QUALITY_SCHEMA,
         source_record_id=source_record_id,
         capture_occurrence_id=None,

@@ -2,28 +2,30 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, fields
 from enum import StrEnum
 from typing import Any
 
 SOURCE_MANIFEST_SCHEMA = "traceforge.source-manifest.v1"
 SOURCE_RECORD_SCHEMA = "traceforge.source-record.v1"
-CAPTURE_SCHEMA = "traceforge.normalized-capture.v2"
+CAPTURE_SCHEMA = "traceforge.normalized-capture.v3"
 REQUEST_BOUNDARY_SCHEMA = "traceforge.request-boundary.v1"
-EVENT_SCHEMA = "traceforge.event-occurrence.v2"
+EVENT_SCHEMA = "traceforge.event-occurrence.v3"
 ACTION_BATCH_SCHEMA = "traceforge.action-batch.v2"
 TOOL_PAIRING_SCHEMA = "traceforge.tool-pairing.v3"
 TOOL_CATALOG_SCHEMA = "traceforge.tool-catalog.v2"
-CAPTURE_QUALITY_SCHEMA = "traceforge.capture-quality.v2"
+CAPTURE_QUALITY_SCHEMA = "traceforge.capture-quality.v3"
 ARTIFACT_MANIFEST_SCHEMA = "traceforge.artifact-manifest.v1"
-ATTRITION_REPORT_SCHEMA = "traceforge.attrition-report.v2"
+ATTRITION_REPORT_SCHEMA = "traceforge.attrition-report.v3"
 RUN_RECEIPT_SCHEMA = "traceforge.run-receipt.v2"
-COMPILER_CONTRACT_VERSION = "trajectory-compiler-m1ab-v3"
+COMPILER_CONTRACT_VERSION = "trajectory-compiler-m1ab-v4"
 
 
 class ProcessingStatus(StrEnum):
+    """M1B 处理终态是二态：编译成功或整条隔离。按用途的三态 eligibility 属 M2，不在此表达。"""
+
     COMPLETE = "COMPLETE"
-    PARTIAL = "PARTIAL"
     QUARANTINED = "QUARANTINED"
 
 
@@ -91,9 +93,45 @@ class CompactionStatus(StrEnum):
 
 
 class InputTruncationStatus(StrEnum):
-    OBSERVED_TRUNCATED = "OBSERVED_TRUNCATED"
-    OBSERVED_NOT_TRUNCATED = "OBSERVED_NOT_TRUNCATED"
+    """上游 `domain_meta.input_audit.input_truncated` 的自报值投影。
+
+    TraceForge 没有独立证据核实输入是否被截断，因此枚举值以 ``SOURCE_REPORTS_`` 前缀标明
+    其来源是上游自报而非本项目观测；缺失或非布尔时为 ``UNKNOWN``。
+    """
+
+    SOURCE_REPORTS_TRUNCATED = "SOURCE_REPORTS_TRUNCATED"
+    SOURCE_REPORTS_NOT_TRUNCATED = "SOURCE_REPORTS_NOT_TRUNCATED"
     UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True, slots=True)
+class PairingEndpointFacts:
+    """严格一对一匹配判定所需的单端事实；compiler 与 validator 各自独立重建，只共享判定规则。"""
+
+    tool_name: str
+    sequence_number: int | None
+    arguments_valid: bool | None
+
+
+def is_strict_one_to_one_match(
+    calls: Sequence[PairingEndpointFacts],
+    results: Sequence[PairingEndpointFacts],
+) -> bool:
+    """``matched_*`` 只在恰好一 call、一 result、同名、result 不早于 call、且 call 参数有效时成立。
+
+    这是 ToolPairing 契约的唯一权威判定；任一条件不可核实（如序号缺失）即为不匹配。
+    """
+
+    if len(calls) != 1 or len(results) != 1:
+        return False
+    call, result = calls[0], results[0]
+    return (
+        call.tool_name == result.tool_name
+        and call.sequence_number is not None
+        and result.sequence_number is not None
+        and result.sequence_number >= call.sequence_number
+        and call.arguments_valid is True
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,7 +168,7 @@ class SourceRecordRefV1(SerializableContract):
 
 
 @dataclass(frozen=True, slots=True)
-class NormalizedCaptureV2(SerializableContract):
+class NormalizedCaptureV3(SerializableContract):
     schema_version: str
     capture_occurrence_id: str
     source_record_id: str
@@ -178,7 +216,7 @@ class RequestBoundaryV1(SerializableContract):
 
 
 @dataclass(frozen=True, slots=True)
-class EventOccurrenceV2(SerializableContract):
+class EventOccurrenceV3(SerializableContract):
     schema_version: str
     event_occurrence_id: str
     capture_occurrence_id: str
@@ -190,7 +228,7 @@ class EventOccurrenceV2(SerializableContract):
     message_index: int
     sub_index: int | None
     source_json_pointer: str
-    visible_payload_utf8_byte_length: int
+    visible_payload_envelope_utf8_byte_length: int
     visible_payload_sha256: str
     integrity_status: str
     payload: dict[str, Any]
@@ -233,7 +271,7 @@ class ToolCatalogV2(SerializableContract):
 
 
 @dataclass(frozen=True, slots=True)
-class CaptureQualityV2(SerializableContract):
+class CaptureQualityV3(SerializableContract):
     schema_version: str
     source_record_id: str
     capture_occurrence_id: str | None

@@ -194,9 +194,9 @@ TOOL_CALL
 TOOL_RESULT
 ```
 
-每个事件保存 occurrence ID、source/capture 引用、JSON pointer、消息和调用位置、request boundary、typed content、`visible_payload_utf8_byte_length`、`visible_payload_sha256` 和 `integrity_status`。
+每个事件保存 occurrence ID、source/capture 引用、JSON pointer、消息和调用位置、request boundary、typed content、`visible_payload_envelope_utf8_byte_length`、`visible_payload_sha256` 和 `integrity_status`。
 
-`visible_payload_utf8_byte_length` 是去除 reasoning 审计摘要后的可见 payload 经 canonical JSON 编码后的 UTF-8 字节数，不是原始 JSONL 行长，也不是 assistant content 字符数。`visible_payload_sha256` 对同一份 canonical bytes 求摘要。M1 v3 只有在该事件的可见 payload 已完整映射时才产出事件，因此 `integrity_status` 固定为 `COMPLETE`；它不表示原始 wire 日志完整、任务完成、工具成功或不存在 compaction。
+`visible_payload_envelope_utf8_byte_length`（v4 起；v3 名为 `visible_payload_utf8_byte_length`）是去除 reasoning 审计摘要后的可见 payload 经 canonical JSON 编码后的 UTF-8 字节数——含 `{"content":…}` 外壳，恒大于 0——不是原始 JSONL 行长，也不是 content 文本长度；判断"有无文本"必须用 typed reader 的 `TextContent.utf8_byte_length` / `ContentBlocks.block_count`。`visible_payload_sha256` 对同一份 canonical bytes 求摘要。M1 v3 只有在该事件的可见 payload 已完整映射时才产出事件，因此 `integrity_status` 固定为 `COMPLETE`；它不表示原始 wire 日志完整、任务完成、工具成功或不存在 compaction。
 
 下游只能通过 `event_payload.py` 的 typed reader 读取五种 event payload，不能各自重新解释 JSON。reader 对普通 TEXT 与无效 JSON 文本独立重算 UTF-8 长度和 SHA-256；脱敏文本只接受正长度的严格 privacy envelope 并核对内外审计字段。terminal 判空必须由发布的 value 形态重算：普通字符串使用实际值，两类合法 Data URL envelope 恒表示非空原文，不能依赖可同步重签的审计长度。tool arguments 的 pointer 必须精确为 `/messages/<index>/tool_calls/<sub_index>/function/arguments`，validator 还要将两个 index 与 event 位置比较。任一字段集合、类型、审计值或绑定不匹配都必须 fail-closed。
 
@@ -234,7 +234,7 @@ INVALID_CALL_ARGUMENTS
 
 所有 call 和 result 都以 occurrence 保存，禁止使用单值字典覆盖重复 ID。`RESULT_NOT_OBSERVED` 只表示当前 capture 未观察到结果，不能解释成工具没有执行。
 
-只有 call/result 数量均为一、工具名一致、result 不早于 call 且 call arguments 有效时，才填写 `matched_call_event_id` 与 `matched_result_event_id` 并标记 `MATCHED_ONE_TO_ONE`。任一异常或重复组只能保存完整 occurrence 集合和异常状态，两个 `matched_*` 字段必须为 `null`，不得伪造精确配对。
+只有 call/result 数量均为一、工具名一致、result 不早于 call 且 call arguments 有效时，才填写 `matched_call_event_id` 与 `matched_result_event_id` 并标记 `MATCHED_ONE_TO_ONE`。该判定是 `contracts.is_strict_one_to_one_match` 一个纯函数（v4 起），compiler 与 validator 共用同一规则、各自独立重建输入事实；独立性在输入重建，不在规则复刻。任一异常或重复组只能保存完整 occurrence 集合和异常状态，两个 `matched_*` 字段必须为 `null`，不得伪造精确配对。
 
 ### 5.5 多维质量状态
 
@@ -242,7 +242,7 @@ INVALID_CALL_ARGUMENTS
 
 ```text
 processing_status:
-  COMPLETE | PARTIAL | QUARANTINED
+  COMPLETE | QUARANTINED
 
 boundary_status
 tool_pairing_applicable
@@ -252,14 +252,14 @@ terminal_status
 privacy_status
 compaction_status
 NormalizedCapture.input_truncation_status:
-  OBSERVED_TRUNCATED | OBSERVED_NOT_TRUNCATED | UNKNOWN
+  SOURCE_REPORTS_TRUNCATED | SOURCE_REPORTS_NOT_TRUNCATED | UNKNOWN
 processing_error
 reason_codes[]
 ```
 
 `leaf_response_status=completed` 只说明捕获响应结束，不能解释为任务完成或回答正确。
 
-`processing_status` 只描述编译器是否忠实产出可见结构，不评价原轨迹质量。缺失 observation、schema conflict、inferred schema、pending tool call、compaction 和 input truncation 都进入独立质量轴；只要可见结构完整落盘，仍为 `COMPLETE`。输入没有明确截断证据时必须为 `UNKNOWN`，不能伪报“未截断”。JSON 或关键 boundary envelope 无法可信编译时为 `QUARANTINED`，且不得产出伪造 capture/event。`PARTIAL` 只保留给未来确有安全子树可落盘、但当前契约明确允许缺失另一子树的情况；M1 v3 不用它掩盖异常。
+`processing_status` 只描述编译器是否忠实产出可见结构，不评价原轨迹质量。缺失 observation、schema conflict、inferred schema、pending tool call、compaction 和 input truncation 都进入独立质量轴；只要可见结构完整落盘，仍为 `COMPLETE`。`input_truncation_status` 只投影上游 `domain_meta.input_audit.input_truncated` 的自报布尔值，TraceForge 没有独立观测手段，故枚举值以 `SOURCE_REPORTS_` 前缀标明来源（v4 起；v3 曾命名为 `OBSERVED_*`，见 [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md) R4）；字段缺失或非布尔时为 `UNKNOWN`，对应 reason code `SOURCE_REPORTS_INPUT_TRUNCATED` / `INPUT_TRUNCATION_UNKNOWN`。JSON 或关键 boundary envelope 无法可信编译时为 `QUARANTINED`，且不得产出伪造 capture/event。M1B 的处理终态只有这两个：v3 曾声明的 `PARTIAL` 从未有生产者，v4 删除；按用途的三态 eligibility（`overall-plan.md` §5）属 M2，不在 M1B 契约中表达。
 
 工具目录只验证可冻结的最小结构：definition 是对象、`type=function`、function 是对象、name 为非空白字符串、parameters 是对象。`catalog_input_valid` 记录该来源结构是否满足最小条件；它不等于完整 JSON Schema 校验，也不证明生产环境真实提供了该工具。
 
@@ -315,7 +315,7 @@ artifacts/r01/<content_addressed_run_id>/
 
 `source_manifest.json` 和 `artifact_manifest.json` 都保存 `source_schema`，内容寻址 run ID 也绑定该字段，防止同一原始字节被不同语义契约误用为同一个 run。
 
-NormalizedCapture、EventOccurrence、ActionBatch、ToolCatalog、CaptureQuality 和 AttritionReport 保持 v2；严格 matched 语义发生变化的 ToolPairingRecord 升为 v3，compiler contract 升为 `trajectory-compiler-m1ab-v3`。来源账本、RequestBoundary 与 ArtifactManifest 的字段未改变，继续使用各自 v1 schema。稳定 ID 的身份字段和公式也未改变，因此 ID namespace 继续使用 v1；schema 版本和身份算法版本不得混为一谈。
+v3：NormalizedCapture、EventOccurrence、ActionBatch、ToolCatalog、CaptureQuality 和 AttritionReport 保持 v2，严格 matched 语义发生变化的 ToolPairingRecord 升为 v3，compiler contract 为 `trajectory-compiler-m1ab-v3`。v4：`input_truncation_status` 值域改名、`PARTIAL` 删除、事件字段 `visible_payload_utf8_byte_length` 改名为 `visible_payload_envelope_utf8_byte_length`、attrition 报告删除 `processing_partial_count` 并把 `input_truncated_capture_count` 改为 `source_reports_truncated_capture_count`，因此 NormalizedCapture、EventOccurrence、CaptureQuality、AttritionReport 升为 v3，compiler contract 升为 `trajectory-compiler-m1ab-v4`；ActionBatch、ToolCatalog、ToolPairingRecord 不变。来源账本、RequestBoundary 与 ArtifactManifest 的字段未改变，继续使用各自 v1 schema。稳定 ID 的身份字段和公式也未改变，因此 ID namespace 继续使用 v1；schema 版本和身份算法版本不得混为一谈。
 
 `artifact_manifest.json` 的 `files` 只列出十个确定性业务文件：`source_manifest.json`、八个 `private/*.jsonl` 和 `reports/attrition_report.json`。它不列出自身，以避免自引用摘要；也不列出含时间和运行环境的 `run_receipt.json`，避免非确定信息改变业务清单。`run_receipt.json` 反向保存 `artifact_manifest.json` 的 SHA-256，并记录 Git commit/tree/dirty 状态；正式运行必须在结束时确认 Git 来源没有变化。独立 validator 仍会检查这两个文件以及完整目录 inventory；“不进入 files”不表示不校验。
 
@@ -364,12 +364,11 @@ tool definition conflicts        = 349
 captures with inferred schemas   = 280
 inferred tool name annotations   = 566
 compaction captures              = 119
-truncated input captures         = 35
+source-reports-truncated inputs  = 35
 unknown input truncation         = 0
 terminal text outcomes           = 472
 terminal tool-call pending       = 1,211
 compiler COMPLETE                = 1,683
-compiler PARTIAL                 = 0
 compiler QUARANTINED             = 0
 ```
 

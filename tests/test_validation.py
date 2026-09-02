@@ -147,7 +147,7 @@ def test_validator_rejects_synced_terminal_quality_from_forged_text_length(
         record["payload"]["content"]["utf8_byte_length"] = 0
         visible = {"content": record["payload"]["content"]}
         encoded = canonical_json_bytes(visible)
-        record["visible_payload_utf8_byte_length"] = len(encoded)
+        record["visible_payload_envelope_utf8_byte_length"] = len(encoded)
         record["visible_payload_sha256"] = hashlib.sha256(encoded).hexdigest()
 
     _rewrite_jsonl_record(run / event_path, forge_event)
@@ -202,7 +202,7 @@ def test_validator_rejects_resigned_empty_data_url_terminal(
         content["value"]["sha256"] = "0" * 64
         visible = {"content": content}
         encoded = canonical_json_bytes(visible)
-        record["visible_payload_utf8_byte_length"] = len(encoded)
+        record["visible_payload_envelope_utf8_byte_length"] = len(encoded)
         record["visible_payload_sha256"] = hashlib.sha256(encoded).hexdigest()
 
     _rewrite_jsonl_record(run / event_path, forge_event)
@@ -247,7 +247,7 @@ def test_validator_binds_tool_arguments_pointer_to_event_position(
         "/messages/99/tool_calls/7/function/arguments"
     )
     encoded = canonical_json_bytes(tool_call["payload"])
-    tool_call["visible_payload_utf8_byte_length"] = len(encoded)
+    tool_call["visible_payload_envelope_utf8_byte_length"] = len(encoded)
     tool_call["visible_payload_sha256"] = hashlib.sha256(encoded).hexdigest()
     (run / event_path).write_bytes(b"".join(canonical_json_line(record) for record in records))
     _resign_artifact(run, event_path)
@@ -536,7 +536,7 @@ def test_validator_recomputes_all_capture_quality_axes_and_report_counts(
 
     def falsify_quality(record: dict[str, Any]) -> None:
         record.update(
-            processing_status="PARTIAL",
+            processing_status="QUARANTINED",
             boundary_status="INVALID",
             tool_pairing_applicable=False,
             tool_pairing_statuses=[],
@@ -560,7 +560,7 @@ def test_validator_recomputes_all_capture_quality_axes_and_report_counts(
     counts = report["counts"]
     counts.update(
         processing_complete_count=0,
-        processing_partial_count=1,
+        processing_quarantined_count=1,
         schema_consistent_capture_count=0,
         schema_invalid_capture_count=1,
         terminal_text_outcome_capture_count=0,
@@ -602,7 +602,7 @@ def test_validator_derives_input_truncation_and_invalid_schema_from_v2_facts(
         issue.code for issue in result.issues if not issue.code.startswith("RUN_RECEIPT_")
     }
     assert not semantic_codes, result.errors
-    assert result.observed_counts["input_truncated_capture_count"] == 1
+    assert result.observed_counts["source_reports_truncated_capture_count"] == 1
     assert result.observed_counts["schema_invalid_capture_count"] == 1
 
 

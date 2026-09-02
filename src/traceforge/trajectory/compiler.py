@@ -17,14 +17,15 @@ from traceforge.trajectory.contracts import (
     TOOL_PAIRING_SCHEMA,
     ActionBatchV2,
     BoundaryStatus,
-    CaptureQualityV2,
+    CaptureQualityV3,
     CompactionStatus,
     EventIntegrityStatus,
     EventKind,
-    EventOccurrenceV2,
+    EventOccurrenceV3,
     EventScope,
     InputTruncationStatus,
-    NormalizedCaptureV2,
+    NormalizedCaptureV3,
+    PairingEndpointFacts,
     PrivacyStatus,
     ProcessingStatus,
     RequestBoundaryV1,
@@ -35,6 +36,7 @@ from traceforge.trajectory.contracts import (
     ToolPairingRecordV3,
     ToolPairingStatus,
     ToolSchemaStatus,
+    is_strict_one_to_one_match,
 )
 from traceforge.trajectory.json_codec import (
     StrictJsonError,
@@ -70,13 +72,13 @@ class CaptureCompileError(ValueError):
 class CompiledCapture:
     """一个 capture 的全部 M1B 派生对象。"""
 
-    capture: NormalizedCaptureV2
+    capture: NormalizedCaptureV3
     request_boundaries: tuple[RequestBoundaryV1, ...]
-    event_occurrences: tuple[EventOccurrenceV2, ...]
+    event_occurrences: tuple[EventOccurrenceV3, ...]
     action_batches: tuple[ActionBatchV2, ...]
     tool_pairings: tuple[ToolPairingRecordV3, ...]
     tool_catalog: ToolCatalogV2
-    quality: CaptureQualityV2
+    quality: CaptureQualityV3
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,7 +184,7 @@ def _compile_capture(
     )
 
     boundary_ids = tuple(item.request_boundary_id for item in request_boundaries)
-    capture = NormalizedCaptureV2(
+    capture = NormalizedCaptureV3(
         schema_version=CAPTURE_SCHEMA,
         capture_occurrence_id=capture_occurrence_id,
         source_record_id=source_ref.source_record_id,
@@ -250,7 +252,7 @@ def _compile_capture(
     duplicate_result_count = sum(
         max(0, len(pairing.result_event_ids) - 1) for pairing in tool_pairings
     )
-    quality = CaptureQualityV2(
+    quality = CaptureQualityV3(
         schema_version=CAPTURE_QUALITY_SCHEMA,
         source_record_id=source_ref.source_record_id,
         capture_occurrence_id=capture_occurrence_id,
@@ -487,12 +489,12 @@ def _compile_events(
     messages: Sequence[Any],
     ownership: Sequence[tuple[EventScope, str | None]],
 ) -> tuple[
-    tuple[EventOccurrenceV2, ...],
+    tuple[EventOccurrenceV3, ...],
     tuple[ActionBatchV2, ...],
     tuple[_ToolEvent, ...],
     tuple[_ToolEvent, ...],
 ]:
-    events: list[EventOccurrenceV2] = []
+    events: list[EventOccurrenceV3] = []
     batches: list[ActionBatchV2] = []
     call_events: list[_ToolEvent] = []
     result_events: list[_ToolEvent] = []
@@ -662,7 +664,7 @@ def _compile_tool_call_event(
     sub_index: int,
     assistant_event_id: str,
     tool_call: Any,
-) -> tuple[EventOccurrenceV2, _ToolEvent]:
+) -> tuple[EventOccurrenceV3, _ToolEvent]:
     pointer = f"/messages/{message_index}/tool_calls/{sub_index}"
     if not isinstance(tool_call, dict):
         raise CaptureCompileError(
@@ -754,7 +756,7 @@ def _compile_tool_result_event(
     request_boundary_id: str | None,
     message_index: int,
     message: Mapping[str, Any],
-) -> tuple[EventOccurrenceV2, _ToolEvent]:
+) -> tuple[EventOccurrenceV3, _ToolEvent]:
     pointer = f"/messages/{message_index}"
     call_id = message.get("tool_call_id")
     if not isinstance(call_id, str) or not call_id:
@@ -846,12 +848,9 @@ def _compile_tool_pairings(
                 observed_statuses.add(ToolPairingStatus.RESULT_BEFORE_CALL)
         if any(event.arguments_valid is False for event in calls):
             observed_statuses.add(ToolPairingStatus.INVALID_CALL_ARGUMENTS)
-        has_strict_match = (
-            len(calls) == 1
-            and len(results) == 1
-            and calls[0].tool_name == results[0].tool_name
-            and results[0].sequence_number >= calls[0].sequence_number
-            and calls[0].arguments_valid is True
+        has_strict_match = is_strict_one_to_one_match(
+            [_pairing_facts(event) for event in calls],
+            [_pairing_facts(event) for event in results],
         )
         if has_strict_match:
             observed_statuses.add(ToolPairingStatus.MATCHED_ONE_TO_ONE)
@@ -879,6 +878,14 @@ def _compile_tool_pairings(
     return tuple(records)
 
 
+def _pairing_facts(event: _ToolEvent) -> PairingEndpointFacts:
+    return PairingEndpointFacts(
+        tool_name=event.tool_name,
+        sequence_number=event.sequence_number,
+        arguments_valid=event.arguments_valid,
+    )
+
+
 def _new_event(
     *,
     source_ref: SourceRecordRefV1,
@@ -892,12 +899,12 @@ def _new_event(
     source_json_pointer: str,
     payload: dict[str, Any],
     visible_payload: dict[str, Any] | None = None,
-) -> EventOccurrenceV2:
+) -> EventOccurrenceV3:
     fingerprint_payload = visible_value_without_reasoning(
         visible_payload if visible_payload is not None else payload
     )
     encoded_fingerprint_payload = canonical_json_bytes(fingerprint_payload)
-    return EventOccurrenceV2(
+    return EventOccurrenceV3(
         schema_version=EVENT_SCHEMA,
         event_occurrence_id=_event_id(
             capture_occurrence_id,
@@ -914,7 +921,7 @@ def _new_event(
         message_index=message_index,
         sub_index=sub_index,
         source_json_pointer=source_json_pointer,
-        visible_payload_utf8_byte_length=len(encoded_fingerprint_payload),
+        visible_payload_envelope_utf8_byte_length=len(encoded_fingerprint_payload),
         visible_payload_sha256=sha256_bytes(encoded_fingerprint_payload),
         integrity_status=EventIntegrityStatus.COMPLETE,
         payload=payload,
@@ -1075,8 +1082,8 @@ def _quality_reason_codes(
         reasons.append(f"TERMINAL_{terminal_status}")
     if compaction_status == CompactionStatus.UNLOCALIZED_COMPACTION_EVIDENCE:
         reasons.append("UNLOCALIZED_COMPACTION_EVIDENCE")
-    if input_truncation_status == InputTruncationStatus.OBSERVED_TRUNCATED:
-        reasons.append("INPUT_TRUNCATED")
+    if input_truncation_status == InputTruncationStatus.SOURCE_REPORTS_TRUNCATED:
+        reasons.append("SOURCE_REPORTS_INPUT_TRUNCATED")
     elif input_truncation_status == InputTruncationStatus.UNKNOWN:
         reasons.append("INPUT_TRUNCATION_UNKNOWN")
     return tuple(reasons)
@@ -1115,9 +1122,9 @@ def _input_truncation_status(domain_meta: Mapping[str, Any]) -> InputTruncationS
         return InputTruncationStatus.UNKNOWN
     observed = input_audit.get("input_truncated")
     if observed is True:
-        return InputTruncationStatus.OBSERVED_TRUNCATED
+        return InputTruncationStatus.SOURCE_REPORTS_TRUNCATED
     if observed is False:
-        return InputTruncationStatus.OBSERVED_NOT_TRUNCATED
+        return InputTruncationStatus.SOURCE_REPORTS_NOT_TRUNCATED
     return InputTruncationStatus.UNKNOWN
 
 

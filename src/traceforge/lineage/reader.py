@@ -6,8 +6,8 @@
 致、内容寻址 run_id 与目录名），因此**不复刻也不 import M1B 私有派生公式**——重算 run_id 由
 M1B validator 内部完成，M1C 侧不触碰该私有约定。
 
-抽取的字段全部来自冻结公开契约 `NormalizedCaptureV2` / `RequestBoundaryV1` /
-`EventOccurrenceV2`（规格 §2.2）。`candidate_group_id` 与 `(thread_id, account_id)` 仅供
+抽取的字段全部来自冻结公开契约 `NormalizedCaptureV3` / `RequestBoundaryV1` /
+`EventOccurrenceV3`（规格 §2.2）。`candidate_group_id` 与 `(thread_id, account_id)` 仅供
 validator 做门③分区一致性与报告聚合计数取用，**绝不传入 builder**（结构性坐实门①/②）。
 
 注：M1B validator 只校验字段集合与 canonical，不逐值校验透传标量的 Python 类型。为把下游对不可

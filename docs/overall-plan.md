@@ -174,7 +174,7 @@ TOOL_RESULT
 - content 形态和长度；
 - 完整性、冲突和推断状态。
 
-M1 v3 的每个 event 都保存 `visible_payload_utf8_byte_length`、`visible_payload_sha256` 和 `integrity_status=COMPLETE`。前两者来自去除 reasoning 摘要后的可见 payload 的 canonical JSON bytes；`COMPLETE` 只表示该可见事件完整映射到当前契约，不代表原始 wire 日志、任务结果或环境状态完整。
+M1 的每个 event 都保存 `visible_payload_envelope_utf8_byte_length`（v3 名 `visible_payload_utf8_byte_length`）、`visible_payload_sha256` 和 `integrity_status=COMPLETE`。前两者来自去除 reasoning 摘要后的可见 payload 的 canonical JSON bytes（含 JSON 外壳，不是正文长度）；`COMPLETE` 只表示该可见事件完整映射到当前契约，不代表原始 wire 日志、任务结果或环境状态完整。
 
 只按显式 ID 建立确定 pairing。基于位置推断的关系必须单独标记，不能进入认证任务的硬证据。
 
@@ -244,7 +244,7 @@ Eligibility:
 - task 边界含糊：Episode 保留，但不进入重建；
 - 原始内容含不可处理敏感信息：隔离，不进入下游模型。
 
-每条输入最终只能处于 `USABLE_COMPLETE`、`USABLE_PARTIAL` 或 `QUARANTINED`，且必须有原因码。
+每条输入在 M2 层最终只能处于 `USABLE_COMPLETE`、`USABLE_PARTIAL` 或 `QUARANTINED`，且必须有原因码。这是按用途的 eligibility 判定，属 M2；M1B 的 `processing_status` 只有 `COMPLETE | QUARANTINED` 二态（v4 起删除了从未有生产者的 `PARTIAL`），两者不得混写。
 
 ## 6. 任务与环境分布
 
