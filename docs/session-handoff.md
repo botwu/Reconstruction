@@ -4,7 +4,7 @@
 
 日期：2026-09-03
 
-状态：M1A/M1B **v4**、M1C v2（重绑定 v4 run）与 M1D v1 正式通过；已验收代码停止在 M1D；M1 主线在 R01 上全部闭合，下一步为 M2 前置 `SourceAnnotationProjection` 规格评审
+状态：M1A/M1B **v4**、M1C v2（重绑定 v4 run）与 M1D v1 正式通过；已验收代码停止在 M1D；M1 主线在 R01 上全部闭合；M2 前置 `UserTextProjection` 规格已评审修订到 v0.2，待 v4 run 探针后冻结为 v0.3
 
 ## 1. 本文用途
 
@@ -19,7 +19,7 @@
 7. [`m1c-processing-spec.md`](m1c-processing-spec.md) 与 [`r01-m1c-validation.md`](r01-m1c-validation.md)（§0′ 为当前有效结论）：M1C 契约与正式验收证据；
    [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md)（R1–R9；R4/R5/R7/R8 随 v4 关闭，R9 随 M1D 提交关闭）与 [`m1c-known-items.md`](m1c-known-items.md)（K1–K3）：已知项登记；K1/K2 已由 M1C v2 从根因关闭，**上游不透明摘要不入任何关系证据**是 v2 起的通用原则；
 8. [`m1d-processing-spec.md`](m1d-processing-spec.md)（v0.3，实现同步稿）与 [`r01-m1d-validation.md`](r01-m1d-validation.md)：M1D 契约与正式验收证据；[`m1d-review-20260902.md`](m1d-review-20260902.md)：已处置的评审意见（存档）；
-9. [`m2-source-projection-spec.md`](m2-source-projection-spec.md)：M2 前置来源投影规格 v0.1（评审中，下一步）；
+9. [`m2-source-projection-spec.md`](m2-source-projection-spec.md)（v0.2，待探针后冻结）与 [`m2-source-projection-review-20260903.md`](m2-source-projection-review-20260903.md)：M2 前置 `UserTextProjection` 规格与评审意见（下一步）；
 10. [`reference-repositories.md`](reference-repositories.md) 与 [`implementation-sources.md`](implementation-sources.md)：参考逻辑和迁移边界。
 
 如果本文与模块规格冲突，以 `r01-processing-spec.md`（M1A/B）、`m1c-processing-spec.md`（M1C）和 `m1d-processing-spec.md`（M1D）的契约为准；如果与开发纪律冲突，以 `AGENTS.md` 为准。
@@ -224,7 +224,7 @@ artifacts/r01/acceptance_m1d/84d826b3d7abddffb5f8fde28d7e5592590720bd6909c24a8b1
 
 不要将 `processing_status=COMPLETE` 解读为任务完成，也不要把 353 个结构候选直接交给任务合成。M1C 的边是 Control 侧来源解析信息，不进入任何 Public 视图，也不用于硬去重。M1D 的回合是**结构**分组：`PREFIX_ROOTED` 回合的用户意图不在观测窗口内，`root_status` 必须随回合一起传给下游。
 
-M1D 规格 §0 的结构探针与正式 run 共同给出对 M2 极关键的事实：14,407 个 USER 事件中 13,225 落在不可定位的 `PRE_FIRST_OBSERVED_TERMINAL` 前缀；100% capture 存在不可定位前缀，80% 的 capture 观测窗口内没有可定位 USER，只有 927 个回合有可定位用户根。M2 的 `SourceAnnotationProjection` 若不显式允许以带"不可定位"标记的方式读取前缀 USER 正文作为任务意图证据，`ObservedTaskDistribution` 的分母将只剩约 342 个 capture。
+M1D 规格 §0 的结构探针与正式 run 共同给出对 M2 极关键的事实：14,407 个 USER 事件中 13,225 落在不可定位的 `PRE_FIRST_OBSERVED_TERMINAL` 前缀；100% capture 存在不可定位前缀，80% 的 capture 观测窗口内没有可定位 USER，只有 927 个回合有可定位用户根。M2 前置的 `UserTextProjection` 若不显式允许以 `locality=PREFIX_UNLOCALIZED` 标记把前缀 USER 事件作为任务意图证据引用，`ObservedTaskDistribution` 的分母将只剩约 342 个 capture。
 
 ## 10. 当前硬停止线
 
@@ -241,7 +241,7 @@ M1D 规格 §0 的结构探针与正式 run 共同给出对 M2 极关键的事�
 
 Harbor 是将来 `RunnableTaskWorldCandidateBundle` 的 rollout 执行层，不是 TraceForge core，也不是当前 M1 的前置依赖。Harbor 部分由项目负责人另行负责。
 
-## 11. 下一模块：M2 前置 `SourceAnnotationProjection` 规格评审
+## 11. 下一模块：M2 前置 `UserTextProjection`（来源投影层）
 
 M1C 的四门（候选组仅 `BLOCKING_HINT_ONLY`、Grade-A 组盲、validator 独立核验分区、`raw_request_hash` 格式契约）与 M1D 的五门（纯确定性零 LLM、只在观测窗口分类、结构信号不读正文、工具观测按配对归属、Public/Control 隔离）分别在 [`m1c-processing-spec.md`](m1c-processing-spec.md) §3、[`m1d-processing-spec.md`](m1d-processing-spec.md) §3 冻结并经各自验收报告验收，此处不再复述。
 
@@ -249,7 +249,9 @@ M1C 的四门（候选组仅 `BLOCKING_HINT_ONLY`、Grade-A 组盲、validator �
 
 **M1D 评审整改已闭合（2026-09-03，规格 v0.3）。** [`m1d-review-20260902.md`](m1d-review-20260902.md) 的 D1–D5 与 §3 三项决定全部处置：validator 改为两层信任边界（篡改检测调用同一纯 fold；fold 缺陷由不经 fold 的正交不变量层检出，含 D1 分区守恒），删除 `processing_status` 透传与 `QUARANTINED` 死分支（D4/D5），`parallel_semantics` 无 batch 取 `null`（D2），accounting 字段以实现为准（D3），终态交叉核对对象改为末 assistant（D-f），配对重复不设 tripwire、空观测流以防御性测试固定（§3）。该评审文档保留为存档。
 
-**下一步（唯一）**：评审并冻结 [`m2-source-projection-spec.md`](m2-source-projection-spec.md)（v0.1 草案）——最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`（[`r01-processing-spec.md`](r01-processing-spec.md) §8.3）。该规格必须直面 §9 末段的事实：前缀 USER 正文要能以显式"不可定位"来源标记进入任务意图证据，否则 M2 分母塌陷（只剩约 342 个 capture / 927 个有根回合）；同时 M2 不得按绝对路径私下重新解析原始 JSONL，只能经 M1A 的来源账本（`source_records` 的 `line_sha256` / `dataset_sha256`）定位原始行。M2 的 LLM 输入单元 = M1D `QueryTurn`（带 `root_status`）+ M1B 事件冻结标量 + 该投影提供的带来源正文；批准前不写 M2 代码。
+**来源投影规格评审已完成一轮（2026-09-03，规格 v0.2）。** [`m2-source-projection-review-20260903.md`](m2-source-projection-review-20260903.md) 对照 M1B v4 代码给出 P1–P8 修正与 D3/D5–D9 决定，已全部写入 [`m2-source-projection-spec.md`](m2-source-projection-spec.md) v0.2：删除无生产者的 `QUARANTINED`（M1B validator 已对每个事件跑过 typed reader；"非字符串 value"是合法隐私 envelope），改为 `content_form` 透传 + `NO_LEADING_TEXT`；冻结开头标签文法与 256 码点判定窗；`UNKNOWN_TAGGED` 恒不落盘标签名（内容安全）；M1D run 可选但"提供即必须全部可解析"；报告三个分母并与 M1D 的 342 个有 `UserBlock` 的 capture 构成跨模块不变量；validator 与 M1D 同构的两层信任边界；白名单准入三规则（`task`/`image`/`irc` 等通用名词不准入）；D3 缓做 `SourceAnnotationProjection`，理由收敛为"不破坏 M2 两次独立提取的独立性"。[`r01-processing-spec.md`](r01-processing-spec.md) §8.2/§8.3 已同步修订（M1D 只做结构；M2 前置硬门 = `UserTextProjection` 必做，`SourceAnnotationProjection` 在 M2 首次消费 `domain_meta` 前必做）。
+
+**下一步（唯一）**：按规格 §8 在 v4 run `6be45e01…` 上执行只读结构探针（只输出标签名与整数；本会话已编写但因执行审批渠道不可用未能运行），据其结果依 §2.3 准入规则定白名单 A–D 成员、更新 §0 与 §6 验收向量，把规格冻结为 v0.3；之后才进入 `src/traceforge/source_projection/` 的测试先行实现与独立 validator，并在 `6be45e01…`（+ `84d826b3…` 作可选输入）上双跑验收。该规格直面 §9 末段的事实：前缀 USER 正文以显式 `locality=PREFIX_UNLOCALIZED` 进入任务意图证据，否则 M2 分母塌陷（只剩约 342 个 capture / 927 个有根回合）；M2 不得按绝对路径私下重新解析原始 JSONL。M2 的 LLM 输入单元 = M1D `QueryTurn`（带 `root_status`）+ M1B 事件冻结标量 + 该投影提供的带来源、带 `text_class` 的 USER 事件引用；规格冻结前不写代码。
 
 ## 12. 参考资源采用边界
 

@@ -1,10 +1,10 @@
 # R01 回流处理实施规格
 
-版本：v3.0
+版本：v4.0
 
-日期：2026-09-01
+日期：2026-09-01（v3.0）；2026-09-02（v4.0 契约变更随提交 `8f6f65c` 写入正文，见 [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md) R4/R5/R7/R8）；2026-09-03（§8.2/§8.3 后续阶段边界依 M1D v0.3 与来源投影规格评审修订）
 
-状态：M1A、M1B v3 正式通过；M1C 尚未启动
+状态：M1A、M1B **v4** 正式通过（[`r01-m1b-v4-validation.md`](r01-m1b-v4-validation.md)）；M1C v2、M1D v1 已在其上正式通过；下一步为 M2 前置 `UserTextProjection`
 
 本文是 R01 回流处理的实施事实来源。项目背景见 [`background-and-goals.md`](background-and-goals.md)，总体阶段与下游边界见 [`overall-plan.md`](overall-plan.md)，开发纪律只引用 [`../AGENTS.md`](../AGENTS.md)。
 
@@ -401,11 +401,11 @@ M1C 启动前必须先冻结以下硬门：
 
 ### 8.2 M1D：QueryTurn
 
-M1D 先确定性区分真实 query、附件上下文、Harness 包装、系统注入、工具反馈和中断控制，只输出 `UserBlock`、`QueryTurn` 与结构性 `ThreadTurnGraph`。
+M1D 只做结构：在观测事件流上确定性产出 `UserBlock`、`AgentStep`、`AssistantOutcome`、`QueryTurn` 与结构性 `ThreadTurnGraph`，不区分 USER 事件是真实 query、附件上下文、Harness 包装、系统注入还是中断控制（[`m1d-processing-spec.md`](m1d-processing-spec.md) 门②）。该区分由 M2 前置的 `UserTextProjection`（[`m2-source-projection-spec.md`](m2-source-projection-spec.md)）以纯结构、封闭白名单、fail-closed 的方式在已发布 M1B run 上完成，逐事件注解、不复制正文。（v0.1 曾把这项区分写在 M1D 名下；2026-09-03 依已验收的 M1D v0.3 与来源投影规格评审修订。）
 
 ### 8.3 M2：TaskEpisode 与画像
 
-进入 M2 前必须先提供最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`，只暴露经审核的 task/rubric/risk 先验。M2 不得绕过 M1 artifact，按绝对路径私下重新解析原始 JSONL。
+进入 M2 前必须先冻结并验收 `UserTextProjection`，它是 M2 意图证据的唯一入口，并以显式 `locality` 暴露前缀不可定位缺口。M2 首次消费 `domain_meta`（task/rubric/risk 先验）之前，必须先冻结并验收最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`，只暴露经审核的白名单字段；M2 v1 不消费 `domain_meta`。M2 不得绕过 M1 artifact，按绝对路径私下重新解析原始 JSONL。
 
 M2 才允许通过两次独立、封闭枚举的语义提取建立：
 
