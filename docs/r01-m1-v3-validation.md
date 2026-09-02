@@ -12,6 +12,8 @@
 
 因此，`trajectory-compiler-m1ab-v3` 可以认定为 M1A/M1B 正式通过。该结论只覆盖来源摄取和 capture 内结构编译，不包含跨 capture lineage、QueryTurn、TaskEpisode、任务或环境画像。
 
+2026-09-01 另有一次会话现场 live 复核，把此前部分自报门（gate 4/6 及 gate 1/5/7）升级为现跑亲证，结果与本报告一致，详见 §8。对抗审计带来源接受但暂不修改的两项已知项（R1 隐私脱敏潜伏 fail-open、R4 截断轴先验渲染成观测）登记在 [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md)，均未使任一验收门变红。
+
 ## 2. 输入、版本与运行身份
 
 | 项目 | 验收值 |
@@ -102,3 +104,21 @@ v3 保持 R01 的确定性结构事实：1,683 个 capture、9,561 个 boundary�
 - `raw_request_hash` 未满足届时冻结的格式契约时只能是 `UNKNOWN`，不得作为关系证据。
 
 本次未实现 M1C、M1D 或 M2。
+
+## 8. 本会话 live 复核（2026-09-01）
+
+本报告 §3–§5 的门禁此前有部分为自报。2026-09-01 会话在现装的 Python 3.12.13 环境（`uv sync --dev --python 3.12`）下现场复跑，把 gate 4/6 及 gate 1/5/7 升级为 live 亲证。所有输出均写入独立临时根，未覆盖冻结 run；复核后临时根已清理。
+
+| 门 | live 复核方式 | 结果 |
+| --- | --- | --- |
+| 4 独立验证 | 对冻结 run `519a86d3…e06d1d` 现跑 `scripts/validate_m1_run.py` | `{"checked_file_count":10,"event_occurrence_count":175858,"ok":true,"physical_line_count":1683}`，退出码 0 |
+| 6 鲁棒性 | 现场 `pytest -q` + `ruff check` + `ruff format --check` | 160 项测试通过，退出码 0；lint 与 format 均 clean |
+| 5 确定性 | 两次独立全量重编译 A、B | run ID 均为 `519a86d3…e06d1d`，与冻结 run 相同 |
+| 1 来源守恒 | A 对冻结 run 递归 diff（排除 `run_receipt.json`）；A 对 B 递归 diff | 两组均**零差异**；A vs B 全量仅 `run_receipt.json` 的 `completed_at`/`duration_seconds` 不同，`artifact_manifest_sha256`（`9dcdb083…`）、run ID、git tree 全同 |
+| 7 资源约束 | 进程内 `resource.getrusage(RUSAGE_SELF)` 采峰值 RSS | A ≈ 45.6 MiB、B ≈ 45.3 MiB，远低于 512 MiB 停止线 |
+
+补充：对新鲜 run A 再跑一次独立 validator，同样 `ok=true`、10 files、1,683 lines、175,858 events。live 复核使用的输入为 560,481,884 字节、SHA-256 `3832d8aa…d260d4d8` 的完整 R01，与冻结值一致。
+
+现场耗时（约 57 秒/次）高于 §4 表中回执时长（约 42 秒/次），因本会话运行于不同硬件与共享盘环境；耗时非确定性业务门，确定性由逐字节 diff 保证，两者不矛盾。
+
+本节把此前自报门升级为 live 亲证，未改变任何冻结字节，也未改变「M1A/M1B v3 正式通过」结论。两项已知项 R1/R4 见 [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md)。

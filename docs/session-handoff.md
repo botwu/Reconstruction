@@ -111,6 +111,8 @@ v1、v2 验收报告的正式结论均已撤销，只保留历史正常路径事
 
 正式验收前的独立红队又发现同属第 1 类的 Data URL envelope 变体：把内外审计长度同步伪造为 0 可把非空终态伪报为空。代码冻结提交 `c3c0a8f` 增加两个独立不变量：合法 Data URL envelope 必须为正长度；terminal 空非空由 value 形态重算，而不是由审计长度决定。纯 Data URL、混合文本、零长度和正长度绕过均已 fail-closed。
 
+对抗审计另发现两项**带来源接受、暂不修改冻结代码**的已知项，登记在 [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md)：R1（隐私脱敏续行判定只认 CR/LF，裸空格/制表符致 base64 尾段 fail-open；R01 未触发、产物 0 base64）与 R4（截断轴把源自报 `input_truncated=False` 渲染成 `OBSERVED_NOT_TRUNCATED`，属规格 §5.5/§7 已批准的设计张力）。两项均未使任一验收门变红；任何收紧都必须走单独 reopen 与重新验收。2026-09-01 会话已把 gate 4/6 及 gate 1/5/7 现场升级为 live 亲证，证据见 [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md) §8。
+
 ## 8. 正式验收证据
 
 ```text
