@@ -17,7 +17,8 @@
 5. [`r01-processing-spec.md`](r01-processing-spec.md)：M1 精确输入、算法、契约与验收；
 6. [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md)：M1A/M1B 正式验收证据；
 7. [`m1c-processing-spec.md`](m1c-processing-spec.md) 与 [`r01-m1c-validation.md`](r01-m1c-validation.md)：M1C 契约与正式验收证据；
-8. [`m1d-processing-spec.md`](m1d-processing-spec.md)：M1D 规格评审稿（未批准实现前只读）；
+   [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md)（R1–R8）与 [`m1c-known-items.md`](m1c-known-items.md)（K1–K3）：已接受未修的已知项，其中 **K1 限制 M2 对 `IDENTICAL_RAW_REQUEST_HASH` 边的使用**；
+8. [`m1d-processing-spec.md`](m1d-processing-spec.md)：M1D 规格评审稿；[`m1d-review-20260902.md`](m1d-review-20260902.md)：对未提交 M1D 实现的评审意见；
 9. [`reference-repositories.md`](reference-repositories.md) 与 [`implementation-sources.md`](implementation-sources.md)：参考逻辑和迁移边界。
 
 如果本文与模块规格冲突，以 `r01-processing-spec.md`（M1A/B）和 `m1c-processing-spec.md`（M1C）的契约为准；如果与开发纪律冲突，以 `AGENTS.md` 为准。

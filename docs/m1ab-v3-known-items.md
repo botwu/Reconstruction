@@ -1,10 +1,10 @@
 # M1A/M1B v3 已知项登记
 
-版本：v1.0
+版本：v1.1
 
-日期：2026-09-01
+日期：2026-09-01（v1.0：R1、R4）；2026-09-02（v1.1：追加 R5–R8）
 
-状态：M1A、M1B v3 正式通过前提下的已知项登记；两项均**已知并接受**，不在当前会话修改冻结代码
+状态：M1A、M1B v3 正式通过前提下的已知项登记；全部条目均**已知并接受**，不在登记会话修改冻结代码
 
 本文登记对抗审计在 `trajectory-compiler-m1ab-v3` 冻结代码上发现、但决定**带来源接受并暂不修改**的两个点（R1、R4）。它不撤销 [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md) 的正式结论，也不新增任何代码。开发纪律只引用 [`../AGENTS.md`](../AGENTS.md)；M1 契约以 [`r01-processing-spec.md`](r01-processing-spec.md) 为准。
 
@@ -16,6 +16,10 @@
 | --- | --- | --- | --- | --- | --- |
 | R1 | 隐私脱敏 fail-open（潜伏） | `src/traceforge/trajectory/privacy.py:374-393` | 否（产物 0 base64、validator `ok=true`） | 概念高 / 实测零影响 | 接受并登记，修法留待非冻结窗口 |
 | R4 | 截断轴把源自报先验渲染成观测 | `src/traceforge/trajectory/compiler.py:1112-1121` | 是（全量 1,683，35 条 `OBSERVED_TRUNCATED`，0 `UNKNOWN`） | 设计张力 / 非泄漏非字节错误 | 作为规格批准的设计选择接受并登记张力 |
+| R5 | validator 严格匹配谓词与 compiler 平行实现、非同一谓词 | `compiler.py:849-857` vs `validation.py:1194` | 否（R01 两谓词结果一致） | 维护风险 / 当前零影响 | 登记；收紧时抽成单一规范谓词并共享测试向量 |
+| R6 | validator 验证范围是 artifact 自洽，不是从 source 重派生 | `validation.py:794-801`、`1962-1965`、`1681-1682`、`1799-1803` | 是（范围限制，恒成立） | 主张边界 / 非缺陷 | 登记为 validator 的明确能力边界 |
+| R7 | `ProcessingStatus.PARTIAL` 全仓库无生产者 | `contracts.py:26`；`compiler.py:257` 恒写 `COMPLETE` | 是（1,683 全 `COMPLETE`，0 `PARTIAL`） | YAGNI 违反 / 下游死分支 | 登记；下一次契约 reopen 时删除或补生产路径 |
+| R8 | `visible_payload_utf8_byte_length` 名不符实 | `compiler.py:917` | 是（恒为 JSON 外壳长度） | 可用性陷阱 / 已致 M1D 规格勘误 | 登记；下一次契约 reopen 时改名或在契约 docstring 显式警告 |
 
 ## 2. R1：脱敏续行判定只认 CR/LF
 
@@ -85,3 +89,23 @@ R1、R4 均已纳入本会话对 8 门的现场闭合评估，未使任一门变
 - **门 2 结构忠实**：R4 为规格 §5.5 命名、§7 oracle 接受的设计选择；登记为语义张力，非结构不忠实。
 
 8 门现场闭合的完整证据见 [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md) 的本会话 live 复核记录。本登记不改变「M1A/M1B v3 正式通过」结论，也不解除进入 M1C/M2 前的各阶段硬门。
+
+## 5. v1.1 追加条目（2026-09-02 代码级审计）
+
+以下四项来自 M1C 验收后对 `trajectory/` 的只读代码审计。全部不改变冻结字节、不使任一验收门变红；处置均留待下一次契约 reopen。
+
+### 5.1 R5：validator 严格匹配谓词是平行实现
+
+compiler 的 `has_strict_match` 显式要求四条件（数量 1:1、`tool_name` 相等、result 不早于 call、`arguments_valid is True`，`compiler.py:849-857`）。validator 的对应判定是 `len(calls) == 1 and len(results) == 1 and not observed`（`validation.py:1194`），即"没有任何异常状态即匹配"。两者在当前数据上等价：`arguments_valid` 对 TOOL_CALL 恒为布尔，`None` 不可能出现；`NAME_MISMATCH`/`RESULT_BEFORE_CALL` 在 1:1 情形下与显式比较同义。但它们不是同一个谓词——若将来 compiler 新增一个不写进 `observed` 的匹配前置条件，validator 不会同步变严。这与 R01 处理规格 §7.1 "validator 独立重算"的立场一致（平行实现正是独立性的代价），登记为维护风险；收紧时应把严格匹配抽成单一规范谓词，双方引用同一组测试向量。
+
+### 5.2 R6：validator 的验证范围是 artifact 自洽，不是从 source 重派生
+
+validator 不读取原始 JSONL。因此以下事实只能校验其枚举合法性与内部一致性，不能证明与来源一致：`input_truncation_status`（来源 `domain_meta.input_audit` 不在任何已发布字段中，`validation.py:794-801`、`1962-1965`）、`compaction_status`（由 capture 自报的 `has_compaction`/`compaction_count`/`compaction_hashes` 推导，`1799-1803`）、`catalog_input_valid`（`1681-1682` 注释已承认）、`source_records` 的 `line_sha256`/`dataset_sha256`（只代入公式，不重算原始字节）。这不是缺陷，而是 validator 的能力边界：它能抵御"篡改单一自报字段"，不能抵御"有权改写整个 run 且同步改写全部自报字段"的攻击者。后者的防线是 `run_receipt` 的 Git provenance 与冻结 `dataset_sha256`。README 中"不信任自报语义"的表述应理解为"对可重算事实不信任自报"，本条把不可重算的清单显式化。
+
+### 5.3 R7：`ProcessingStatus.PARTIAL` 无生产者
+
+`contracts.py:26` 定义了 `PARTIAL`，但 `compiler.py:257` 成功路径恒写 `COMPLETE`，失败路径由 `pipeline.py:216` 写 `QUARANTINED`；全仓库没有任何代码产出 `PARTIAL`（R01 实测 1,683 全 `COMPLETE`）。`overall-plan.md` §5 描述的"每条输入最终只能处于 `USABLE_COMPLETE`、`USABLE_PARTIAL` 或 `QUARANTINED`"在 M1B 层实际只实现了两态。后果是下游 M1D 规格 §6 与其实现中的 `PARTIAL` 分支为死代码。与 M1C 删除 `RelationGrade.B` 同类：契约不应保留无生产者的成员。下一次 reopen 时二选一：删除该成员，或定义 compiler 何时产出 `PARTIAL`（例如 pairing 存在 `RESULT_NOT_OBSERVED` 但结构完整）。
+
+### 5.4 R8：`visible_payload_utf8_byte_length` 是 JSON 外壳长度
+
+`compiler.py:917` 写入的是去除 reasoning 后的可见 payload 经 canonical JSON 编码的字节数（含 `{"content":…}` 外壳），恒大于 0，不是正文长度。规格 §4.3 的描述是准确的，但字段名会误导下游把它当作"有无文本"的判据——M1D 规格 v0.2 §1 的勘误正是踩了这个坑。正文长度的权威来源是 typed reader 的 `TextContent.utf8_byte_length` / `ContentBlocks.block_count`。建议下一次 reopen 改名为 `visible_payload_envelope_utf8_byte_length`，或至少在 `EventOccurrenceV2` 的契约 docstring 写明。
