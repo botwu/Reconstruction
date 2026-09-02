@@ -9,6 +9,8 @@ from pathlib import Path
 
 from traceforge.lineage.pipeline import build_lineage
 from traceforge.lineage.reader import LineageInputError
+from traceforge.query_turns.pipeline import build_query_turns
+from traceforge.query_turns.reader import QueryTurnInputError
 from traceforge.trajectory.artifacts import ArtifactPublishError
 from traceforge.trajectory.pipeline import compile_trajectory
 from traceforge.trajectory.source import SourceError
@@ -65,6 +67,28 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         help="lineage artifact 根目录",
     )
+
+    query_turns = commands.add_parser("query-turns", help="结构型 QueryTurn 回合图（M1D）")
+    query_turns_commands = query_turns.add_subparsers(
+        dest="query_turns_command",
+        required=True,
+    )
+    query_turns_build = query_turns_commands.add_parser(
+        "build",
+        help="在一个已发布 M1B run 之上派生只读回合图产物",
+    )
+    query_turns_build.add_argument(
+        "--m1b-run",
+        type=Path,
+        required=True,
+        help="已发布 M1B run 目录（只读消费）",
+    )
+    query_turns_build.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="query-turns artifact 根目录",
+    )
     return parser
 
 
@@ -93,6 +117,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except (LineageInputError, ArtifactPublishError, ValueError) as exc:
             print(f"关系图构建失败：{exc}", file=sys.stderr)
+            return 2
+        print(output_path)
+        return 0
+    if arguments.command == "query-turns" and arguments.query_turns_command == "build":
+        try:
+            output_path = build_query_turns(
+                m1b_run_dir=arguments.m1b_run,
+                output_root=arguments.output,
+            )
+        except (QueryTurnInputError, ArtifactPublishError, ValueError) as exc:
+            print(f"回合图构建失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
         return 0

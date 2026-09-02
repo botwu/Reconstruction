@@ -226,3 +226,50 @@ def test_run_receipt_verifies_git_snapshot_at_completion_without_paths(
     assert str(output) not in serialized_receipt
     assert source.name not in serialized_receipt
     assert output.name not in serialized_receipt
+
+
+def test_query_turns_build_command_publishes_run(
+    stable_git_provenance: None,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    """query-turns build 在已发布 M1B run 之上派生并发布 M1D run，回打印内容寻址目录。"""
+
+    capture = capture_factory(
+        messages=[
+            {"role": "user", "content": "虚构提问。"},
+            {"role": "assistant", "content": "虚构回答。"},
+        ],
+        terminal_prefix_depths=[2],
+    )
+    m1b_run = compile_dataset([capture], label="cli-m1d")
+    output = tmp_path / "m1d-artifacts"
+
+    exit_code = main(["query-turns", "build", "--m1b-run", str(m1b_run), "--output", str(output)])
+
+    assert exit_code == 0
+    published = Path(capsys.readouterr().out.strip())
+    assert published.is_dir()
+    assert (published / "query_turn_manifest.json").is_file()
+    assert (published / "reports/m1d_report.json").is_file()
+
+
+def test_query_turns_build_command_reports_invalid_m1b_without_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """指向非 M1B 目录 → fail-closed 为 exit 2 且不外泄 traceback。"""
+
+    not_a_run = tmp_path / "空目录"
+    not_a_run.mkdir()
+
+    exit_code = main(
+        ["query-turns", "build", "--m1b-run", str(not_a_run), "--output", str(tmp_path / "out")]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "回合图构建失败" in captured.err
+    assert "Traceback" not in captured.err
