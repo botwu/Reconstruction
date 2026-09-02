@@ -11,8 +11,26 @@ from typing import Any
 import pytest
 
 from traceforge.trajectory.json_codec import canonical_json_bytes, canonical_json_line
+from traceforge.trajectory.provenance import GitProvenance
 from traceforge.trajectory.source_adapter import RESTORED_LONG_CAPTURE_SCHEMA
 from traceforge.trajectory.validation import validate_compiled_run
+
+
+@pytest.fixture
+def stable_compile_git_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """将 M1B 编译路径的 collect_git_provenance 固定为「已核验」来源。
+
+    非 git-fast 环境下真实 `git status` 耗时超过 provenance 采集的 5s 超时 → available=False →
+    正式 run 完成时无法核验一致，validate_compiled_run 报 RUN_RECEIPT_GIT_PROVENANCE_UNVERIFIED，
+    掩盖本用例真正要验的「验收合法编译产物」。固定为可核验值以隔离环境差异（镜像
+    test_pipeline_determinism.py 既有做法；只 patch trajectory 编译路径，不 import M1C，
+    避免 M1B 测试反向耦合到 lineage）。
+    """
+
+    monkeypatch.setattr(
+        "traceforge.trajectory.pipeline.collect_git_provenance",
+        lambda: GitProvenance(True, "a" * 40, "b" * 40, False),
+    )
 
 
 def _issue_codes(run: Path) -> set[str]:
@@ -74,6 +92,7 @@ def _one_to_one_capture(
 
 
 def test_full_run_validator_accepts_compiler_output(
+    stable_compile_git_provenance: None,
     compile_dataset: Callable[..., Path],
     two_boundary_capture: dict[str, Any],
 ) -> None:
@@ -91,6 +110,7 @@ def test_full_run_validator_accepts_compiler_output(
 
 
 def test_validator_accepts_reasoning_summary_in_non_assistant_extensions(
+    stable_compile_git_provenance: None,
     compile_dataset: Callable[..., Path],
     capture_factory: Callable[..., dict[str, Any]],
 ) -> None:

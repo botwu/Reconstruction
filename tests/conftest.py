@@ -208,6 +208,24 @@ def compile_dataset(tmp_path: Path) -> Callable[..., Path]:
     return compile_records
 
 
+@pytest.fixture
+def stable_git_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把 M1B 编译与 M1C 建图两处的 collect_git_provenance 固定为「已核验」来源。
+
+    provenance 采集不可用时（本仓库虽是 git 仓库，但慢速网络盘上 `git status` 耗时超过
+    provenance 的 5s 超时 → available=False）完成时无法核验一致，会使
+    validate_compiled_run / validate_lineage_run 报 RUN_RECEIPT_GIT_PROVENANCE_UNVERIFIED，
+    掩盖测试真正要验的行为。固定为可核验值以隔离环境差异（两个 pipeline 各持一份 import 引用，
+    须分别 patch）。
+    """
+
+    from traceforge.trajectory.provenance import GitProvenance
+
+    provenance = GitProvenance(True, "a" * 40, "b" * 40, False)
+    monkeypatch.setattr("traceforge.trajectory.pipeline.collect_git_provenance", lambda: provenance)
+    monkeypatch.setattr("traceforge.lineage.pipeline.collect_git_provenance", lambda: provenance)
+
+
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
