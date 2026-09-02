@@ -42,7 +42,7 @@ TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并
 
 M1A/M1B v3 已正式通过。三项 P1 及脱敏 Data URL 终态的同步重签变体已经闭合；冻结 R01 已在干净代码冻结点完成两次独立全量编译、两次 validator、确定性对比和轻量留证。输入 `source_schema` 仍是 `traceforge.restored-long-capture.v1`。
 
-M1C 已正式通过（[R01 M1C 全量验收报告](docs/r01-m1c-validation.md)）：在冻结 M1B run 之上两次独立建图、两次独立 validator、确定性对比与门②/森林拓扑独立复算均通过；本次只实现 4 类 Grade-A 关系，Grade-B `NORMALIZED_VISIBLE_PREFIX_OF` 按规格缓做。当前正式停点在 M1C；M1D 规格处于评审稿，其实现尚未验收。
+M1C 已正式通过（[R01 M1C 全量验收报告](docs/r01-m1c-validation.md)）：在冻结 M1B run 之上两次独立建图、两次独立 validator、确定性对比与门②/森林拓扑独立复算均通过；v2 实现 3 类 Grade-A 关系（`SHARED_SOURCE_REQUEST` / `EXPLICIT_REQUEST_SUCCESSOR` / `COMPLETE_DUPLICATE_CAPTURE`），全部只依赖 M1B 已发布的可重算可见事实；上游不透明摘要（`raw_request_hash`、`target_hash`）不进入任何关系证据。Grade-B `NORMALIZED_VISIBLE_PREFIX_OF` 按规格缓做。当前正式停点在 M1C；M1D 规格处于评审稿，其实现尚未验收。
 
 当前实现边界：
 

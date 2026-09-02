@@ -17,7 +17,7 @@
 5. [`r01-processing-spec.md`](r01-processing-spec.md)：M1 精确输入、算法、契约与验收；
 6. [`r01-m1-v3-validation.md`](r01-m1-v3-validation.md)：M1A/M1B 正式验收证据；
 7. [`m1c-processing-spec.md`](m1c-processing-spec.md) 与 [`r01-m1c-validation.md`](r01-m1c-validation.md)：M1C 契约与正式验收证据；
-   [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md)（R1–R8）与 [`m1c-known-items.md`](m1c-known-items.md)（K1–K3）：已接受未修的已知项，其中 **K1 限制 M2 对 `IDENTICAL_RAW_REQUEST_HASH` 边的使用**；
+   [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md)（R1–R8）与 [`m1c-known-items.md`](m1c-known-items.md)（K1–K3）：已知项登记；K1/K2 已由 M1C v2 从根因关闭，**上游不透明摘要不入任何关系证据**是 v2 起的通用原则；
 8. [`m1d-processing-spec.md`](m1d-processing-spec.md)：M1D 规格评审稿；[`m1d-review-20260902.md`](m1d-review-20260902.md)：对未提交 M1D 实现的评审意见；
 9. [`reference-repositories.md`](reference-repositories.md) 与 [`implementation-sources.md`](implementation-sources.md)：参考逻辑和迁移边界。
 
@@ -89,13 +89,13 @@ ToolPairing schema：traceforge.tool-pairing.v3
 M1C 正式全量运行绑定的代码冻结点（`src/traceforge/trajectory/` 相对 `c3c0a8f` 无变化）：
 
 ```text
-Git commit：e50e999cf96c14d57d266f2f8e707f5bfc856832
-Git tree：9c17188d2e77054a20d024a8b9571abdf3a26cfa
+Git commit：fcff8cf88e7edcd645484318fd8bd12de50b7af7
+Git tree：482b2a72c4b3b17bdb15c143f06bb5c1b48bb416
 dirty：false
-lineage contract：lineage-compiler-m1c-v1
+lineage contract：lineage-compiler-m1c-v2
 ```
 
-交接文档自身会形成后续纯文档提交；新会话必须用 `git log` 确认 HEAD 是上述冻结点的后代，并确认 `e50e999` 之后除 M1D 新增文件外没有未重新验收的 `src/trajectory/`、`src/lineage/`、`pyproject.toml` 或 `uv.lock` 变化。
+交接文档自身会形成后续纯文档提交；新会话必须用 `git log` 确认 HEAD 是上述冻结点的后代，并确认 `fcff8cf` 之后除 M1D 新增文件外没有未重新验收的 `src/trajectory/`、`src/lineage/`、`pyproject.toml` 或 `uv.lock` 变化。
 
 ## 6. M1 已实现能力
 
@@ -152,24 +152,24 @@ artifacts/r01/acceptance/519a86d3f48add7c37262b05db792d790aa49fccf67b7b92bbea278
 
 真实 run 和证据均被 Git 忽略。长期可提交摘要见 `r01-m1-v3-validation.md`。
 
-### 8.1 M1C 正式验收证据（2026-09-02）
+### 8.1 M1C 正式验收证据（v2，2026-09-03）
 
 ```text
-lineage run ID：19d0325c32a470f1d3f08433be83d176ed16e591343b391eb88b98de663aa359
+lineage run ID：978c0347b4198223cada09ccfd7bf55cf50a42a0ee7a049d55feedf793c7e12e
 绑定 M1B run：519a86d3…e06d1d（manifest SHA-256 9dcdb083…）
-lineage artifact manifest SHA-256：9423ee2416f9ee21d13d02e62a8b64b97fa6a1ab26cc4b77b79ec927e4fd6f99
-运行 A：114.524946 秒，RSS 243,896,320 bytes
-运行 B：111.146084 秒，RSS 244,428,800 bytes
+lineage artifact manifest SHA-256：837c9da7f89b16658f4eacca7ea04a0dd851c42abd9f93f2e094bddcfd9450f9
+运行 A：116.317097 秒，RSS 244,486,144 bytes
+运行 B：118.341063 秒，RSS 243,265,536 bytes
 validator A/B：ok=true；5 files；计数与 m1c-processing-spec §4.4 逐项一致
 递归 diff：排除 run_receipt.json 后无差异
-lineage 相关测试：77 passed；Ruff lint/format：通过
+lineage 相关测试通过；Ruff lint/format：通过；v2 相对 v1 产物恰好只少 41 条 IDENTICAL 边
 ```
 
 本地正式 run 与证据：
 
 ```text
-artifacts/r01/lineage/19d0325c32a470f1d3f08433be83d176ed16e591343b391eb88b98de663aa359/
-artifacts/r01/acceptance_m1c/19d0325c32a470f1d3f08433be83d176ed16e591343b391eb88b98de663aa359/
+artifacts/r01/lineage/978c0347b4198223cada09ccfd7bf55cf50a42a0ee7a049d55feedf793c7e12e/
+artifacts/r01/acceptance_m1c/978c0347b4198223cada09ccfd7bf55cf50a42a0ee7a049d55feedf793c7e12e/
 ```
 
 长期可提交摘要见 `r01-m1c-validation.md`，其中 §7 登记两项环境已知项：慢盘上 `git status` 超过 provenance 的 5 秒超时会使就地 run 被 validator 拒绝（正式 run 因此在本地盘干净克隆上执行）；验收机器上的 `return_data/.../R01.jsonl` 为不完整副本，任何需要原始 JSONL 的阶段开工前必须先取回完整文件并核对 SHA-256。
@@ -188,7 +188,6 @@ artifacts/r01/acceptance_m1c/19d0325c32a470f1d3f08433be83d176ed16e591343b391eb88
 | 保守结构候选 | 353 | 仍然不是 task，必须先做 lineage 与 QueryTurn |
 | `SHARED_SOURCE_REQUEST` 边（M1C） | 1,671 | 全部为"共享前缀后分叉"的兄弟 capture，0 例跨候选组 |
 | `EXPLICIT_REQUEST_SUCCESSOR` 边（M1C） | 4,994 | 请求级真森林：入度 ≤ 1、最大出度 13、无环 |
-| `IDENTICAL_RAW_REQUEST_HASH` 边（M1C） | 41 | 19 组 / 47 capture，其中 5 组跨候选组（门②实证） |
 | `COMPLETE_DUPLICATE_CAPTURE` 边（M1C） | 0 | 契约保留，R01 无完整重复 capture |
 
 不要将 `processing_status=COMPLETE` 解读为任务完成，也不要把 353 个结构候选直接交给任务合成。M1C 的边是 Control 侧来源解析信息，不进入任何 Public 视图，也不用于硬去重。
@@ -199,7 +198,8 @@ M1D 规格 §0 的结构探针另给出对 M2 极关键的事实：14,407 个 US
 
 未经下一阶段规格审核，不得实现或宣称存在：
 
-- Grade-B `NORMALIZED_VISIBLE_PREFIX_OF` 或任何非 4 类 Grade-A 的 lineage 关系；
+- Grade-B `NORMALIZED_VISIBLE_PREFIX_OF`、已删除的 `IDENTICAL_RAW_REQUEST_HASH` 或任何非 3 类 Grade-A 的 lineage 关系；
+- 任何以上游不透明摘要（`raw_request_hash`、`target_hash`、`input_truncated` 等自报值）为依据的关系或 `OBSERVED_*` 状态；
 - 以 M1C 边为依据的 capture 硬去重、合并或"选最长丢其余"；
 - 已验收的 QueryTurn，或任何 TaskEpisode；
 - ObservedTaskDistribution 或 EnvironmentExposureProfile；
@@ -214,6 +214,8 @@ Harbor 是将来 `RunnableTaskWorldCandidateBundle` 的 rollout 执行层，不�
 M1C 的四门（候选组仅 `BLOCKING_HINT_ONLY`、Grade-A 组盲、validator 独立核验分区、`raw_request_hash` 格式契约）已在 [`m1c-processing-spec.md`](m1c-processing-spec.md) §3 冻结并经 [`r01-m1c-validation.md`](r01-m1c-validation.md) 验收，此处不再复述。
 
 M1D 当前状态：规格 [`m1d-processing-spec.md`](m1d-processing-spec.md) v0.2 为评审稿，§12 留有 D-a～D-d 四个小决策；`src/traceforge/query_turns/` 由并行会话开始实现。M1D 的验收门与 M1C 同构：在冻结 M1B run（可选加 M1C run）上两次独立构建、独立多参 validator、观测/前缀守恒、AgentStep 双向 bijection、capture 末 turn 与 `CaptureQualityV2.terminal_status` 交叉核对、两层隐私、RSS 停止线。M1D 验收报告落 `docs/r01-m1d-validation.md` 后才更新本文停点。
+
+**M1B v4 reopen（已批准，代码先行、验收后置）。** 代码级审计的四项 M1B 已知项归为两个根因，一次 reopen 全部处理：(a) 上游自报值不得渲染成观测——`input_truncation_status` 的枚举值改为 `SOURCE_REPORTS_TRUNCATED / SOURCE_REPORTS_NOT_TRUNCATED / UNKNOWN`（R4）；(b) 契约不保留无生产者的状态、业务规则只有一个定义——删除 `ProcessingStatus.PARTIAL`（R7，三态 eligibility 属 M2）、严格匹配谓词抽为 `contracts.py` 纯函数供 compiler 与 validator 共用（R5）、`visible_payload_utf8_byte_length` 改名为 `visible_payload_envelope_utf8_byte_length`（R8）。前三项改产物字节或契约版本，compiler contract 升为 `trajectory-compiler-m1ab-v4`。本机可完成代码、测试与 fixture 级确定性验证；**正式验收必须在有完整 R01（560,481,884 字节、SHA `3832d8aa…`）的机器上两次全量重编译**，在此之前 `c3c0a8f` 的 v3 结论继续有效、v4 代码不得宣称已验收。
 
 进入 M2 前必须冻结最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`（[`r01-processing-spec.md`](r01-processing-spec.md) §8.3）。该规格必须直面 §9 末段的事实：前缀 USER 正文要能以显式"不可定位"来源标记进入任务意图证据，否则 M2 分母塌陷；同时 M2 不得按绝对路径私下重新解析原始 JSONL。
 
@@ -239,7 +241,7 @@ git status --short
 git log --oneline -5
 git diff c3c0a8fb6ed9927d5bebba55c616e1ef524c653b..HEAD -- \
   src/traceforge/trajectory pyproject.toml uv.lock
-git diff e50e999cf96c14d57d266f2f8e707f5bfc856832..HEAD -- src/traceforge/lineage
+git diff fcff8cf88e7edcd645484318fd8bd12de50b7af7..HEAD -- src/traceforge/lineage
 .venv/bin/pytest -p no:cacheprovider -q
 .venv/bin/ruff check --no-cache .
 .venv/bin/ruff format --no-cache --check .
@@ -247,11 +249,11 @@ uv lock --check --offline --no-cache
 .venv/bin/python scripts/validate_m1_run.py \
   artifacts/r01/519a86d3f48add7c37262b05db792d790aa49fccf67b7b92bbea2784e8e06d1d
 .venv/bin/python scripts/validate_m1c_run.py \
-  artifacts/r01/lineage/19d0325c32a470f1d3f08433be83d176ed16e591343b391eb88b98de663aa359 \
+  artifacts/r01/lineage/978c0347b4198223cada09ccfd7bf55cf50a42a0ee7a049d55feedf793c7e12e \
   artifacts/r01/519a86d3f48add7c37262b05db792d790aa49fccf67b7b92bbea2784e8e06d1d
 ```
 
-预期：`trajectory/` 相对 `c3c0a8f`、`lineage/` 相对 `e50e999` 均无运行时代码变化；测试全部通过（M1C 检查点为 230 项，不含并行会话的 M1D 新增测试）；M1 validator 返回 `ok=true`、10 files、1,683 lines、175,858 events；M1C validator 返回 `ok=true`、5 files、计数与 §8.1 一致。
+预期：`trajectory/` 相对 `c3c0a8f`、`lineage/` 相对 `fcff8cf` 均无运行时代码变化；测试全部通过（M1C 检查点为 230 项，不含并行会话的 M1D 新增测试）；M1 validator 返回 `ok=true`、10 files、1,683 lines、175,858 events；M1C validator 返回 `ok=true`、5 files、计数与 §8.1 一致。
 
 若工作区含未提交的 `query_turns/` 或 `test_m1d_*.py`，它们属于进行中的 M1D 实现，不改变本检查点结论；不得把它们与 M1C 或文档改动混入同一提交。
 

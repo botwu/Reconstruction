@@ -1,12 +1,63 @@
 # R01 M1C 全量验收报告
 
-日期：2026-09-02
+日期：2026-09-02（v1）；2026-09-03（v2）
 
 范围：M1C 跨 capture 关系图（`RequestLineageForest` + `CaptureRelationGraph`，全 Grade-A）
 
-状态：**正式通过。M1D 尚未验收。**
+状态：**v2（`lineage-compiler-m1c-v2`）正式通过，为当前有效结论；v1 结论由 v2 取代，其运行事实保留于 §1–§7。M1D 尚未验收。**
 
-## 1. 结论
+## 0. v2 验收（2026-09-03，当前有效）
+
+### 0.1 变更与动机
+
+v1 验收后对冻结产物做独立复算（[`m1c-known-items.md`](m1c-known-items.md) K1）：同 `raw_request_hash` 的 19 组 capture 中 18 组请求输入内容不同、19 组 `tool_catalog_id` 不同，该字段相等不蕴含同一请求。提交 `fcff8cf88e7edcd645484318fd8bd12de50b7af7` 删除 `IDENTICAL_RAW_REQUEST_HASH` 关系及门④格式契约，契约升为 `lineage-compiler-m1c-v2`，规格升为 v0.4；剩余 3 类关系全部只依赖 M1B 已发布的可重算可见事实。净删除 245 行。
+
+### 0.2 运行身份
+
+| 项目 | 验收值 |
+| --- | --- |
+| 输入 M1B run | `519a86d3f48add7c37262b05db792d790aa49fccf67b7b92bbea2784e8e06d1d`（manifest `9dcdb083…`，与 v1 相同） |
+| lineage contract | `lineage-compiler-m1c-v2` |
+| Git commit / tree | `fcff8cf88e7edcd645484318fd8bd12de50b7af7` / `482b2a72c4b3b17bdb15c143f06bb5c1b48bb416`，`dirty=false` |
+| lineage run ID | `978c0347b4198223cada09ccfd7bf55cf50a42a0ee7a049d55feedf793c7e12e` |
+| lineage `artifact_manifest` SHA-256 | `837c9da7f89b16658f4eacca7ea04a0dd851c42abd9f93f2e094bddcfd9450f9` |
+
+### 0.3 双全量运行门禁
+
+| 验收项 | 第一次 | 第二次 |
+| --- | ---: | ---: |
+| 建图回执时长 | 116.317097 秒 | 118.341063 秒 |
+| 峰值 RSS | 244,486,144 bytes | 243,265,536 bytes |
+| 512 MiB 停止线 | 通过 | 通过 |
+| 独立 validator | `ok=true`，5 files | `ok=true`，5 files |
+
+两次 run ID 相同；排除 `run_receipt.json` 后递归 diff 退出码 0。
+
+### 0.4 计数与 v1 产物对照
+
+| 计数 | v2 观测 | 规格 §4.4 基线 |
+| --- | ---: | ---: |
+| capture / `RequestNode` / 候选组 | 1,683 / 6,301 / 956 | 同 |
+| `SHARED_SOURCE_REQUEST` 边 | 1,671 | 1,671 |
+| `EXPLICIT_REQUEST_SUCCESSOR` 边 | 4,994 | 4,994 |
+| `COMPLETE_DUPLICATE_CAPTURE` 边 | 0 | 0 |
+
+v2 产物与 v1 run `19d0325c…` 逐记录对照：`request_nodes.jsonl` 与 `request_successor_edges.jsonl` **逐字节相同**；`capture_relation_edges.jsonl` 恰好少 41 条 `IDENTICAL_RAW_REQUEST_HASH` 边，其余 1,671 条逐条相同，无新增。即 v2 只做了删除，未触碰任何保留关系。
+
+### 0.5 证据位置
+
+```text
+artifacts/r01/lineage/978c0347b4198223cada09ccfd7bf55cf50a42a0ee7a049d55feedf793c7e12e/
+artifacts/r01/acceptance_m1c/978c0347b4198223cada09ccfd7bf55cf50a42a0ee7a049d55feedf793c7e12e/
+```
+
+`determinism.json` 额外记录 v1→v2 的边集差异。v1 run 与证据目录保留，不再作为当前结论。
+
+---
+
+以下 §1–§8 为 v1（`lineage-compiler-m1c-v1`，2026-09-02）的原始验收记录，保留运行事实；其"正式通过"结论已由 v2 取代。
+
+## 1. 结论（v1）
 
 代码提交 `e50e999cf96c14d57d266f2f8e707f5bfc856832`（树 `9c17188d2e77054a20d024a8b9571abdf3a26cfa`，`dirty=false`）在冻结 M1B run `519a86d3…e06d1d` 之上完成两次独立全量建图。两份 lineage run 的内容寻址 run ID 与 `artifact_manifest.json` 摘要一致，排除非确定性的 `run_receipt.json` 后递归 diff 无差异；两份 run 均通过独立双参 validator；九项聚合计数与 [`m1c-processing-spec.md`](m1c-processing-spec.md) §4.4 的实测基线逐项吻合；门②、请求森林拓扑另经独立脚本复算确认。
 
