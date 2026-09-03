@@ -4,7 +4,7 @@
 
 日期：2026-09-03
 
-状态：M1A/M1B **v4**、M1C v2（重绑定 v4 run）、M1D v1 与 M2 前置 `UserTextProjection` v1 正式通过；已验收代码停止在 `UserTextProjection`（提交 `1de39ae`）；M1 主线与 M2 前置硬门在 R01 上全部闭合；M2 已拆为 ①–④ 四个子模块（§11），① `TurnEvidence` 规格草案 v0.1 已起草，下一步为评审冻结
+状态：M1A/M1B **v4**、M1C v2（重绑定 v4 run）、M1D v1 与 M2 前置 `UserTextProjection` v1 正式通过；已验收代码停止在 `UserTextProjection`（提交 `1de39ae`）；M1 主线与 M2 前置硬门在 R01 上全部闭合；M2 已拆为 ①–④ 四个子模块（§11），① `TurnEvidence` 规格草案 v0.2（含前缀消息分段）已起草，下一步为评审冻结
 
 ## 1. 本文用途
 
@@ -20,7 +20,7 @@
    [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md)（R1–R9；R4/R5/R7/R8 随 v4 关闭，R9 随 M1D 提交关闭）与 [`m1c-known-items.md`](m1c-known-items.md)（K1–K3）：已知项登记；K1/K2 已由 M1C v2 从根因关闭，**上游不透明摘要不入任何关系证据**是 v2 起的通用原则；
 8. [`m1d-processing-spec.md`](m1d-processing-spec.md)（v0.3，实现同步稿）与 [`r01-m1d-validation.md`](r01-m1d-validation.md)：M1D 契约与正式验收证据；[`m1d-review-20260902.md`](m1d-review-20260902.md)：已处置的评审意见（存档）；
 9. [`m2-source-projection-spec.md`](m2-source-projection-spec.md)（v0.3，已冻结并已实现）与 [`r01-user-text-projection-validation.md`](r01-user-text-projection-validation.md)：M2 前置 `UserTextProjection` 契约与正式验收证据（含同批 validator 公共原语重构的重新验收）；[`m2-source-projection-review-20260903.md`](m2-source-projection-review-20260903.md)：已处置的评审意见（存档）；
-10. [`m2-turn-evidence-spec.md`](m2-turn-evidence-spec.md)（v0.1 草案，待评审冻结）：M2 ① `TurnEvidence` 契约、固定函数与验收向量；M2 四子模块拆解见 §11；
+10. [`m2-turn-evidence-spec.md`](m2-turn-evidence-spec.md)（v0.2 草案，待评审冻结）：M2 ① `TurnEvidence` 契约、固定函数与验收向量；M2 四子模块拆解见 §11；
 11. [`reference-repositories.md`](reference-repositories.md) 与 [`implementation-sources.md`](implementation-sources.md)：参考逻辑和迁移边界。
 
 如果本文与模块规格冲突，以 `r01-processing-spec.md`（M1A/B）、`m1c-processing-spec.md`（M1C）、`m1d-processing-spec.md`（M1D）和 `m2-source-projection-spec.md`（`UserTextProjection`）的契约为准；如果与开发纪律冲突，以 `AGENTS.md` 为准。
@@ -47,7 +47,7 @@ flowchart LR
     C1 --> P[M2 前置 UserTextProjection]
     E -. 可选回指 .-> P
     P --> S{{当前 STOP}}
-    S -. M2 ① TurnEvidence 规格 v0.1 待评审冻结 .-> F[M2 ①→④ 子模块]
+    S -. M2 ① TurnEvidence 规格 v0.2 待评审冻结 .-> F[M2 ①→④ 子模块]
     F --> G[M3 Task-World 联合合成]
     G --> H[M4 认证、rollout 闭合与定向修复]
     H --> I[M5 六维难度校准]
@@ -303,14 +303,16 @@ M1C 的四门（候选组仅 `BLOCKING_HINT_ONLY`、Grade-A 组盲、validator �
 
 | 序 | 子模块（契约） | 性质 | 输入 | 产出 | 单独成模块的理由 |
 |---|---|---|---|---|---|
-| ① | `TurnEvidence`（`turn-evidence-v1`） | 确定性、零模型 | 已校验的 M1B + M1D + `UserTextProjection` run | 每个 `QueryTurn` 一条证据包：意图证据事件 ID 集（仅 `PLAIN_USER_TEXT`）与 `intent_locality`；AgentStep 结构特征（步数、调用/观测/未解析计数、工具名集合、并行语义）；终态；中断线索（`CONTROL_SIGNAL`）；环境暴露标签（`HARNESS_*`）；附件位；按用途的 eligibility（`task_profile`/`environment_profile`/`reconstruction`，固定函数 + 原因码，plan §5） | 结构事实与模型语义彻底分开；是 ②③④ 的唯一输入，模型层只见证据包、不见原始 run |
-| ② | `EnvironmentExposureProfile`（`environment-exposure-v1`） | 确定性聚合，只出计数 | ① run（+ M1B 工具配对/schema 冲突标量） | plan §6.2 的 R01 observed 环境暴露分布：declared/called/observed 工具角色、观测 empty/error/truncated 比例、harness 指纹、compaction、显式不可观测性声明 | M3 World 合成需要它且不依赖任何语义抽取；先交付确定性价值 |
+| ① | `TurnEvidence`（`turn-evidence-v1`） | 确定性、零模型 | 已校验的 M1B + M1D + `UserTextProjection` run | 每个**意图单元**一条证据包，单元 = M1D `QueryTurn` ∪ 前缀消息分段（按 M1D 同一 UserBlock 规则在前缀消息顺序上分段，`PREFIX_ONLY` 显式）：意图证据事件 ID 集（仅 `PLAIN_USER_TEXT`）、Harness/控制信号/其他计数、附件位、agent 活动与调用/观测/未解析计数、`outcome_observed`；按用途的 eligibility（`task_profile`/`environment_profile`，固定函数 + 8 个原因码，plan §5） | 结构事实与模型语义彻底分开；是 ③④ 的唯一输入，模型层只见证据包、不见原始 run |
+| ② | `EnvironmentExposureProfile`（`environment-exposure-v1`） | 确定性聚合，只出计数 | M1B **全 scope** 事件 + 配对 + 工具目录（不经 ①——M1D/① 的 agent 活动只覆盖观测窗口约 30% 的工具事件；① 只供回合级关联） | plan §6.2 的 R01 observed 环境暴露分布：declared/called/observed 工具角色、观测 empty/error/truncated 比例、harness 指纹、compaction、显式不可观测性声明 | M3 World 合成需要它且不依赖任何语义抽取；先交付确定性价值 |
 | ③ | `SemanticExtraction`（`semantic-extraction-v1`） | **首个模型模块**，封闭标签 | ① 中 `task_profile ∈ {ELIGIBLE, PARTIAL}` 的回合证据包（正文经 M1B 事件 ID 解引用，只在模型边界内读） | 每回合 task family/domain/交付形式/约束种类（封闭枚举）+ 相邻回合语义关系（plan §4.6 八值）；两次独立抽取，不一致或无证据 → `AMBIGUOUS`/abstain；每条结论只引事件 ID | 全部模型风险隔离于此：冻结提示与输出 schema、模型/温度/缓存键、可从缓存离线重放；validator 只能核验 schema/来源引用/两次一致性，语义正确性显式声明为抽样人工评审门 |
 | ④ | `TaskEpisode` DAG + `ObservedTaskDistribution`（`task-episodes-v1`） | 确定性组合与聚合 | ① + ③ run（+ M1C Grade-A 组作 lineage 去重分母） | plan §4.6 Episode DAG、§6.1 分布（`PREFIX_ONLY` 单列；unknown/abstain/eligible 分母显式） | 组合规则与聚合口径独立于模型输出演化 |
 
-前置决定与缓做：③ 之前必须先定**模型接入**（哪个模型、能否离线缓存重放、预算与调用上限）——这是唯一需要用户拍板的外部依赖，①② 不受其阻塞；`SourceAnnotationProjection`（D3）只在 ③ 验收后作事后对照 oracle 时才需要；`ReconstructionCandidate`（plan §7）属 M2/M3 边界，留到 ④ 之后。
+前置决定与缓做：③ 之前必须先定**模型接入**（见下文「模型接入」段：网关已探明，模型 ID 待确认）；①② 不受其阻塞；`SourceAnnotationProjection`（D3）只在 ③ 验收后作事后对照 oracle 时才需要；`ReconstructionCandidate`（plan §7）属 M2/M3 边界，留到 ④ 之后。
 
-**① 规格草案已起草（v0.1，[`m2-turn-evidence-spec.md`](m2-turn-evidence-spec.md)）**：§0 三条实测地基来自冻结 run 的只读探针（2,610 回合 = 1,683 PREFIX_ROOTED + 927 OBSERVED_ROOTED；927 中 885 有 `PLAIN_USER_TEXT` 意图证据、32 只有 Harness 注入、10 只有控制信号；1,680 个 capture 的前缀共 10,802 条用户文本是 80% capture 的唯一意图来源；终态缺失系统性——1,211 capture 以 `TOOL_CALL_PENDING` 结束）；契约一张表（主键沿用 `query_turn_id`，闭合值域，不存工具名）；eligibility 只产 `task_profile`/`environment_profile` 两用途 + 8 个原因码的固定函数（`reconstruction` 在结构事实下恒等于 task ELIGIBLE，无信息量，不产）；§6 验收向量已由探针按固定函数预演（task：548/337/42 与 0/1,680/3；environment：230/675/22 与 416/1,267/0）。**下一步（唯一）**：评审并冻结该草案（§11 四个待定小决策 E-a–E-d 需拍板），冻结后才写代码（[`../AGENTS.md`](../AGENTS.md) 规格先行）。以下已冻结前置约束对 ①–④ 全部有效：
+**① 规格草案 v0.2 已起草（[`m2-turn-evidence-spec.md`](m2-turn-evidence-spec.md)）。** 2026-09-03 对齐评审采纳两项结构调整：(a) ① 增加确定性的前缀消息分段——M1D 的 UserBlock 规则原样施加在前缀事件的消息顺序上（M1B §183 禁止的是伪造 request ID，消息顺序是 EventLog 冻结事实），不带 boundary、`intent_locality=PREFIX_ONLY` 显式；(b) ② 的输入改为 M1B 全 scope 事件（原写「① run」会漏掉 70% 的工具活动）。v0.2 的只读探针：单元 9,268 = 927 观测回合 + 1,683 `PREFIX_ROOTED` 回合（各并入其前缀最后一个 block 作根）+ 6,658 前缀分段；11,694 条 `PLAIN_USER_TEXT` 每条恰属一个单元；前缀事件按 kind 的划分与 M1D `CaptureTurnAccountingV1` 全量守恒；task_profile ELIGIBLE 548 / PARTIAL 8,322 / INELIGIBLE 398，environment_profile ELIGIBLE 3,963 / PARTIAL 4,745 / INELIGIBLE 560。**下一步（唯一）**：评审并冻结 v0.2（§11 待定小决策 E-a–E-f 需拍板），冻结后才写代码（[`../AGENTS.md`](../AGENTS.md) 规格先行）。
+
+**模型接入（③ 及 M3+ 合成一律用同一模型）。** 用户决定合成用 Claude Opus 4.6。网关为 `config.yaml`（已 gitignore，密钥不得进入任何产物/文档/日志）中的 `claude` 通道（new-api 网关 `tokenhub.sensetime.com`），实测同时支持 Anthropic 原生 `/v1/messages` 与 OpenAI 兼容 `/v1/chat/completions`；**但该通道当前只提供 `claude-opus-5`，`claude-opus-4-6` 返回 `model_not_found`**（2026-09-03 探测）。待用户确认：改用 `claude-opus-5`，或提供含 4.6 的通道。无论哪一个：模型 ID 进缓存键、温度 0、全部输出落盘缓存可离线重放；「两次独立抽取」在同一模型下只能靠两套独立提示模板实现，独立性弱于双模型，规格须如实声明并以不一致 → `AMBIGUOUS` 兜底。以下已冻结前置约束对 ①–④ 全部有效：
 
 - 输入单元 = M1D `QueryTurn`（带 `root_status`）+ M1B 事件冻结标量 + `UserTextProjection` 的带来源、带 `text_class`/`locality` 的 USER 事件引用；M1C 边只作 Control 侧来源解析提示（`BLOCKING_HINT_ONLY`），不作语义依据；
 - 消费约定按 [`m2-source-projection-spec.md`](m2-source-projection-spec.md) §2.5：只有 `PLAIN_USER_TEXT` 可作任务意图证据；`HARNESS_*` 只作环境暴露证据；`CONTROL_SIGNAL` 只作中断线索；`EMPTY_TEXT`/`UNKNOWN_TAGGED`/`NO_LEADING_TEXT` 只计数；由 `PREFIX_UNLOCALIZED` 证据得出的 Episode/意图必须携带 `intent_locality=PREFIX_ONLY` 并在 `ObservedTaskDistribution` 中单列；M2 不得按绝对路径重新解析原始 JSONL；
