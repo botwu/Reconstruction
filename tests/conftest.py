@@ -217,18 +217,86 @@ def stable_git_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     provenance 采集不可用时（本仓库虽是 git 仓库，但慢速网络盘上 `git status` 耗时超过
     provenance 的 5s 超时 → available=False）完成时无法核验一致，会使
     validate_compiled_run / validate_lineage_run 报 RUN_RECEIPT_GIT_PROVENANCE_UNVERIFIED，
-    掩盖测试真正要验的行为。固定为可核验值以隔离环境差异（三个 pipeline 各持一份 import 引用，
+    掩盖测试真正要验的行为。固定为可核验值以隔离环境差异（四个 pipeline 各持一份 import 引用，
     须分别 patch）。
     """
 
     from traceforge.trajectory.provenance import GitProvenance
 
     provenance = GitProvenance(True, "a" * 40, "b" * 40, False)
-    monkeypatch.setattr("traceforge.trajectory.pipeline.collect_git_provenance", lambda: provenance)
-    monkeypatch.setattr("traceforge.lineage.pipeline.collect_git_provenance", lambda: provenance)
-    monkeypatch.setattr(
-        "traceforge.query_turns.pipeline.collect_git_provenance", lambda: provenance
+    for module in (
+        "traceforge.trajectory.pipeline",
+        "traceforge.lineage.pipeline",
+        "traceforge.query_turns.pipeline",
+        "traceforge.source_projection.pipeline",
+    ):
+        monkeypatch.setattr(f"{module}.collect_git_provenance", lambda: provenance)
+
+
+USER_TEXT_DATA_URL = "data:image/png;base64,U0VDUkVUX0JBU0U2NA=="
+USER_TEXT_UNKNOWN_TAG = "mystery_tag"
+
+
+def user_text_dialogue(
+    capture_factory: Callable[..., dict[str, Any]], user_contents: list[Any], **kwargs: Any
+) -> dict[str, Any]:
+    """每个 user 内容后接一条 assistant 终态；depth 递增使首条 user 落前缀、其余落观测窗口。"""
+
+    messages: list[dict[str, Any]] = []
+    for index, content in enumerate(user_contents):
+        messages.append({"role": "user", "content": content})
+        messages.append({"role": "assistant", "content": f"虚构助手回复 {index}"})
+    depths = [2 * (index + 1) for index in range(len(user_contents))]
+    return capture_factory(messages=messages, terminal_prefix_depths=depths, **kwargs)
+
+
+@pytest.fixture
+def user_text_captures(capture_factory: Callable[..., dict[str, Any]]) -> list[dict[str, Any]]:
+    """`UserTextProjection` 夹具：四个 capture 共 13 条 USER 事件，覆盖全部类别与 content_form。
+
+    mixed：前缀普通文本 / 观测 environment_context / 观测普通文本；
+    edge：前缀空白 / 属性形态 in-app-browser-context / 自闭合 turn_aborted / 未知标签 /
+    recommended_plugins；privacy：整段 Data URL / 首段文本的分段 / 首段 Data URL 的分段 / 内容块；
+    prefix_only：唯一一条普通文本只在前缀（用于 `captures_with_plain_user_text_only_in_prefix`）。
+    """
+
+    mixed = user_text_dialogue(
+        capture_factory,
+        [
+            "先整理一个完全虚构的背景。",
+            "<environment_context>\n虚构环境说明\n</environment_context>",
+            "请继续处理。",
+        ],
+        request_ids=["mixed-1", "mixed-2", "mixed-3"],
     )
+    edge = user_text_dialogue(
+        capture_factory,
+        [
+            "   \n\t",
+            '<in-app-browser-context url="about:blank">虚构页面</in-app-browser-context>',
+            "<turn_aborted/>",
+            f"<{USER_TEXT_UNKNOWN_TAG}>用户自写的标记文本</{USER_TEXT_UNKNOWN_TAG}>",
+            "<recommended_plugins>\n虚构插件\n</recommended_plugins>",
+        ],
+        request_ids=[f"edge-{index}" for index in range(1, 6)],
+    )
+    privacy = user_text_dialogue(
+        capture_factory,
+        [
+            USER_TEXT_DATA_URL,
+            f"看图 {USER_TEXT_DATA_URL} 结束",
+            f"{USER_TEXT_DATA_URL} 后文",
+            [
+                {"type": "input_text", "text": "内容块中的虚构文本。"},
+                {"type": "input_image", "image_url": USER_TEXT_DATA_URL},
+            ],
+        ],
+        request_ids=[f"privacy-{index}" for index in range(1, 5)],
+    )
+    prefix_only = user_text_dialogue(
+        capture_factory, ["只出现在前缀里的虚构问题。"], request_ids=["prefix-only-1"]
+    )
+    return [mixed, edge, privacy, prefix_only]
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:

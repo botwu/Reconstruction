@@ -11,6 +11,8 @@ from traceforge.lineage.pipeline import build_lineage
 from traceforge.lineage.reader import LineageInputError
 from traceforge.query_turns.pipeline import build_query_turns
 from traceforge.query_turns.reader import QueryTurnInputError
+from traceforge.source_projection.contracts import UserTextProjectionInputError
+from traceforge.source_projection.pipeline import build_user_text_projection
 from traceforge.trajectory.artifacts import ArtifactPublishError
 from traceforge.trajectory.pipeline import compile_trajectory
 from traceforge.trajectory.source import SourceError
@@ -89,6 +91,36 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         help="query-turns artifact 根目录",
     )
+
+    source_projection = commands.add_parser(
+        "source-projection", help="来源投影：USER 事件结构注解（M2 前置）"
+    )
+    source_projection_commands = source_projection.add_subparsers(
+        dest="source_projection_command",
+        required=True,
+    )
+    source_projection_build = source_projection_commands.add_parser(
+        "build",
+        help="在一个已发布 M1B run（可选绑定 M1D run）之上派生只读 USER 文本结构注解",
+    )
+    source_projection_build.add_argument(
+        "--m1b-run",
+        type=Path,
+        required=True,
+        help="已发布 M1B run 目录（只读消费）",
+    )
+    source_projection_build.add_argument(
+        "--m1d-run",
+        type=Path,
+        default=None,
+        help="可选：已发布 M1D run 目录（只读消费；提供即绑定并回指 UserBlock）",
+    )
+    source_projection_build.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="source-projection artifact 根目录",
+    )
     return parser
 
 
@@ -128,6 +160,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except (QueryTurnInputError, ArtifactPublishError, ValueError) as exc:
             print(f"回合图构建失败：{exc}", file=sys.stderr)
+            return 2
+        print(output_path)
+        return 0
+    if arguments.command == "source-projection" and arguments.source_projection_command == "build":
+        try:
+            output_path = build_user_text_projection(
+                m1b_run_dir=arguments.m1b_run,
+                output_root=arguments.output,
+                m1d_run_dir=arguments.m1d_run,
+            )
+        except (UserTextProjectionInputError, ArtifactPublishError, ValueError) as exc:
+            print(f"来源投影构建失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
         return 0

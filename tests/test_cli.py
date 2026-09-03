@@ -273,3 +273,86 @@ def test_query_turns_build_command_reports_invalid_m1b_without_traceback(
     assert exit_code == 2
     assert "回合图构建失败" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_source_projection_build_command_publishes_run_with_optional_m1d(
+    stable_git_provenance: None,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    """source-projection build 在 M1B run（+ 可选 M1D run）之上发布投影，回打印内容寻址目录。"""
+
+    capture = capture_factory(
+        messages=[
+            {"role": "user", "content": "虚构提问。"},
+            {"role": "assistant", "content": "虚构回答。"},
+            {"role": "user", "content": "<environment_context>虚构环境</environment_context>"},
+            {"role": "assistant", "content": "虚构回答二。"},
+        ],
+        terminal_prefix_depths=[2, 4],
+    )
+    m1b_run = compile_dataset([capture], label="cli-utp")
+    exit_code = main(
+        ["query-turns", "build", "--m1b-run", str(m1b_run), "--output", str(tmp_path / "m1d")]
+    )
+    assert exit_code == 0
+    m1d_run = Path(capsys.readouterr().out.strip())
+
+    exit_code = main(
+        [
+            "source-projection",
+            "build",
+            "--m1b-run",
+            str(m1b_run),
+            "--m1d-run",
+            str(m1d_run),
+            "--output",
+            str(tmp_path / "utp"),
+        ]
+    )
+    assert exit_code == 0
+    published = Path(capsys.readouterr().out.strip())
+    assert published.is_dir()
+    assert (published / "projection_manifest.json").is_file()
+    assert (published / "reports/projection_report.json").is_file()
+    assert (published / "private/user_text_annotations.jsonl").is_file()
+
+    exit_code = main(
+        [
+            "source-projection",
+            "build",
+            "--m1b-run",
+            str(m1b_run),
+            "--output",
+            str(tmp_path / "utp-unbound"),
+        ]
+    )
+    assert exit_code == 0
+    unbound = Path(capsys.readouterr().out.strip())
+    assert unbound.name != published.name
+
+
+def test_source_projection_build_command_reports_invalid_input_without_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    not_a_run = tmp_path / "空目录"
+    not_a_run.mkdir()
+
+    exit_code = main(
+        [
+            "source-projection",
+            "build",
+            "--m1b-run",
+            str(not_a_run),
+            "--output",
+            str(tmp_path / "out"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "来源投影构建失败" in captured.err
+    assert "Traceback" not in captured.err
