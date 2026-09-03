@@ -23,7 +23,6 @@ from traceforge.query_turns.contracts import (
     QueryTurnArtifactManifestV1,
     QueryTurnManifestV1,
     QueryTurnReportV1,
-    artifact_entry_dicts,
     build_report_counts,
     query_turn_run_id,
 )
@@ -31,6 +30,7 @@ from traceforge.query_turns.reader import load_m1b_turn_view
 from traceforge.trajectory.artifacts import (
     ArtifactWorkspace,
     JsonlArtifactWriter,
+    artifact_entry_dicts,
     write_json_artifact,
 )
 from traceforge.trajectory.provenance import collect_git_provenance

@@ -15,12 +15,12 @@ candidate_group_id 等，规格 §5.6 修正）。
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from traceforge.trajectory.contracts import ArtifactEntryV1, SerializableContract
+from traceforge.trajectory.contracts import SerializableContract
 from traceforge.trajectory.json_codec import stable_id
 
 # --- 契约版本与 schema 常量 ------------------------------------------------
@@ -272,9 +272,3 @@ def build_report_counts(
     for relation, value in edge_counts_by_relation.items():
         counts[edge_count_key(relation)] = value
     return dict(sorted(counts.items()))
-
-
-def artifact_entry_dicts(entries: Iterable[ArtifactEntryV1]) -> tuple[dict[str, Any], ...]:
-    """把 writer 返回的 ArtifactEntryV1 按 relative_path 排序后转为 manifest files 项。"""
-
-    return tuple(entry.to_dict() for entry in sorted(entries, key=lambda item: item.relative_path))

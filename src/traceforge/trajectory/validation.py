@@ -72,6 +72,7 @@ from traceforge.trajectory.privacy import (
     find_privacy_violations,
     visible_value_without_reasoning,
 )
+from traceforge.trajectory.run_validation import IssueCollector, ValidationIssue
 from traceforge.trajectory.source import validate_dataset_id
 from traceforge.trajectory.source_adapter import RESTORED_LONG_CAPTURE_SCHEMA
 
@@ -196,15 +197,6 @@ _PROCESSING_STATUSES = frozenset(status.value for status in ProcessingStatus)
 
 
 @dataclass(frozen=True, slots=True)
-class ValidationIssue:
-    """一条不携带业务原文的校验错误。"""
-
-    code: str
-    location: str
-    message: str
-
-
-@dataclass(frozen=True, slots=True)
 class ValidationResult:
     """完整 run 的验收结果。"""
 
@@ -217,32 +209,6 @@ class ValidationResult:
     @property
     def errors(self) -> tuple[str, ...]:
         return tuple(f"[{issue.code}] {issue.location}: {issue.message}" for issue in self.issues)
-
-
-class _Issues:
-    """限制错误量，避免损坏的大文件反向耗尽内存。"""
-
-    def __init__(self, limit: int = 300) -> None:
-        self.items: list[ValidationIssue] = []
-        self.limit = limit
-        self.dropped = 0
-
-    def add(self, code: str, location: str, message: str) -> None:
-        if len(self.items) < self.limit:
-            self.items.append(ValidationIssue(code, location, message))
-        else:
-            self.dropped += 1
-
-    def finish(self) -> tuple[ValidationIssue, ...]:
-        if self.dropped:
-            self.items.append(
-                ValidationIssue(
-                    "ERROR_LIMIT_REACHED",
-                    "run",
-                    f"另有 {self.dropped} 条错误未展开",
-                )
-            )
-        return tuple(self.items)
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,7 +323,7 @@ def validate_compiled_run(
     """流式校验一个 M1 run；只保留外键索引，不保留 event payload。"""
 
     root = Path(run_path)
-    issues = _Issues()
+    issues = IssueCollector()
     if not root.is_dir():
         issues.add("RUN_NOT_DIRECTORY", "run", "run_path 不是可读目录")
         finished = issues.finish()
@@ -409,7 +375,7 @@ def validate_compiled_run(
 def _manifest_entries(
     root: Path,
     manifest: dict[str, Any] | None,
-    issues: _Issues,
+    issues: IssueCollector,
 ) -> dict[str, dict[str, Any]]:
     if not _check_contract(
         manifest,
@@ -452,7 +418,7 @@ def _manifest_entries(
 def _check_artifact_bytes(
     root: Path,
     entries: Mapping[str, Mapping[str, Any]],
-    issues: _Issues,
+    issues: IssueCollector,
 ) -> int:
     checked = 0
     for relative, entry in sorted(entries.items()):
@@ -489,7 +455,7 @@ def _check_artifact_bytes(
     return checked
 
 
-def _check_inventory(root: Path, issues: _Issues) -> None:
+def _check_inventory(root: Path, issues: IssueCollector) -> None:
     observed = {
         path.relative_to(root).as_posix()
         for path in root.rglob("*")
@@ -499,7 +465,7 @@ def _check_inventory(root: Path, issues: _Issues) -> None:
         issues.add("RUN_FILE_SET_MISMATCH", "run", "run 文件集合与当前 M1 契约不一致")
 
 
-def _check_public_report(report: dict[str, Any] | None, issues: _Issues) -> None:
+def _check_public_report(report: dict[str, Any] | None, issues: IssueCollector) -> None:
     if not _check_contract(
         report,
         AttritionReportV2,
@@ -529,7 +495,7 @@ def _check_public_report(report: dict[str, Any] | None, issues: _Issues) -> None
         )
 
 
-def _check_dataset_id(value: Any, location: str, issues: _Issues) -> None:
+def _check_dataset_id(value: Any, location: str, issues: IssueCollector) -> None:
     """复用冻结 slug 契约，错误不得回显不可信标识。"""
 
     try:
@@ -542,7 +508,7 @@ def _check_receipt(
     root: Path,
     receipt: dict[str, Any] | None,
     manifest: dict[str, Any] | None,
-    issues: _Issues,
+    issues: IssueCollector,
 ) -> None:
     if not isinstance(receipt, dict):
         return
@@ -570,7 +536,7 @@ def _check_receipt(
         issues.add("RUN_RECEIPT_RUN_ID_MISMATCH", "run_receipt.json", "run_id 不匹配")
 
 
-def _check_git_provenance(value: Any, issues: _Issues) -> None:
+def _check_git_provenance(value: Any, issues: IssueCollector) -> None:
     location = "run_receipt.json/git_provenance"
     if not isinstance(value, dict) or set(value) != {"available", "commit", "tree", "dirty"}:
         issues.add("RUN_RECEIPT_GIT_PROVENANCE_INVALID", location, "git_provenance 字段不闭合")
@@ -607,7 +573,7 @@ def _check_run_identity(
     source: dict[str, Any] | None,
     artifact: dict[str, Any] | None,
     report: dict[str, Any] | None,
-    issues: _Issues,
+    issues: IssueCollector,
 ) -> None:
     if not isinstance(source, dict) or not isinstance(artifact, dict):
         return
@@ -666,7 +632,7 @@ def _read_sources(
     root: Path,
     manifest: dict[str, Any] | None,
     state: _State,
-    issues: _Issues,
+    issues: IssueCollector,
 ) -> None:
     expected_dataset_id = manifest.get("dataset_id") if isinstance(manifest, dict) else None
     expected_dataset_sha256 = manifest.get("dataset_sha256") if isinstance(manifest, dict) else None
@@ -742,7 +708,7 @@ def _read_sources(
             issues.add("SOURCE_BYTE_LENGTH_MISMATCH", "source_manifest.json", "来源字节数不匹配")
 
 
-def _read_captures(root: Path, state: _State, issues: _Issues) -> None:
+def _read_captures(root: Path, state: _State, issues: IssueCollector) -> None:
     for line_number, record in enumerate(_iter_jsonl(root, "private/captures.jsonl", issues), 1):
         location = f"private/captures.jsonl:{line_number}"
         capture_id = record.get("capture_occurrence_id")
@@ -849,7 +815,7 @@ def _read_captures(root: Path, state: _State, issues: _Issues) -> None:
         )
 
 
-def _read_boundaries(root: Path, state: _State, issues: _Issues) -> None:
+def _read_boundaries(root: Path, state: _State, issues: IssueCollector) -> None:
     for line_number, record in enumerate(
         _iter_jsonl(root, "private/request_boundaries.jsonl", issues),
         1,
@@ -903,7 +869,7 @@ def _read_boundaries(root: Path, state: _State, issues: _Issues) -> None:
             issues.add("CAPTURE_BOUNDARY_EDGE_MISMATCH", capture_id, "capture/boundary 外键不闭合")
 
 
-def _read_events(root: Path, state: _State, issues: _Issues) -> None:
+def _read_events(root: Path, state: _State, issues: IssueCollector) -> None:
     next_sequence: Counter[str] = Counter()
     for line_number, record in enumerate(
         _iter_jsonl(root, "private/event_occurrences.jsonl", issues),
@@ -1085,7 +1051,7 @@ def _read_events(root: Path, state: _State, issues: _Issues) -> None:
     _derive_terminal_statuses(state)
 
 
-def _check_event_structure(state: _State, issues: _Issues) -> None:
+def _check_event_structure(state: _State, issues: IssueCollector) -> None:
     """检查 message 主事件覆盖，以及同一 assistant 内 call sub-index 连续性。"""
 
     main_events: dict[str, Counter[int]] = defaultdict(Counter)
@@ -1256,7 +1222,7 @@ def _derive_terminal_statuses(state: _State) -> None:
         state.terminal_status_by_capture[capture_id] = status
 
 
-def _check_boundary_edges(state: _State, issues: _Issues) -> None:
+def _check_boundary_edges(state: _State, issues: IssueCollector) -> None:
     events_by_capture: dict[str, list[_Event]] = defaultdict(list)
     for event in state.events.values():
         events_by_capture[event.capture_id].append(event)
@@ -1359,7 +1325,7 @@ def _check_boundary_edges(state: _State, issues: _Issues) -> None:
         state.boundary_valid_by_capture[capture_id] = valid
 
 
-def _read_action_batches(root: Path, state: _State, issues: _Issues) -> None:
+def _read_action_batches(root: Path, state: _State, issues: IssueCollector) -> None:
     covered_calls: Counter[str] = Counter()
     assistants: set[str] = set()
     expected_calls_by_assistant: dict[str, list[str]] = defaultdict(list)
@@ -1455,7 +1421,7 @@ def _read_action_batches(root: Path, state: _State, issues: _Issues) -> None:
         )
 
 
-def _read_pairings(root: Path, state: _State, issues: _Issues) -> None:
+def _read_pairings(root: Path, state: _State, issues: IssueCollector) -> None:
     covered: Counter[str] = Counter()
     groups: set[tuple[str, str]] = set()
     observed_group_order: list[tuple[str, str]] = []
@@ -1588,7 +1554,7 @@ def _check_pairing_events(
     state: _State,
     covered: Counter[str],
     location: str,
-    issues: _Issues,
+    issues: IssueCollector,
 ) -> None:
     for event_id in event_ids:
         if not isinstance(event_id, str):
@@ -1606,7 +1572,7 @@ def _check_pairing_events(
             covered[event_id] += 1
 
 
-def _read_catalogs(root: Path, state: _State, issues: _Issues) -> None:
+def _read_catalogs(root: Path, state: _State, issues: IssueCollector) -> None:
     by_capture: dict[str, str] = {}
     for line_number, record in enumerate(
         _iter_jsonl(root, "private/tool_catalogs.jsonl", issues),
@@ -1736,7 +1702,7 @@ def _published_definition_name(
     return name if item.get("provenance") == expected_provenance else None
 
 
-def _read_quality(root: Path, state: _State, issues: _Issues) -> None:
+def _read_quality(root: Path, state: _State, issues: IssueCollector) -> None:
     seen_sources: set[str] = set()
     seen_captures: set[str] = set()
     for line_number, record in enumerate(
@@ -1784,7 +1750,7 @@ def _check_capture_quality(
     source_id: str,
     state: _State,
     location: str,
-    issues: _Issues,
+    issues: IssueCollector,
 ) -> None:
     capture = state.captures.get(capture_id)
     if capture is None or capture.source_id != source_id:
@@ -1876,7 +1842,7 @@ def _check_quarantined_quality(
     source_id: str,
     state: _State,
     location: str,
-    issues: _Issues,
+    issues: IssueCollector,
 ) -> None:
     if any(capture.source_id == source_id for capture in state.captures.values()):
         issues.add("QUALITY_QUARANTINE_INVALID", location, "已有 capture 的 source 不得隔离")
@@ -1926,7 +1892,7 @@ def _check_quarantined_quality(
 def _check_quality_enums(
     record: Mapping[str, Any],
     location: str,
-    issues: _Issues,
+    issues: IssueCollector,
 ) -> None:
     checks = (
         ("processing_status", _PROCESSING_STATUSES, "QUALITY_PROCESSING_STATUS_INVALID"),
@@ -1952,7 +1918,7 @@ def _check_capture_reason_codes(
     compaction_status: str,
     input_truncation_status: str,
     location: str,
-    issues: _Issues,
+    issues: IssueCollector,
 ) -> None:
     if not isinstance(raw_reasons, list) or not all(
         isinstance(reason, str) for reason in raw_reasons
@@ -1978,7 +1944,7 @@ def _check_capture_reason_codes(
         issues.add("QUALITY_REASON_CODES_MISMATCH", location, "reason_codes 与可重算事实不一致")
 
 
-def _finish_counts(state: _State, issues: _Issues) -> None:
+def _finish_counts(state: _State, issues: IssueCollector) -> None:
     state.counts["unique_source_request_count"] = len(state.unique_request_ids)
     state.counts["captures_with_unobserved_results"] = sum(
         count > 0 for count in state.missing_count_by_capture.values()
@@ -2005,7 +1971,7 @@ def _finish_counts(state: _State, issues: _Issues) -> None:
     _check_count_conservation(state, issues)
 
 
-def _check_count_conservation(state: _State, issues: _Issues) -> None:
+def _check_count_conservation(state: _State, issues: IssueCollector) -> None:
     checks = (
         (
             sum(state.counts[key] for key in _EVENT_COUNT_KEYS.values()),
@@ -2052,7 +2018,7 @@ def _check_count_conservation(state: _State, issues: _Issues) -> None:
 def _compare_report(
     report: Mapping[str, Any] | None,
     observed: Mapping[str, int],
-    issues: _Issues,
+    issues: IssueCollector,
 ) -> None:
     if not isinstance(report, dict) or not isinstance(report.get("counts"), dict):
         return
@@ -2065,7 +2031,7 @@ def _compare_report(
             )
 
 
-def _iter_jsonl(root: Path, relative: str, issues: _Issues) -> Iterable[dict[str, Any]]:
+def _iter_jsonl(root: Path, relative: str, issues: IssueCollector) -> Iterable[dict[str, Any]]:
     path = root / relative
     if not path.is_file():
         return
@@ -2087,7 +2053,7 @@ def _iter_jsonl(root: Path, relative: str, issues: _Issues) -> Iterable[dict[str
                 yield value
 
 
-def _read_json(path: Path, issues: _Issues) -> dict[str, Any] | None:
+def _read_json(path: Path, issues: IssueCollector) -> dict[str, Any] | None:
     location = path.name if path.parent.name != "reports" else f"reports/{path.name}"
     if not path.is_file():
         issues.add("JSON_FILE_MISSING", location, "文件不存在")
@@ -2107,7 +2073,7 @@ def _read_json(path: Path, issues: _Issues) -> dict[str, Any] | None:
     return value
 
 
-def _check_privacy(value: Any, location: str, issues: _Issues) -> None:
+def _check_privacy(value: Any, location: str, issues: IssueCollector) -> None:
     """统一扫描结构化派生产物，不把孤立的 ``;base64,`` 当作 Data URL。"""
 
     for violation in find_privacy_violations(value):
@@ -2124,7 +2090,7 @@ def _check_contract(
     contract: type[Any],
     schema: str | None,
     location: str,
-    issues: _Issues,
+    issues: IssueCollector,
 ) -> bool:
     if not isinstance(value, dict):
         issues.add("SCHEMA_NOT_OBJECT", location, "记录顶层必须是对象")
@@ -2163,7 +2129,7 @@ def _check_stable_id(
     observed: str,
     expected: str,
     location: str,
-    issues: _Issues,
+    issues: IssueCollector,
 ) -> None:
     if observed != expected:
         issues.add("STABLE_ID_MISMATCH", location, "稳定 ID 与固定身份公式不匹配")

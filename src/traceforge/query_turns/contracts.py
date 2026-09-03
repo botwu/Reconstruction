@@ -13,13 +13,12 @@ M1D 复用 `trajectory.json_codec` 的公开稳定 ID 内核，只在自有命�
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
 from traceforge.trajectory.contracts import (
-    ArtifactEntryV1,
     SerializableContract,
     TerminalStatus,
 )
@@ -411,9 +410,3 @@ def build_report_counts(
         "captures_with_compaction_count": captures_with_compaction_count,
     }
     return dict(sorted(counts.items()))
-
-
-def artifact_entry_dicts(entries: Iterable[ArtifactEntryV1]) -> tuple[dict[str, Any], ...]:
-    """把 writer 返回的 ArtifactEntryV1 按 relative_path 排序后转为 manifest files 项。"""
-
-    return tuple(entry.to_dict() for entry in sorted(entries, key=lambda item: item.relative_path))

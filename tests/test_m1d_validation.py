@@ -380,7 +380,7 @@ def _codes_without_bijection(
 ) -> set[str]:
     """把篡改检测层置空，只留不变量层；返回的 code 集合中不应再有任何 bijection 产物。"""
 
-    monkeypatch.setattr(m1d_validation, "_bijection", lambda *args, **kwargs: None)
+    monkeypatch.setattr(m1d_validation, "bijection", lambda *args, **kwargs: None)
     codes = _codes(m1d_run, m1b_run)
     assert not {code for code in codes if code.startswith(_BIJECTION_CODE_PREFIXES)}, codes
     return codes

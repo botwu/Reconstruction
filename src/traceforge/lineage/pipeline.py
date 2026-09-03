@@ -22,7 +22,6 @@ from traceforge.lineage.contracts import (
     LineageArtifactManifestV1,
     LineageManifestV1,
     LineageReportV1,
-    artifact_entry_dicts,
     build_report_counts,
     lineage_run_id,
 )
@@ -30,6 +29,7 @@ from traceforge.lineage.reader import load_m1b_run_view
 from traceforge.trajectory.artifacts import (
     ArtifactWorkspace,
     JsonlArtifactWriter,
+    artifact_entry_dicts,
     write_json_artifact,
 )
 from traceforge.trajectory.provenance import collect_git_provenance

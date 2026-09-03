@@ -6,12 +6,18 @@ import hashlib
 import os
 import shutil
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, BinaryIO
 
 from traceforge.trajectory.contracts import ArtifactEntryV1
 from traceforge.trajectory.json_codec import canonical_json_bytes, canonical_json_line
+
+
+def artifact_entry_dicts(entries: Iterable[ArtifactEntryV1]) -> tuple[dict[str, Any], ...]:
+    """把 writer 返回的 ArtifactEntryV1 按 relative_path 排序后转为 manifest 的 files 项。"""
+
+    return tuple(entry.to_dict() for entry in sorted(entries, key=lambda item: item.relative_path))
 
 
 class ArtifactPublishError(RuntimeError):
