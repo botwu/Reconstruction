@@ -4,7 +4,7 @@
 
 日期：2026-09-03
 
-状态：M1A/M1B **v4**、M1C v2（重绑定 v4 run）、M1D v1 与 M2 前置 `UserTextProjection` v1 正式通过；已验收代码停止在 `UserTextProjection`（提交 `1de39ae`）；M1 主线与 M2 前置硬门在 R01 上全部闭合；下一步为起草并评审 M2 规格
+状态：M1A/M1B **v4**、M1C v2（重绑定 v4 run）、M1D v1 与 M2 前置 `UserTextProjection` v1 正式通过；已验收代码停止在 `UserTextProjection`（提交 `1de39ae`）；M1 主线与 M2 前置硬门在 R01 上全部闭合；M2 已拆为 ①–④ 四个子模块（§11），下一步为起草并评审 ① `TurnEvidence` 规格
 
 ## 1. 本文用途
 
@@ -46,7 +46,7 @@ flowchart LR
     C1 --> P[M2 前置 UserTextProjection]
     E -. 可选回指 .-> P
     P --> S{{当前 STOP}}
-    S -. M2 规格待起草评审 .-> F[M2 TaskEpisode 与画像]
+    S -. M2 ① TurnEvidence 规格待起草 .-> F[M2 ①→④ 子模块]
     F --> G[M3 Task-World 联合合成]
     G --> H[M4 认证、rollout 闭合与定向修复]
     H --> I[M5 六维难度校准]
@@ -298,12 +298,23 @@ M1C 的四门（候选组仅 `BLOCKING_HINT_ONLY`、Grade-A 组盲、validator �
 
 **`UserTextProjection` 已实现并正式验收（2026-09-03，提交 `1de39ae`）。** 按 [`../AGENTS.md`](../AGENTS.md) 测试先行：77 项模块测试 + 2 项 CLI 测试覆盖规格 §6 的全部用例清单；干净克隆双跑复现 run `47cfac20…`（绑定 M1D）与 `9dc26f2f…`（未绑定），23 项计数与 12 个白名单标签计数与规格 §6 向量逐项相等，1,182 个观测 USER 事件全部回指 UserBlock，330 ≤ 342（§8.3，[`r01-user-text-projection-validation.md`](r01-user-text-projection-validation.md)）。同批重构 `f70710f`（validator 公共原语）已对 M1B/M1C/M1D 重新验收（§5）。规格 §7 D10 的扩展候选 `skill` 保持 `UNKNOWN_TAGGED`，任何白名单扩展只能经修订规格 + §8 离线探针；`SourceAnnotationProjection` 按 D3 缓做，在 M2 首次消费 `domain_meta` 前必做。
 
-**下一步（唯一）**：起草 M2 规格 `docs/m2-processing-spec.md`（草案，需评审后冻结，实现前不得写代码——[`../AGENTS.md`](../AGENTS.md) 规格先行）。范围以 [`overall-plan.md`](overall-plan.md) §4.6（`TaskEpisode` DAG）、§5（数据质量）、§6（任务与环境分布）为准，并受以下已冻结前置约束：
+**M2 拆为四个子模块，一次只做一个（2026-09-03 决定）。** 原计划"起草一份 M2 总规格"过大：[`overall-plan.md`](overall-plan.md) §4.6/§5/§6/§7 合在一起既含确定性结构事实、又含首次模型调用、又含跨 capture 聚合，任何一处返工都会拖住整块，也无法满足 M2 验收条"结构事实由确定性代码产生"的可核验性。沿用 M1C/M1D/`UserTextProjection` 已验证的节奏——独立规格 → 独立包 → 同构两层 validator → 干净克隆双跑验收——拆为：
+
+| 序 | 子模块（契约） | 性质 | 输入 | 产出 | 单独成模块的理由 |
+|---|---|---|---|---|---|
+| ① | `TurnEvidence`（`turn-evidence-v1`） | 确定性、零模型 | 已校验的 M1B + M1D + `UserTextProjection` run | 每个 `QueryTurn` 一条证据包：意图证据事件 ID 集（仅 `PLAIN_USER_TEXT`）与 `intent_locality`；AgentStep 结构特征（步数、调用/观测/未解析计数、工具名集合、并行语义）；终态；中断线索（`CONTROL_SIGNAL`）；环境暴露标签（`HARNESS_*`）；附件位；按用途的 eligibility（`task_profile`/`environment_profile`/`reconstruction`，固定函数 + 原因码，plan §5） | 结构事实与模型语义彻底分开；是 ②③④ 的唯一输入，模型层只见证据包、不见原始 run |
+| ② | `EnvironmentExposureProfile`（`environment-exposure-v1`） | 确定性聚合，只出计数 | ① run（+ M1B 工具配对/schema 冲突标量） | plan §6.2 的 R01 observed 环境暴露分布：declared/called/observed 工具角色、观测 empty/error/truncated 比例、harness 指纹、compaction、显式不可观测性声明 | M3 World 合成需要它且不依赖任何语义抽取；先交付确定性价值 |
+| ③ | `SemanticExtraction`（`semantic-extraction-v1`） | **首个模型模块**，封闭标签 | ① 中 `task_profile ∈ {ELIGIBLE, PARTIAL}` 的回合证据包（正文经 M1B 事件 ID 解引用，只在模型边界内读） | 每回合 task family/domain/交付形式/约束种类（封闭枚举）+ 相邻回合语义关系（plan §4.6 八值）；两次独立抽取，不一致或无证据 → `AMBIGUOUS`/abstain；每条结论只引事件 ID | 全部模型风险隔离于此：冻结提示与输出 schema、模型/温度/缓存键、可从缓存离线重放；validator 只能核验 schema/来源引用/两次一致性，语义正确性显式声明为抽样人工评审门 |
+| ④ | `TaskEpisode` DAG + `ObservedTaskDistribution`（`task-episodes-v1`） | 确定性组合与聚合 | ① + ③ run（+ M1C Grade-A 组作 lineage 去重分母） | plan §4.6 Episode DAG、§6.1 分布（`PREFIX_ONLY` 单列；unknown/abstain/eligible 分母显式） | 组合规则与聚合口径独立于模型输出演化 |
+
+前置决定与缓做：③ 之前必须先定**模型接入**（哪个模型、能否离线缓存重放、预算与调用上限）——这是唯一需要用户拍板的外部依赖，①② 不受其阻塞；`SourceAnnotationProjection`（D3）只在 ③ 验收后作事后对照 oracle 时才需要；`ReconstructionCandidate`（plan §7）属 M2/M3 边界，留到 ④ 之后。
+
+**下一步（唯一）**：起草 ① 的规格 `docs/m2-turn-evidence-spec.md`（草案，评审冻结后才写代码——[`../AGENTS.md`](../AGENTS.md) 规格先行）。先在冻结 run（`6be45e01…`/`84d826b3…`/`47cfac20…`）上做只读结构探针得 §0 地基（OBSERVED_ROOTED 回合的意图证据覆盖、工具名是否为 M1B 公开冻结标量、终态与中断线索的实际分布），再写契约、固定函数、两层 validator 与验收向量。以下已冻结前置约束对 ①–④ 全部有效：
 
 - 输入单元 = M1D `QueryTurn`（带 `root_status`）+ M1B 事件冻结标量 + `UserTextProjection` 的带来源、带 `text_class`/`locality` 的 USER 事件引用；M1C 边只作 Control 侧来源解析提示（`BLOCKING_HINT_ONLY`），不作语义依据；
 - 消费约定按 [`m2-source-projection-spec.md`](m2-source-projection-spec.md) §2.5：只有 `PLAIN_USER_TEXT` 可作任务意图证据；`HARNESS_*` 只作环境暴露证据；`CONTROL_SIGNAL` 只作中断线索；`EMPTY_TEXT`/`UNKNOWN_TAGGED`/`NO_LEADING_TEXT` 只计数；由 `PREFIX_UNLOCALIZED` 证据得出的 Episode/意图必须携带 `intent_locality=PREFIX_ONLY` 并在 `ObservedTaskDistribution` 中单列；M2 不得按绝对路径重新解析原始 JSONL；
-- M2 是首个引入模型调用的模块：规格必须先定义提示与输出的冻结 schema、抽取结果的来源引用（只引 ID 不复制正文）、确定性/可复现要求（模型、温度、缓存键）、与上游"任务摘要"的独立性（D3：上游标签只能作事后对照 oracle）、以及独立 validator 能核验什么、不能核验什么（语义正确性不可机械核验，须显式声明为抽样人工评审门）；
-- 硬停止线 §10 在 M2 规格冻结前不变。
+- ③ 是首个引入模型调用的模块：规格必须先定义提示与输出的冻结 schema、抽取结果的来源引用（只引 ID 不复制正文）、确定性/可复现要求（模型、温度、缓存键）、与上游"任务摘要"的独立性（D3：上游标签只能作事后对照 oracle）、以及独立 validator 能核验什么、不能核验什么（语义正确性不可机械核验，须显式声明为抽样人工评审门）；
+- 硬停止线 §10 在 ① 规格冻结前不变。
 
 ## 12. 参考资源采用边界
 
@@ -346,7 +357,7 @@ uv lock --check --offline --no-cache
 
 预期：`src/traceforge/` 相对 `1de39ae` 无变化（`trajectory/`、`lineage/`、`query_turns/` 的最后一次变化是重构 `f70710f`，已在 §5 重新验收）；测试全部通过（本检查点为 352 项）；M1 validator 返回 `ok=true`、10 files、1,683 lines、175,858 events；M1C validator 返回 `ok=true`、5 files、计数与 §8.1 一致；M1D validator 返回 `ok=true`、8 files、13 项计数与 §8.2 一致；投影 validator 返回 `ok=true`、3 files、23 项计数与 §8.3 / 规格 §6 一致。在 AFS 慢盘上，四个 validator 各需 1–7 分钟（M1C/M1D 内含对 706 MB 上游 run 的权威重验；投影绑定 M1D 时该重验发生两次），属先校验后消费的必要成本。
 
-在 AFS 共享盘工作区**就地**构建的任何 run 会因 `git status` 超过 provenance 5 秒超时而被 validator 拒绝——正式 run 一律在本地盘干净克隆上执行（[`r01-m1c-validation.md`](r01-m1c-validation.md) §7）。
+provenance 单条 git 命令超时已由 5 秒放宽到 30 秒（`trajectory/provenance.py`，2026-09-03；AFS 上 `git status` 实测 4–8 秒，原阈值使就地 run 回执恒 `available=false` 而被 validator 拒绝，见 [`r01-m1c-validation.md`](r01-m1c-validation.md) §7）。该改动只影响 `run_receipt.json` 的来源字段，不触及任何内容寻址产物。正式 run 仍一律在本地盘干净克隆上执行——干净克隆是验收纪律（保证执行的代码就是提交的代码），不是对超时的绕过。
 
 ## 14. 明确禁止项
 
