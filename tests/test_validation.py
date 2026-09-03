@@ -20,8 +20,8 @@ from traceforge.trajectory.validation import validate_compiled_run
 def stable_compile_git_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     """将 M1B 编译路径的 collect_git_provenance 固定为「已核验」来源。
 
-    非 git-fast 环境下真实 `git status` 耗时超过 provenance 采集的 5s 超时 → available=False →
-    正式 run 完成时无法核验一致，validate_compiled_run 报 RUN_RECEIPT_GIT_PROVENANCE_UNVERIFIED，
+    真实 provenance 取决于测试机的 git 状态（脏工作区、非 git 目录、慢盘超时），会让
+    validate_compiled_run 报 RUN_RECEIPT_GIT_PROVENANCE_UNVERIFIED，
     掩盖本用例真正要验的「验收合法编译产物」。固定为可核验值以隔离环境差异（镜像
     test_pipeline_determinism.py 既有做法；只 patch trajectory 编译路径，不 import M1C，
     避免 M1B 测试反向耦合到 lineage）。

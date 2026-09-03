@@ -10,6 +10,10 @@ from typing import Any
 
 GitCommandRunner = Callable[[tuple[str, ...], Path], str]
 
+# 单条 git 命令的硬上限。慢速网络盘（AFS）上 `git status` 实测 4–8 秒，原 5 秒阈值使就地 run 的
+# 回执恒为 available=False 而被 validator 拒绝；30 秒仍是有界的，只防真正挂起。
+GIT_COMMAND_TIMEOUT_SECONDS = 30
+
 
 @dataclass(frozen=True, slots=True)
 class GitProvenance:
@@ -76,7 +80,7 @@ def _run_git(arguments: tuple[str, ...], working_directory: Path) -> str:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        timeout=5,
+        timeout=GIT_COMMAND_TIMEOUT_SECONDS,
     )
     return completed.stdout
 

@@ -214,11 +214,9 @@ def compile_dataset(tmp_path: Path) -> Callable[..., Path]:
 def stable_git_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
     """把 M1B 编译与 M1C 建图两处的 collect_git_provenance 固定为「已核验」来源。
 
-    provenance 采集不可用时（本仓库虽是 git 仓库，但慢速网络盘上 `git status` 耗时超过
-    provenance 的 5s 超时 → available=False）完成时无法核验一致，会使
-    validate_compiled_run / validate_lineage_run 报 RUN_RECEIPT_GIT_PROVENANCE_UNVERIFIED，
-    掩盖测试真正要验的行为。固定为可核验值以隔离环境差异（四个 pipeline 各持一份 import 引用，
-    须分别 patch）。
+    真实 provenance 取决于测试机的 git 状态（脏工作区、非 git 目录、慢盘超时都会让
+    validate_* 报 RUN_RECEIPT_GIT_PROVENANCE_UNVERIFIED），会掩盖测试真正要验的行为。
+    固定为可核验值以隔离环境差异（四个 pipeline 各持一份 import 引用，须分别 patch）。
     """
 
     from traceforge.trajectory.provenance import GitProvenance
