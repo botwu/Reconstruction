@@ -4,7 +4,7 @@
 
 日期：2026-09-03
 
-状态：M1A/M1B **v4**、M1C v2（重绑定 v4 run）、M1D v1 与 M2 前置 `UserTextProjection` v1 正式通过；已验收代码停止在 `UserTextProjection`（提交 `1de39ae`）；M1 主线与 M2 前置硬门在 R01 上全部闭合；M2 已拆为 ①–④ 四个子模块（§11），下一步为起草并评审 ① `TurnEvidence` 规格
+状态：M1A/M1B **v4**、M1C v2（重绑定 v4 run）、M1D v1 与 M2 前置 `UserTextProjection` v1 正式通过；已验收代码停止在 `UserTextProjection`（提交 `1de39ae`）；M1 主线与 M2 前置硬门在 R01 上全部闭合；M2 已拆为 ①–④ 四个子模块（§11），① `TurnEvidence` 规格草案 v0.1 已起草，下一步为评审冻结
 
 ## 1. 本文用途
 
@@ -20,7 +20,8 @@
    [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md)（R1–R9；R4/R5/R7/R8 随 v4 关闭，R9 随 M1D 提交关闭）与 [`m1c-known-items.md`](m1c-known-items.md)（K1–K3）：已知项登记；K1/K2 已由 M1C v2 从根因关闭，**上游不透明摘要不入任何关系证据**是 v2 起的通用原则；
 8. [`m1d-processing-spec.md`](m1d-processing-spec.md)（v0.3，实现同步稿）与 [`r01-m1d-validation.md`](r01-m1d-validation.md)：M1D 契约与正式验收证据；[`m1d-review-20260902.md`](m1d-review-20260902.md)：已处置的评审意见（存档）；
 9. [`m2-source-projection-spec.md`](m2-source-projection-spec.md)（v0.3，已冻结并已实现）与 [`r01-user-text-projection-validation.md`](r01-user-text-projection-validation.md)：M2 前置 `UserTextProjection` 契约与正式验收证据（含同批 validator 公共原语重构的重新验收）；[`m2-source-projection-review-20260903.md`](m2-source-projection-review-20260903.md)：已处置的评审意见（存档）；
-10. [`reference-repositories.md`](reference-repositories.md) 与 [`implementation-sources.md`](implementation-sources.md)：参考逻辑和迁移边界。
+10. [`m2-turn-evidence-spec.md`](m2-turn-evidence-spec.md)（v0.1 草案，待评审冻结）：M2 ① `TurnEvidence` 契约、固定函数与验收向量；M2 四子模块拆解见 §11；
+11. [`reference-repositories.md`](reference-repositories.md) 与 [`implementation-sources.md`](implementation-sources.md)：参考逻辑和迁移边界。
 
 如果本文与模块规格冲突，以 `r01-processing-spec.md`（M1A/B）、`m1c-processing-spec.md`（M1C）、`m1d-processing-spec.md`（M1D）和 `m2-source-projection-spec.md`（`UserTextProjection`）的契约为准；如果与开发纪律冲突，以 `AGENTS.md` 为准。
 
@@ -46,7 +47,7 @@ flowchart LR
     C1 --> P[M2 前置 UserTextProjection]
     E -. 可选回指 .-> P
     P --> S{{当前 STOP}}
-    S -. M2 ① TurnEvidence 规格待起草 .-> F[M2 ①→④ 子模块]
+    S -. M2 ① TurnEvidence 规格 v0.1 待评审冻结 .-> F[M2 ①→④ 子模块]
     F --> G[M3 Task-World 联合合成]
     G --> H[M4 认证、rollout 闭合与定向修复]
     H --> I[M5 六维难度校准]
@@ -309,7 +310,7 @@ M1C 的四门（候选组仅 `BLOCKING_HINT_ONLY`、Grade-A 组盲、validator �
 
 前置决定与缓做：③ 之前必须先定**模型接入**（哪个模型、能否离线缓存重放、预算与调用上限）——这是唯一需要用户拍板的外部依赖，①② 不受其阻塞；`SourceAnnotationProjection`（D3）只在 ③ 验收后作事后对照 oracle 时才需要；`ReconstructionCandidate`（plan §7）属 M2/M3 边界，留到 ④ 之后。
 
-**下一步（唯一）**：起草 ① 的规格 `docs/m2-turn-evidence-spec.md`（草案，评审冻结后才写代码——[`../AGENTS.md`](../AGENTS.md) 规格先行）。先在冻结 run（`6be45e01…`/`84d826b3…`/`47cfac20…`）上做只读结构探针得 §0 地基（OBSERVED_ROOTED 回合的意图证据覆盖、工具名是否为 M1B 公开冻结标量、终态与中断线索的实际分布），再写契约、固定函数、两层 validator 与验收向量。以下已冻结前置约束对 ①–④ 全部有效：
+**① 规格草案已起草（v0.1，[`m2-turn-evidence-spec.md`](m2-turn-evidence-spec.md)）**：§0 三条实测地基来自冻结 run 的只读探针（2,610 回合 = 1,683 PREFIX_ROOTED + 927 OBSERVED_ROOTED；927 中 885 有 `PLAIN_USER_TEXT` 意图证据、32 只有 Harness 注入、10 只有控制信号；1,680 个 capture 的前缀共 10,802 条用户文本是 80% capture 的唯一意图来源；终态缺失系统性——1,211 capture 以 `TOOL_CALL_PENDING` 结束）；契约一张表（主键沿用 `query_turn_id`，闭合值域，不存工具名）；eligibility 只产 `task_profile`/`environment_profile` 两用途 + 8 个原因码的固定函数（`reconstruction` 在结构事实下恒等于 task ELIGIBLE，无信息量，不产）；§6 验收向量已由探针按固定函数预演（task：548/337/42 与 0/1,680/3；environment：230/675/22 与 416/1,267/0）。**下一步（唯一）**：评审并冻结该草案（§11 四个待定小决策 E-a–E-d 需拍板），冻结后才写代码（[`../AGENTS.md`](../AGENTS.md) 规格先行）。以下已冻结前置约束对 ①–④ 全部有效：
 
 - 输入单元 = M1D `QueryTurn`（带 `root_status`）+ M1B 事件冻结标量 + `UserTextProjection` 的带来源、带 `text_class`/`locality` 的 USER 事件引用；M1C 边只作 Control 侧来源解析提示（`BLOCKING_HINT_ONLY`），不作语义依据；
 - 消费约定按 [`m2-source-projection-spec.md`](m2-source-projection-spec.md) §2.5：只有 `PLAIN_USER_TEXT` 可作任务意图证据；`HARNESS_*` 只作环境暴露证据；`CONTROL_SIGNAL` 只作中断线索；`EMPTY_TEXT`/`UNKNOWN_TAGGED`/`NO_LEADING_TEXT` 只计数；由 `PREFIX_UNLOCALIZED` 证据得出的 Episode/意图必须携带 `intent_locality=PREFIX_ONLY` 并在 `ObservedTaskDistribution` 中单列；M2 不得按绝对路径重新解析原始 JSONL；
