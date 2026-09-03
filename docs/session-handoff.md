@@ -1,10 +1,10 @@
 # TraceForge 开发会话交接
 
-版本：M1D 检查点
+版本：M2 前置 `UserTextProjection` 检查点
 
 日期：2026-09-03
 
-状态：M1A/M1B **v4**、M1C v2（重绑定 v4 run）与 M1D v1 正式通过；已验收代码停止在 M1D；M1 主线在 R01 上全部闭合；M2 前置 `UserTextProjection` 规格已冻结为 v0.3，下一步为其测试先行实现
+状态：M1A/M1B **v4**、M1C v2（重绑定 v4 run）、M1D v1 与 M2 前置 `UserTextProjection` v1 正式通过；已验收代码停止在 `UserTextProjection`（提交 `1de39ae`）；M1 主线与 M2 前置硬门在 R01 上全部闭合；下一步为起草并评审 M2 规格
 
 ## 1. 本文用途
 
@@ -19,10 +19,10 @@
 7. [`m1c-processing-spec.md`](m1c-processing-spec.md) 与 [`r01-m1c-validation.md`](r01-m1c-validation.md)（§0′ 为当前有效结论）：M1C 契约与正式验收证据；
    [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md)（R1–R9；R4/R5/R7/R8 随 v4 关闭，R9 随 M1D 提交关闭）与 [`m1c-known-items.md`](m1c-known-items.md)（K1–K3）：已知项登记；K1/K2 已由 M1C v2 从根因关闭，**上游不透明摘要不入任何关系证据**是 v2 起的通用原则；
 8. [`m1d-processing-spec.md`](m1d-processing-spec.md)（v0.3，实现同步稿）与 [`r01-m1d-validation.md`](r01-m1d-validation.md)：M1D 契约与正式验收证据；[`m1d-review-20260902.md`](m1d-review-20260902.md)：已处置的评审意见（存档）；
-9. [`m2-source-projection-spec.md`](m2-source-projection-spec.md)（v0.3，已冻结）与 [`m2-source-projection-review-20260903.md`](m2-source-projection-review-20260903.md)：M2 前置 `UserTextProjection` 规格与评审意见（下一步）；
+9. [`m2-source-projection-spec.md`](m2-source-projection-spec.md)（v0.3，已冻结并已实现）与 [`r01-user-text-projection-validation.md`](r01-user-text-projection-validation.md)：M2 前置 `UserTextProjection` 契约与正式验收证据（含同批 validator 公共原语重构的重新验收）；[`m2-source-projection-review-20260903.md`](m2-source-projection-review-20260903.md)：已处置的评审意见（存档）；
 10. [`reference-repositories.md`](reference-repositories.md) 与 [`implementation-sources.md`](implementation-sources.md)：参考逻辑和迁移边界。
 
-如果本文与模块规格冲突，以 `r01-processing-spec.md`（M1A/B）、`m1c-processing-spec.md`（M1C）和 `m1d-processing-spec.md`（M1D）的契约为准；如果与开发纪律冲突，以 `AGENTS.md` 为准。
+如果本文与模块规格冲突，以 `r01-processing-spec.md`（M1A/B）、`m1c-processing-spec.md`（M1C）、`m1d-processing-spec.md`（M1D）和 `m2-source-projection-spec.md`（`UserTextProjection`）的契约为准；如果与开发纪律冲突，以 `AGENTS.md` 为准。
 
 ## 2. 背景与最终目标
 
@@ -43,15 +43,17 @@ flowchart LR
     C --> C1[EventLog / ActionBatch / Pairing]
     C1 --> D[M1C 跨 capture lineage]
     C1 --> E[M1D 结构型 QueryTurn]
-    E --> S{{当前 STOP}}
-    S -. M2 前置规格评审中 .-> F[M2 TaskEpisode 与画像]
+    C1 --> P[M2 前置 UserTextProjection]
+    E -. 可选回指 .-> P
+    P --> S{{当前 STOP}}
+    S -. M2 规格待起草评审 .-> F[M2 TaskEpisode 与画像]
     F --> G[M3 Task-World 联合合成]
     G --> H[M4 认证、rollout 闭合与定向修复]
     H --> I[M5 六维难度校准]
     I --> J[CertifiedTaskWorldRelease]
 ```
 
-当前只完成实线部分：M1A/B v4 → M1C v2、M1D v1 均在 R01 上正式验收，三者的 run 以内容寻址身份链式绑定（`84d826b3…` ← `6be45e01…` → `9ff708d9…`）。M1D 与 M1C 并列消费 M1B run，互不依赖（M1D 默认不启用 M1C 做跨 capture 线程图，规格 §11 D-c）。仓库中没有 M2、World、认证、难度或 Harbor 的空壳实现。
+当前只完成实线部分：M1A/B v4 → M1C v2、M1D v1、M2 前置 `UserTextProjection` v1 均在 R01 上正式验收，四条 run 以内容寻址身份链式绑定（`47cfac20…` ← (`6be45e01…`, `84d826b3…`)；`84d826b3…` ← `6be45e01…` → `9ff708d9…`）。M1D 与 M1C 并列消费 M1B run，互不依赖（M1D 默认不启用 M1C 做跨 capture 线程图，规格 §11 D-c）；`UserTextProjection` 消费 M1B run，M1D run 只是可选回指输入。仓库中没有 M2、World、认证、难度或 Harbor 的空壳实现。
 
 ## 4. 仓库与冻结输入
 
@@ -107,11 +109,22 @@ dirty：false
 query-turn contract：query-turn-compiler-m1d-v1
 ```
 
-交接文档自身会形成后续纯文档提交；新会话必须用 `git log` 确认 HEAD 是上述冻结点的后代，并确认 `1c588be` 之后没有未重新验收的 `src/traceforge/trajectory/`、`src/traceforge/lineage/`、`src/traceforge/query_turns/`、`pyproject.toml` 或 `uv.lock` 变化。
+**validator 公共原语重构 `f70710f`（2026-09-03）** 触碰了 `trajectory/`、`lineage/`、`query_turns/`：把三个 validator 各自复制的物理层原语抽到 `trajectory/run_validation.py`，`artifact_entry_dicts` 收拢到 `trajectory/artifacts.py`；issue code/location/message 逐字不变。它已在干净克隆 `1de39ae` 上重新验收：重构后的三个 validator 对冻结 run `6be45e01…` / `9ff708d9…` / `84d826b3…` 均 `ok=true` 且计数不变；重构后重建 M1C、M1D 分别复现 `9ff708d9…`、`84d826b3…` 且排除 `run_receipt.json` 后逐字节相同（[`r01-user-text-projection-validation.md`](r01-user-text-projection-validation.md) §6）。上述三个冻结点的正式结论因此继续有效，其"代码无变化"的比对基线相应改为：`trajectory/` 相对 `f70710f`、`lineage/` 相对 `f70710f`、`query_turns/` 相对 `f70710f`。
+
+M2 前置 `UserTextProjection` v1 正式全量运行绑定的代码冻结点：
+
+```text
+Git commit：1de39aeda894b55cc84d1fb8f8923e2b4c57380f
+Git tree：8fbd9729996bd1b2621ed27092db6cf3f1ef274a
+dirty：false
+projection contract：user-text-projection-v1
+```
+
+交接文档自身会形成后续纯文档提交；新会话必须用 `git log` 确认 HEAD 是上述冻结点的后代，并确认 `1de39ae` 之后没有未重新验收的 `src/traceforge/trajectory/`、`src/traceforge/lineage/`、`src/traceforge/query_turns/`、`src/traceforge/source_projection/`、`pyproject.toml` 或 `uv.lock` 变化。
 
 ## 6. M1 已实现能力
 
-M1A/B 位于 `src/traceforge/trajectory/`（字段与算法只在 `r01-processing-spec.md` 定义）；M1C 位于 `src/traceforge/lineage/`（`m1c-processing-spec.md`）；M1D 位于 `src/traceforge/query_turns/`（`m1d-processing-spec.md`）。M1A/B 能力边界如下：
+M1A/B 位于 `src/traceforge/trajectory/`（字段与算法只在 `r01-processing-spec.md` 定义）；M1C 位于 `src/traceforge/lineage/`（`m1c-processing-spec.md`）；M1D 位于 `src/traceforge/query_turns/`（`m1d-processing-spec.md`）；M2 前置 `UserTextProjection` 位于 `src/traceforge/source_projection/`（`m2-source-projection-spec.md`）。四个模块的 validator 共用 `trajectory/run_validation.py` 的物理层原语（manifest 自洽、逐文件摘要、目录清单、回执/provenance、控制文件路径扫描、canonical JSONL 读入、双向 bijection），各自只保留语义层。M1A/B 能力边界如下：
 
 - 单一显式 restored-long source adapter，不对任意 JSON 猜格式；
 - 两遍流式扫描、stat/digest/字节数/行数闭合和逐行来源账本；
@@ -126,6 +139,8 @@ M1A/B 位于 `src/traceforge/trajectory/`（字段与算法只在 `r01-processin
 - 独立 validator 重算 boundary、ActionBatch、pairing、quality、report、typed payload 与隐私不变量。
 
 M1D（`query-turn-compiler-m1d-v1`）在已发布 M1B run 之上：先跑 M1B 权威 validator 再消费；以 `sequence_number` 升序的**可观测事件流**为工作对象，boundary 只作证据锚点；键于 assistant 事件建 `AgentStep`，工具观测**按 `ToolPairingRecordV3` 配对归属**而非位置；可定位 USER 段起 `OBSERVED_ROOTED` 回合，窗口以 assistant 起头则起 `PREFIX_ROOTED` 回合（根在不可定位前缀，显式暴露）；末步有 ActionBatch 即 `INCOMPLETE`、否则按 typed reader 冻结标量判 `TEXT/EMPTY_OUTCOME`；capture 内相邻回合连 `STRUCTURAL_NEXT_TURN` 边；每 capture 一条记账（前缀/观测逐 kind 计数、孤儿观测、compaction）。零模型调用、零语义关系。validator 为两层信任边界：篡改检测（同一纯 fold 重建 + 六表双向 bijection）与不经 fold 的正交不变量（观测事件分区守恒、记账对账、末 assistant 与 M1B `terminal_status` 交叉核对、报告由表重算）。
+
+`UserTextProjection`（`user-text-projection-v1`）在已发布 M1B run（+ 可选已发布 M1D run）之上：先跑上游权威 validator 再消费；对**每条 USER 事件**恰产一条 `UserTextAnnotationV1`——`locality`（`event_scope` 一一映射为 `OBSERVED` / `PREFIX_UNLOCALIZED`）、`content_form`（透传 typed reader / 隐私 envelope 种类：`TEXT_STRING` / `TEXT_WITH_DATA_URL_SEGMENTS` / `DATA_URL_SUMMARY` / `CONTENT_BLOCKS`）、`text_class`（去空白后的开头是否以**冻结白名单**内的开标签起头：`PLAIN_USER_TEXT` / `EMPTY_TEXT` / `HARNESS_CONTEXT`(A7) / `HARNESS_CAPABILITY`(B2) / `CONTROL_SIGNAL`(C3) / `UNKNOWN_TAGGED` / `NO_LEADING_TEXT`）、`leading_tag`（仅白名单字面量；`UNKNOWN_TAGGED` 恒空）、绑定 M1D 时观测事件回指 `user_block_id`。判定窗口 = `lstrip()` 后前 256 码点，文法 `^<([A-Za-z_][A-Za-z0-9_.:-]*)(?=[\s>/])`，大小写敏感；分类只有一个实现 `contracts.classify_leading_text`。零模型调用、零语义推断；产物不含任何正文；公共报告只有固定 allowlist 的 23 项计数（含门④三个诚实分母）。validator 三参（绑定 M1D 时 oracle 必填、未绑定时不得提供），两层信任边界：同一纯 fold 的双向 bijection 抓篡改；不经 fold/分类函数的正交不变量（USER 事件一一覆盖、来源事实逐条一致、`leading_tag` 闭合、类别与开头结构相容、回指与 UserBlock 索引及 capture 一致、报告由表重算、`captures_with_observed_plain_user_text ≤ 有 UserBlock 的 capture 数`）抓派生缺陷。
 
 ## 7. 本轮审计闭环
 
@@ -202,6 +217,31 @@ artifacts/r01/acceptance_m1d/84d826b3d7abddffb5f8fde28d7e5592590720bd6909c24a8b1
 
 长期可提交摘要见 `r01-m1d-validation.md`。真实 run 和证据均被 Git 忽略。
 
+### 8.3 M2 前置 `UserTextProjection` v1（2026-09-03，当前有效）
+
+```text
+projection run ID（绑定 M1D）：47cfac20b89ed066f388da6679cb53f745e6a0392cd5f6e459e869c7076f689c
+绑定 M1B run：6be45e01…（manifest SHA-256 179b82ef…）；绑定 M1D run：84d826b3…（manifest SHA-256 56a3befe…）
+projection artifact manifest SHA-256：b45193276fe0a83d45bf5fa8bd4bc8e6edc303aad493ec3c32fc33894a01ceab
+projection run ID（未绑定 M1D）：9dc26f2fc2ae2ce50e002834597142b4accf5c0f7e410ff798c691b4fa05c627（注解表除 user_block_id 外逐字节相同，报告相同）
+运行 A：回执 397.426230 秒，RSS 257,028,096 bytes
+运行 B：回执 398.604551 秒，RSS 256,225,280 bytes
+运行 C（未绑定）：回执 193.778914 秒，RSS 245,571,584 bytes
+validator A/B/C（三参）：ok=true；3 files；23 项计数与 12 个标签计数与规格 §6 向量逐项相等
+递归 diff：A/B 排除 run_receipt.json 后无差异
+反向核对：绑定 run 缺 M1D oracle → M1D_RUN_REQUIRED；未绑定 run 给 M1D oracle → M1D_BINDING_MISMATCH；v3 M1B run 作 oracle → M1B_INPUT_INVALID + M1D_INPUT_INVALID
+重构 f70710f 重新验收：三 validator 重验冻结 run 全 ok；重建 M1C/M1D 复现同 run ID、字节相同
+测试：352 passed（source_projection 77 + CLI 2 新增）；Ruff lint/format：通过
+```
+
+```text
+artifacts/r01/source_projection/47cfac20b89ed066f388da6679cb53f745e6a0392cd5f6e459e869c7076f689c/
+artifacts/r01/source_projection/9dc26f2fc2ae2ce50e002834597142b4accf5c0f7e410ff798c691b4fa05c627/
+artifacts/r01/acceptance_utp/47cfac20b89ed066f388da6679cb53f745e6a0392cd5f6e459e869c7076f689c/
+```
+
+长期可提交摘要见 `r01-user-text-projection-validation.md`。真实 run 和证据均被 Git 忽略。
+
 ## 9. 当前关键数据事实
 
 | 观察 | 结果 | 含义 |
@@ -221,10 +261,13 @@ artifacts/r01/acceptance_m1d/84d826b3d7abddffb5f8fde28d7e5592590720bd6909c24a8b1
 | `AgentStep` / `UserBlock` / 结构边（M1D） | 14,375 / 927 / 927 | AgentStep 是唯一始终可定位的单元；边数 = 回合数 − capture 数 |
 | `COMPLETE` / `INCOMPLETE` 回合（M1D） | 1,200 / 1,410 | R01 无 `EMPTY_OUTCOME`；INCOMPLETE 全部为末步工具调用步或 USER-only 回合 |
 | 孤儿工具观测 / 含 compaction capture（M1D） | 324 / 119 | 孤儿=配对到前缀调用的观测结果，集中在少数 capture |
+| USER 事件（`UserTextProjection`） | 14,407 = 1,182 `OBSERVED` + 13,225 `PREFIX_UNLOCALIZED` | 每条恰一条结构注解；R01 无 `DATA_URL_SUMMARY`/`CONTENT_BLOCKS` 形态，2 条分段隐私 envelope 首段为文本 |
+| `PLAIN_USER_TEXT` / Harness 注入 / 控制信号 / 未知标签 / 空正文 | 11,694 / 2,559（context 2,501 + capability 58）/ 96 / 54 / 4 | 约 19% 的 USER 事件按结构不是用户文本；`skill`（41 次）等 54 条未知标签只计数、不落标签名 |
+| 普通用户文本的三个分母 | 1,680 / 1,350（只在前缀）/ 330（观测窗口内） | 只用可定位证据时 `ObservedTaskDistribution` 分母 = 330（≤ M1D 有 UserBlock 的 342 个 capture） |
 
 不要将 `processing_status=COMPLETE` 解读为任务完成，也不要把 353 个结构候选直接交给任务合成。M1C 的边是 Control 侧来源解析信息，不进入任何 Public 视图，也不用于硬去重。M1D 的回合是**结构**分组：`PREFIX_ROOTED` 回合的用户意图不在观测窗口内，`root_status` 必须随回合一起传给下游。
 
-M1D 规格 §0 的结构探针与正式 run 共同给出对 M2 极关键的事实：14,407 个 USER 事件中 13,225 落在不可定位的 `PRE_FIRST_OBSERVED_TERMINAL` 前缀；100% capture 存在不可定位前缀，80% 的 capture 观测窗口内没有可定位 USER，只有 927 个回合有可定位用户根。M2 前置的 `UserTextProjection` 若不显式允许以 `locality=PREFIX_UNLOCALIZED` 标记把前缀 USER 事件作为任务意图证据引用，`ObservedTaskDistribution` 的分母将只剩约 342 个 capture。
+M1D 规格 §0 的结构探针与正式 run 共同给出对 M2 极关键的事实：14,407 个 USER 事件中 13,225 落在不可定位的 `PRE_FIRST_OBSERVED_TERMINAL` 前缀；100% capture 存在不可定位前缀，80% 的 capture 观测窗口内没有可定位 USER，只有 927 个回合有可定位用户根。`UserTextProjection` 正式 run 把这一事实量化为可消费的注解：1,350 个 capture 的普通用户文本**只**在前缀、330 个在观测窗口内有普通用户文本。M2 使用前缀证据必须携带 `intent_locality=PREFIX_ONLY` 单列（规格 §2.5），否则要么分母塌陷到 330，要么把不可定位证据混进有根 Episode。
 
 ## 10. 当前硬停止线
 
@@ -241,7 +284,7 @@ M1D 规格 §0 的结构探针与正式 run 共同给出对 M2 极关键的事�
 
 Harbor 是将来 `RunnableTaskWorldCandidateBundle` 的 rollout 执行层，不是 TraceForge core，也不是当前 M1 的前置依赖。Harbor 部分由项目负责人另行负责。
 
-## 11. 下一模块：M2 前置 `UserTextProjection`（来源投影层）
+## 11. 下一模块：M2 规格起草（`TaskEpisode` 与画像）
 
 M1C 的四门（候选组仅 `BLOCKING_HINT_ONLY`、Grade-A 组盲、validator 独立核验分区、`raw_request_hash` 格式契约）与 M1D 的五门（纯确定性零 LLM、只在观测窗口分类、结构信号不读正文、工具观测按配对归属、Public/Control 隔离）分别在 [`m1c-processing-spec.md`](m1c-processing-spec.md) §3、[`m1d-processing-spec.md`](m1d-processing-spec.md) §3 冻结并经各自验收报告验收，此处不再复述。
 
@@ -253,7 +296,14 @@ M1C 的四门（候选组仅 `BLOCKING_HINT_ONLY`、Grade-A 组盲、validator �
 
 **规格已冻结为 v0.3（2026-09-03）。** 规格 §8 只读探针已在 v4 run `6be45e01…` 上执行：USER 14,407 = 前缀 13,225 + 观测 1,182；普通文本 11,694（含 2 条分段隐私 envelope）、空正文 4、开标签 2,709（15 个 ≥2 次标签名 + 7 个单例）；白名单冻结为 A 7 / B 2 / C 3，`skill`（41 次）依准入规则 ② 暂不准入并登记为扩展候选 D10，`ATTACHMENT_MARKER` 删除，新增 `EMPTY_TEXT`；三个分母 1,680 / 1,350 / 330（330 ≤ M1D 有 `UserBlock` 的 342 个 capture）。完整验收向量见规格 §6。
 
-**下一步（唯一）**：实现 `UserTextProjection`——包 `src/traceforge/source_projection/`、契约 `user-text-projection-v1`、CLI `source-projection build`、脚本 `scripts/validate_user_text_projection_run.py`。顺序按 [`../AGENTS.md`](../AGENTS.md)：先写正常+失败测试（规格 §6 列表）→ 最小实现（共用纯函数 `classify_leading_text`）→ 两层信任边界独立 validator（规格 §3）→ 本地盘干净克隆上对 `6be45e01…`（+ `84d826b3…` 作可选输入）双跑验收、与 §6 向量逐项对照 → `docs/r01-user-text-projection-validation.md`。该规格直面 §9 末段的事实：前缀 USER 正文以显式 `locality=PREFIX_UNLOCALIZED` 进入任务意图证据，否则 M2 分母塌陷；M2 不得按绝对路径私下重新解析原始 JSONL。M2 的 LLM 输入单元 = M1D `QueryTurn`（带 `root_status`）+ M1B 事件冻结标量 + 该投影提供的带来源、带 `text_class` 的 USER 事件引用。
+**`UserTextProjection` 已实现并正式验收（2026-09-03，提交 `1de39ae`）。** 按 [`../AGENTS.md`](../AGENTS.md) 测试先行：77 项模块测试 + 2 项 CLI 测试覆盖规格 §6 的全部用例清单；干净克隆双跑复现 run `47cfac20…`（绑定 M1D）与 `9dc26f2f…`（未绑定），23 项计数与 12 个白名单标签计数与规格 §6 向量逐项相等，1,182 个观测 USER 事件全部回指 UserBlock，330 ≤ 342（§8.3，[`r01-user-text-projection-validation.md`](r01-user-text-projection-validation.md)）。同批重构 `f70710f`（validator 公共原语）已对 M1B/M1C/M1D 重新验收（§5）。规格 §7 D10 的扩展候选 `skill` 保持 `UNKNOWN_TAGGED`，任何白名单扩展只能经修订规格 + §8 离线探针；`SourceAnnotationProjection` 按 D3 缓做，在 M2 首次消费 `domain_meta` 前必做。
+
+**下一步（唯一）**：起草 M2 规格 `docs/m2-processing-spec.md`（草案，需评审后冻结，实现前不得写代码——[`../AGENTS.md`](../AGENTS.md) 规格先行）。范围以 [`overall-plan.md`](overall-plan.md) §4.6（`TaskEpisode` DAG）、§5（数据质量）、§6（任务与环境分布）为准，并受以下已冻结前置约束：
+
+- 输入单元 = M1D `QueryTurn`（带 `root_status`）+ M1B 事件冻结标量 + `UserTextProjection` 的带来源、带 `text_class`/`locality` 的 USER 事件引用；M1C 边只作 Control 侧来源解析提示（`BLOCKING_HINT_ONLY`），不作语义依据；
+- 消费约定按 [`m2-source-projection-spec.md`](m2-source-projection-spec.md) §2.5：只有 `PLAIN_USER_TEXT` 可作任务意图证据；`HARNESS_*` 只作环境暴露证据；`CONTROL_SIGNAL` 只作中断线索；`EMPTY_TEXT`/`UNKNOWN_TAGGED`/`NO_LEADING_TEXT` 只计数；由 `PREFIX_UNLOCALIZED` 证据得出的 Episode/意图必须携带 `intent_locality=PREFIX_ONLY` 并在 `ObservedTaskDistribution` 中单列；M2 不得按绝对路径重新解析原始 JSONL；
+- M2 是首个引入模型调用的模块：规格必须先定义提示与输出的冻结 schema、抽取结果的来源引用（只引 ID 不复制正文）、确定性/可复现要求（模型、温度、缓存键）、与上游"任务摘要"的独立性（D3：上游标签只能作事后对照 oracle）、以及独立 validator 能核验什么、不能核验什么（语义正确性不可机械核验，须显式声明为抽样人工评审门）；
+- 硬停止线 §10 在 M2 规格冻结前不变。
 
 ## 12. 参考资源采用边界
 
@@ -275,9 +325,7 @@ AgentHER、CSO、GameCraft-Bench 在当前本地快照中没有可审计、可�
 ```bash
 git status --short
 git log --oneline -5
-git diff 8f6f65c..HEAD -- src/traceforge/trajectory pyproject.toml uv.lock
-git diff fcff8cf88e7edcd645484318fd8bd12de50b7af7..HEAD -- src/traceforge/lineage
-git diff 1c588bed6cfbb696611823ce427fdaa8fd06e249..HEAD -- src/traceforge/query_turns
+git diff 1de39aeda894b55cc84d1fb8f8923e2b4c57380f..HEAD -- src/traceforge pyproject.toml uv.lock
 .venv/bin/pytest -p no:cacheprovider -q
 .venv/bin/ruff check --no-cache .
 .venv/bin/ruff format --no-cache --check .
@@ -290,9 +338,13 @@ uv lock --check --offline --no-cache
 .venv/bin/python scripts/validate_m1d_run.py \
   artifacts/r01/query_turns/84d826b3d7abddffb5f8fde28d7e5592590720bd6909c24a8b17b7f0c70b66ea \
   artifacts/r01/6be45e01cb97b14ce8cfeeed4b0860097a7006619a83e9a32f1284ee5775c8ed
+.venv/bin/python scripts/validate_user_text_projection_run.py \
+  artifacts/r01/source_projection/47cfac20b89ed066f388da6679cb53f745e6a0392cd5f6e459e869c7076f689c \
+  artifacts/r01/6be45e01cb97b14ce8cfeeed4b0860097a7006619a83e9a32f1284ee5775c8ed \
+  --m1d-run artifacts/r01/query_turns/84d826b3d7abddffb5f8fde28d7e5592590720bd6909c24a8b17b7f0c70b66ea
 ```
 
-预期：`trajectory/` 相对 `8f6f65c`、`lineage/` 相对 `fcff8cf`（除 `reader.py` 文档字符串 2 行）、`query_turns/` 相对 `1c588be` 均无运行时代码变化；测试全部通过（M1D 检查点为 273 项）；M1 validator 返回 `ok=true`、10 files、1,683 lines、175,858 events；M1C validator 返回 `ok=true`、5 files、计数与 §8.1 一致；M1D validator 返回 `ok=true`、8 files、13 项计数与 §8.2 一致。在 AFS 慢盘上，三个 validator 各需 1–4 分钟（M1C/M1D 内含对 706 MB 上游 run 的权威重验），属先校验后消费的必要成本。
+预期：`src/traceforge/` 相对 `1de39ae` 无变化（`trajectory/`、`lineage/`、`query_turns/` 的最后一次变化是重构 `f70710f`，已在 §5 重新验收）；测试全部通过（本检查点为 352 项）；M1 validator 返回 `ok=true`、10 files、1,683 lines、175,858 events；M1C validator 返回 `ok=true`、5 files、计数与 §8.1 一致；M1D validator 返回 `ok=true`、8 files、13 项计数与 §8.2 一致；投影 validator 返回 `ok=true`、3 files、23 项计数与 §8.3 / 规格 §6 一致。在 AFS 慢盘上，四个 validator 各需 1–7 分钟（M1C/M1D 内含对 706 MB 上游 run 的权威重验；投影绑定 M1D 时该重验发生两次），属先校验后消费的必要成本。
 
 在 AFS 共享盘工作区**就地**构建的任何 run 会因 `git status` 超过 provenance 5 秒超时而被 validator 拒绝——正式 run 一律在本地盘干净克隆上执行（[`r01-m1c-validation.md`](r01-m1c-validation.md) §7）。
 

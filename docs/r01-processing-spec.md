@@ -4,7 +4,7 @@
 
 日期：2026-09-01（v3.0）；2026-09-02（v4.0 契约变更随提交 `8f6f65c` 写入正文，见 [`m1ab-v3-known-items.md`](m1ab-v3-known-items.md) R4/R5/R7/R8）；2026-09-03（§8.2/§8.3 后续阶段边界依 M1D v0.3 与来源投影规格评审修订）
 
-状态：M1A、M1B **v4** 正式通过（[`r01-m1b-v4-validation.md`](r01-m1b-v4-validation.md)）；M1C v2、M1D v1 已在其上正式通过；下一步为 M2 前置 `UserTextProjection`
+状态：M1A、M1B **v4** 正式通过（[`r01-m1b-v4-validation.md`](r01-m1b-v4-validation.md)）；M1C v2、M1D v1 与 M2 前置 `UserTextProjection` v1（[`r01-user-text-projection-validation.md`](r01-user-text-projection-validation.md)）已在其上正式通过；下一步为起草 M2 规格
 
 本文是 R01 回流处理的实施事实来源。项目背景见 [`background-and-goals.md`](background-and-goals.md)，总体阶段与下游边界见 [`overall-plan.md`](overall-plan.md)，开发纪律只引用 [`../AGENTS.md`](../AGENTS.md)。
 
@@ -405,7 +405,7 @@ M1D 只做结构：在观测事件流上确定性产出 `UserBlock`、`AgentStep
 
 ### 8.3 M2：TaskEpisode 与画像
 
-进入 M2 前必须先冻结并验收 `UserTextProjection`，它是 M2 意图证据的唯一入口，并以显式 `locality` 暴露前缀不可定位缺口。M2 首次消费 `domain_meta`（task/rubric/risk 先验）之前，必须先冻结并验收最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`，只暴露经审核的白名单字段；M2 v1 不消费 `domain_meta`。M2 不得绕过 M1 artifact，按绝对路径私下重新解析原始 JSONL。
+进入 M2 前必须先冻结并验收 `UserTextProjection`，它是 M2 意图证据的唯一入口，并以显式 `locality` 暴露前缀不可定位缺口（**已满足**：2026-09-03 提交 `1de39ae` 在 v4 run 上正式验收，见 [`r01-user-text-projection-validation.md`](r01-user-text-projection-validation.md)）。M2 首次消费 `domain_meta`（task/rubric/risk 先验）之前，必须先冻结并验收最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`，只暴露经审核的白名单字段；M2 v1 不消费 `domain_meta`。M2 不得绕过 M1 artifact，按绝对路径私下重新解析原始 JSONL。
 
 M2 才允许通过两次独立、封闭枚举的语义提取建立：
 

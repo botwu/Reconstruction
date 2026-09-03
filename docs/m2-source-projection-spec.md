@@ -4,7 +4,7 @@
 
 日期：2026-09-02（v0.1 草案）；2026-09-03（v0.2 吸收 [`m2-source-projection-review-20260903.md`](m2-source-projection-review-20260903.md) P1–P8 / D6–D9；v0.3 依 §8 探针在 v4 run 上的结果冻结白名单与验收向量）
 
-状态：**已冻结**，进入测试先行实现。本文兑现 [`r01-processing-spec.md`](r01-processing-spec.md) §8.3 的 M2 前置硬门（`UserTextProjection` 必做；`SourceAnnotationProjection`/`SourceResolver` 在 M2 首次消费 `domain_meta` 前必做）。只定义 I/O 与确定性算法，不在 M1B/M1C/M1D 预埋任何结构（[`../AGENTS.md`](../AGENTS.md) §1 YAGNI）。
+状态：**已冻结并已实现、已正式验收**（实现提交 `1de39ae`，包 `src/traceforge/source_projection/`；验收 [`r01-user-text-projection-validation.md`](r01-user-text-projection-validation.md)：干净克隆双跑复现 run `47cfac20…`（绑定 M1D）/ `9dc26f2f…`（未绑定），23 项计数与 12 个标签计数与 §6 验收向量逐项相等）。本文兑现 [`r01-processing-spec.md`](r01-processing-spec.md) §8.3 的 M2 前置硬门（`UserTextProjection` 必做；`SourceAnnotationProjection`/`SourceResolver` 在 M2 首次消费 `domain_meta` 前必做）。只定义 I/O 与确定性算法，不在 M1B/M1C/M1D 预埋任何结构（[`../AGENTS.md`](../AGENTS.md) §1 YAGNI）。
 
 v0.2 相对 v0.1 的变化：删除无生产者的 `QUARANTINED`，新增透传字段 `content_form` 与类别 `NO_LEADING_TEXT`（§2.2/§2.3）；冻结开头标签文法（§2.3）；`UNKNOWN_TAGGED` 恒不输出标签名（§2.3/§3）；M1D 回指从"可空"改为"提供即必须可解析"（§2.1/§3）；报告增加第三个分母（§2.4）；白名单准入规则（§2.3）；validator 改为与 M1D 同构的两层信任边界（§3）；包名、契约版本、run ID 绑定（§4）；只读探针固定程序（§8）。
 
@@ -215,7 +215,9 @@ run ID = `stable_id(contract_version, m1b_run_id, m1b_artifact_manifest_sha256, 
 - 单元测试含：普通文本、每类白名单标签（含带属性与自闭合形态）、未知标签（断言 `leading_tag` 为空）、`</x>`/`<3`/`<<` 开头、前置空白与 BOM、空正文、Data URL 摘要 envelope、分段 envelope 首段为文本/为 Data URL/为全空白文本、`CONTENT_BLOCKS`、M1D 回指有/无、M1D 绑定但事件无归属（构建失败）、错误 oracle fail-closed、篡改重签与置空篡改检测后不变量层仍 fail-closed；
 - 无 R01 硬编码常量（§0/§6 数字不入代码）、无语义占位、无 M2 预埋。
 
-**验收向量**（§8 探针按 v0.3 规则在 v4 run `6be45e01…` 上的参考计算；`docs/r01-user-text-projection-validation.md` 逐项对照）：
+以上完成条件已由提交 `1de39ae` 兑现并经 [`r01-user-text-projection-validation.md`](r01-user-text-projection-validation.md) 验收（2026-09-03）；单元测试清单中的每一项在 `tests/test_source_projection_*.py` 中都有对应用例。
+
+**验收向量**（§8 探针按 v0.3 规则在 v4 run `6be45e01…` 上的参考计算；[`r01-user-text-projection-validation.md`](r01-user-text-projection-validation.md) §4 逐项对照：**全部相等**）：
 
 | 计数 | 值 |
 | --- | ---: |
