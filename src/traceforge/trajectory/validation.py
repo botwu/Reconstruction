@@ -74,7 +74,7 @@ from traceforge.trajectory.privacy import (
 )
 from traceforge.trajectory.run_validation import IssueCollector, ValidationIssue
 from traceforge.trajectory.source import validate_dataset_id
-from traceforge.trajectory.source_adapter import RESTORED_LONG_CAPTURE_SCHEMA
+from traceforge.trajectory.source_adapter import SUPPORTED_SOURCE_SCHEMAS
 
 _PRIVATE_CONTRACTS = {
     "private/source_records.jsonl": (SOURCE_RECORD_SCHEMA, SourceRecordRefV1),
@@ -583,13 +583,13 @@ def _check_run_identity(
         "artifact_manifest.json/dataset_id",
         issues,
     )
-    if source.get("source_schema") != RESTORED_LONG_CAPTURE_SCHEMA:
+    if source.get("source_schema") not in SUPPORTED_SOURCE_SCHEMAS:
         issues.add(
             "SOURCE_SCHEMA_UNSUPPORTED",
             "source_manifest.json/source_schema",
             "source_schema 不是当前 validator 唯一支持的版本",
         )
-    if artifact.get("source_schema") != RESTORED_LONG_CAPTURE_SCHEMA:
+    if artifact.get("source_schema") not in SUPPORTED_SOURCE_SCHEMAS:
         issues.add(
             "SOURCE_SCHEMA_UNSUPPORTED",
             "artifact_manifest.json/source_schema",

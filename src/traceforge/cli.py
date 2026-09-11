@@ -16,7 +16,7 @@ from traceforge.source_projection.pipeline import build_user_text_projection
 from traceforge.trajectory.artifacts import ArtifactPublishError
 from traceforge.trajectory.pipeline import compile_trajectory
 from traceforge.trajectory.source import SourceError
-from traceforge.trajectory.source_adapter import RESTORED_LONG_CAPTURE_SCHEMA
+from traceforge.trajectory.source_adapter import SUPPORTED_SOURCE_SCHEMAS
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -39,7 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     compile_parser.add_argument(
         "--source-schema",
         required=True,
-        help=f"显式来源契约；当前支持 {RESTORED_LONG_CAPTURE_SCHEMA}",
+        help=f"显式来源契约；当前支持 {', '.join(sorted(SUPPORTED_SOURCE_SCHEMAS))}",
     )
     compile_parser.add_argument(
         "--expected-sha256",

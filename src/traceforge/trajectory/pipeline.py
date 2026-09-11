@@ -41,6 +41,7 @@ from traceforge.trajectory.provenance import collect_git_provenance
 from traceforge.trajectory.source import iter_verified_records, scan_jsonl_source
 from traceforge.trajectory.source_adapter import (
     RESTORED_LONG_CAPTURE_SCHEMA,
+    SUPPORTED_SOURCE_SCHEMAS,
     SourceRecordAdaptError,
     UnsupportedSourceSchemaError,
     adapt_source_record,
@@ -273,9 +274,9 @@ def compile_trajectory(
 ) -> Path:
     """把一个冻结 JSONL 来源编译成 M1A、M1B 确定性 artifacts。"""
 
-    if source_schema != RESTORED_LONG_CAPTURE_SCHEMA:
+    if source_schema not in SUPPORTED_SOURCE_SCHEMAS:
         raise UnsupportedSourceSchemaError(
-            "不支持该 source_schema；当前编译器只接受显式 restored-long v1 契约"
+            "不支持该 source_schema；当前编译器只接受已注册的显式来源契约"
         )
     started_at = datetime.now(UTC)
     git_provenance = collect_git_provenance()
@@ -325,7 +326,9 @@ def compile_trajectory(
                 accumulator.add_quarantined_quality()
                 continue
             try:
-                envelope = adapt_source_record(source_record.value)
+                envelope = adapt_source_record(
+                    source_record.value, source_schema=source_schema
+                )
                 result = compile_capture(reference, envelope)
             except (SourceRecordAdaptError, CaptureCompileError) as exc:
                 quality = _quarantined_quality(
