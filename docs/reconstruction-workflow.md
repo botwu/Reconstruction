@@ -44,6 +44,12 @@
 
 ## 统一入口
 
+先对结构化失败报告执行模型裁决，再生成首批人工复核样本：
+
+    PYTHONPATH=src python -m traceforge failure-analysis model-judge       --report-json report.json --evidence-json evidence.json       --output artifacts/model-analysis
+
+    PYTHONPATH=src python -m traceforge failure-analysis review-batch       --input-jsonl artifacts/failure-analysis/private/failure_analysis.jsonl       --output artifacts/manual-review --limit 50
+
 Python API：
 
     from traceforge.reconstruction.workflow import run_reconstruction_workflow
