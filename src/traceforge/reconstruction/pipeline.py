@@ -1,8 +1,6 @@
-"""Pure orchestration for the reconstruction DAG.
+"""编排重建 DAG，并发布可审计的执行计划。
 
-This layer intentionally does not call an LLM, Harbor or AGS.  It materializes
-an auditable execution plan and a conservative candidate selection manifest,
-while leaving model-backed stages explicitly pending.
+本层不调用模型、Harbor 或 AGS，只生成保守的候选清单，并将模型阶段显式标记为待执行。
 """
 
 from __future__ import annotations
@@ -69,7 +67,7 @@ def _reports(m4_dir: Path) -> list[dict[str, Any]]:
 
 
 def _candidate_decision(report: dict[str, Any]) -> tuple[CandidateDecision, str, tuple[str, ...]]:
-    """Conservative, model-free gate used before semantic agents are enabled."""
+    """在语义 Agent 启用前执行保守的无模型候选门禁。"""
     primary = str(report.get("primary_failure", "INCONCLUSIVE"))
     layer = str(report.get("failure_layer", "UNCLEAR"))
     confidence = float(report.get("confidence", 0.0) or 0.0)
@@ -116,11 +114,10 @@ def _candidate(report: dict[str, Any], *, run_id: str) -> ReconstructionCandidat
 def build_reconstruction_pipeline(
     *, m1b_run_dir: str | Path, output_root: str | Path, m1d_run_dir: str | Path | None = None
 ) -> Path:
-    """Run M4 and publish a deterministic reconstruction execution plan.
+    """运行 M4 并发布确定性的重建执行计划。
 
-    ``output_root`` receives ``m4/<m4-run>`` and ``pipeline/<pipeline-run>``;
-    existing runs are never overwritten.  Downstream model/Harbor/AGS nodes are
-    emitted as ``PENDING_MODEL`` with stable input references.
+    输出目录包含 ``m4/<m4-run>`` 和 ``pipeline/<pipeline-run>``，不会覆盖已有运行；
+    下游模型、Harbor 和 AGS 节点以 ``PENDING_MODEL`` 及稳定输入引用发布。
     """
     started_at = datetime.now(UTC)
     root = Path(output_root)

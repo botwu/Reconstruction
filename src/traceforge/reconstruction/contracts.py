@@ -1,8 +1,6 @@
-"""Stable contracts for reconstruction -> Harbor -> rollout -> SFT.
+"""定义从重建到 Harbor、rollout 和 SFT 的稳定数据契约。
 
-This module is intentionally model/runtime agnostic.  It carries references and
-checksums rather than raw source logs so each downstream stage can be rerun and
- audited independently.
+本模块不依赖具体模型或运行时，仅传递引用和校验和，使下游阶段能够独立重跑和审计。
 """
 
 from __future__ import annotations
@@ -348,19 +346,19 @@ def harbor_bundle_manifest(
         rel = path.relative_to(root).as_posix()
         _safe_rel(rel)
         hashes[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
-    public = tuple(
+    # public_paths denotes the Agent-visible surface, not every file shipped
+    # in the runner bundle. task.toml/environment are runner metadata.
+    public = tuple(sorted(p for p in hashes if p == "instruction.md" or p.startswith("workspace/")))
+    control = tuple(sorted(p for p in hashes if p.startswith("tests/control/")))
+    # Keep the V1 field name for compatibility; protected references include
+    # solution/** as well as non-control verifier files.
+    verifier = tuple(
         sorted(
             p
             for p in hashes
-            if p == "task.toml"
-            or p == "instruction.md"
-            or p.startswith("workspace/")
-            or p.startswith("environment/")
-            or p.startswith("solution/")
+            if (p.startswith("tests/") and p not in control) or p.startswith("solution/")
         )
     )
-    control = tuple(sorted(p for p in hashes if p.startswith("tests/control/")))
-    verifier = tuple(sorted(p for p in hashes if p.startswith("tests/") and p not in control))
     tree = hashlib.sha256(
         "".join(f"{p}:{hashes[p]}\\n" for p in sorted(hashes)).encode()
     ).hexdigest()
