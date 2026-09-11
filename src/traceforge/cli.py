@@ -9,6 +9,7 @@ from pathlib import Path
 
 from traceforge.failure_analysis.pipeline import build_failure_analysis
 from traceforge.failure_analysis.reader import FailureAnalysisInputError
+from traceforge.failure_analysis.mapping_reader import MappingInputError
 from traceforge.lineage.pipeline import build_lineage
 from traceforge.lineage.reader import LineageInputError
 from traceforge.query_turns.pipeline import build_query_turns
@@ -61,6 +62,9 @@ def _parser() -> argparse.ArgumentParser:
     )
     failure_analysis_build.add_argument(
         "--m1b-run", type=Path, required=True, help="published M1B run (read only)"
+    )
+    failure_analysis_build.add_argument(
+        "--m1d-run", type=Path, default=None, help="可选：已发布 M1D QueryTurn run"
     )
     failure_analysis_build.add_argument(
         "--output", type=Path, required=True, help="failure-analysis artifact root"
@@ -164,8 +168,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_path = build_failure_analysis(
                 m1b_run_dir=arguments.m1b_run,
                 output_root=arguments.output,
+                m1d_run_dir=arguments.m1d_run,
             )
-        except (FailureAnalysisInputError, ArtifactPublishError, ValueError) as exc:
+        except (FailureAnalysisInputError, MappingInputError, ArtifactPublishError, ValueError) as exc:
             print(f"失败分析构建失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)

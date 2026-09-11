@@ -19,6 +19,7 @@ FAILURE_ANALYSIS_CONTRACT_VERSION = "failure-analysis-m4-v1"
 EVIDENCE_REF_SCHEMA = "traceforge.failure-analysis-evidence-ref.v1"
 INVARIANT_CHECK_SCHEMA = "traceforge.failure-analysis-invariant-check.v1"
 FAILURE_ANALYSIS_REPORT_SCHEMA = "traceforge.failure-analysis-report.v1"
+FAILURE_ANALYSIS_SUMMARY_SCHEMA = "traceforge.failure-analysis-summary.v1"
 RECONSTRUCTABILITY_GATE_SCHEMA = "traceforge.reconstructability-gate.v1"
 
 FAILURE_ANALYSIS_RUN_ID_NAMESPACE = "m4-failure-analysis-run-v1"
@@ -391,6 +392,7 @@ __all__ = [
     "FAILURE_ANALYSIS_CONTRACT_VERSION",
     "FAILURE_ANALYSIS_RUN_ID_NAMESPACE",
     "FAILURE_ANALYSIS_REPORT_SCHEMA",
+    "FAILURE_ANALYSIS_SUMMARY_SCHEMA",
     "INVARIANT_CHECK_SCHEMA",
     "RECONSTRUCTABILITY_GATE_SCHEMA",
     "EvidenceKind",

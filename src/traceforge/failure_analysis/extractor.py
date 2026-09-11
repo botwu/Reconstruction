@@ -51,13 +51,18 @@ def analyze_capture(*, run_id: str, m1b_run_id: str, capture: CaptureFact,
         elif "INVALID_CALL_ARGUMENTS" in statuses:
             result, target = InvariantResult.FAIL, (FailureCategory.INVALID_TOOL_INVOCATION.value,)
         elif statuses:
-            result, target = InvariantResult.FAIL, (FailureCategory.TOOL_OUTPUT_MISINTERPRETATION.value,)
+            # Pairing anomalies establish an observation gap, not that the
+            # agent misread a result. In particular RESULT_NOT_OBSERVED and
+            # ORPHAN_RESULT have no result semantics to interpret.
+            result, target = InvariantResult.UNCLEAR, (FailureCategory.INCONCLUSIVE.value,)
         else:
             result, target = InvariantResult.UNCLEAR, (FailureCategory.INCONCLUSIVE.value,)
         checks.append(_check(run_id, "tool_pairing.strict_one_to_one", InvariantKind.STATIC, result,
                              pairing.call_event_ids[0] if pairing.call_event_ids else None, pids, target))
     if capture.terminal_status == "TOOL_CALL_PENDING":
-        terminal_result, terminal_target = InvariantResult.FAIL, (FailureCategory.VERIFIER_OR_TERMINATION_FAILURE.value,)
+        # A pending call means the result is absent; it cannot establish a
+        # verifier failure or a tool-output misinterpretation by itself.
+        terminal_result, terminal_target = InvariantResult.UNCLEAR, (FailureCategory.INCONCLUSIVE.value,)
     elif capture.terminal_status == "EMPTY_OUTCOME":
         terminal_result, terminal_target = InvariantResult.UNCLEAR, (FailureCategory.INCONCLUSIVE.value,)
     elif capture.terminal_status == "INVALID":
@@ -76,7 +81,10 @@ def analyze_capture(*, run_id: str, m1b_run_id: str, capture: CaptureFact,
     elif unclear:
         primary, recoverability, confidence = FailureCategory.INCONCLUSIVE.value, Recoverability.UNKNOWN, 0.0
     else:
-        primary, recoverability, confidence = FailureCategory.INCONCLUSIVE.value, Recoverability.NOT_RECOVERABLE, 1.0
+        # Passing structural checks is absence of a deterministic failure
+        # signal, not evidence that reconstruction is impossible.
+        primary, recoverability, confidence = FailureCategory.INCONCLUSIVE.value, Recoverability.UNKNOWN, 0.0
+        unclear = [*unclear, "no_deterministic_failure_signal"]
     critical = tuple(sorted({e for c in failed for r in c.evidence_ref_ids for e in [next((x.source_id for x in refs if x.evidence_id == r and x.evidence_kind == EvidenceKind.EVENT.value), "")] if e}))
     report = FailureAnalysisReportV1(
         schema_version=FAILURE_ANALYSIS_REPORT_SCHEMA,
