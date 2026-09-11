@@ -153,3 +153,42 @@ def test_unknown_critical_event_is_reviewed():
     assert result.decision == "REVIEW"
     assert result.needs_reconstruction is None
     assert any("UNKNOWN_CRITICAL_EVENT_ID" in reason for reason in result.review_reasons)
+
+def test_model_runner_publishes_auditable_artifacts(tmp_path):
+    from traceforge.failure_analysis.model_runner import run_failure_analysis_model
+
+    report = {
+        "report_id": "r1",
+        "session_ref": "s1",
+        "attempt_ref": "a1",
+        "capture_occurrence_id": "c1",
+    }
+    evidence = [{"evidence_ref_id": "e1", "source_id": "event-1"}]
+    payload = {
+        "outcome": "FAILURE",
+        "needs_reconstruction": True,
+        "decision": "ELIGIBLE",
+        "primary_failure": "PLAN_EXECUTION_FAILURE",
+        "failure_layer": "SOLVER",
+        "recoverability": "HIGH",
+        "critical_step": 1,
+        "critical_event_ids": ["event-1"],
+        "user_intent_boundary": {"goal": "do task", "constraints": [], "unknowns": []},
+        "evidence_ref_ids": ["e1"],
+        "rubric": {
+            "task_identifiability": 3, "failure_evidence": 3,
+            "initial_environment_visibility": 2, "environment_completion_value": 2,
+            "verifier_constructability": 2, "episode_boundary_confidence": 3,
+            "privacy_processability": 3, "estimated_cost": 1,
+        },
+        "attribution": {"SOLVER": 1.0},
+        "confidence": 0.9,
+        "review_reasons": [],
+    }
+    out = run_failure_analysis_model(
+        report=report, evidence=evidence, model=FakeModel(payload), output_root=tmp_path
+    )
+    assert (out / "model_analysis.json").is_file()
+    assert (out / "metrics.json").is_file()
+    assert (out / "private/model_exchange.json").is_file()
+

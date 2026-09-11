@@ -30,6 +30,7 @@ from .contracts import (
 )
 
 __all__ = [
+    "MODEL_ANALYSIS_RUN_SCHEMA",
     "EpisodeOutcome",
     "EvidenceKind",
     "EvidenceRef",
@@ -57,6 +58,7 @@ __all__ = [
     "failure_analysis_report_id",
     "failure_analysis_run_id",
     "reconstructability_gate_id",
+    "run_failure_analysis_model",
     "validate_failure_analysis_report",
     "validate_invariant_check",
     "validate_reconstructability_gate",
@@ -68,3 +70,4 @@ from .model_analyzer import (
     ModelAnalysisStatus,
     analyze_failure,
 )
+from .model_runner import MODEL_ANALYSIS_RUN_SCHEMA, run_failure_analysis_model
