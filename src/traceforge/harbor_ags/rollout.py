@@ -127,13 +127,17 @@ def _credential_status(agent_mode: str) -> dict[str, Any]:
     }
 
 
-def _harbor_executable(root: Path) -> Path:
+def _harbor_command(root: Path) -> list[str]:
     candidate = root / ".venv/bin/harbor"
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return candidate
+    if candidate.is_file():
+        if os.access(candidate, os.X_OK):
+            return [str(candidate)]
+        interpreter = root / ".venv/bin/python"
+        if interpreter.is_file():
+            return [str(interpreter), str(candidate)]
     resolved = shutil.which("harbor")
     if resolved:
-        return Path(resolved)
+        return [resolved]
     raise HarborRolloutError("找不到 Harbor 可执行文件")
 
 
@@ -186,7 +190,7 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
     harbor_config = harbor_root / "configs" / config_name
     if not harbor_config.is_file():
         raise HarborRolloutError(f"Harbor 项目缺少 configs/{config_name}")
-    executable = _harbor_executable(harbor_root)
+    harbor_command = _harbor_command(harbor_root)
     task_name = _task_name(task_dir)
     bundle_digest = hashlib.sha256(
         json.dumps(layout, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -224,7 +228,7 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
         )
         published_config_path = workspace.final_path / "harbor-config.yaml"
         command = [
-            str(executable),
+            *harbor_command,
             "run",
             "-c",
             str(published_config_path),
