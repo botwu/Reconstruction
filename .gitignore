@@ -15,3 +15,7 @@ runs/
 .cache/
 data/raw/
 return_data/
+
+# 本地临时虚拟环境
+.venv-*/
+.uvpy/
