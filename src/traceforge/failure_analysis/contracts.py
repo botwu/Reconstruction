@@ -252,9 +252,13 @@ def failure_analysis_run_id(*, m1b_run_id: str, m1d_run_id: str, input_manifest_
 
 
 def failure_analysis_report_id(
-    *, m4_run_id: str, task_episode_id: str | None, target_attempt_id: str | None
+    *,
+    m4_run_id: str,
+    task_episode_id: str | None,
+    target_attempt_id: str | None,
+    capture_occurrence_id: str | None = None,
 ) -> str:
-    """报告身份绑定到 M4 run 和目标 attempt，重复运行可区分。"""
+    """报告身份绑定到 M4 run、目标引用和 capture。"""
 
     return stable_id(
         FAILURE_REPORT_ID_NAMESPACE,
