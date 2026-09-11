@@ -119,9 +119,38 @@ def test_environment_completion_excludes_unindexed_files(tmp_path):
     (replay / "solution.txt").write_text("secret answer", encoding="utf-8")
     payload = {"candidates": [{"files": [], "decision": "READY"}]}
     out = run_environment_completion(
-        task={}, attempt_ref="a", replay_workspace=replay,
+        task={},
+        attempt_ref="a",
+        replay_workspace=replay,
         replay_files=[{"path": "observed.txt", "completeness": "COMPLETE"}],
-        evidence=[{"evidence_ref_id": "e"}], model=FakeModel(payload), output_root=tmp_path / "out",
+        evidence=[{"evidence_ref_id": "e"}],
+        model=FakeModel(payload),
+        output_root=tmp_path / "out",
     )
     files = json.loads((out / "environment_completion.json").read_text())["candidates"][0]["files"]
     assert [item["path"] for item in files] == ["observed.txt"]
+
+
+def test_environment_completion_persists_model_failure(tmp_path):
+    class FailingModel:
+        def complete(self, request: ModelRequest) -> ModelResponse:
+            from traceforge.reconstruction.model_gateway import ModelGatewayError
+
+            raise ModelGatewayError("超时", code="NETWORK_TIMEOUT", retryable=True)
+
+    replay = tmp_path / "replay"
+    replay.mkdir()
+    out = run_environment_completion(
+        task={},
+        attempt_ref="a",
+        replay_workspace=replay,
+        replay_files=[],
+        evidence=[],
+        model=FailingModel(),
+        output_root=tmp_path / "out",
+    )
+    record = json.loads((out / "environment_completion.json").read_text())
+    assert record["candidates"] == []
+    assert record["model_error_code"] == "NETWORK_TIMEOUT"
+    manifest = json.loads((out / "artifact_manifest.json").read_text())
+    assert manifest["status"] == "FAILED"

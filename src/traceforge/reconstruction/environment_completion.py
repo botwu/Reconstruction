@@ -52,7 +52,10 @@ def _safe_path(value: str) -> str:
         or ".." in path.parts
     ):
         raise EnvironmentCompletionError(f"不安全的 workspace 路径：{value!r}")
-    if any(part in {"solution", "tests", "environment", "hidden_control", ".git"} for part in path.parts):
+    if any(
+        part in {"solution", "tests", "environment", "hidden_control", ".git"}
+        for part in path.parts
+    ):
         raise EnvironmentCompletionError(f"补全不得写入隐藏或运行时目录：{value}")
     return path.as_posix()
 
@@ -187,7 +190,9 @@ def _materialize(
                     "path": relative,
                     "content": content,
                     "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
-                    "provenance": provenance.get(relative, {"kind": "REPLAYED", "evidence_ref_ids": []}),
+                    "provenance": provenance.get(
+                        relative, {"kind": "REPLAYED", "evidence_ref_ids": []}
+                    ),
                 }
             )
     return files, []
@@ -230,7 +235,68 @@ def run_environment_completion(
         prompt,
         "traceforge.environment-completion-candidates.v1",
     )
-    response = model.complete(request)
+    try:
+        response = model.complete(request)
+    except ModelGatewayError as exc:
+        # 网络或模型协议失败也必须留下可审计的失败 artifact，供上游决定重试，
+        # 不能让 workflow 只得到一个未定位的异常。
+        run_id = stable_id(
+            "traceforge.environment-completion-failed-v1",
+            {"request_id": request_id, "error_code": exc.code},
+        )
+        workspace = ArtifactWorkspace(Path(output_root), run_id)
+        try:
+            entries = [
+                write_json_artifact(
+                    workspace.staging_path,
+                    "environment_completion.json",
+                    {
+                        "schema_version": ENVIRONMENT_COMPLETION_RUN_SCHEMA,
+                        "run_id": run_id,
+                        "attempt_ref": attempt_ref,
+                        "candidates": [],
+                        "open_questions": ["模型调用失败，不能判断环境是否可解"],
+                        "model_error_code": exc.code,
+                    },
+                ),
+                write_json_artifact(
+                    workspace.staging_path,
+                    "metrics.json",
+                    {
+                        "schema_version": "traceforge.environment-completion-metrics.v1",
+                        "run_id": run_id,
+                        "candidate_count": 0,
+                        "ready_count": 0,
+                        "review_count": 0,
+                        "model_error_code": exc.code,
+                    },
+                ),
+            ]
+            manifest = write_json_artifact(
+                workspace.staging_path,
+                "artifact_manifest.json",
+                {
+                    "schema_version": ENVIRONMENT_COMPLETION_RUN_SCHEMA,
+                    "run_id": run_id,
+                    "status": "FAILED",
+                    "files": artifact_entry_dicts(entries),
+                },
+            )
+            write_json_artifact(
+                workspace.staging_path,
+                "run_receipt.json",
+                {
+                    "schema_version": "traceforge.environment-completion-receipt.v1",
+                    "run_id": run_id,
+                    "artifact_manifest_sha256": manifest.sha256,
+                    "model_calls": 1,
+                    "model_error_code": exc.code,
+                },
+            )
+            return workspace.publish()
+        except BaseException:
+            workspace.abort()
+            raise
     receipt = receipt_for_response(response)
     try:
         payload = parse_json_object(response.text)
