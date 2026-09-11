@@ -76,6 +76,7 @@ __all__ = [
     "NodeStatus",
     "PipelineNodeV1",
     "ReconstructionCandidateV1",
+    "ReconstructionWorkflowError",
     "RecoveryEvidenceV1",
     "RolloutRequestV1",
     "RolloutStatus",
@@ -90,6 +91,7 @@ __all__ = [
     "recovery_id",
     "rollout_id",
     "run_environment_completion",
+    "run_reconstruction_workflow",
     "run_sufficiency_judge",
     "run_task_recovery",
     "validate_environment_recovery",
@@ -98,3 +100,4 @@ __all__ = [
     "validate_task_recovery",
     "validate_verification_result",
 ]
+from .workflow import ReconstructionWorkflowError, run_reconstruction_workflow
