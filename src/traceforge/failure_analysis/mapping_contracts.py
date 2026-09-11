@@ -1,0 +1,58 @@
+"""M2 到 M4 的 TaskEpisode/Attempt 事实映射契约。"""
+from __future__ import annotations
+from dataclasses import dataclass
+from enum import StrEnum
+from traceforge.trajectory.contracts import SerializableContract
+from traceforge.trajectory.json_codec import stable_id
+M4_MAPPING_CONTRACT_VERSION = "failure-analysis-mapping-v1"
+EPISODE_REF_SCHEMA = "traceforge.failure-analysis-episode-ref.v1"
+ATTEMPT_REF_SCHEMA = "traceforge.failure-analysis-attempt-ref.v1"
+MAPPING_INDEX_SCHEMA = "traceforge.failure-analysis-mapping-index.v1"
+EPISODE_REF_NAMESPACE = "m4-episode-ref-v1"
+ATTEMPT_REF_NAMESPACE = "m4-attempt-ref-v1"
+class MappingBasis(StrEnum):
+    QUERY_TURN = "QUERY_TURN"
+    AGENT_STEP = "AGENT_STEP"
+    TURN_FALLBACK = "TURN_FALLBACK"
+class SemanticStatus(StrEnum):
+    STRUCTURAL_ONLY = "STRUCTURAL_ONLY"
+    MODEL_PENDING = "MODEL_PENDING"
+@dataclass(frozen=True, slots=True)
+class EpisodeRefV1(SerializableContract):
+    schema_version: str
+    episode_ref: str
+    session_ref: str
+    query_turn_id: str
+    capture_occurrence_id: str
+    turn_ordinal: int
+    user_block_id: str | None
+    boundary_ids_spanned: tuple[str, ...]
+    mapping_basis: str
+    semantic_status: str
+@dataclass(frozen=True, slots=True)
+class AttemptRefV1(SerializableContract):
+    schema_version: str
+    attempt_ref: str
+    episode_ref: str
+    session_ref: str
+    query_turn_id: str
+    agent_step_id: str | None
+    assistant_event_id: str | None
+    step_ordinal: int
+    turn_status: str
+    mapping_basis: str
+    semantic_status: str
+@dataclass(frozen=True, slots=True)
+class MappingIndexV1(SerializableContract):
+    schema_version: str
+    m4_mapping_contract_version: str
+    m1d_run_id: str
+    m1d_artifact_manifest_sha256: str
+    m1b_run_id: str
+    sessions: tuple[dict[str, object], ...]
+    episodes: tuple[EpisodeRefV1, ...]
+    attempts: tuple[AttemptRefV1, ...]
+def episode_ref_id(*, m1d_run_id: str, query_turn_id: str) -> str:
+    return stable_id(EPISODE_REF_NAMESPACE, {"contract_version": M4_MAPPING_CONTRACT_VERSION, "m1d_run_id": m1d_run_id, "query_turn_id": query_turn_id})
+def attempt_ref_id(*, m1d_run_id: str, query_turn_id: str, agent_step_id: str | None, step_ordinal: int) -> str:
+    return stable_id(ATTEMPT_REF_NAMESPACE, {"contract_version": M4_MAPPING_CONTRACT_VERSION, "m1d_run_id": m1d_run_id, "query_turn_id": query_turn_id, "agent_step_id": agent_step_id, "step_ordinal": step_ordinal})
