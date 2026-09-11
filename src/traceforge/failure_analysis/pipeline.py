@@ -26,7 +26,12 @@ def _abort_writers(writers: dict[str, JsonlArtifactWriter]) -> list[BaseExceptio
 def _bind_reports(bundle: Any, *, run_id: str, mapping: Any | None) -> Any:
     """按 capture 绑定真实 M1D episode/attempt；无映射只留下显式 pending 标记。"""
     if mapping is None:
-        return bundle
+        reports = []
+        for report in bundle.reports:
+            episode_ref = f"mapping_pending:episode:{report.capture_occurrence_id}"
+            attempt_ref = f"mapping_pending:attempt:{report.capture_occurrence_id}"
+            reports.append(replace(report, report_id=failure_analysis_report_id(m4_run_id=run_id, task_episode_id=episode_ref, target_attempt_id=attempt_ref), episode_ref=episode_ref, attempt_ref=attempt_ref, reconstruction_relevance={**report.reconstruction_relevance, "mapping_status": "MAPPING_PENDING"}))
+        return replace(bundle, reports=tuple(reports))
     by_capture = {}
     for episode in mapping.episodes:
         by_capture.setdefault(episode.capture_occurrence_id, []).append(episode)
