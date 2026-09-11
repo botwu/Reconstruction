@@ -102,7 +102,10 @@ def _red_case(
     results = run.get("results") or {}
     trials = results.get("trials") if isinstance(results, dict) else []
     first = trials[0] if isinstance(trials, list) and trials else {}
+    quality_gate = results.get("quality_gate") if isinstance(results, dict) else None
     status = str(first.get("status", "INCONCLUSIVE"))
+    if not isinstance(quality_gate, dict) or quality_gate.get("ok") is not True:
+        status = "INFRA_ERROR"
     reward = first.get("reward")
     reward_value = float(reward) if isinstance(reward, (int, float)) else None
     return RedCheckCase(
@@ -342,8 +345,20 @@ def run_reconstruction_workflow(
         for row in rows:
             candidate = curate_candidate(row, curation_thresholds or CurationThresholds())
             curated.append(candidate.to_dict())
+        hermes_quality = (
+            isinstance(result, dict)
+            and isinstance(result.get("quality_gate"), dict)
+            and result["quality_gate"].get("ok") is True
+        )
+        eligible_count = sum(
+            item.get("eligibility") == "ELIGIBLE" for item in curated
+            if isinstance(item, dict)
+        )
         sft_result = {
-            "status": "READY" if red_report.passed else "REVIEW",
+            "status": "READY"
+            if red_report.passed and hermes_quality and eligible_count > 0
+            else "REVIEW",
+            "eligible_count": eligible_count,
             "candidates": curated,
         }
 

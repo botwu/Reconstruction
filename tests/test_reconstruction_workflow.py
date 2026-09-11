@@ -96,3 +96,17 @@ environment:
     assert execution["red_check"]["status"] == "PENDING_EXECUTION"
     assert Path(json.loads((out / "workflow_manifest.json").read_text())["stages"]["bundle"]).is_dir()
 
+
+def test_red_case_rejects_incomplete_harbor_quality_gate():
+    from traceforge.reconstruction.workflow import _red_case
+
+    run = {
+        "results": {
+            "quality_gate": {"ok": False},
+            "trials": [{"status": "PASS", "reward": 1.0}],
+        },
+        "job_dir": "/tmp/job",
+    }
+    case = _red_case("oracle_pass", run, "PASS", 1.0)
+    assert case.status == "INFRA_ERROR"
+
