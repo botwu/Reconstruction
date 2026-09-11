@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from traceforge.failure_analysis.extractor import analyze_capture
-from traceforge.failure_analysis.reader import CaptureFact, PairingFact
 from traceforge.failure_analysis.contracts import (
     EVIDENCE_REF_SCHEMA,
     FAILURE_ANALYSIS_REPORT_SCHEMA,
@@ -21,8 +19,8 @@ from traceforge.failure_analysis.contracts import (
     InvariantCheckV1,
     InvariantKind,
     InvariantResult,
-    Recoverability,
     ReconstructabilityGateV1,
+    Recoverability,
     evidence_ref_id,
     failure_analysis_report_id,
     reconstructability_gate_id,
@@ -30,6 +28,8 @@ from traceforge.failure_analysis.contracts import (
     validate_invariant_check,
     validate_reconstructability_gate,
 )
+from traceforge.failure_analysis.extractor import analyze_capture
+from traceforge.failure_analysis.reader import CaptureFact, PairingFact
 
 
 def test_schemas_and_stable_ids_bind_upstream_identity() -> None:
@@ -209,9 +209,7 @@ def test_invariant_error_requires_code_and_other_results_forbid_it() -> None:
     )
     validate_invariant_check(base)
     with pytest.raises(ValueError):
-        validate_invariant_check(
-            base.__class__(**{**base.to_dict(), "error_code": None})
-        )
+        validate_invariant_check(base.__class__(**{**base.to_dict(), "error_code": None}))
     with pytest.raises(ValueError):
         validate_invariant_check(
             base.__class__(**{**base.to_dict(), "result": InvariantResult.PASS})
@@ -220,35 +218,53 @@ def test_invariant_error_requires_code_and_other_results_forbid_it() -> None:
 
 def test_missing_tool_result_is_unclear_and_no_signal_is_not_not_recoverable() -> None:
     capture = CaptureFact(
-        capture_id="capture-missing", terminal_status="TOOL_CALL_PENDING",
-        reason_codes=("RESULT_NOT_OBSERVED",), missing_result_count=1, event_count=1,
+        capture_id="capture-missing",
+        terminal_status="TOOL_CALL_PENDING",
+        reason_codes=("RESULT_NOT_OBSERVED",),
+        missing_result_count=1,
+        event_count=1,
     )
     pairing = PairingFact(
-        pairing_id="pair-1", capture_id="capture-missing",
-        call_event_ids=("event-1",), result_event_ids=(),
-        matched_call_event_id="event-1", matched_result_event_id=None,
+        pairing_id="pair-1",
+        capture_id="capture-missing",
+        call_event_ids=("event-1",),
+        result_event_ids=(),
+        matched_call_event_id="event-1",
+        matched_result_event_id=None,
         statuses=("RESULT_NOT_OBSERVED",),
     )
     report, _, checks = analyze_capture(
-        run_id="m4-run", m1b_run_id="m1b-run", capture=capture,
-        events=(), pairings=(pairing,),
+        run_id="m4-run",
+        m1b_run_id="m1b-run",
+        capture=capture,
+        events=(),
+        pairings=(pairing,),
     )
     assert report.primary_failure == FailureCategory.INCONCLUSIVE
     assert report.recoverability == Recoverability.UNKNOWN
     assert report.confidence == 0.0
-    assert all(c.result != InvariantResult.FAIL or
-               FailureCategory.TOOL_OUTPUT_MISINTERPRETATION.value not in c.taxonomy_targets
-               for c in checks)
+    assert all(
+        c.result != InvariantResult.FAIL
+        or FailureCategory.TOOL_OUTPUT_MISINTERPRETATION.value not in c.taxonomy_targets
+        for c in checks
+    )
     assert "no_deterministic_failure_signal" not in report.uncertainty_codes
+
 
 def test_clean_capture_without_failure_signal_remains_unknown() -> None:
     capture = CaptureFact(
-        capture_id="capture-clean", terminal_status="TEXT_OUTCOME",
-        reason_codes=(), missing_result_count=0, event_count=0,
+        capture_id="capture-clean",
+        terminal_status="TEXT_OUTCOME",
+        reason_codes=(),
+        missing_result_count=0,
+        event_count=0,
     )
-    report, _, checks = analyze_capture(
-        run_id="m4-run", m1b_run_id="m1b-run", capture=capture,
-        events=(), pairings=(),
+    report, _, _checks = analyze_capture(
+        run_id="m4-run",
+        m1b_run_id="m1b-run",
+        capture=capture,
+        events=(),
+        pairings=(),
     )
     assert report.primary_failure == FailureCategory.INCONCLUSIVE
     assert report.recoverability == Recoverability.UNKNOWN
