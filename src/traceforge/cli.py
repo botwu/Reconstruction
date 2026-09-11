@@ -27,7 +27,7 @@ from traceforge.lineage.pipeline import build_lineage
 from traceforge.lineage.reader import LineageInputError
 from traceforge.query_turns.pipeline import build_query_turns
 from traceforge.query_turns.reader import QueryTurnInputError
-from traceforge.reconstruction.model_gateway import OpusClient
+from traceforge.reconstruction.model_gateway import build_chat_model, resolve_model_name
 from traceforge.reconstruction.pipeline import (
     ReconstructionPipelineInputError,
     build_reconstruction_pipeline,
@@ -96,6 +96,8 @@ def _parser() -> argparse.ArgumentParser:
     failure_model.add_argument("--evidence-json", type=Path, required=True)
     failure_model.add_argument("--output", type=Path, required=True)
     failure_model.add_argument("--model-name", default="claude-opus-4-8")
+    failure_model.add_argument("--config", type=Path, default=None, help="NewAPI 配置文件（可选）")
+    failure_model.add_argument("--channel", default="gemini", help="配置中的 channel 名")
     failure_batch = failure_analysis_commands.add_parser(
         "review-batch", help="按固定规则生成待人工复核批次"
     )
@@ -109,6 +111,8 @@ def _parser() -> argparse.ArgumentParser:
     failure_agentrx.add_argument("--trajectory-json", type=Path, required=True)
     failure_agentrx.add_argument("--output", type=Path, required=True)
     failure_agentrx.add_argument("--model-name", default="claude-opus-4-8")
+    failure_agentrx.add_argument("--config", type=Path, default=None, help="NewAPI 配置文件（可选）")
+    failure_agentrx.add_argument("--channel", default="gemini", help="配置中的 channel 名")
     capability_aggregate = failure_analysis_commands.add_parser(
         "capabilities-aggregate", help="按 TRACE 双阈值聚合独立能力标注 runs"
     )
@@ -232,6 +236,8 @@ def _parser() -> argparse.ArgumentParser:
     reconstruct_workflow.add_argument("--harbor-root", type=Path, required=True)
     reconstruct_workflow.add_argument("--output", type=Path, required=True)
     reconstruct_workflow.add_argument("--model-name", default="claude-opus-4-8")
+    reconstruct_workflow.add_argument("--config", type=Path, default=None, help="NewAPI 配置文件（可选）")
+    reconstruct_workflow.add_argument("--channel", default="gemini", help="配置中的 channel 名")
     reconstruct_workflow.add_argument("--rollout-trials", type=int, default=1)
     reconstruct_workflow.add_argument(
         "--execute-rollout", action="store_true", help="显式执行 Harbor/AGS 与 RED-check"
@@ -328,9 +334,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_path = run_failure_analysis_model(
                 report=report,
                 evidence=evidence,
-                model=OpusClient(),
+                model=build_chat_model(config_path=arguments.config, channel=arguments.channel),
                 output_root=arguments.output,
-                model_name=arguments.model_name,
+                model_name=resolve_model_name(
+                    arguments.model_name,
+                    config_path=arguments.config,
+                    channel=arguments.channel,
+                ),
             )
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
             print(f"模型失败分析失败：{exc}", file=sys.stderr)
@@ -357,7 +367,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             trajectory = json.loads(arguments.trajectory_json.read_text(encoding="utf-8"))
             report = run_agentrx_diagnosis(
-                trajectory, OpusClient(), model_name=arguments.model_name
+                trajectory,
+                build_chat_model(config_path=arguments.config, channel=arguments.channel),
+                model_name=resolve_model_name(
+                    arguments.model_name,
+                    config_path=arguments.config,
+                    channel=arguments.channel,
+                ),
             )
             arguments.output.parent.mkdir(parents=True, exist_ok=True)
             arguments.output.write_text(
@@ -501,11 +517,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 evidence=evidence,
                 replay_workspace=arguments.replay_workspace,
                 replay_files=replay_files,
-                model=OpusClient(),
+                model=build_chat_model(config_path=arguments.config, channel=arguments.channel),
                 output_root=arguments.output,
                 harbor_root=arguments.harbor_root,
                 execute_rollout=arguments.execute_rollout,
-                model_name=arguments.model_name,
+                model_name=resolve_model_name(
+                    arguments.model_name,
+                    config_path=arguments.config,
+                    channel=arguments.channel,
+                ),
                 rollout_trials=arguments.rollout_trials,
             )
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RuntimeError) as exc:

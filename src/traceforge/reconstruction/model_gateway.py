@@ -79,6 +79,172 @@ class ChatModel(Protocol):
 Transport = Callable[[str, Mapping[str, str], bytes, int], tuple[int, bytes]]
 
 
+def _config_channels(path: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
+    """读取 ``newapi_channel_conn`` 配置而不将密钥写入日志或 artifact。
+
+    当前 TokenHub 配置是顶层 channel 名加一行 JSON 对象的 YAML 子集；这里
+    不依赖 PyYAML，并且只把解析结果保存在进程内存中。对普通 YAML 映射也
+    做了最小兼容，便于测试配置迁移。
+    """
+
+    try:
+        raw_lines = open(path, encoding="utf-8").read().splitlines()
+    except OSError as exc:
+        raise ModelGatewayError("无法读取模型配置", code="CONFIG_READ_ERROR") from exc
+    channels: dict[str, dict[str, Any]] = {}
+    current: str | None = None
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not line.startswith((" ", "\t")) and stripped.endswith(":"):
+            current = stripped[:-1].strip()
+            continue
+        if current is None:
+            continue
+        # 配置格式中的值是一行 JSON；拒绝任意代码或复杂 YAML。
+        try:
+            value = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            channels[current] = value
+    return channels
+
+
+class NewAPIClient:
+    """TokenHub/NewAPI OpenAI-compatible chat-completions 客户端。
+
+    ``api_key`` 仅保存在客户端对象内存中，既不会进入 ``ModelResponse``，也
+    不会进入 receipt、异常文本或持久化 artifact。该客户端用于 Gemini 等
+    NewAPI channel；Claude 原生接口继续使用 :class:`OpusClient`。
+    """
+
+    provider = "newapi"
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        channel: str = "gemini",
+        max_retries: int = 2,
+        retry_backoff_seconds: float = 1.0,
+        transport: Transport | None = None,
+    ) -> None:
+        if not api_key.strip():
+            raise ModelGatewayError("模型配置缺少密钥", code="API_KEY_MISSING")
+        if max_retries < 0 or retry_backoff_seconds < 0:
+            raise ValueError("重试参数必须非负")
+        self._api_key = api_key
+        self.channel = channel
+        configured_url = base_url.rstrip("/")
+        if configured_url.endswith("/chat/completions"):
+            endpoint = configured_url
+        elif configured_url.endswith("/v1"):
+            endpoint = configured_url + "/chat/completions"
+        else:
+            endpoint = configured_url + "/v1/chat/completions"
+        self.base_url = endpoint
+        self.max_retries = max_retries
+        self.retry_backoff_seconds = retry_backoff_seconds
+        self._transport = transport or _default_transport
+
+    @classmethod
+    def from_config(
+        cls,
+        path: str | os.PathLike[str],
+        *,
+        channel: str = "gemini",
+        max_retries: int = 2,
+        retry_backoff_seconds: float = 1.0,
+        transport: Transport | None = None,
+    ) -> "NewAPIClient":
+        channels = _config_channels(path)
+        entry = channels.get(channel)
+        if not isinstance(entry, dict):
+            raise ModelGatewayError("模型配置未找到指定 channel", code="CONFIG_CHANNEL_MISSING")
+        api_key = entry.get("key") or entry.get("api_key")
+        base_url = entry.get("url") or entry.get("base_url")
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise ModelGatewayError("模型配置缺少密钥", code="API_KEY_MISSING")
+        if not isinstance(base_url, str) or not base_url.strip():
+            raise ModelGatewayError("模型配置缺少 endpoint", code="CONFIG_ENDPOINT_MISSING")
+        return cls(
+            api_key=api_key,
+            base_url=base_url,
+            channel=channel,
+            max_retries=max_retries,
+            retry_backoff_seconds=retry_backoff_seconds,
+            transport=transport,
+        )
+
+    def complete(self, request: ModelRequest) -> ModelResponse:
+        if not request.model.strip() or not request.prompt.strip():
+            raise ModelGatewayError("模型请求缺少 model 或 prompt", code="INVALID_REQUEST")
+        if not request.response_schema.strip():
+            raise ModelGatewayError("必须声明响应 schema", code="SCHEMA_REQUIRED")
+        body = json.dumps(
+            {
+                "model": request.model,
+                "messages": [
+                    {"role": "system", "content": request.system},
+                    {"role": "user", "content": request.prompt},
+                ],
+                "temperature": request.temperature,
+                "max_tokens": request.max_tokens,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        headers = {
+            "content-type": "application/json",
+            "authorization": f"Bearer {self._api_key}",
+        }
+        started = time.monotonic()
+        for attempt in range(self.max_retries + 1):
+            try:
+                status, raw = self._transport(self.base_url, headers, body, request.timeout_seconds)
+            except ModelGatewayError as exc:
+                if not exc.retryable or attempt >= self.max_retries:
+                    raise
+                time.sleep(self.retry_backoff_seconds * (2**attempt))
+                continue
+            if status in {408, 429} or status >= 500:
+                if attempt < self.max_retries:
+                    time.sleep(self.retry_backoff_seconds * (2**attempt))
+                    continue
+                raise ModelGatewayError("模型服务暂时不可用", code=f"HTTP_{status}", retryable=True)
+            if status < 200 or status >= 300:
+                raise ModelGatewayError("模型请求被拒绝", code=f"HTTP_{status}")
+            try:
+                payload = json.loads(raw)
+                choices = payload.get("choices", [])
+                message = choices[0].get("message", {}) if choices else {}
+                content = message.get("content", "") if isinstance(message, dict) else ""
+                if isinstance(content, list):
+                    text = "".join(
+                        str(part.get("text", "")) for part in content if isinstance(part, dict)
+                    )
+                else:
+                    text = str(content)
+            except (UnicodeDecodeError, json.JSONDecodeError, AttributeError, TypeError, IndexError) as exc:
+                raise ModelGatewayError("模型响应不是合法 JSON", code="INVALID_RESPONSE") from exc
+            if not text.strip():
+                raise ModelGatewayError("模型响应没有文本内容", code="EMPTY_RESPONSE")
+            usage = payload.get("usage", {}) if isinstance(payload, dict) else {}
+            return ModelResponse(
+                request_id=request.request_id,
+                model=request.model,
+                provider=f"{self.provider}:{self.channel}",
+                text=text,
+                attempts=attempt + 1,
+                latency_seconds=time.monotonic() - started,
+                input_tokens=usage.get("prompt_tokens") if isinstance(usage, dict) else None,
+                output_tokens=usage.get("completion_tokens") if isinstance(usage, dict) else None,
+            )
+        raise AssertionError("unreachable")
+
+
 def _default_transport(
     url: str, headers: Mapping[str, str], body: bytes, timeout: int
 ) -> tuple[int, bytes]:
@@ -214,14 +380,48 @@ def receipt_for_response(response: ModelResponse) -> ModelCallReceipt:
     )
 
 
+def build_chat_model(
+    *,
+    config_path: str | os.PathLike[str] | None = None,
+    channel: str = "gemini",
+    transport: Transport | None = None,
+) -> ChatModel:
+    """根据 CLI 配置选择 NewAPI channel 或保持原有环境变量客户端。"""
+
+    if config_path is not None:
+        return NewAPIClient.from_config(config_path, channel=channel, transport=transport)
+    return OpusClient(transport=transport)
+
+
+def resolve_model_name(
+    requested: str | None,
+    *,
+    config_path: str | os.PathLike[str] | None = None,
+    channel: str = "gemini",
+) -> str:
+    """为配置驱动调用提供安全默认模型，避免把 Claude 名称发给 Gemini。"""
+
+    if requested and requested.strip() and not (
+        config_path is not None and requested.startswith("claude-") and channel == "gemini"
+    ):
+        return requested
+    if config_path is not None:
+        defaults = {"gemini": "gemini-2.5-pro", "gpt": "gpt-5", "claude": "claude-opus-4-8"}
+        return defaults.get(channel, channel)
+    return requested or "claude-opus-4-8"
+
+
 __all__ = [
     "ChatModel",
     "ModelCallReceipt",
     "ModelGatewayError",
     "ModelRequest",
     "ModelResponse",
+    "NewAPIClient",
     "OpusClient",
     "Transport",
+    "build_chat_model",
+    "resolve_model_name",
     "parse_json_object",
     "receipt_for_response",
 ]
