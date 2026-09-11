@@ -7,7 +7,7 @@ from traceforge.reconstruction.pipeline import build_reconstruction_pipeline
 
 
 def test_pipeline_materializes_selection_and_pending_execution_plan(tmp_path: Path, monkeypatch) -> None:
-    m4 = tmp_path / m4 / m4-run
+    m4 = tmp_path / out / m4 / m4-run
     (m4 / private).mkdir(parents=True)
     manifest = {
         failure_analysis_run_id: m4-run,
