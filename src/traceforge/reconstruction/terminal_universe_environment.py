@@ -28,7 +28,7 @@ class EnvironmentReconstructionError(ValueError):
 
 def _safe_path(value: str) -> str:
     p = PurePosixPath(value.replace("\\", "/"))
-    if not value or p.is_absolute() or ".." in p.parts or ":" in p.parts[0]:
+    if not value or not p.parts or p.is_absolute() or ".." in p.parts or ":" in p.parts[0]:
         raise EnvironmentReconstructionError(f"unsafe path: {value!r}")
     if any(
         part in {"solution", "tests", "environment", "hidden_control", ".git"} for part in p.parts
