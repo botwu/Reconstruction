@@ -25,6 +25,7 @@ from .model_gateway import (
 
 ENVIRONMENT_COMPLETION_RUN_SCHEMA = "traceforge.environment-completion-run.v1"
 ENVIRONMENT_COMPLETION_PROMPT_VERSION = "terminal-universe-environment-completion-b1-v1"
+MAX_ENVIRONMENT_CANDIDATES = 5
 
 
 class EnvironmentCompletionError(RuntimeError):
@@ -44,12 +45,17 @@ def _prompt(
     task: dict[str, Any], replay_files: list[dict[str, Any]], evidence: list[dict[str, Any]]
 ) -> str:
     return (
-        "Complete a Docker workspace so that the given task becomes solvable, but NOT solved. "
-        "只补缺失文件或补齐明确标为 PARTIAL 的文件。不得修改 COMPLETE 文件，不得实现任务、"
-        "写答案、测试、solution、答案提示或预期输出。只输出 JSON object："
+        "Complete the partial Docker workspace at /app so that the given task becomes solvable, "
+        "but NOT solved. This is Terminal-Universe Stage 2 environment completion: preserve "
+        "the replayed initial state, add only evidence-backed missing context, dependencies, or "
+        "partial files, and produce up to five diverse candidates. Do not implement the task, "
+        "apply the withheld agent changes, write answers, tests, solution files, hints, or "
+        "expected outputs. Candidate workspaces must expose the same tool/file interface as "
+        "the source trajectory and remain independently auditable. 只补缺失文件或补齐明确标为 "
+        "PARTIAL 的文件。不得修改 COMPLETE/UNKNOWN 文件。只输出 JSON object："
         "{candidates:[{files:[{path,content,provenance,evidence_ref_ids}],dependencies:[],"
         "runtime_constraints:[],uncertainties:[],decision:READY|REVIEW|DEFER|REJECT}],"
-        "open_questions:[]}，最多 3 个候选。"
+        f"open_questions:[]}}，最多 {MAX_ENVIRONMENT_CANDIDATES} 个候选。"
         f"\n任务：{task!r}\n确定性重放文件（含实际内容）：{replay_files!r}"
         f"\n证据索引：{evidence!r}"
     )
@@ -211,9 +217,13 @@ def run_environment_completion(
     except ModelGatewayError as exc:
         payload = {"candidates": [], "open_questions": [], "parse_error": exc.code}
     raw_candidates = payload.get("candidates", [])
-    candidate_limit_error = not isinstance(raw_candidates, list) or len(raw_candidates) > 3
+    candidate_limit_error = (
+        not isinstance(raw_candidates, list) or len(raw_candidates) > MAX_ENVIRONMENT_CANDIDATES
+    )
     raw_candidates = (
-        raw_candidates if isinstance(raw_candidates, list) and len(raw_candidates) <= 3 else []
+        raw_candidates
+        if isinstance(raw_candidates, list) and len(raw_candidates) <= MAX_ENVIRONMENT_CANDIDATES
+        else []
     )
     run_id = stable_id(
         "traceforge.environment-completion-run.v1",
@@ -334,6 +344,7 @@ def run_environment_completion(
 
 __all__ = [
     "ENVIRONMENT_COMPLETION_RUN_SCHEMA",
+    "MAX_ENVIRONMENT_CANDIDATES",
     "EnvironmentCompletionError",
     "run_environment_completion",
 ]
