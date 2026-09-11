@@ -1,0 +1,222 @@
+"""语义重建模型的窄调用边界。
+
+模块不持久化 API key、prompt 或响应正文。调用方可以注入 transport 做离线测试；
+生产环境只从环境变量读取密钥。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import time
+import urllib.error
+import urllib.request
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+
+class ModelGatewayError(RuntimeError):
+    """模型请求失败，或返回内容不满足调用契约。"""
+
+    def __init__(self, message: str, *, code: str, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.code = code
+        self.retryable = retryable
+
+
+@dataclass(frozen=True, slots=True)
+class ModelRequest:
+    """一次可审计的模型请求；不包含密钥。"""
+
+    request_id: str
+    model: str
+    system: str
+    prompt: str
+    response_schema: str
+    temperature: float = 0.0
+    max_tokens: int = 4096
+    timeout_seconds: int = 120
+
+
+@dataclass(frozen=True, slots=True)
+class ModelResponse:
+    request_id: str
+    model: str
+    provider: str
+    text: str
+    attempts: int
+    latency_seconds: float
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+    @property
+    def content_sha256(self) -> str:
+        return hashlib.sha256(self.text.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class ModelCallReceipt:
+    """可持久化的调用摘要，禁止保存 prompt、响应正文和密钥。"""
+
+    request_id: str
+    provider: str
+    model: str
+    status: str
+    attempts: int
+    latency_seconds: float
+    response_sha256: str | None
+    error_code: str | None
+
+
+class ChatModel(Protocol):
+    """语义重建只依赖这一个接口。"""
+
+    def complete(self, request: ModelRequest) -> ModelResponse: ...
+
+
+Transport = Callable[[str, Mapping[str, str], bytes, int], tuple[int, bytes]]
+
+
+def _default_transport(
+    url: str, headers: Mapping[str, str], body: bytes, timeout: int
+) -> tuple[int, bytes]:
+    request = urllib.request.Request(url, data=body, headers=dict(headers), method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+    except urllib.error.URLError as exc:
+        raise ModelGatewayError("模型网络请求失败", code="NETWORK_ERROR", retryable=True) from exc
+
+
+class OpusClient:
+    """Claude Opus 原生 Messages API 客户端。"""
+
+    provider = "anthropic"
+
+    def __init__(
+        self,
+        *,
+        api_key_env: str = "ANTHROPIC_API_KEY",
+        base_url: str = "https://api.anthropic.com/v1/messages",
+        max_retries: int = 2,
+        retry_backoff_seconds: float = 1.0,
+        transport: Transport | None = None,
+    ) -> None:
+        if max_retries < 0 or retry_backoff_seconds < 0:
+            raise ValueError("重试参数必须非负")
+        self.api_key_env = api_key_env
+        self.base_url = base_url
+        self.max_retries = max_retries
+        self.retry_backoff_seconds = retry_backoff_seconds
+        self._transport = transport or _default_transport
+
+    def complete(self, request: ModelRequest) -> ModelResponse:
+        if not request.model.strip() or not request.prompt.strip():
+            raise ModelGatewayError("模型请求缺少 model 或 prompt", code="INVALID_REQUEST")
+        if not request.response_schema.strip():
+            raise ModelGatewayError("必须声明响应 schema", code="SCHEMA_REQUIRED")
+        api_key = os.environ.get(self.api_key_env)
+        if not api_key:
+            raise ModelGatewayError(
+                f"未设置模型密钥环境变量：{self.api_key_env}", code="API_KEY_MISSING"
+            )
+        body = json.dumps(
+            {
+                "model": request.model,
+                "system": request.system,
+                "messages": [{"role": "user", "content": request.prompt}],
+                "temperature": request.temperature,
+                "max_tokens": request.max_tokens,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        headers = {
+            "content-type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        }
+        started = time.monotonic()
+        for attempt in range(self.max_retries + 1):
+            try:
+                status, raw = self._transport(self.base_url, headers, body, request.timeout_seconds)
+            except ModelGatewayError as exc:
+                if not exc.retryable or attempt >= self.max_retries:
+                    raise
+                time.sleep(self.retry_backoff_seconds * (2**attempt))
+                continue
+            if status in {408, 429} or status >= 500:
+                if attempt < self.max_retries:
+                    time.sleep(self.retry_backoff_seconds * (2**attempt))
+                    continue
+                raise ModelGatewayError("模型服务暂时不可用", code=f"HTTP_{status}", retryable=True)
+            if status < 200 or status >= 300:
+                raise ModelGatewayError("模型请求被拒绝", code=f"HTTP_{status}")
+            try:
+                payload = json.loads(raw)
+                blocks = payload.get("content", [])
+                text = "".join(
+                    str(block.get("text", "")) for block in blocks if block.get("type") == "text"
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError, AttributeError, TypeError) as exc:
+                raise ModelGatewayError("模型响应不是合法 JSON", code="INVALID_RESPONSE") from exc
+            if not text.strip():
+                raise ModelGatewayError("模型响应没有文本内容", code="EMPTY_RESPONSE")
+            usage = payload.get("usage", {}) if isinstance(payload, dict) else {}
+            return ModelResponse(
+                request_id=request.request_id,
+                model=request.model,
+                provider=self.provider,
+                text=text,
+                attempts=attempt + 1,
+                latency_seconds=time.monotonic() - started,
+                input_tokens=usage.get("input_tokens") if isinstance(usage, dict) else None,
+                output_tokens=usage.get("output_tokens") if isinstance(usage, dict) else None,
+            )
+        raise AssertionError("unreachable")
+
+
+def parse_json_object(text: str) -> dict[str, Any]:
+    """解析模型 JSON；允许 fenced block，但不允许前后额外文本。"""
+
+    candidate = text.strip()
+    fence = chr(96) * 3
+    if candidate.startswith(fence) and candidate.endswith(fence):
+        lines = candidate.splitlines()
+        candidate = "\n".join(lines[1:-1]).strip()
+    try:
+        value = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        raise ModelGatewayError("模型输出不是合法 JSON", code="INVALID_JSON") from exc
+    if not isinstance(value, dict):
+        raise ModelGatewayError("模型输出必须是 JSON object", code="JSON_OBJECT_REQUIRED")
+    return value
+
+
+def receipt_for_response(response: ModelResponse) -> ModelCallReceipt:
+    return ModelCallReceipt(
+        request_id=response.request_id,
+        provider=response.provider,
+        model=response.model,
+        status="COMPLETED",
+        attempts=response.attempts,
+        latency_seconds=response.latency_seconds,
+        response_sha256=response.content_sha256,
+        error_code=None,
+    )
+
+
+__all__ = [
+    "ChatModel",
+    "ModelCallReceipt",
+    "ModelGatewayError",
+    "ModelRequest",
+    "ModelResponse",
+    "OpusClient",
+    "Transport",
+    "parse_json_object",
+    "receipt_for_response",
+]
