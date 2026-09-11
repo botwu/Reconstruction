@@ -174,7 +174,9 @@ def run_reconstruction_workflow(
     if not isinstance(environment_candidates, list):
         raise ReconstructionWorkflowError("environment candidates 不是数组")
     sufficiency_records: list[dict[str, Any]] = []
-    selected: tuple[int, dict[str, Any], Path, Path, dict[str, Any]] | None = None
+    selected: (
+        tuple[tuple[float, int, int], dict[str, Any], Path, Path, dict[str, Any]] | None
+    ) = None
     for index, candidate in enumerate(environment_candidates):
         if not isinstance(candidate, dict) or candidate.get("status") != "READY":
             sufficiency_records.append(
