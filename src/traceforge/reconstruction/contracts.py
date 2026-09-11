@@ -301,3 +301,104 @@ def harbor_bundle_manifest(*, bundle_root: str | Path, bundle_id: str, task_name
 
 
 __all__ = [name for name in globals() if (name.isupper() and not name.startswith('_') or name.endswith('V1') or name.endswith('Status') or name.endswith('Eligibility') or name in {'Decision', 'Visibility', 'recovery_id', 'rollout_id', 'harbor_bundle_manifest', 'validate_task_recovery', 'validate_environment_recovery', 'validate_rollout_request', 'validate_verification_result', 'validate_sft_candidate'})]
+
+# Orchestration-level references.  Kept separate from model/runtime contracts above.
+PIPELINE_MANIFEST_SCHEMA = traceforge.reconstruction-pipeline-manifest.v1
+SELECTION_MANIFEST_SCHEMA = traceforge.reconstruction-selection-manifest.v1
+EXECUTION_PLAN_SCHEMA = traceforge.reconstruction-execution-plan.v1
+PIPELINE_RUN_RECEIPT_SCHEMA = traceforge.reconstruction-pipeline-run-receipt.v1
+
+class NodeStatus(StrEnum):
+    COMPLETED = COMPLETED
+    PENDING_MODEL = PENDING_MODEL
+    BLOCKED = BLOCKED
+    SKIPPED = SKIPPED
+
+class CandidateDecision(StrEnum):
+    ELIGIBLE = ELIGIBLE
+    REVIEW = REVIEW
+    DEFER = DEFER
+    REJECT = REJECT
+
+@dataclass(frozen=True, slots=True)
+class PipelineNodeV1(SerializableContract):
+    schema_version: str
+    node_id: str
+    stage: str
+    status: str
+    input_refs: tuple[str, ...]
+    output_refs: tuple[str, ...]
+    reason_codes: tuple[str, ...]
+
+@dataclass(frozen=True, slots=True)
+class ReconstructionCandidateV1(SerializableContract):
+    schema_version: str
+    candidate_id: str
+    report_id: str
+    session_ref: str
+    episode_ref: str
+    attempt_ref: str
+    decision: str
+    route: str
+    primary_failure: str
+    failure_layer: str
+    recoverability: str
+    confidence: float
+    evidence_ref_ids: tuple[str, ...]
+    reconstruction_targets: tuple[str, ...]
+    blocking_reason_codes: tuple[str, ...]
+
+def pipeline_run_id(*, m1b_run_id: str, m1b_manifest_sha256: str, m1d_run_id: str | None, m4_run_id: str, policy_version: str = RECONSTRUCTION_CONTRACT_VERSION) -> str:
+
+# Orchestration contracts consumed by reconstruction/pipeline.py.
+EXECUTION_PLAN_SCHEMA = traceforge.reconstruction-execution-plan.v1
+PIPELINE_MANIFEST_SCHEMA = traceforge.reconstruction-pipeline-manifest.v1
+PIPELINE_RUN_RECEIPT_SCHEMA = traceforge.reconstruction-pipeline-run-receipt.v1
+SELECTION_MANIFEST_SCHEMA = traceforge.reconstruction-selection-manifest.v1
+RECONSTRUCTION_NODE_SCHEMA = traceforge.reconstruction-node.v1
+RECONSTRUCTION_CANDIDATE_SCHEMA = traceforge.reconstruction-candidate.v1
+
+class NodeStatus(StrEnum):
+    COMPLETED = COMPLETED
+    BLOCKED = BLOCKED
+    PENDING_MODEL = PENDING_MODEL
+    FAILED = FAILED
+
+class CandidateDecision(StrEnum):
+    ELIGIBLE = ELIGIBLE
+    REVIEW = REVIEW
+    DEFER = DEFER
+    REJECT = REJECT
+
+@dataclass(frozen=True, slots=True)
+class PipelineNodeV1(SerializableContract):
+    schema_version: str
+    node_id: str
+    node_type: str
+    status: str
+    input_refs: tuple[str, ...]
+    output_refs: tuple[str, ...]
+    blocking_reason_codes: tuple[str, ...]
+
+@dataclass(frozen=True, slots=True)
+class ReconstructionCandidateV1(SerializableContract):
+    schema_version: str
+    candidate_id: str
+    report_id: str
+    session_ref: str
+    episode_ref: str
+    attempt_ref: str
+    decision: str
+    route: str
+    primary_failure: str
+    failure_layer: str
+    recoverability: str
+    confidence: float
+    evidence_ref_ids: tuple[str, ...]
+    reconstruction_targets: tuple[str, ...]
+    blocking_reason_codes: tuple[str, ...]
+
+def pipeline_run_id(*, m1b_run_id: str, m1b_manifest_sha256: str, m1d_run_id: str | None, m4_run_id: str) -> str:
+    return stable_id(reconstruction-pipeline-run-v1, {version: RECONSTRUCTION_CONTRACT_VERSION, m1b_run_id: m1b_run_id, m1b_manifest_sha256: m1b_manifest_sha256, m1d_run_id: m1d_run_id, m4_run_id: m4_run_id})
+
+__all__ = [name for name in globals() if (name.isupper() and not name.startswith('_') or name.endswith('V1') or name.endswith('Status') or name.endswith('Eligibility') or name.endswith('Decision') or name in {'recovery_id', 'rollout_id', 'pipeline_run_id', 'harbor_bundle_manifest', 'validate_task_recovery', 'validate_environment_recovery', 'validate_rollout_request', 'validate_verification_result', 'validate_sft_candidate'})]
