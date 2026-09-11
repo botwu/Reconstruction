@@ -6,6 +6,7 @@ from pathlib import Path
 
 from traceforge.reconstruction.model_gateway import ModelRequest, ModelResponse
 from traceforge.reconstruction.workflow import run_reconstruction_workflow
+from traceforge.reconstruction.workflow import ReconstructionWorkflowError
 
 
 class WorkflowModel:
@@ -95,6 +96,56 @@ environment:
     assert execution["status"] == "PLAN_ONLY"
     assert execution["red_check"]["status"] == "PENDING_EXECUTION"
     assert Path(json.loads((out / "workflow_manifest.json").read_text())["stages"]["bundle"]).is_dir()
+
+
+def test_workflow_builds_replay_before_environment(tmp_path: Path):
+    normalized = tmp_path / "normalized"
+    (normalized / "private").mkdir(parents=True)
+    def event(sequence, kind, payload):
+        return {
+            "capture_occurrence_id": "cap-1",
+            "sequence_number": sequence,
+            "event_kind": kind,
+            "event_occurrence_id": f"event-{sequence}",
+            "payload": payload,
+        }
+    rows = [
+        event(1, "TOOL_CALL", {"tool_call_id": "call-1", "function": {"name": "read", "arguments": {"value": {"path": "README.md"}}}}),
+        event(2, "TOOL_RESULT", {"tool_call_id": "call-1", "content": {"value": "hello\n"}}),
+    ]
+    (normalized / "private/event_occurrences.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n"
+    )
+    harbor = tmp_path / "harbor"
+    (harbor / "configs").mkdir(parents=True)
+    (harbor / ".venv" / "bin").mkdir(parents=True)
+    (harbor / ".venv" / "bin" / "harbor").write_text("#!/bin/sh\nexit 0\n")
+    (harbor / ".venv" / "bin" / "harbor").chmod(0o755)
+    config = "jobs_dir: /tmp/jobs\nn_concurrent_trials: 1\nagents:\n  hermes:\n    model_name: anthropic/claude-opus-4-8\n    expected_commit: abc\nenvironment:\n  kwargs:\n    sandbox_timeout_sec: 900\n"
+    for name in ("hermes-batch.yaml", "oracle.yaml", "nop.yaml"):
+        (harbor / "configs" / name).write_text(config)
+    out = run_reconstruction_workflow(
+        attempt_ref="attempt-1", source_report_id="report-1", report={"failure": "incomplete"},
+        evidence=[{"evidence_ref_id": "e1", "role": "user"}], model=WorkflowModel(),
+        normalized_run_dir=normalized, capture_id="cap-1", output_root=tmp_path / "out",
+        harbor_root=harbor,
+    )
+    manifest = json.loads((out / "workflow_manifest.json").read_text())
+    assert manifest["stages"]["replay"]
+    replay_root = Path(manifest["stages"]["replay"])
+    assert (replay_root / "workspaces/cap-1/README.md").read_text() == "hello\n"
+
+
+def test_workflow_rejects_unbound_replay_inputs(tmp_path: Path):
+    try:
+        run_reconstruction_workflow(
+            attempt_ref="a", source_report_id="r", report={}, evidence=[], model=WorkflowModel(),
+            output_root=tmp_path / "out", harbor_root=tmp_path / "harbor",
+        )
+    except ReconstructionWorkflowError as exc:
+        assert "normalized_run_dir" in str(exc)
+    else:
+        raise AssertionError("workflow must require normalized replay or explicit legacy inputs")
 
 
 def test_red_case_rejects_incomplete_harbor_quality_gate():

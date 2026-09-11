@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -199,15 +200,38 @@ def build_trajectory_replay(
         for cid in sorted(grouped):
             files, changes, partial, barriers = _replay_capture(grouped[cid], workspace_root)
             base = Path("workspaces") / cid
+            (workspace.staging_path / base).mkdir(parents=True, exist_ok=True)
+            partial_paths = {
+                str(item.get("path"))
+                for item in partial
+                if isinstance(item, dict) and item.get("path")
+            }
+            file_records: list[dict[str, Any]] = []
             for file_path, text in sorted(files.items()):
                 target = workspace.staging_path / base / file_path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(text, encoding="utf-8")
+                file_records.append(
+                    {
+                        "path": file_path,
+                        "completeness": "PARTIAL" if file_path in partial_paths else "COMPLETE",
+                        "source_event_id": next(
+                            (
+                                item.get("source_event_id")
+                                for item in partial
+                                if item.get("path") == file_path
+                            ),
+                            None,
+                        ),
+                        "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                    }
+                )
             captures.append(
                 {
                     "capture_occurrence_id": cid,
                     "workspace_path": base.as_posix(),
                     "observed_file_count": len(files),
+                    "files": file_records,
                     "withheld_changes": changes,
                     "partial_evidence": partial,
                     "unknown_mutation_barriers": barriers,

@@ -24,6 +24,7 @@ from traceforge.trajectory.artifacts import (
     artifact_entry_dicts,
     write_json_artifact,
 )
+from traceforge.trajectory_replay.pipeline import ReplayInputError, build_trajectory_replay
 from traceforge.verifier.bundle import compile_bundle
 from traceforge.verifier.red_check import RedCheckCase, evaluate_red_check
 from traceforge.verifier.synthesis import synthesize_verifier
@@ -144,14 +145,57 @@ def _resolve_rollout_model(model_name: str, rollout_model: str | None) -> str:
     )
 
 
+def _replay_inputs(
+    replay_root: Path, capture_id: str | None
+) -> tuple[Path, list[dict[str, Any]], str]:
+    """读取确定性回放产物，拒绝在多 capture 时猜测 workspace。"""
+    manifest_path = replay_root / "replay_manifest.json"
+    try:
+        manifest = _json(manifest_path)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ReconstructionWorkflowError(
+            f"回放产物缺少 replay_manifest.json：{replay_root}"
+        ) from exc
+    captures = manifest.get("captures")
+    if not isinstance(captures, list) or not captures:
+        raise ReconstructionWorkflowError("确定性回放没有可用 capture")
+    selected = [item for item in captures if isinstance(item, dict)]
+    if capture_id is not None:
+        selected = [item for item in selected if item.get("capture_occurrence_id") == capture_id]
+    if len(selected) != 1:
+        raise ReconstructionWorkflowError(
+            "capture_id 必须唯一匹配一个回放 capture；不会跨 session 猜测 workspace"
+        )
+    capture = selected[0]
+    resolved_id = str(capture.get("capture_occurrence_id"))
+    workspace_rel = capture.get("workspace_path")
+    if not isinstance(workspace_rel, str):
+        raise ReconstructionWorkflowError("回放 capture 缺少 workspace_path")
+    workspace = replay_root / workspace_rel
+    if not workspace.is_dir():
+        raise ReconstructionWorkflowError(f"回放 workspace 不存在：{workspace}")
+    files = capture.get("files", [])
+    if not isinstance(files, list):
+        raise ReconstructionWorkflowError("回放 capture 的 files 必须是数组")
+    # 只接受 replay manifest 列出的文件，避免把 artifact 旁的其它内容带入 public。
+    indexed: list[dict[str, Any]] = []
+    for item in files:
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            raise ReconstructionWorkflowError("回放 files 含非法条目")
+        indexed.append(dict(item))
+    return workspace, indexed, resolved_id
+
+
 def run_reconstruction_workflow(
     *,
     attempt_ref: str,
     source_report_id: str,
     report: dict[str, Any],
     evidence: list[dict[str, Any]],
-    replay_workspace: str | Path,
-    replay_files: list[dict[str, Any]],
+    replay_workspace: str | Path | None = None,
+    replay_files: list[dict[str, Any]] | None = None,
+    normalized_run_dir: str | Path | None = None,
+    capture_id: str | None = None,
     model: Any,
     output_root: str | Path,
     harbor_root: str | Path,
@@ -168,10 +212,35 @@ def run_reconstruction_workflow(
     """
     if rollout_trials < 1:
         raise ReconstructionWorkflowError("rollout_trials 必须大于 0")
-    evidence = canonicalize_evidence(evidence)
     root = Path(output_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     stages = root / "stages"
+
+    replay_stage_root: Path | None = None
+    if normalized_run_dir is not None:
+        if not Path(normalized_run_dir).is_dir():
+            raise ReconstructionWorkflowError(f"规范化 run 不存在：{normalized_run_dir}")
+        try:
+            replay_stage_root = build_trajectory_replay(
+                normalized_run_dir=normalized_run_dir,
+                capture_id=capture_id,
+                output_root=stages / "replay",
+            )
+        except ReplayInputError as exc:
+            raise ReconstructionWorkflowError(f"确定性回放失败：{exc}") from exc
+        replay_workspace, replay_files, resolved_capture_id = _replay_inputs(
+            replay_stage_root, capture_id
+        )
+        capture_id = resolved_capture_id
+    elif replay_workspace is None or replay_files is None:
+        raise ReconstructionWorkflowError(
+            "必须提供 normalized_run_dir（推荐）或同时提供 replay_workspace/replay_files；"
+            "不会默默使用未绑定的跨 session workspace"
+        )
+
+    assert replay_workspace is not None
+    assert replay_files is not None
+    evidence = canonicalize_evidence(evidence)
 
     task_root = run_task_recovery(
         attempt_ref=attempt_ref,
@@ -461,6 +530,7 @@ def run_reconstruction_workflow(
                 "source_report_id": source_report_id,
                 "status": execution["status"],
                 "stages": {
+                    "replay": str(replay_stage_root) if replay_stage_root else None,
                     "task": str(task_root),
                     "environment": str(environment_root),
                     "sufficiency": str(sufficiency_root),

@@ -37,8 +37,30 @@ def test_replay_restores_read_file_and_withholds_mutation(tmp_path):
     capture = manifest["captures"][0]
     assert (output / "workspaces/cap-1/a.txt").read_text() == "before\n"
     assert not (output / "workspaces/cap-1/new.txt").exists()
+    assert capture["files"] == [{
+        "path": "a.txt",
+        "completeness": "PARTIAL",
+        "source_event_id": "e-1",
+        "content_sha256": __import__("hashlib").sha256(b"before\n").hexdigest(),
+    }]
     assert capture["status"] == "PARTIAL"
     assert {item["classification"] for item in capture["withheld_changes"]} == {
         "withheld_change",
         "agent_created_file",
     }
+
+
+def test_replay_marks_observed_file_partial_after_mutation(tmp_path):
+    source = tmp_path / "source"
+    (source / "private").mkdir(parents=True)
+    rows = [
+        _event(1, "TOOL_CALL", "read", {"path": "a.txt"}),
+        _event(2, "TOOL_RESULT", "read", "before\n"),
+        _event(3, "TOOL_CALL", "edit", {"path": "a.txt", "new_string": "after"}),
+    ]
+    (source / "private/event_occurrences.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n"
+    )
+    output = build_trajectory_replay(normalized_run_dir=source, output_root=tmp_path / "out")
+    capture = json.loads((output / "replay_manifest.json").read_text())["captures"][0]
+    assert capture["files"][0]["completeness"] == "PARTIAL"
