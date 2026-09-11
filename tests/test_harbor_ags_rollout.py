@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -89,6 +90,14 @@ def test_prepare_rollout_materializes_dataset_without_executing(
     assert 'model_name: "anthropic/claude-opus-4-8"' in config_text
     assert Path(plan["dataset"]["dataset_root"]).is_dir()
     assert Path(plan["dataset"]["dataset_root"], "dataset.toml").is_file()
+    generated_task = Path(plan["dataset"]["dataset_root"]) / plan["dataset"][
+        "task_relative_paths"
+    ][0]
+    task_text = (generated_task / "task.toml").read_text()
+    assert tomllib.loads(task_text)["verifier"]["collect"][0]["service"] == "main"
+    assert "TraceForge workspace snapshot hook" in task_text
+    assert "/home/user/workspace" in task_text
+    assert "/logs/artifacts/traceforge/workspace" in task_text
     assert "ags-secret-value" not in plan_text
     assert "tokenhub-secret-value" not in plan_text
 
@@ -118,7 +127,9 @@ def test_execute_rollout_requires_credentials(tmp_path: Path) -> None:
                 os.environ[name] = value
 
 
-def test_execute_rollout_is_explicit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_execute_rollout_is_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     output = build_rollout_plan(
         HarborRolloutConfig(
             task_dir=_bundle(tmp_path / "task"),

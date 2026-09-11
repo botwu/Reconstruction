@@ -98,6 +98,7 @@ def _materialize_dataset(
         suffix = f"--trial-{index:03d}" if trials > 1 else ""
         task_target = destination / f"{task_slug}{suffix}"
         shutil.copytree(task_dir, task_target, symlinks=False)
+        _ensure_workspace_snapshot_hook(task_target / "task.toml")
         task_targets.append(task_target.relative_to(destination).as_posix())
     dataset_toml = (
         "[dataset]\n"
@@ -113,6 +114,48 @@ def _materialize_dataset(
         "trial_count": trials,
         "dataset_toml_sha256": _sha256_file(destination / "dataset.toml"),
     }
+
+
+def _ensure_workspace_snapshot_hook(task_toml: Path) -> None:
+    """声明在 Harbor artifact collection 前复制 Agent 最终 workspace。
+
+    Harbor 的 ``verifier.collect`` hook 在 Agent 阶段结束后、沙盒销毁前执行。
+    快照只来自 ``/home/user/workspace``，随后由约定的
+    ``/logs/artifacts/traceforge`` convention artifact 下载并投影给独立 verifier。
+    """
+
+    try:
+        raw = task_toml.read_text(encoding="utf-8")
+        tomllib.loads(raw)
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise HarborRolloutError("复制后的 task.toml 无法解析") from exc
+    marker_text = "TraceForge workspace snapshot hook"
+    if marker_text in raw:
+        return
+    marker = (
+        "\n# TraceForge workspace snapshot hook\n"
+        "[[verifier.collect]]\n"
+        "command = \"set -eu; rm -rf /logs/artifacts/traceforge/workspace; "
+        "mkdir -p /logs/artifacts/traceforge/workspace; "
+        "cp -a /home/user/workspace/. /logs/artifacts/traceforge/workspace/\"\n"
+        "service = \"main\"\n"
+        "user = \"root\"\n"
+        "timeout_sec = 120.0\n"
+    )
+    lines = raw.splitlines(keepends=True)
+    verifier_index = next(
+        (index for index, line in enumerate(lines) if line.strip() == "[verifier]"),
+        None,
+    )
+    if verifier_index is not None:
+        insert_at = verifier_index + 1
+    else:
+        insert_at = next(
+            (index for index, line in enumerate(lines) if line.lstrip().startswith("[")),
+            len(lines),
+        )
+    lines.insert(insert_at, marker)
+    task_toml.write_text("".join(lines), encoding="utf-8")
 
 
 def _credential_status(agent_mode: str) -> dict[str, Any]:
