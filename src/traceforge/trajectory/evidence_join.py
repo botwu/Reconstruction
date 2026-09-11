@@ -40,6 +40,20 @@ def build_capture_input(*, event_occurrences_path: str|Path, capture_id: str, ou
     rows=sorted(rows,key=lambda r:(r.get("sequence_number",0),r.get("event_occurrence_id","")))[:max_events]
     return _emit(capture_id=capture_id,rows=rows,output_path=output_path)
 
+def build_query_task_input(*, event_occurrences_path: str|Path, capture_id: str, query_ordinal: int = -1, output_path: str|Path) -> dict[str,Any]:
+    """按 USER 边界拆出单个 QueryTurn，避免把一条 session 当作一个任务。"""
+    all_rows=[]
+    for line in Path(event_occurrences_path).open():
+        row=json.loads(line)
+        if row.get("capture_occurrence_id")==capture_id and row.get("event_kind") in {"USER","TOOL_CALL","TOOL_RESULT","ASSISTANT_MESSAGE"}:
+            all_rows.append(row)
+    all_rows.sort(key=lambda r:(r.get("sequence_number",0),r.get("event_occurrence_id","")))
+    starts=[i for i,r in enumerate(all_rows) if r.get("event_kind")=="USER"]
+    if not starts: return _emit(capture_id=capture_id,rows=[],output_path=output_path,missing=["NO_USER_QUERY"])
+    idx=starts[query_ordinal]
+    end=starts[query_ordinal+1] if query_ordinal >= 0 and query_ordinal+1 < len(starts) else (starts[query_ordinal+1] if query_ordinal < -1 and abs(query_ordinal+1)<=len(starts) else len(all_rows))
+    return _emit(capture_id=capture_id,rows=all_rows[idx:end],output_path=output_path)
+
 def build_task_input(*, evidence_path: str|Path, event_occurrences_path: str|Path, capture_id: str, output_path: str|Path) -> dict[str,Any]:
     """按已有证据引用 join；缺失引用显式记录。"""
     refs=json.loads(Path(evidence_path).read_text()); wanted={r.get("source_id") for r in refs if isinstance(r,dict)}
