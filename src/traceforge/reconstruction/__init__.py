@@ -100,4 +100,16 @@ __all__ = [
     "validate_task_recovery",
     "validate_verification_result",
 ]
-from .workflow import ReconstructionWorkflowError, run_reconstruction_workflow
+def run_reconstruction_workflow(*args, **kwargs):
+    """延迟导入完整 workflow，避免 verifier.synthesis 与 reconstruction 的循环依赖。"""
+    from .workflow import run_reconstruction_workflow as _run
+
+    return _run(*args, **kwargs)
+
+
+def __getattr__(name: str):
+    if name == "ReconstructionWorkflowError":
+        from .workflow import ReconstructionWorkflowError
+
+        return ReconstructionWorkflowError
+    raise AttributeError(name)
