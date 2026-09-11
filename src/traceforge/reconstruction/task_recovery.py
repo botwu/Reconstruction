@@ -12,12 +12,13 @@ from traceforge.trajectory.artifacts import (
     artifact_entry_dicts,
     write_json_artifact,
 )
-from traceforge.trajectory.json_codec import stable_id
+from traceforge.trajectory.json_codec import canonical_json_bytes, stable_id
 
 from .model_gateway import ChatModel, ModelRequest, ModelResponse
 from .semantic_recovery import recover, recovery_metrics
 
 TASK_RECOVERY_RUN_SCHEMA = "traceforge.task-recovery-run.v1"
+TASK_RECOVERY_PROMPT_VERSION = "terminal-universe-intent-recovery-c1-v1"
 
 
 class _RecordingModel:
@@ -40,7 +41,7 @@ def run_task_recovery(
     evidence: list[dict[str, Any]],
     model: ChatModel,
     output_root: str | Path,
-    model_name: str = "anthropic/claude-opus-4-8",
+    model_name: str = "claude-opus-4-8",
 ) -> Path:
     """重述用户任务并发布公开结果、私有模型边界和指标。
 
@@ -54,7 +55,9 @@ def run_task_recovery(
             "attempt_ref": attempt_ref,
             "source_report_id": source_report_id,
             "model": model_name,
-            "evidence_refs": sorted(str(item.get("evidence_ref_id", "")) for item in evidence),
+            "prompt_version": TASK_RECOVERY_PROMPT_VERSION,
+            "report_sha256": hashlib.sha256(canonical_json_bytes(report)).hexdigest(),
+            "evidence_sha256": hashlib.sha256(canonical_json_bytes(evidence)).hexdigest(),
         },
     )
     recording = _RecordingModel(model)
@@ -96,6 +99,7 @@ def run_task_recovery(
                         "request_id": request.request_id if request else None,
                         "model": request.model if request else model_name,
                         "response_schema": request.response_schema if request else None,
+                        "prompt_version": TASK_RECOVERY_PROMPT_VERSION,
                         "prompt_sha256": (
                             hashlib.sha256(request.prompt.encode()).hexdigest() if request else None
                         ),

@@ -44,6 +44,11 @@ from .environment_completion import (
     EnvironmentCompletionError,
     run_environment_completion,
 )
+from .sufficiency_judge import (
+    SUFFICIENCY_JUDGE_SCHEMA,
+    SUFFICIENCY_PROMPT_VERSION,
+    run_sufficiency_judge,
+)
 from .task_recovery import TASK_RECOVERY_RUN_SCHEMA, run_task_recovery
 
 __all__ = [
@@ -58,6 +63,8 @@ __all__ = [
     "ROLLOUT_TRIAL_SCHEMA",
     "SELECTION_MANIFEST_SCHEMA",
     "SFT_CANDIDATE_SCHEMA",
+    "SUFFICIENCY_JUDGE_SCHEMA",
+    "SUFFICIENCY_PROMPT_VERSION",
     "TASK_RECOVERY_RUN_SCHEMA",
     "TASK_RECOVERY_SCHEMA",
     "VERIFICATION_RESULT_SCHEMA",
@@ -83,6 +90,7 @@ __all__ = [
     "recovery_id",
     "rollout_id",
     "run_environment_completion",
+    "run_sufficiency_judge",
     "run_task_recovery",
     "validate_environment_recovery",
     "validate_rollout_request",
