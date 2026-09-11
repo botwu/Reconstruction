@@ -170,25 +170,72 @@ def run_reconstruction_workflow(
         model_name=model_name,
     )
     environment_payload = _json(environment_root / "environment_completion.json")
-    environment = _ready_candidate(environment_payload, "candidates")
-    workspace_rel = environment.get("workspace")
-    if not isinstance(workspace_rel, str):
-        raise ReconstructionWorkflowError("环境候选缺少 workspace")
-    completed_workspace = environment_root / workspace_rel
-    if not completed_workspace.is_dir():
-        raise ReconstructionWorkflowError(f"补全 workspace 不存在：{completed_workspace}")
-
-    sufficiency_root = run_sufficiency_judge(
-        task=task,
-        workspace_root=completed_workspace,
-        evidence=evidence,
-        model=model,
-        output_root=stages / "sufficiency",
-        model_name=model_name,
-    )
-    sufficiency = _json(sufficiency_root / "sufficiency_judgement.json")
-    if sufficiency.get("decision") != "READY" or sufficiency.get("label") != "SUFFICIENT":
-        raise ReconstructionWorkflowError("workspace 未通过充分性判定")
+    environment_candidates = environment_payload.get("candidates", [])
+    if not isinstance(environment_candidates, list):
+        raise ReconstructionWorkflowError("environment candidates 不是数组")
+    sufficiency_records: list[dict[str, Any]] = []
+    selected: tuple[int, dict[str, Any], Path, Path, dict[str, Any]] | None = None
+    for index, candidate in enumerate(environment_candidates):
+        if not isinstance(candidate, dict) or candidate.get("status") != "READY":
+            sufficiency_records.append(
+                {"index": index, "status": "SKIPPED", "reason": "ENVIRONMENT_NOT_READY"}
+            )
+            continue
+        workspace_rel = candidate.get("workspace")
+        if not isinstance(workspace_rel, str):
+            sufficiency_records.append(
+                {"index": index, "status": "REVIEW", "reason": "WORKSPACE_REF_MISSING"}
+            )
+            continue
+        candidate_workspace = environment_root / workspace_rel
+        if not candidate_workspace.is_dir():
+            sufficiency_records.append(
+                {"index": index, "status": "REVIEW", "reason": "WORKSPACE_MISSING"}
+            )
+            continue
+        candidate_sufficiency_root = run_sufficiency_judge(
+            task=task,
+            workspace_root=candidate_workspace,
+            evidence=evidence,
+            model=model,
+            output_root=stages / "sufficiency" / f"candidate-{index:03d}",
+            model_name=model_name,
+        )
+        candidate_sufficiency = _json(
+            candidate_sufficiency_root / "sufficiency_judgement.json"
+        )
+        record = {
+            "index": index,
+            "workspace": workspace_rel,
+            "decision": candidate_sufficiency.get("decision"),
+            "label": candidate_sufficiency.get("label"),
+            "confidence": candidate_sufficiency.get("confidence", 0.0),
+            "errors": candidate_sufficiency.get("errors", []),
+            "sufficiency_root": str(candidate_sufficiency_root),
+        }
+        sufficiency_records.append(record)
+        if (
+            candidate_sufficiency.get("decision") == "READY"
+            and candidate_sufficiency.get("label") == "SUFFICIENT"
+        ):
+            score = (
+                float(candidate_sufficiency.get("confidence", 0.0)),
+                -len(candidate.get("uncertainties", []))
+                if isinstance(candidate.get("uncertainties", []), list)
+                else 0,
+                -index,
+            )
+            if selected is None or score > selected[0]:
+                selected = (
+                    score,
+                    candidate,
+                    candidate_workspace,
+                    candidate_sufficiency_root,
+                    candidate_sufficiency,
+                )
+    if selected is None:
+        raise ReconstructionWorkflowError("所有环境候选均未通过充分性判定")
+    _, environment, completed_workspace, sufficiency_root, sufficiency = selected
 
     workspace_files = {
         path.relative_to(completed_workspace).as_posix(): path.read_text(encoding="utf-8")
@@ -393,8 +440,9 @@ def run_reconstruction_workflow(
             {
                 "schema_version": "traceforge.reconstruction-workflow-metrics.v2",
                 "task_candidate_count": len(task_payload.get("candidates", [])),
-                "environment_candidate_count": len(environment_payload.get("candidates", [])),
+                "environment_candidate_count": len(environment_candidates),
                 "sufficiency_label": sufficiency.get("label"),
+                "environment_selection_count": len(sufficiency_records),
                 "verifier_status": verifier.status,
                 "external_execution": execution.get("external_execution", False),
                 "red_check": execution.get("red_check"),
@@ -402,6 +450,19 @@ def run_reconstruction_workflow(
             },
         ),
         write_json_artifact(final.staging_path, "execution.json", execution),
+        write_json_artifact(
+            final.staging_path,
+            "environment_selection.json",
+            {
+                "schema_version": "traceforge.environment-selection.v1",
+                "selected_candidate_index": next(
+                    item["index"]
+                    for item in sufficiency_records
+                    if item.get("sufficiency_root") == str(sufficiency_root)
+                ),
+                "candidates": sufficiency_records,
+            },
+        ),
         write_json_artifact(final.staging_path, "sft_curation.json", sft_result),
     ]
     write_json_artifact(
