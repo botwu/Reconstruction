@@ -45,8 +45,26 @@ def _read_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def _score(row: dict[str, Any]) -> tuple[int, int, int, float, str]:
-    decision = str(row.get("decision", ""))
-    outcome = str(row.get("outcome", ""))
+    raw_decision = row.get("decision")
+    raw_outcome = row.get("outcome")
+    decision = (
+        str(raw_decision)
+        if isinstance(raw_decision, str)
+        else (
+            "REVIEW"
+            if str(row.get("primary_failure", "INCONCLUSIVE")) != "INCONCLUSIVE"
+            else "DEFER"
+        )
+    )
+    outcome = (
+        str(raw_outcome)
+        if isinstance(raw_outcome, str)
+        else (
+            "FAILURE"
+            if str(row.get("primary_failure", "INCONCLUSIVE")) != "INCONCLUSIVE"
+            else "UNCERTAIN"
+        )
+    )
     recoverability = str(row.get("recoverability", ""))
     decision_rank = {"ELIGIBLE": 4, "REVIEW": 3, "DEFER": 2, "REJECT": 0}.get(decision, 1)
     outcome_rank = {"FAILURE": 3, "INCOMPLETE": 3, "UNCERTAIN": 1, "SUCCESS": 0}.get(outcome, 0)
@@ -61,6 +79,10 @@ def _score(row: dict[str, Any]) -> tuple[int, int, int, float, str]:
         if isinstance(rubric, dict)
         else 0
     )
+    if rubric_total == 0:
+        rubric_total = len(row.get("evidence_ref_ids", [])) + len(
+            row.get("reconstruction_targets", [])
+        )
     confidence = row.get("confidence", 0.0)
     confidence_value = float(confidence) if isinstance(confidence, (int, float)) else 0.0
     stable = str(row.get("analysis_id") or row.get("report_id") or row.get("attempt_ref") or "")
@@ -136,8 +158,16 @@ def build_review_batch(
                     "selected_count": len(selected),
                     "requested_limit": limit,
                     "decision_counts": {
-                        decision: sum(str(row.get("decision")) == decision for row in selected)
-                        for decision in ("ELIGIBLE", "REVIEW", "DEFER", "REJECT")
+                        decision: sum(
+                            (
+                                str(row.get("decision"))
+                                if isinstance(row.get("decision"), str)
+                                else "UNLABELED"
+                            )
+                            == decision
+                            for row in selected
+                        )
+                        for decision in ("ELIGIBLE", "REVIEW", "DEFER", "REJECT", "UNLABELED")
                     },
                 },
             )
