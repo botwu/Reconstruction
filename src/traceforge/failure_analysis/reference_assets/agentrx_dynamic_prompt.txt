@@ -1,0 +1,375 @@
+
+You are an expert at analyzing agent trajectories and generating step-specific dynamic invariants which are programmable for trajectory verification. 
+Your task is to analyze the current step in an agent's execution trajectory and determine if any invariant should be generated for verification for this specific step.
+
+REUSE the previous assertions wherever possible, do NOT create new ones unless absolutely necessary. Prioritize computation checks wherever computation is required such as counting, summing, comparison, etc.
+
+You will be provided with the overall task instruction, the static invariants already generated, and the full agent trajectory up to the current step.
+
+**IMPORTANT**: Static invariants have already been generated to cover general policy violations, preconditions, sequential dependencies, and business rules. Focus ONLY on cases NOT covered by static invariants, such as:
+- Computation errors (counting, summing, calculations)
+- Step-specific validation that static invariants cannot capture
+
+## Context Information:
+**Task Instruction:** <<TASK_INSTRUCTION>>
+
+**Current Step Index:** <<STEP_NUM>>
+
+## Your Task:
+Analyze the current step in the trajectory and generate dynamic invariants that:
+1. Are simple enough to implement via python or NL checks.
+2. Can be checked at this specific step in the trajectory (e.g., computation checks from tool call results)
+3. Focus on **critical errors or policy violations** NOT already covered by static invariants
+4. Are objectively verifiable from trajectory data
+5. Fill gaps left by static invariants, particularly computation and step-specific validation
+6. Provide working Python code or Natural Language (NL) check for each dynamic assertion that can be executed
+
+## Focus Areas:
+Generate assertions for these key constraint types (ONLY if NOT covered by static invariants):
+
+### **Computation Checks**
+- Verify numerical calculations, aggregations, and data accuracy.
+- Examples:
+  - Financial: "Transaction total should equal sum of line items plus applicable fees"
+  - Inventory: "Remaining stock after reservation should be original stock minus reserved quantity"
+  - Healthcare: "Medication dosage calculations should be within safe therapeutic ranges"
+
+### **Context-Specific Business Logic**
+- Step-specific rules that depend on current trajectory state
+- Examples:
+  - Retail: "Discount calculations based on current cart contents and user loyalty level"
+  - Financial: "Credit limit checks based on current account status and transaction history"
+  - Healthcare: "Drug interaction checks based on current prescription list"
+  - Workflow: "Approval requirements based on current user role and request amount"
+
+### **Cross-Tool Data Validation**
+- Verify data integrity across multiple tool interactions in the same session
+- Examples:
+  - "Entity identifiers referenced in later steps must match those retrieved in earlier tool outputs"
+  - Retail: "Items added to cart must still be available when proceeding to checkout"
+  - "If the agent claims an action succeeded, subsequent tool outputs must show evidence consistent with the claim"
+  - Financial: "Exchange rates used in calculations must be consistent across related transactions"
+  - Healthcare: "Lab results referenced in diagnosis must match the lab results retrieved"
+  - System: "File permissions checked must match the permissions set in previous operations"
+
+Output MUST be valid JSON only (no markdown, no commentary), with EXACT keys and structure defined below.
+
+CRITICAL FORMATTING REQUIREMENTS:
+1. Output ONLY valid JSON - NO markdown code blocks (no ```json or ```)
+2. Use double quotes for all strings (not single quotes)
+3. Ensure all commas are placed correctly between array/object elements
+4. Ensure all brackets and braces are properly closed
+5. Follow the EXACT schema below - do not add or remove fields
+6. Validate your JSON before outputting
+7. TAXONOMY TARGETS: Use ONLY values from the allowed list.
+8. ONLY PRODUCE PYTHON_CHECK INVARIANTS: check type should ALWAYS be python check that is, "check_type": "python_check", the nl_check fields should ALWAYS be empty.
+
+================================================================================================
+TRAJECTORY FORMAT (IMPORTANT) - THIS WILL BE GIVEN AS AN INPUT PARAMETER
+================================================================================================
+
+TRAJECTORY:
+The runtime provides a trajectory dict in the following IR schema:
+
+{
+  "trajectory_id": "str",
+  "instruction": "str",  // The overall task instruction
+  "steps": [
+    {
+      "index": int,  // 1-based step index
+      "substeps": [
+        {
+          "sub_index": int,  // 1-based substep index within the step
+          "role": "str",  // The role of the substep
+          "content": "str"  // The content of this substep
+        }
+      ]
+    }
+  ]
+}
+
+IMPORTANT ACCESS PATTERNS:
+- To get instruction: trajectory["instruction"]
+- To access step N: trajectory["steps"][N-1] (steps list is 0-indexed, but step.index is 1-based)
+- To get substeps of a step: step.get("substeps", [])
+- To get content: substep.get("content")
+- To get role: substep.get("role")
+
+================================================================================================
+OUTPUT FORMAT
+================================================================================================
+
+Top-level JSON schema (EXACT):
+{
+  "step_num": <int>,
+  "decision": "NO_INVARIANT" | "INVARIANT",
+  "invariant":  [ <InvariantObject> ] | null,
+  "trigger_to_invariants_map": {
+    "agent:<AgentName>": ["assertion_name", "..."]
+  }
+}
+
+where <AgentName> is one of: <<AGENT_UNION>>
+  
+================================================================================================
+InvariantObject schema (EXACT)
+================================================================================================
+Each invariant object MUST have these keys (no extras):
+
+IMPORTANT: Follow this schema EXACTLY. Do not add extra fields. Use correct JSON formatting.
+
+{
+  "assertion_name": "string_unique_snake_case",
+
+   "taxonomy_targets": [
+    "Instruction/PlanAdherenceFailure: The agent fails to follow the directions or the agreed plan by ignoring directives and skipping policy steps. This covers both under-execution (missed steps) and over-execution (unplanned or unnecessary actions, e.g., extra tool calls) that deviate from the static plan, domain policy or orchestrator plan.",
+    "InventionOfNewInformation: The agent introduces, removes, or alters information that is not grounded in any available input, context, or tool output. This includes fabricating unsupported facts, hallucinating details, or omitting relevant information without justification.",
+    "InvalidInvocation: The agent encounters errors triggered by inputs that can't be parsed or validated e.g., syntax errors or tool calls with bad/missing arguments. Not involving wrong logic; just invalid inputs.",
+    "MisinterpretationOfToolOutput: The agent incorrectly reasons about its own or another agent's tool output (like computation errors), leading to incorrect assumptions or actions. This also includes cases where the agent considered only partial tool output.",
+    "IntentPlanMisalignment: The agent misreads the user's goal or constraints and produces the wrong step sequence or structure. Covers both bad ordering/structure and plans aimed at the wrong objective.",
+    "UnderspecifiedUserIntent: The agent was unable to complete the task due to lack of complete information at any point in the trajectory/plan execution.",
+    "IntentNotSupported: The agent/user is asking to perform an action for which a tool is not available, like listening to an audio file.",
+    "GuardrailsTriggered: The agent is blocked by safety/RAI policies or by external site access restrictions, preventing execution despite a valid plan. Examples include policy refusals (e.g., unsafe content, privacy-protected data), CAPTCHA/robot blocks, login/paywall/403/robots.txt denials, or site forbids automation. This is not an agent planning/execution error; it is an external/guardrail block.",
+    "SystemFailure: The agent faces a system connectivity issue while calling a particular tool like an endpoint not being reachable."
+    // Select 1-3 most relevant taxonomy targets for each invariant from the above list ONLY.
+ 
+    // Example: ["Instruction/PlanAdherenceFailure", "GuardrailsTriggered"]
+  ],
+
+  "invariant_type": "SCHEMA  // Ensures a structured payload (embedded JSON, tool args/result, ledger blob) is parseable and contains required fields.
+  | PROTOCOL                 // Ensures the correct division of labor and delegation conventions across agents
+  | RELATIONAL_POST          // Enforces cross-event linkage where later actions/claims must be supported by earlier tool outputs via token/field containment checks.
+  | PROVENANCE               // Enforces grounding claims or critical tokens must trace to earlier tool outputs
+  | TEMPORAL                 // Enforces ordering constraints ("X must happen before Y", "do not call tool before directive") without requiring full workflow state.
+  | CAPABILITY               // Ensures tools/agents are used only within their defined capabilities and I/O shapes.
+  | ANY",
+
+  "event_trigger": {
+    "step_index": "*|int|range",
+    "substep_index": "*|int|range",
+    "role_name": "<<AGENT_UNION>>"  // agent names inferred from substep.role; "*" matches all
+  },
+
+  "check_hint": "deterministic procedure description in 2-8 sentences",
+  "check_type": "python_check|nl_check",
+
+  "python_check": {
+    "function_name": "same_as_assertion_name",
+    "args": ["trajectory","current_step_index"],
+    "code_lines": [
+      "def same_as_assertion_name(trajectory, current_step_index):",
+      "    \"\"\"Return True iff invariant holds.\"\"\"",
+      "    # Access steps via trajectory['steps'][current_step_index]",
+      "    # Each step has 'substeps' with 'role' and 'content'",
+      "    # MUST include at least one explicit failure path: return False",
+      "    return True"
+    ]
+  },
+
+  "nl_check": {
+    "judge_system_prompt_template": "<<NL_CHECK_JUDGE_SYSTEM_PROMPT>>",
+    "judge_user_prompt_template": "template using {POLICY_TEXT} {TASK_INSTRUCTION} {CURRENT_EVENT_JSON} {WINDOW_EVENTS_JSON}",
+    "judge_scope_notes": "what events are in scope and what counts as evidence",
+    "focus_steps_instruction": "REQUIRED: Clear, actionable instruction identifying which 2-4 specific events to examine. Must specify events by relative position (e.g., 'immediately prior user message', '2 steps back', 'most recent get_order_details result') and explain what to look for in each.",
+    "judge_rubric": ["objective criterion 1", "objective criterion 2", "..."],
+    "rubric_evaluation_algorithm_template": "<<RUBRIC_EVALUATION_ALGORITHM>>",
+    "output_format_template": "<<OUTPUT_FORMAT>>"
+  }
+}
+
+## Quality Guidelines:
+- **Policy-Derived**: Must be supported by the policy document content, include any user confirmation checks before critical actions if specified in policy
+- **Practical Impact**: Focus on assertions that prevent real operational problems
+- **Domain-Relevant**: Prioritize rules specific to this business domain
+- **Reasonable Scope**: Avoid both trivial sanity checks and overly complex checks that would be difficult to implement reliably.
+
+## Trigger Robustness Rules:
+- content_regex MUST be robust to formatting differences (markdown, punctuation, extra whitespace, casing).
+- NEVER hardcode markdown-sensitive exact strings like:
+    "Tool result:\s*Query successful"
+  because real traces often contain:
+    "**Tool result:**\nQuery successful. ..."
+- Prefer matching stable substrings that survive formatting changes.
+- Prefer SHORT regexes. Avoid overfitting to ":" vs "**:**" vs "." variations.
+- Avoid brittle patterns that depend on exact formatting or punctuation.
+- Make sure to match the role name perfectly and overapproximate if you are unsure.
+
+Each invariant should be as GENERAL as possible, if many specific invariants can be combined into one invariant function, do so.
+For example, an invariant which checks order status validity for various tool calls can be combined into one function.
+
+================================================================================================
+DECISION GUIDE: PYTHON_CHECK VS NL_CHECK
+================================================================================================
+Use python_check when:
+- Tool output is structured JSON with extractable fields (e.g., get_order_details, get_user_details)
+- Check involves counting, summing, or comparing numeric values
+- Check involves verifying exact field matches (IDs, status codes, amounts, dates)
+- Check involves parsing and validating data structure or schema
+- Check uses simple regex patterns (e.g., matching an order_id format like r"#W\d+" or extracting keys or specific count in the content message)
+- Check involves deterministic string containment or exact substring matching
+
+Use nl_check when:
+- Check requires understanding paraphrasing or semantic equivalence (e.g., "bigger size" = "larger size")
+- Check requires judging whether two different phrasings express the same intent
+- Check requires evaluating whether user agent messages align with task instruction semantically
+- The content is unstructured natural language without clear fields to extract
+- Check would require a long list of synonyms or variations to cover programmatically
+
+A naive python_check approach would try to match exact phrases like:
+  - "I want to return"
+  - "I'd like to exchange"
+  - "cancel my order"
+  - "modify my address"
+  - "get a refund"
+  - "change the items"
+But users express the same intent in many ways:
+  - "Could you help me send back..." (return)
+  - "I need to swap this for..." (exchange)
+  - "Please void the order" (cancel)
+  - "Update my shipping info" (modify address)
+Matching exact phrases is brittle and incomplete. Use nl_check for semantic intent.
+
+================================================================================================
+## PYTHON CHECK GUIDELINES
+================================================================================================
+
+## Python Code Guidelines:
+- Write complete, executable Python functions
+- You will be given 2 parameters - (trajectory and current_step_index), where trajectory is the full IR dict with "steps" field
+- Access steps via trajectory["steps"][current_step_index] - steps list is 0-indexed
+- Each step has "index" (1-based) and "substeps" array
+- Each substep has "sub_index", "role", and "content"
+- The current_step_index is 0-based. So if the current step being executed has index=7, current_step_index will be 6.
+- Include docstrings explaining the assertion
+- Look at the tool response key fields very carefully while writing the code.
+  1. First, identify which tool(s) you're working with in the current trajectory step
+  2. Pay attention to nested dictionaries (use chained .get() calls) and list structures (check length before indexing)
+  3. Note the data types (str, float, bool, list, dict) to avoid type errors
+  4. Use ONLY the exact field names shown in the tool structure - do NOT invent or assume field names
+- Handle edge cases and missing data gracefully - verify field existence and type before operations
+- Focus on computation validation and step-specific checks, avoid very trivial sanity checks
+- **Exception Handling**: Raise exceptions for safety check violations (KeyError, IndexError, TypeError, AttributeError, ValueError, etc.) instead of returning False. Let these exceptions propagate naturally. Only return boolean (True/False) for actual invariant logic violations
+- Return boolean values (True if assertion passes, False if invariant violation detected)
+- **Add print statements for debugging**: Start with printing the function name, then print all key variables, extracted JSON fields, and intermediate calculation results to aid in debugging and verification
+
+================================================================================================
+## PYTHON_CHECK ANTI-HALLUCINATION RULES
+================================================================================================
+- A python_check MUST implement ONLY the exact condition(s) described in this invariant's `check_hint`.
+- FORBIDDEN: adding "extra" checks that are not explicitly part of check_hint.
+  Examples of forbidden extras:
+  * checking additional URLs/IDs/regexes beyond the targeted substring(s)
+  * inferring "plan rules" not explicitly spelled out in check_hint
+  * scanning many steps for unrelated markers "just in case"
+  * inventing secondary conditions like "also must not contain X" unless required by check_hint
+- Keep python_check SMALL and TARGETED:
+  * prefer 1-3 simple extractions + 1 boolean condition
+  * avoid long keyword lists and complex regex (if you need that, it is probably a nl_check candidate)
+
+================================================================================================
+## NL CHECK GUIDELINES
+================================================================================================
+
+For nl_check invariants, MUST include a "focus_steps_instruction" field that tells the judge which specific events to pay attention to.
+
+The instruction should:
+1. Be clear and actionable - the judge should know exactly which events to look at
+2. Identify 2-4 critical events by their position relative to current_step_index
+3. Explain WHY each event is important for the evaluation
+4. Use relative positioning (e.g., "immediately prior", "2 steps back", "most recent X tool result")
+
+EXAMPLES OF GOOD FOCUS STEPS INSTRUCTIONS:
+
+For confirmation checks:
+"Focus your evaluation on these key events: (1) The immediately prior message - check for explicit confirmation keywords like 'yes', 'confirm', 'proceed', 'ok'. (2) The assistant message two to three steps back - verify that it describes the action of interest (cancel/modify/exchange/return) and mentions the relevant target entity identifier(s) and critical parameters (e.g., record/entity ID, amount, destination, items, scope). (3) The current tool call arguments - verify they match the order_id/incident_id and details mentioned by another agent."
+
+For information invention checks:
+"Focus on: (1) The current agent content message being evaluated. (2) The most recent relevant tool results in the window — extract the authoritative facts actually present (identifiers, key fields/attributes, timestamps, computed outputs). (3) Compare specific claims in the agent's message against these tool results."
+
+For temporal/prerequisite checks:
+"Focus on: (1) The current tool call event — identify what operation is being attempted and what prerequisites it implies (authentication, entity lookup, permission check, required context fetch, state precondition). (2) Scan backward through all prior events to find the most recent event(s) that satisfy each prerequisite. (3) Most recent state snapshot for the same target entity — locate the latest tool result that reports the entity's current state."
+
+KEY PRINCIPLES:
+- Be specific about WHICH events (by relative position or role+name)
+- Explain WHAT to look for in each event
+- Make it easy for the judge to locate and examine the right evidence
+- Reduce cognitive load by narrowing focus to what matters most
+
+================================================================================================
+COMPLETE NL_CHECK INVARIANT EXAMPLE
+================================================================================================
+Below is a complete example of an nl_check invariant. Use this as a template when the check requires semantic understanding, paraphrasing detection, intent alignment, or meaning-based evaluation that cannot be reliably done with keyword/regex matching.
+
+WHY THIS MUST BE NL_CHECK (NOT PYTHON_CHECK):
+A naive python_check approach would try to match exact phrases like:
+  - "I want to return"
+  - "I'd like to exchange"
+  - "cancel my order"
+  - "modify my address"
+  - "get a refund"
+  - "change the items"
+But users express the same intent in many ways:
+  - "Could you help me send back..." (return)
+  - "I need to swap this for..." (exchange)
+  - "Please void the order" (cancel)
+  - "Update my shipping info" (modify address)
+Matching exact phrases is brittle and incomplete. Use nl_check for semantic intent.
+
+Here's a complete example:
+{
+  "assertion_name": "user_agent_follows_task_instruction",
+  "taxonomy_targets": ["UnderspecifiedUserIntent"],
+  "invariant_type": "USER_INTENT_CHECK",
+  "check_phase": "ANY",
+  "event_trigger": {
+    "step_index": "*",
+    "substep_index": "*",
+    "role_name": "user",
+    "content_regex": "*",
+    "tool_name": "*"
+  },
+  "check_hint": "Verify that the simulated user agent's message is semantically consistent with the original task instruction. Check that the user is not introducing new requirements, contradicting the task instruction, or providing information that deviates from what was specified in the task.",
+  "check_type": "nl_check",
+  "python_check": {},
+  "nl_check": {
+    "judge_system_prompt_template": "You are a strict compliance judge. Evaluate only with evidence in the provided events and the task instruction. Do not infer intent beyond explicit statements. CRITICAL: If required evidence is missing or ambiguous, mark the criterion as UNCLEAR.",
+    "judge_user_prompt_template": "POLICY TEXT: {POLICY_TEXT}\n\nTASK INSTRUCTION: {TASK_INSTRUCTION}\n\nCURRENT USER MESSAGE: {CURRENT_EVENT_JSON}\n\nEvaluate whether the user agent's message is consistent with the task instruction.",
+    "judge_scope_notes": "Compare the user agent's current message against the original task instruction to detect semantic drift, contradictions, or invention of new requirements not in the task.",
+    "focus_steps_instruction": "Focus on: (1) The current user message being evaluated - extract the specific request, preferences, or information being communicated. (2) The original task instruction provided at the start - identify the user's stated goals, constraints, and preferences. (3) Check for semantic alignment: is the user asking for what the task instruction specifies, or has the user agent drifted to a different request?",
+    "judge_rubric": [
+      "The user agent's request type (return/exchange/cancel/modify) matches what is specified in the task instruction",
+      "If the user mentions specific items, quantities, or attributes, they are consistent with those in the task instruction",
+      "The user agent does not introduce new constraints or preferences that were not present in the task instruction",
+      "The user agent does not contradict or reverse any requirement from the task instruction"
+    ],
+    "rubric_evaluation_algorithm_template": "{RUBRIC_EVALUATION_ALGORITHM}",
+    "output_format_template": "{OUTPUT_FORMAT}"
+  }
+}
+
+YOU NEED NOT GENERATE A DYNAMIC INVARIANT FOR EVERY STEP. IF NO NEW DYNAMIC INVARIANTS ARE NEEDED OR ARE ALREADY COVERED BY STATIC INVARIANTS, OUTPUT:
+
+{
+  "step_num": <<STEP_NUM>>,
+  "decision": "NO_INVARIANT",
+  "invariant": null,
+  "trigger_to_invariants_map": {}
+}
+
+================================================================================================
+STATIC INVARIANTS ALREADY GENERATED
+================================================================================================
+
+<<STATIC_INVARIANTS>>
+
+================================================================================================
+DYNAMIC INVARIANTS GENERATED FOR PREVIOUS STEPS
+================================================================================================
+
+<<DYNAMIC_INVARIANTS_ALREADY_GENERATED>>
+
+================================================================================================
+TRAJECTORY STEPS TILL NOW
+================================================================================================
+
+<<TRAJECTORY_UP_TO_CURRENT_STEP>>

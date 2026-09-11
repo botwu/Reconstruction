@@ -15,6 +15,9 @@ _AGENTRX_COMMIT = "f228165bfec60a801fd5fedd9d8ffe0f9de0c69d"
 _TRACE_COMMIT = "d2db23085409555b3f13ea426f42d62cf0bbc43d"
 _AGENTRX_SOURCE_SHA256 = "9629515bc49fa83c686a2aa03343b4a5ee9ddc23215f4756f7767ee6c9a59323"
 _TRACE_SOURCE_SHA256 = "5f32d35b633f2fee9f07c5449503be30bb5b96ac55bdcc2024199dda89448600"
+_AGENTRX_INVARIANTS_COMMIT = _AGENTRX_COMMIT
+_AGENTRX_STATIC_SOURCE_SHA256 = "a113e9ad7dffc08d2de06142bd60609e365435e550721b41db430e0f4927b874"
+_AGENTRX_DYNAMIC_SOURCE_SHA256 = "6874f860c423394706308ebf71c23304a2a52cdd5a4a4909c940542a9a14a2d9"
 PROMPT_ADAPTER_VERSION = "agentrx-trace-evidence-adapter.v2"
 
 
@@ -28,6 +31,16 @@ def _read_asset(name: str) -> str:
 def _asset_sha(name: str) -> str:
     path = _ASSET_DIR / name
     return sha256(path.read_bytes()).hexdigest() if path.is_file() else "MISSING"
+
+
+def static_invariant_guidance() -> str:
+    """返回 AgentRx STATIC_INVARIANT_PROMPT 原文（含上游占位符）。"""
+    return _read_asset("agentrx_static_prompt.txt").strip()
+
+
+def dynamic_invariant_guidance() -> str:
+    """返回 AgentRx DYNAMIC_INVARIANT_PROMPT 原文（含上游占位符）。"""
+    return _read_asset("agentrx_dynamic_prompt.txt").strip()
 
 
 def taxonomy_data() -> dict[str, Any]:
@@ -95,6 +108,13 @@ def provenance() -> dict[str, str]:
         "trace_source_path": "prompts/general/capability_selection.md",
         "trace_source_sha256": _TRACE_SOURCE_SHA256,
         "trace_labeling_sha256": _asset_sha("trace_labeling.md"),
+        "agentrx_invariants_commit": _AGENTRX_INVARIANTS_COMMIT,
+        "agentrx_static_source_path": "agentrx/invariants/static_invariant_generator.py",
+        "agentrx_static_source_sha256": _AGENTRX_STATIC_SOURCE_SHA256,
+        "agentrx_dynamic_source_path": "agentrx/invariants/dynamic_invariant_generator.py",
+        "agentrx_dynamic_source_sha256": _AGENTRX_DYNAMIC_SOURCE_SHA256,
+        "agentrx_static_prompt_sha256": _asset_sha("agentrx_static_prompt.txt"),
+        "agentrx_dynamic_prompt_sha256": _asset_sha("agentrx_dynamic_prompt.txt"),
     }
 
 
@@ -113,6 +133,10 @@ def prompt_context() -> str:
             f"labeling_sha256={p['trace_labeling_sha256']}",
             "AGENTRX_TAXONOMY_JSON:",
             taxonomy,
+            "AGENTRX_STATIC_INVARIANT_PROMPT:",
+            static_invariant_guidance(),
+            "AGENTRX_DYNAMIC_INVARIANT_PROMPT:",
+            dynamic_invariant_guidance(),
             "AGENTRX_ROOT_CAUSE_ALGORITHM:",
             root_cause_guidance(),
             "TRACE_THREE_WAY_LABELING:",
@@ -130,11 +154,13 @@ def prompt_context() -> str:
 __all__ = [
     "PROMPT_ADAPTER_VERSION",
     "capability_guidance",
+    "dynamic_invariant_guidance",
     "environment_guidance",
     "prompt_context",
     "provenance",
     "root_cause_algorithm",
     "root_cause_guidance",
+    "static_invariant_guidance",
     "taxonomy_data",
     "trace_labeling_guidance",
 ]
