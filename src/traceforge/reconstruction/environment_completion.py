@@ -246,12 +246,13 @@ def run_environment_completion(
                     "status": status,
                     "decision": decision,
                     "workspace": str(destination.relative_to(workspace.staging_path))
-                    if files
+                    if not errors
                     else None,
                     "files": files,
                     "dependencies": candidate.get("dependencies", []),
                     "runtime_constraints": candidate.get("runtime_constraints", []),
                     "uncertainties": candidate.get("uncertainties", []),
+                    "confidence": candidate.get("confidence", 0.0),
                     "errors": errors,
                 }
             )

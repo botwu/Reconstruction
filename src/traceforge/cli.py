@@ -23,10 +23,12 @@ from traceforge.lineage.pipeline import build_lineage
 from traceforge.lineage.reader import LineageInputError
 from traceforge.query_turns.pipeline import build_query_turns
 from traceforge.query_turns.reader import QueryTurnInputError
+from traceforge.reconstruction.model_gateway import OpusClient
 from traceforge.reconstruction.pipeline import (
     ReconstructionPipelineInputError,
     build_reconstruction_pipeline,
 )
+from traceforge.reconstruction.workflow import run_reconstruction_workflow
 from traceforge.source_projection.contracts import UserTextProjectionInputError
 from traceforge.source_projection.pipeline import build_user_text_projection
 from traceforge.trajectory.artifacts import ArtifactPublishError
@@ -184,6 +186,22 @@ def _parser() -> argparse.ArgumentParser:
     )
     reconstruct_pipeline.add_argument(
         "--output", type=Path, required=True, help="pipeline artifact 根目录"
+    )
+    reconstruct_workflow = reconstruct_commands.add_parser(
+        "workflow", help="运行单条失败轨迹的任务、环境、验证器、rollout 与 SFT 闭环"
+    )
+    reconstruct_workflow.add_argument("--attempt-ref", required=True)
+    reconstruct_workflow.add_argument("--source-report-id", required=True)
+    reconstruct_workflow.add_argument("--report-json", type=Path, required=True)
+    reconstruct_workflow.add_argument("--evidence-json", type=Path, required=True)
+    reconstruct_workflow.add_argument("--replay-workspace", type=Path, required=True)
+    reconstruct_workflow.add_argument("--replay-files-json", type=Path, required=True)
+    reconstruct_workflow.add_argument("--harbor-root", type=Path, required=True)
+    reconstruct_workflow.add_argument("--output", type=Path, required=True)
+    reconstruct_workflow.add_argument("--model-name", default="claude-opus-4-8")
+    reconstruct_workflow.add_argument("--rollout-trials", type=int, default=1)
+    reconstruct_workflow.add_argument(
+        "--execute-rollout", action="store_true", help="显式执行 Harbor/AGS 与 RED-check"
     )
 
     replay = commands.add_parser(
@@ -354,6 +372,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             ValueError,
         ) as exc:
             print(f"重建流程编排失败：{exc}", file=sys.stderr)
+            return 2
+        print(output_path)
+        return 0
+    if arguments.command == "reconstruct" and arguments.reconstruct_command == "workflow":
+        try:
+            report = json.loads(arguments.report_json.read_text(encoding="utf-8"))
+            evidence = json.loads(arguments.evidence_json.read_text(encoding="utf-8"))
+            replay_files = json.loads(arguments.replay_files_json.read_text(encoding="utf-8"))
+            if (
+                not isinstance(report, dict)
+                or not isinstance(evidence, list)
+                or not isinstance(replay_files, list)
+            ):
+                raise ValueError("report 必须是对象，evidence/replay-files 必须是数组")
+            output_path = run_reconstruction_workflow(
+                attempt_ref=arguments.attempt_ref,
+                source_report_id=arguments.source_report_id,
+                report=report,
+                evidence=evidence,
+                replay_workspace=arguments.replay_workspace,
+                replay_files=replay_files,
+                model=OpusClient(),
+                output_root=arguments.output,
+                harbor_root=arguments.harbor_root,
+                execute_rollout=arguments.execute_rollout,
+                model_name=arguments.model_name,
+                rollout_trials=arguments.rollout_trials,
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
+            print(f"重建闭环执行失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
         return 0
