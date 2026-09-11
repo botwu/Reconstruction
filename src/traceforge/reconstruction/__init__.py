@@ -39,8 +39,15 @@ from .contracts import (
     validate_task_recovery,
     validate_verification_result,
 )
+from .environment_completion import (
+    ENVIRONMENT_COMPLETION_RUN_SCHEMA,
+    EnvironmentCompletionError,
+    run_environment_completion,
+)
+from .task_recovery import TASK_RECOVERY_RUN_SCHEMA, run_task_recovery
 
 __all__ = [
+    "ENVIRONMENT_COMPLETION_RUN_SCHEMA",
     "ENVIRONMENT_RECOVERY_SCHEMA",
     "EXECUTION_PLAN_SCHEMA",
     "HARBOR_BUNDLE_MANIFEST_SCHEMA",
@@ -51,9 +58,11 @@ __all__ = [
     "ROLLOUT_TRIAL_SCHEMA",
     "SELECTION_MANIFEST_SCHEMA",
     "SFT_CANDIDATE_SCHEMA",
+    "TASK_RECOVERY_RUN_SCHEMA",
     "TASK_RECOVERY_SCHEMA",
     "VERIFICATION_RESULT_SCHEMA",
     "CandidateDecision",
+    "EnvironmentCompletionError",
     "EnvironmentFileV1",
     "EnvironmentRecoveryV1",
     "HarborBundleManifestV1",
@@ -73,6 +82,8 @@ __all__ = [
     "pipeline_run_id",
     "recovery_id",
     "rollout_id",
+    "run_environment_completion",
+    "run_task_recovery",
     "validate_environment_recovery",
     "validate_rollout_request",
     "validate_sft_candidate",
