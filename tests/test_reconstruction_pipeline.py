@@ -10,7 +10,8 @@ from traceforge.reconstruction.pipeline import build_reconstruction_pipeline
 def test_pipeline_materializes_selection_and_pending_execution_plan(
     tmp_path: Path, monkeypatch
 ) -> None:
-    m4_dir = tmp_path / "m4" / "m4-run"
+    pipeline_root = tmp_path / "pipeline-output"
+    m4_dir = pipeline_root / "m4" / "m4-run"
     private_dir = m4_dir / "private"
     private_dir.mkdir(parents=True)
     manifest = {
@@ -42,7 +43,7 @@ def test_pipeline_materializes_selection_and_pending_execution_plan(
     output_dir = build_reconstruction_pipeline(
         m1b_run_dir=tmp_path / "m1b",
         m1d_run_dir=tmp_path / "m1d",
-        output_root=tmp_path / "pipeline-output",
+        output_root=pipeline_root,
     )
     selection = json.loads((output_dir / "selection_manifest.json").read_text(encoding="utf-8"))
     plan = json.loads((output_dir / "execution_plan.json").read_text(encoding="utf-8"))
