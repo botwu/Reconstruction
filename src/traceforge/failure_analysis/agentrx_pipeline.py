@@ -23,6 +23,12 @@ from traceforge.reconstruction.model_gateway import (
 )
 from traceforge.trajectory.json_codec import stable_id
 
+try:
+    from .reference_prompts import prompt_context as _reference_prompt_context
+except Exception:  # assets may be unavailable in a minimal source checkout
+    def _reference_prompt_context() -> str:
+        return PROMPT_SOURCE
+
 from .agentrx_contracts import (
     AgentRxReport,
     CheckResult,
