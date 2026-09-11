@@ -13,7 +13,11 @@ __all__ = [
     "RedCheckReport",
     "SolutionVariant",
     "VerifierCandidate",
+    "VerifierIterationResult",
     "VerifierSynthesisError",
     "evaluate_red_check",
     "synthesize_verifier",
+    "synthesize_verifier_iterative",
 ]
+
+from .iterative import VerifierIterationResult, synthesize_verifier_iterative
