@@ -298,6 +298,7 @@ def run_environment_completion(
                     "attempt_ref": attempt_ref,
                     "candidates": outputs,
                     "open_questions": payload.get("open_questions", []),
+                    "parse_error": payload.get("parse_error"),
                 },
             )
         ]
@@ -312,6 +313,7 @@ def run_environment_completion(
                     "ready_count": sum(item.get("status") == "READY" for item in outputs),
                     "complete_overwrite_violation_count": violations,
                     "review_count": sum(item.get("status") == "REVIEW" for item in outputs),
+                    "parse_error": payload.get("parse_error"),
                 },
             )
         )
