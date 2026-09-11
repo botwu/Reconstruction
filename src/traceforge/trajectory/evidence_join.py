@@ -20,6 +20,7 @@ def _emit(
     output_path: str | Path,
     missing: list[str] | None = None,
     query_ordinal: int | None = None,
+    target_event_id: str | None = None,
 ) -> dict[str, Any]:
     selected: list[dict[str, Any]] = []
     for row in rows:
@@ -28,7 +29,7 @@ def _emit(
         ref_id = hashlib.sha256(f"event:{event_id}:{pointer}".encode()).hexdigest()
         kind = row.get("event_kind")
         payload = row.get("payload", {})
-        role = "TASK" if kind == "USER" else "CONTEXT" if kind in {"SYSTEM", "ASSISTANT_MESSAGE"} else "FAILURE"
+        role = "TASK" if kind == "USER" and (target_event_id is None or event_id == target_event_id) else "CONTEXT" if kind in {"SYSTEM", "USER", "ASSISTANT_MESSAGE"} else "FAILURE"
         selected.append(
             {
                 "evidence_id": ref_id,
@@ -63,6 +64,8 @@ def _emit(
             "evidence_resolved": len(selected),
             "missing_count": len(missing_refs),
             "user_query_count": len(users),
+            "target_user_count": sum(item["role"] == "TASK" for item in selected),
+            "context_user_count": sum(item["role"] == "CONTEXT" and item["event_kind"] == "USER" for item in selected),
             "context_event_count": sum(item["role"] == "CONTEXT" for item in selected),
             "pending_tool_call_count": len(pending),
         },
@@ -107,7 +110,8 @@ def build_query_task_input(*, event_occurrences_path: str | Path, capture_id: st
     end = starts[position + 1] if position + 1 < len(starts) else len(rows)
     before = [row for row in rows[:start] if row.get("event_kind") in {"SYSTEM", "USER", "ASSISTANT_MESSAGE"}]
     turn = rows[start:end]
-    return _emit(capture_id=capture_id, rows=before + turn, output_path=output_path, query_ordinal=query_ordinal)
+    target_event_id = rows[start].get("event_occurrence_id")
+    return _emit(capture_id=capture_id, rows=before + turn, output_path=output_path, query_ordinal=query_ordinal, target_event_id=target_event_id)
 
 
 def build_task_input(*, evidence_path: str | Path, event_occurrences_path: str | Path, capture_id: str, output_path: str | Path) -> dict[str, Any]:
