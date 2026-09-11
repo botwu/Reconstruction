@@ -8,11 +8,13 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from traceforge.failure_analysis.agentrx_pipeline import run_agentrx_diagnosis
 from traceforge.failure_analysis.mapping_reader import MappingInputError
 from traceforge.failure_analysis.model_runner import run_failure_analysis_model
 from traceforge.failure_analysis.pipeline import build_failure_analysis
 from traceforge.failure_analysis.reader import FailureAnalysisInputError
 from traceforge.failure_analysis.review_batch import build_review_batch
+from traceforge.failure_analysis.trace_capabilities import aggregate_capability_runs
 from traceforge.harbor_ags.adapter import HarborAgsAdapterError, build_boundary_plan
 from traceforge.harbor_ags.results import HarborResultError, read_rollout_results
 from traceforge.harbor_ags.rollout import (
@@ -101,6 +103,21 @@ def _parser() -> argparse.ArgumentParser:
     failure_batch.add_argument("--output", type=Path, required=True)
     failure_batch.add_argument("--limit", type=int, default=50)
     failure_batch.add_argument("--batch-name", default="initial-manual-review")
+    failure_agentrx = failure_analysis_commands.add_parser(
+        "agentrx", help="运行 AgentRx 静态/动态不变量与根因诊断适配"
+    )
+    failure_agentrx.add_argument("--trajectory-json", type=Path, required=True)
+    failure_agentrx.add_argument("--output", type=Path, required=True)
+    failure_agentrx.add_argument("--model-name", default="claude-opus-4-8")
+    capability_aggregate = failure_analysis_commands.add_parser(
+        "capabilities-aggregate", help="按 TRACE 双阈值聚合独立能力标注 runs"
+    )
+    capability_aggregate.add_argument("--runs-json", type=Path, required=True)
+    capability_aggregate.add_argument("--outcomes-json", type=Path, required=True)
+    capability_aggregate.add_argument("--output", type=Path, required=True)
+    capability_aggregate.add_argument("--rho", type=float, default=0.10)
+    capability_aggregate.add_argument("--delta", type=float, default=0.20)
+    capability_aggregate.add_argument("--consistency-k", type=int, default=None)
 
     harbor_ags = commands.add_parser(
         "harbor-ags", help="Harbor/AGS Task Bundle 边界适配（不启动 rollout）"
@@ -335,6 +352,44 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"人工复核批次构建失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
+        return 0
+    if arguments.command == "failure-analysis" and arguments.failure_analysis_command == "agentrx":
+        try:
+            trajectory = json.loads(arguments.trajectory_json.read_text(encoding="utf-8"))
+            report = run_agentrx_diagnosis(
+                trajectory, OpusClient(), model_name=arguments.model_name
+            )
+            arguments.output.parent.mkdir(parents=True, exist_ok=True)
+            arguments.output.write_text(
+                json.dumps(report.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
+            print(f"AgentRx 轨迹诊断失败：{exc}", file=sys.stderr)
+            return 2
+        print(arguments.output)
+        return 0
+    if (
+        arguments.command == "failure-analysis"
+        and arguments.failure_analysis_command == "capabilities-aggregate"
+    ):
+        try:
+            runs = json.loads(arguments.runs_json.read_text(encoding="utf-8"))
+            outcomes = json.loads(arguments.outcomes_json.read_text(encoding="utf-8"))
+            result = aggregate_capability_runs(
+                runs,
+                outcomes,
+                rho=arguments.rho,
+                delta=arguments.delta,
+                consistency_k=arguments.consistency_k,
+            )
+            arguments.output.parent.mkdir(parents=True, exist_ok=True)
+            arguments.output.write_text(
+                json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
+            print(f"TRACE 能力聚合失败：{exc}", file=sys.stderr)
+            return 2
+        print(arguments.output)
         return 0
     if arguments.command == "harbor-ags" and arguments.harbor_ags_command == "plan":
         try:

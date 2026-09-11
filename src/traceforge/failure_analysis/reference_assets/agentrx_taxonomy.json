@@ -1,0 +1,102 @@
+{
+  "1": {
+    "name": "Instruction/Plan Adherence Failure",
+    "desc_standard": "The agent fails to follow the directions or the agreed plan by ignoring directives and skipping policy steps. \nThis covers both under-execution (missed steps) and over-execution (unplanned or unnecessary actions, e.g., extra tool calls) that deviate from the static plan, \ndomain policy or orchestrator plan.",
+    "desc_checklist": "Goal is correct, but the agent deviates from the required plan by ignoring directives and skipping steps despite having enough information. \nThis covers both under-execution (missed steps) and over-execution (unplanned or unnecessary actions, e.g., extra tool calls) that deviate from the static plan, domain policy or orchestrator plan.",
+    "checklist": [
+      "Can you state the user's goal, and do the agent's intent and end goal match that goal (i.e., the agent is not solving the wrong problem)?",
+      "Was all the required information already available at this step (user intent, required context, prior tool outputs)?",
+      "Is there a step where the ground-truth/policy requires an action (tool call, question, confirmation, ordering) and the agent did something different (skipped it / reordered it / added extra unneeded action)?"
+    ]
+  },
+  "2": {
+    "name": "Invention of New Information",
+    "desc_standard": "The agent introduces, removes, or alters information that is not grounded in any available input, context, or tool output. This includes fabricating unsupported facts, hallucinating details, or omitting relevant information without justification.",
+    "desc_checklist": "The agent introduces, removes, or alters information that is not grounded in any available input, context, or tool output. This includes fabricating unsupported facts, hallucinating details, or omitting relevant information.",
+    "checklist": [
+      "Can you pinpoint the exact invented/altered/omitted claim, value, or assumption the agent used?",
+      "Is that claim absent from all evidence available up to that step (user text, provided context, tool outputs)?",
+      "Did the agent rely on that claim to decide an action or produce the failing conclusion (not just harmless wording)?"
+    ]
+  },
+  "3": {
+    "name": "Invalid Invocation",
+    "desc_standard": "The agent encounters errors triggered by inputs that can't be parsed or validated e.g., Kusto syntax errors or tool calls with bad/missing arguments. Not involving wrong logic; just invalid inputs.",
+    "desc_checklist": "Tool call fails because the request is ill-formed (missing args, wrong fields/types, malformed query, schema mismatch).",
+    "checklist": [
+      "At the failure step, did the agent attempt a tool call with a concrete invocation payload/arguments?",
+      "Does the tool/runtime explicitly report a parse/validation/schema/syntax error for that call (e.g., missing field, invalid type, cannot parse, malformed query)?",
+      "Is the error NOT primarily a network/timeout/service-unavailable/endpoint-unreachable issue (infra/connectivity)?",
+      "Is the error NOT primarily a CAPTCHA/login/paywall refusal (access/guardrail block)?"
+    ]
+  },
+  "4": {
+    "name": "Misinterpretation of Tool Output / Handoff Failure",
+    "desc_standard": "The agent incorrectly reasons about its own or another agent's tool output (like computation errors), leading to incorrect assumptions or actions. This also includes cases where the agent considered only partial tool output.",
+    "desc_checklist": "The agent incorrectly reasons about its own or another agent's tool output, leading to incorrect assumptions or actions. This also includes cases where the agent considered only partial tool output.",
+    "checklist": [
+      "Before (or at) the failure step, did the agent receive tool output or handoff output that is relevant to the failing decision?",
+      "Did the agent state or imply a specific reasoning derived from that tool output?",
+      "Does that reasoning contradict the tool output, omit a crucial part, or reflect a clear computation/logic error relative to the output?"
+    ]
+  },
+  "5": {
+    "name": "Intent-Plan Misalignment",
+    "desc_standard": "The agent misreads the user's goal or constraints and produces the wrong step sequence or structure. Covers both bad ordering/structure and plans aimed at the wrong objective.",
+    "desc_checklist": "Agent misunderstands the user's intent/constraints and pursues the wrong objective or violates key constraints due to misunderstanding.",
+    "checklist": [
+      "Do the agent's actions/plan optimize for a different goal OR violate a key constraint (not a minor wording/format issue)?",
+      "Is the misalignment due to misunderstanding of intent/constraints (rather than missing required info from the user/context/tool outputs)?",
+      "Is the misalignment not primarily caused by a tool error (invalid invocation, infra failure, or access/guardrail block)?"
+    ]
+  },
+  "6": {
+    "name": "Underspecified User Intent",
+    "desc_standard": "The agent was unable to complete the task due to lack of complete information at any point in the trajectory/plan execution.",
+    "desc_checklist": "The agent was unable to complete the task due to lack of complete information at any point in the trajectory/plan execution.",
+    "checklist": [
+      "Can you identify a specific missing piece of information that is required to proceed correctly (e.g., date, address, account id, item variant)?",
+      "Is that information absent from all evidence available up to that step (user text, provided context, and tool outputs)?",
+      "Did the agent fail because it proceeded without obtaining this information OR because it did not ask for it when needed?"
+    ]
+  },
+  "7": {
+    "name": "Intent Not Supported",
+    "desc_standard": "The agent/user is asking to perform an action for which a tool is not available, like listening to an audio file.",
+    "desc_checklist": "Requested action cannot be performed with available tools/capabilities.",
+    "checklist": [
+      "Is the user requesting an action that requires an external capability/tool (e.g., listen to audio, access a private system, perform a human action)?",
+      "Given the tool set available in this environment, is there no tool that can perform the requested action?",
+      "Is the failure not primarily caused by infrastructure/connectivity issues?"
+    ]
+  },
+  "8": {
+    "name": "Guardrails Triggered",
+    "desc_standard": "The agent is blocked by safety/RAI policies or by external site access restrictions, preventing execution despite a valid plan. Examples include policy refusals (e.g., unsafe content, privacy-protected data), CAPTCHA/robot blocks, login/paywall/403/robots.txt denials, or site forbids automation. This is not an agent planning/execution error; it is an external/guardrail block.",
+    "desc_checklist": "The agent is blocked by safety/RAI policies or by external site access restrictions, preventing execution despite a valid plan. ",
+    "checklist": [
+      "Is there an explicit refusal/block signal (policy refusal, CAPTCHA, login required, 403, paywall, robots.txt, automation forbidden)?",
+      "Would the plan be feasible and correct if this block were removed (i.e., the agent is not pursuing the wrong goal/constraints)?",
+      "Is the failure not primarily due to malformed tool invocation (schema/syntax/args validation error)?",
+      "Is the failure not primarily due to infrastructure/connectivity issues (timeouts, endpoint unreachable)?"
+    ]
+  },
+  "9": {
+    "name": "System Failure",
+    "desc_standard": "The agent faces a system connectivity issue while calling a particular tool like an endpoint not being reachable",
+    "desc_checklist": "The agent faces a system connectivity issue while calling a particular tool like an endpoint not being reachable.",
+    "checklist": [
+      "At the failure step, did the agent attempt a tool call or rely on a tool that should have been callable?",
+      "Is there an explicit infra/connectivity error signal (timeout, connection refused, DNS failure, endpoint unreachable, service unavailable, premature termination)?",
+      "Is the failure not primarily a parse/validation/schema/syntax error caused by malformed arguments?"
+    ]
+  },
+  "10": {
+    "name": "Inconclusive (USE SPARINGLY)",
+    "desc_standard": "If you are not able to classify the failure into any of the above categories, label it as inconclusive and create your own category.",
+    "desc_checklist": "None of 1-10 clearly apply; must provide a custom category label.",
+    "checklist": [
+      "If labeling as 10, did you provide a non-empty custom_category describing the failure type?"
+    ]
+  }
+}

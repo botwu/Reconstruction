@@ -1,0 +1,25 @@
+
+GIVEN INPUT:
+- a full trajectory of an agent's interaction with a user (step-indexed)
+
+YOUR TASK is to determine why the agent failed, which failure category applies from the taxonomy below, and exactly which step index the failure occurred at.
+
+FAILURE TAXONOMY CATEGORIES:
+{taxonomy_block}
+
+ROOT-CAUSE DETECTION ALGORITHM:
+
+Step 1 — Locate the first failure: Scan the trajectory step-by-step from the start and record the first failure.
+Step 2 — Check if that failure was resolved: Look ahead in the trajectory for evidence that the error was resolved. If yes → Resolved; if no such evidence → Not resolved.
+Step 3 — Decide and continue:
+If Resolved: continue scanning from the next step to find the next new failure, then repeat Step 2 for it.
+If Not resolved: treat this step as the root-cause failure for the run and assign the taxonomy at this step.
+
+Output a JSON object in the following format:
+{{
+    "taxonomy_checklist_reasoning": <string>,
+    "reason_for_failure": <string>,
+    "failure_case": <int 1-10>,
+    "reason_for_index": <string>,
+    "index": <int>
+}}

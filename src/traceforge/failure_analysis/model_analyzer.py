@@ -35,9 +35,10 @@ from .contracts import (
     GateDecision,
     Recoverability,
 )
+from .reference_prompts import PROMPT_ADAPTER_VERSION, prompt_context
 
 MODEL_ANALYSIS_SCHEMA = "traceforge.failure-analysis-model.v1"
-MODEL_ANALYSIS_PROMPT_VERSION = "agentrx-trace-rubric-failure-analysis.v1"
+MODEL_ANALYSIS_PROMPT_VERSION = PROMPT_ADAPTER_VERSION
 
 def canonicalize_evidence(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """接受 M4 evidence_id，并归一化为模型分析契约的 evidence_ref_id。"""
@@ -199,6 +200,7 @@ def _prompt(report: dict[str, Any], evidence: list[dict[str, Any]]) -> str:
         "若 outcome=FAILURE/INCOMPLETE 且 decision=ELIGIBLE，",
         "needs_reconstruction 必须为 true。",
         "",
+        prompt_context(),
         "REPORT:",
         repr(report),
         "",
@@ -475,6 +477,8 @@ def analyze_failure(
         raise TypeError("report 必须是 object")
     if not isinstance(evidence, list):
         raise TypeError("evidence 必须是 array")
+    # M4 记录历史上使用 ``evidence_id``；在模型边界统一，保证提示词与校验器寻址一致。
+    evidence = canonicalize_evidence(evidence)
     if not isinstance(report.get("report_id"), str) or not report["report_id"].strip():
         return _base_result(
             report, model_name, status=ModelAnalysisStatus.REVIEW, errors=("REPORT_ID_MISSING",)
