@@ -11,9 +11,11 @@ from traceforge.failure_analysis.pipeline import build_failure_analysis
 from traceforge.failure_analysis.reader import FailureAnalysisInputError
 from traceforge.failure_analysis.mapping_reader import MappingInputError
 from traceforge.lineage.pipeline import build_lineage
+from traceforge.harbor_ags.adapter import HarborAgsAdapterError, build_boundary_plan
 from traceforge.lineage.reader import LineageInputError
 from traceforge.query_turns.pipeline import build_query_turns
 from traceforge.query_turns.reader import QueryTurnInputError
+from traceforge.reconstruction.pipeline import ReconstructionPipelineInputError, build_reconstruction_pipeline
 from traceforge.source_projection.contracts import UserTextProjectionInputError
 from traceforge.source_projection.pipeline import build_user_text_projection
 from traceforge.trajectory.artifacts import ArtifactPublishError
@@ -70,6 +72,18 @@ def _parser() -> argparse.ArgumentParser:
         "--output", type=Path, required=True, help="failure-analysis artifact root"
     )
 
+    harbor_ags = commands.add_parser(
+        "harbor-ags", help="Harbor/AGS Task Bundle 边界适配（不启动 rollout）"
+    )
+    harbor_ags_commands = harbor_ags.add_subparsers(dest="harbor_ags_command", required=True)
+    harbor_ags_plan = harbor_ags_commands.add_parser(
+        "plan", help="生成 public workspace/hidden control 执行计划"
+    )
+    harbor_ags_plan.add_argument("--task-dir", type=Path, required=True, help="Harbor Task Bundle 目录")
+    harbor_ags_plan.add_argument("--output", type=Path, required=True, help="artifact 根目录")
+    harbor_ags_plan.add_argument("--harbor-root", type=Path, default=None, help="可选 harbor_ags 项目根目录")
+    harbor_ags_plan.add_argument("--source-ref", action="append", default=[], help="来源 artifact 引用，可重复")
+
     lineage = commands.add_parser("lineage", help="跨 capture 关系图（M1C）")
     lineage_commands = lineage.add_subparsers(
         dest="lineage_command",
@@ -113,6 +127,13 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         help="query-turns artifact 根目录",
     )
+
+    reconstruct = commands.add_parser("reconstruct", help="重建流程编排（模型阶段仅生成 pending refs）")
+    reconstruct_commands = reconstruct.add_subparsers(dest="reconstruct_command", required=True)
+    reconstruct_pipeline = reconstruct_commands.add_parser("pipeline", help="运行 M1B/M1D → M4 并生成执行计划")
+    reconstruct_pipeline.add_argument("--m1b-run", type=Path, required=True, help="已发布 M1B run")
+    reconstruct_pipeline.add_argument("--m1d-run", type=Path, default=None, help="可选：已发布 M1D run")
+    reconstruct_pipeline.add_argument("--output", type=Path, required=True, help="pipeline artifact 根目录")
 
     source_projection = commands.add_parser(
         "source-projection", help="来源投影：USER 事件结构注解（M2 前置）"
@@ -175,6 +196,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         print(output_path)
         return 0
+    if arguments.command == "harbor-ags" and arguments.harbor_ags_command == "plan":
+        try:
+            output_path = build_boundary_plan(
+                arguments.task_dir, output_root=arguments.output,
+                harbor_root=arguments.harbor_root, source_refs=arguments.source_ref,
+            )
+        except (HarborAgsAdapterError, ValueError, OSError) as exc:
+            print(f"Harbor/AGS 计划构建失败：{exc}", file=sys.stderr)
+            return 2
+        print(output_path)
+        return 0
     if arguments.command == "lineage" and arguments.lineage_command == "build":
         try:
             output_path = build_lineage(
@@ -194,6 +226,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except (QueryTurnInputError, ArtifactPublishError, ValueError) as exc:
             print(f"回合图构建失败：{exc}", file=sys.stderr)
+            return 2
+        print(output_path)
+        return 0
+    if arguments.command == "reconstruct" and arguments.reconstruct_command == "pipeline":
+        try:
+            output_path = build_reconstruction_pipeline(
+                m1b_run_dir=arguments.m1b_run,
+                m1d_run_dir=arguments.m1d_run,
+                output_root=arguments.output,
+            )
+        except (ReconstructionPipelineInputError, FailureAnalysisInputError, MappingInputError, ArtifactPublishError, ValueError) as exc:
+            print(f"重建流程编排失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
         return 0
