@@ -749,3 +749,80 @@ PYTHONPATH=src .venv/bin/python -m pytest <与改动相关的测试> -q
 .venv/bin/ruff check <与改动相关的源码和测试>
 git status --short --branch
 ```
+
+## 十二、主 DAG 与独立模块的区别
+
+当前仓库有两种入口，不能混淆：
+
+### 独立分析入口
+
+`failure-analysis agentrx`、`failure-analysis model-judge` 和 TRACE 的 discovery/labeling 可以独立运行，但不会自动成为 `reconstruct workflow` 的前置阶段。
+
+因此目前需要人工或外部脚本完成：
+
+```text
+M1B/M1D artifacts
+  → failure-analysis build
+  → AgentRx 或 model-judge
+  → 选择待重建 attempt
+  → 手工传给 reconstruct workflow
+```
+
+### 单条重建入口
+
+`reconstruct workflow` 需要调用方提前准备：
+
+- report.json；
+- evidence.json；
+- replay workspace；
+- replay-files.json；
+- attempt-ref；
+- source-report-id；
+- Harbor root。
+
+它不会自动从一个完整 sessions.jsonl 中筛出待重建 session，也不会自动调用 AgentRx。
+
+`reconstruct pipeline` 目前主要生成执行计划，模型、Harbor、Hermes 和 SFT 节点仍可能标记为 pending；真正调用模型的是 `reconstruct workflow`。
+
+## 十三、SFT 门禁的精确规则
+
+默认阈值来自 `curation.CurationThresholds`：
+
+```text
+task_recovery_confidence >= 0.8
+environment_recovery_confidence >= 0.8
+trajectory_quality >= 0.8
+reward >= 1.0
+verifier_status == PASS
+solution_leakage == false
+reproducible == false
+```
+
+其中 `solution_leakage` 和 `reproducible` 必须是上游显式计算的布尔值：
+
+- 泄漏为 true：直接 REJECT；
+- 泄漏缺失：REVIEW；
+- 可复现为 false：REJECT；
+- 可复现缺失：REVIEW；
+- 所有硬门禁通过且审计字段明确：ELIGIBLE。
+
+`curation/sft.py` 只生成筛选结果和统计，不负责训练。
+
+## 十四、继续开发时的第一条验证原则
+
+看到一个“模型调用成功”不能等同于“样本可训练”。必须按以下顺序确认：
+
+```text
+模型请求成功
+  → JSON 合法
+  → evidence 引用存在
+  → Task READY
+  → Environment READY
+  → Sufficiency = SUFFICIENT
+  → Verifier 通过独立执行校准
+  → Harbor reward 通过
+  → 轨迹对账和 cleanup 通过
+  → SFT eligibility = ELIGIBLE
+```
+
+任何中间阶段返回 REVIEW、BLOCKED、UNAVAILABLE 或 INFRA_ERROR，都不能进入 SFT。
