@@ -268,11 +268,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if arguments.command == "failure-analysis" and arguments.failure_analysis_command == "build":
         try:
-            output_path = build_failure_analysis(
-                m1b_run_dir=arguments.m1b_run,
-                output_root=arguments.output,
-                m1d_run_dir=arguments.m1d_run,
-            )
+            failure_kwargs = {
+                "m1b_run_dir": arguments.m1b_run,
+                "output_root": arguments.output,
+            }
+            if arguments.m1d_run is not None:
+                failure_kwargs["m1d_run_dir"] = arguments.m1d_run
+            output_path = build_failure_analysis(**failure_kwargs)
         except (
             FailureAnalysisInputError,
             MappingInputError,
