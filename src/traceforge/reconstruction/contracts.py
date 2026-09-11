@@ -4,6 +4,7 @@ This module is intentionally model/runtime agnostic.  It carries references and
 checksums rather than raw source logs so each downstream stage can be rerun and
  audited independently.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -199,15 +200,37 @@ class SFTCandidateV1(SerializableContract):
 
 
 def recovery_id(*, attempt_ref: str, source_report_id: str, kind: str) -> str:
-    return stable_id("reconstruction-recovery-v1", {"version": RECONSTRUCTION_CONTRACT_VERSION, "attempt_ref": attempt_ref, "source_report_id": source_report_id, "kind": kind})
+    return stable_id(
+        "reconstruction-recovery-v1",
+        {
+            "version": RECONSTRUCTION_CONTRACT_VERSION,
+            "attempt_ref": attempt_ref,
+            "source_report_id": source_report_id,
+            "kind": kind,
+        },
+    )
 
 
 def rollout_id(*, bundle_id: str, agent_model: str, n_trials: int, seeds: tuple[int, ...]) -> str:
-    return stable_id("reconstruction-rollout-v1", {"version": RECONSTRUCTION_CONTRACT_VERSION, "bundle_id": bundle_id, "agent_model": agent_model, "n_trials": n_trials, "seeds": seeds})
+    return stable_id(
+        "reconstruction-rollout-v1",
+        {
+            "version": RECONSTRUCTION_CONTRACT_VERSION,
+            "bundle_id": bundle_id,
+            "agent_model": agent_model,
+            "n_trials": n_trials,
+            "seeds": seeds,
+        },
+    )
 
 
 def _confidence(value: float, name: str = "confidence") -> None:
-    if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(float(value)) or not 0 <= float(value) <= 1:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (float, int))
+        or not math.isfinite(float(value))
+        or not 0 <= float(value) <= 1
+    ):
         raise ValueError(f"{name} must be finite and in [0,1]")
 
 
@@ -219,7 +242,11 @@ def _safe_rel(path: str) -> str:
 
 
 def validate_task_recovery(value: TaskRecoveryV1) -> None:
-    if value.schema_version != TASK_RECOVERY_SCHEMA or not value.recovery_id or not value.attempt_ref:
+    if (
+        value.schema_version != TASK_RECOVERY_SCHEMA
+        or not value.recovery_id
+        or not value.attempt_ref
+    ):
         raise ValueError("invalid TaskRecovery schema or identity")
     if not value.task_instruction.strip() or not value.user_intent.strip():
         raise ValueError("task instruction and intent must be non-empty")
@@ -230,7 +257,11 @@ def validate_task_recovery(value: TaskRecoveryV1) -> None:
 
 
 def validate_environment_recovery(value: EnvironmentRecoveryV1) -> None:
-    if value.schema_version != ENVIRONMENT_RECOVERY_SCHEMA or not value.recovery_id or not value.attempt_ref:
+    if (
+        value.schema_version != ENVIRONMENT_RECOVERY_SCHEMA
+        or not value.recovery_id
+        or not value.attempt_ref
+    ):
         raise ValueError("invalid EnvironmentRecovery schema or identity")
     _confidence(value.confidence)
     Decision(value.decision)
@@ -241,12 +272,18 @@ def validate_environment_recovery(value: EnvironmentRecoveryV1) -> None:
             raise ValueError(f"duplicate environment path: {path}")
         seen.add(path)
         Visibility(item.visibility)
-        if item.size_bytes is not None and (isinstance(item.size_bytes, bool) or item.size_bytes < 0):
+        if item.size_bytes is not None and (
+            isinstance(item.size_bytes, bool) or item.size_bytes < 0
+        ):
             raise ValueError("size_bytes must be non-negative")
 
 
 def validate_rollout_request(value: RolloutRequestV1) -> None:
-    if value.schema_version != ROLLOUT_REQUEST_SCHEMA or value.n_trials < 1 or len(value.seeds) != value.n_trials:
+    if (
+        value.schema_version != ROLLOUT_REQUEST_SCHEMA
+        or value.n_trials < 1
+        or len(value.seeds) != value.n_trials
+    ):
         raise ValueError("invalid rollout request")
     if value.timeout_seconds < 1 or value.temperature < 0 or not math.isfinite(value.temperature):
         raise ValueError("invalid rollout limits")
@@ -259,7 +296,12 @@ def validate_verification_result(value: VerificationResultV1) -> None:
     if value.reward is not None and (not math.isfinite(value.reward) or not 0 <= value.reward <= 1):
         raise ValueError("reward must be in [0,1]")
     for key, score in value.criterion_scores.items():
-        if not isinstance(key, str) or not isinstance(score, (int, float)) or not math.isfinite(float(score)) or not 0 <= float(score) <= 1:
+        if (
+            not isinstance(key, str)
+            or not isinstance(score, (int, float))
+            or not math.isfinite(float(score))
+            or not 0 <= float(score) <= 1
+        ):
             raise ValueError("criterion scores must be in [0,1]")
 
 
@@ -268,11 +310,24 @@ def validate_sft_candidate(value: SFTCandidateV1) -> None:
         raise ValueError("invalid SFT candidate schema")
     SFTEligibility(value.eligibility)
     VerificationStatus(value.verifier_status)
-    for name in ("task_recovery_confidence", "environment_recovery_confidence", "trajectory_quality"):
+    for name in (
+        "task_recovery_confidence",
+        "environment_recovery_confidence",
+        "trajectory_quality",
+    ):
         _confidence(getattr(value, name), name)
 
 
-def harbor_bundle_manifest(*, bundle_root: str | Path, bundle_id: str, task_name: str, task_recovery_id: str, environment_recovery_id: str, source_attempt_ref: str, verifier_obligation_ids: tuple[str, ...] = ()) -> HarborBundleManifestV1:
+def harbor_bundle_manifest(
+    *,
+    bundle_root: str | Path,
+    bundle_id: str,
+    task_name: str,
+    task_recovery_id: str,
+    environment_recovery_id: str,
+    source_attempt_ref: str,
+    verifier_obligation_ids: tuple[str, ...] = (),
+) -> HarborBundleManifestV1:
     """Create a deterministic manifest for the Harbor v1.4 directory contract.
 
     Public workspace/environment are agent-visible; tests/control and grader are
@@ -293,12 +348,40 @@ def harbor_bundle_manifest(*, bundle_root: str | Path, bundle_id: str, task_name
         rel = path.relative_to(root).as_posix()
         _safe_rel(rel)
         hashes[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
-    public = tuple(sorted(p for p in hashes if p == "task.toml" or p == "instruction.md" or p.startswith("workspace/") or p.startswith("environment/") or p.startswith("solution/")))
+    public = tuple(
+        sorted(
+            p
+            for p in hashes
+            if p == "task.toml"
+            or p == "instruction.md"
+            or p.startswith("workspace/")
+            or p.startswith("environment/")
+            or p.startswith("solution/")
+        )
+    )
     control = tuple(sorted(p for p in hashes if p.startswith("tests/control/")))
     verifier = tuple(sorted(p for p in hashes if p.startswith("tests/") and p not in control))
-    tree = hashlib.sha256("".join(f"{p}:{hashes[p]}\\n" for p in sorted(hashes)).encode()).hexdigest()
-    return HarborBundleManifestV1(HARBOR_BUNDLE_MANIFEST_SCHEMA, bundle_id, root.as_posix(), task_name, "1.4", task_recovery_id, environment_recovery_id, source_attempt_ref, public, control, verifier, hashes, verifier_obligation_ids, "COMPILED", "NOT_RUN", tree)
-
+    tree = hashlib.sha256(
+        "".join(f"{p}:{hashes[p]}\\n" for p in sorted(hashes)).encode()
+    ).hexdigest()
+    return HarborBundleManifestV1(
+        HARBOR_BUNDLE_MANIFEST_SCHEMA,
+        bundle_id,
+        root.as_posix(),
+        task_name,
+        "1.4",
+        task_recovery_id,
+        environment_recovery_id,
+        source_attempt_ref,
+        public,
+        control,
+        verifier,
+        hashes,
+        verifier_obligation_ids,
+        "COMPILED",
+        "NOT_RUN",
+        tree,
+    )
 
 
 # Orchestration-level references. Kept separate from model/runtime contracts above.
@@ -309,6 +392,7 @@ PIPELINE_RUN_RECEIPT_SCHEMA = "traceforge.reconstruction-pipeline-run-receipt.v1
 RECONSTRUCTION_NODE_SCHEMA = "traceforge.reconstruction-node.v1"
 RECONSTRUCTION_CANDIDATE_SCHEMA = "traceforge.reconstruction-candidate.v1"
 
+
 class NodeStatus(StrEnum):
     COMPLETED = "COMPLETED"
     PENDING_MODEL = "PENDING_MODEL"
@@ -316,11 +400,13 @@ class NodeStatus(StrEnum):
     SKIPPED = "SKIPPED"
     FAILED = "FAILED"
 
+
 class CandidateDecision(StrEnum):
     ELIGIBLE = "ELIGIBLE"
     REVIEW = "REVIEW"
     DEFER = "DEFER"
     REJECT = "REJECT"
+
 
 @dataclass(frozen=True, slots=True)
 class PipelineNodeV1(SerializableContract):
@@ -331,6 +417,7 @@ class PipelineNodeV1(SerializableContract):
     input_refs: tuple[str, ...]
     output_refs: tuple[str, ...]
     blocking_reason_codes: tuple[str, ...]
+
 
 @dataclass(frozen=True, slots=True)
 class ReconstructionCandidateV1(SerializableContract):
@@ -350,7 +437,48 @@ class ReconstructionCandidateV1(SerializableContract):
     reconstruction_targets: tuple[str, ...]
     blocking_reason_codes: tuple[str, ...]
 
-def pipeline_run_id(*, m1b_run_id: str, m1b_manifest_sha256: str, m1d_run_id: str | None, m4_run_id: str, policy_version: str = RECONSTRUCTION_CONTRACT_VERSION) -> str:
-    return stable_id("reconstruction-pipeline-run-v1", {"version": RECONSTRUCTION_CONTRACT_VERSION, "policy_version": policy_version, "m1b_run_id": m1b_run_id, "m1b_manifest_sha256": m1b_manifest_sha256, "m1d_run_id": m1d_run_id, "m4_run_id": m4_run_id})
 
-__all__ = [name for name in globals() if (name.isupper() and not name.startswith('_') or name.endswith('V1') or name.endswith('Status') or name.endswith('Eligibility') or name.endswith('Decision') or name in {'recovery_id', 'rollout_id', 'pipeline_run_id', 'harbor_bundle_manifest', 'validate_task_recovery', 'validate_environment_recovery', 'validate_rollout_request', 'validate_verification_result', 'validate_sft_candidate'})]
+def pipeline_run_id(
+    *,
+    m1b_run_id: str,
+    m1b_manifest_sha256: str,
+    m1d_run_id: str | None,
+    m4_run_id: str,
+    policy_version: str = RECONSTRUCTION_CONTRACT_VERSION,
+) -> str:
+    return stable_id(
+        "reconstruction-pipeline-run-v1",
+        {
+            "version": RECONSTRUCTION_CONTRACT_VERSION,
+            "policy_version": policy_version,
+            "m1b_run_id": m1b_run_id,
+            "m1b_manifest_sha256": m1b_manifest_sha256,
+            "m1d_run_id": m1d_run_id,
+            "m4_run_id": m4_run_id,
+        },
+    )
+
+
+__all__ = [
+    name
+    for name in globals()
+    if (
+        (name.isupper() and not name.startswith("_"))
+        or name.endswith("V1")
+        or name.endswith("Status")
+        or name.endswith("Eligibility")
+        or name.endswith("Decision")
+        or name
+        in {
+            "recovery_id",
+            "rollout_id",
+            "pipeline_run_id",
+            "harbor_bundle_manifest",
+            "validate_task_recovery",
+            "validate_environment_recovery",
+            "validate_rollout_request",
+            "validate_verification_result",
+            "validate_sft_candidate",
+        }
+    )
+]

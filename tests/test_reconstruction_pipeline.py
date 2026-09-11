@@ -3,24 +3,23 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import traceforge.reconstruction.pipeline as pipeline
+import traceforge.reconstruction.pipeline as reconstruction_pipeline
 from traceforge.reconstruction.pipeline import build_reconstruction_pipeline
 
 
 def test_pipeline_materializes_selection_and_pending_execution_plan(
     tmp_path: Path, monkeypatch
 ) -> None:
-    m4 = tmp_path / "fake-m4"
-    (m4 / "private").mkdir(parents=True)
+    m4_dir = tmp_path / "m4" / "m4-run"
+    private_dir = m4_dir / "private"
+    private_dir.mkdir(parents=True)
     manifest = {
         "failure_analysis_run_id": "m4-run",
         "m1b_run_id": "m1b-run",
         "m1d_run_id": "m1d-run",
         "m1b_artifact_manifest_sha256": "a" * 64,
     }
-    (m4 / "artifact_manifest.json").write_text(
-        json.dumps(manifest), encoding="utf-8"
-    )
+    (m4_dir / "artifact_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     report = {
         "report_id": "report-1",
         "session_ref": "session-1",
@@ -33,22 +32,21 @@ def test_pipeline_materializes_selection_and_pending_execution_plan(
         "evidence_ref_ids": ["e-1"],
         "reconstruction_targets": [],
     }
-    (m4 / "private/failure_analysis.jsonl").write_text(
-        json.dumps(report) + "\n", encoding="utf-8"
+    (private_dir / "failure_analysis.jsonl").write_text(json.dumps(report) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        reconstruction_pipeline,
+        "build_failure_analysis",
+        lambda **_: m4_dir,
     )
-    monkeypatch.setattr(pipeline, "build_failure_analysis", lambda **_: m4)
 
-    output = build_reconstruction_pipeline(
+    output_dir = build_reconstruction_pipeline(
         m1b_run_dir=tmp_path / "m1b",
         m1d_run_dir=tmp_path / "m1d",
-        output_root=tmp_path / "output",
+        output_root=tmp_path / "pipeline-output",
     )
-    selection = json.loads(
-        (output / "selection_manifest.json").read_text(encoding="utf-8")
-    )
-    plan = json.loads(
-        (output / "execution_plan.json").read_text(encoding="utf-8")
-    )
+    selection = json.loads((output_dir / "selection_manifest.json").read_text(encoding="utf-8"))
+    plan = json.loads((output_dir / "execution_plan.json").read_text(encoding="utf-8"))
+
     assert selection["candidate_count"] == 1
     assert selection["candidates"][0]["decision"] == "DEFER"
     assert plan["model_calls"] == 0
