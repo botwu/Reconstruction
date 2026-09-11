@@ -88,7 +88,8 @@ def _config_channels(path: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
     """
 
     try:
-        raw_lines = open(path, encoding="utf-8").read().splitlines()
+        with open(path, encoding="utf-8") as config_file:
+            raw_lines = config_file.read().splitlines()
     except OSError as exc:
         raise ModelGatewayError("无法读取模型配置", code="CONFIG_READ_ERROR") from exc
     channels: dict[str, dict[str, Any]] = {}
@@ -159,7 +160,7 @@ class NewAPIClient:
         max_retries: int = 2,
         retry_backoff_seconds: float = 1.0,
         transport: Transport | None = None,
-    ) -> "NewAPIClient":
+    ) -> NewAPIClient:
         channels = _config_channels(path)
         entry = channels.get(channel)
         if not isinstance(entry, dict):
@@ -227,7 +228,13 @@ class NewAPIClient:
                     )
                 else:
                     text = str(content)
-            except (UnicodeDecodeError, json.JSONDecodeError, AttributeError, TypeError, IndexError) as exc:
+            except (
+                UnicodeDecodeError,
+                json.JSONDecodeError,
+                AttributeError,
+                TypeError,
+                IndexError,
+            ) as exc:
                 raise ModelGatewayError("模型响应不是合法 JSON", code="INVALID_RESPONSE") from exc
             if not text.strip():
                 raise ModelGatewayError("模型响应没有文本内容", code="EMPTY_RESPONSE")
@@ -402,7 +409,7 @@ def resolve_model_name(
     """为配置驱动调用提供安全默认模型，避免把 Claude 名称发给 Gemini。"""
 
     if requested and requested.strip() and not (
-        config_path is not None and requested.startswith("claude-") and channel == "gemini"
+        config_path is not None and requested.startswith("claude-")
     ):
         return requested
     if config_path is not None:
@@ -421,7 +428,7 @@ __all__ = [
     "OpusClient",
     "Transport",
     "build_chat_model",
-    "resolve_model_name",
     "parse_json_object",
     "receipt_for_response",
+    "resolve_model_name",
 ]

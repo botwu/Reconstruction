@@ -111,7 +111,9 @@ def _parser() -> argparse.ArgumentParser:
     failure_agentrx.add_argument("--trajectory-json", type=Path, required=True)
     failure_agentrx.add_argument("--output", type=Path, required=True)
     failure_agentrx.add_argument("--model-name", default="claude-opus-4-8")
-    failure_agentrx.add_argument("--config", type=Path, default=None, help="NewAPI 配置文件（可选）")
+    failure_agentrx.add_argument(
+        "--config", type=Path, default=None, help="NewAPI 配置文件（可选）"
+    )
     failure_agentrx.add_argument("--channel", default="gemini", help="配置中的 channel 名")
     capability_aggregate = failure_analysis_commands.add_parser(
         "capabilities-aggregate", help="按 TRACE 双阈值聚合独立能力标注 runs"
@@ -236,7 +238,9 @@ def _parser() -> argparse.ArgumentParser:
     reconstruct_workflow.add_argument("--harbor-root", type=Path, required=True)
     reconstruct_workflow.add_argument("--output", type=Path, required=True)
     reconstruct_workflow.add_argument("--model-name", default="claude-opus-4-8")
-    reconstruct_workflow.add_argument("--config", type=Path, default=None, help="NewAPI 配置文件（可选）")
+    reconstruct_workflow.add_argument(
+        "--config", type=Path, default=None, help="NewAPI 配置文件（可选）"
+    )
     reconstruct_workflow.add_argument("--channel", default="gemini", help="配置中的 channel 名")
     reconstruct_workflow.add_argument("--rollout-trials", type=int, default=1)
     reconstruct_workflow.add_argument(
