@@ -131,8 +131,7 @@ def _replay_capture(
                     "source_event_id": source_id,
                 }
             )
-        else:
-            workspace[file_path] = text
+        workspace[file_path] = text
     for item in changes:
         if not item["old_content_available"]:
             item["classification"] = "agent_created_file"
