@@ -296,6 +296,7 @@ def run_environment_completion(
         "保持 workspace 可解但未解；证据不足时 REVIEW。只返回 JSON。",
         prompt,
         "traceforge.environment-completion-candidates.v1",
+        max_tokens=8192,
     )
     try:
         response = model.complete(request)
