@@ -209,6 +209,8 @@ def recover(
             continue
         refs, ref_errors = _evidence(candidate.get("evidence", []), allowed)
         errors.extend(f"candidate_{index}:{error}" for error in ref_errors)
+        if ref_errors:
+            continue
         try:
             identity = {"attempt": attempt_ref, "report": source_report_id, "index": index}
             decision = str(candidate.get("decision", Decision.REVIEW.value))
