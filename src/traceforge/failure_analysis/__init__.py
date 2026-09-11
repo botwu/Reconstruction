@@ -30,10 +30,12 @@ from .contracts import (
 )
 
 __all__ = [
+    "EpisodeOutcome",
     "EvidenceKind",
     "EvidenceRef",
     "EvidenceRefV1",
     "EvidenceRole",
+    "FailureAnalysisModelResult",
     "FailureAnalysisReport",
     "FailureAnalysisReportV1",
     "FailureAttribution",
@@ -45,10 +47,12 @@ __all__ = [
     "InvariantCheckV1",
     "InvariantKind",
     "InvariantResult",
+    "ModelAnalysisStatus",
     "ReconstructabilityGate",
     "ReconstructabilityGateV1",
     "Recoverability",
     "analysis_run_id",
+    "analyze_failure",
     "evidence_ref_id",
     "failure_analysis_report_id",
     "failure_analysis_run_id",
@@ -57,3 +61,10 @@ __all__ = [
     "validate_invariant_check",
     "validate_reconstructability_gate",
 ]
+
+from .model_analyzer import (
+    EpisodeOutcome,
+    FailureAnalysisModelResult,
+    ModelAnalysisStatus,
+    analyze_failure,
+)
