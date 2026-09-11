@@ -183,6 +183,10 @@ def run_reconstruction_workflow(
         model_name=model_name,
     )
     task_payload = _json(task_root / "task_recovery.json")
+    if task_payload.get("status") != "COMPLETE":
+        raise ReconstructionWorkflowError(
+            "任务重建未通过证据质量门禁：" + ",".join(task_payload.get("errors", []))
+        )
     task = _ready_candidate(task_payload, "candidates")
 
     environment_root = run_environment_completion(
@@ -200,9 +204,9 @@ def run_reconstruction_workflow(
     if not isinstance(environment_candidates, list):
         raise ReconstructionWorkflowError("environment candidates 不是数组")
     sufficiency_records: list[dict[str, Any]] = []
-    selected: (
-        tuple[tuple[float, int, int], dict[str, Any], Path, Path, dict[str, Any]] | None
-    ) = None
+    selected: tuple[tuple[float, int, int], dict[str, Any], Path, Path, dict[str, Any]] | None = (
+        None
+    )
     for index, candidate in enumerate(environment_candidates):
         if not isinstance(candidate, dict) or candidate.get("status") != "READY":
             sufficiency_records.append(
@@ -229,9 +233,7 @@ def run_reconstruction_workflow(
             output_root=stages / "sufficiency" / f"candidate-{index:03d}",
             model_name=model_name,
         )
-        candidate_sufficiency = _json(
-            candidate_sufficiency_root / "sufficiency_judgement.json"
-        )
+        candidate_sufficiency = _json(candidate_sufficiency_root / "sufficiency_judgement.json")
         record = {
             "index": index,
             "workspace": workspace_rel,
@@ -359,9 +361,7 @@ def run_reconstruction_workflow(
     }
     sft_result: dict[str, Any] = {"status": "PENDING_EXECUTION", "candidates": []}
     if execute_rollout:
-        hermes_run = _run_plan_and_read(
-            rollout_plan, jobs_root / "hermes", agent_mode="hermes"
-        )
+        hermes_run = _run_plan_and_read(rollout_plan, jobs_root / "hermes", agent_mode="hermes")
         red_runs = {
             "oracle_pass": _run_plan_and_read(
                 red_plans["oracle_pass"], jobs_root / "oracle-pass", agent_mode="oracle"
@@ -438,8 +438,7 @@ def run_reconstruction_workflow(
             candidate = curate_candidate(row, curation_thresholds or CurationThresholds())
             curated.append(candidate.to_dict())
         eligible_count = sum(
-            item.get("eligibility") == "ELIGIBLE" for item in curated
-            if isinstance(item, dict)
+            item.get("eligibility") == "ELIGIBLE" for item in curated if isinstance(item, dict)
         )
         sft_result = {
             "status": "READY"
