@@ -71,6 +71,21 @@ def _request_id(kind: str, attempt_ref: str, report_id: str) -> str:
     )
 
 
+def _prompt_evidence(evidence: list[dict[str, Any]], *, max_chars: int = 3000) -> list[dict[str, Any]]:
+    """压缩上下文窗口，保留可追溯字段，避免完整 payload 使请求被截断。"""
+    slim: list[dict[str, Any]] = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        row = {key: item.get(key) for key in ("evidence_ref_id", "role", "event_kind", "sequence_number", "content_sha256")}
+        text = item.get("text")
+        if isinstance(text, str):
+            row["text"] = text[:max_chars]
+            row["text_truncated"] = len(text) > max_chars
+        slim.append(row)
+    return slim
+
+
 def _prompt(kind: str, report: dict[str, Any], evidence: list[dict[str, Any]]) -> str:
     if kind == "task":
         instruction = "重述用户任务和可观察验收条件，只能使用证据支持的事实。"
@@ -90,7 +105,7 @@ def _prompt(kind: str, report: dict[str, Any], evidence: list[dict[str, Any]]) -
         f"{instruction} 输出 JSON object，包含 candidates 数组（最多 3 个）和 open_questions 数组。"
         f"每个候选包含字段：{shape}。decision 只能是 READY、REVIEW、DEFER、REJECT；"
         "证据只能引用给定 evidence_ref_id。"
-        f"\n失败分析报告：{report!r}\n证据索引：{evidence!r}"
+        f"\n失败分析报告：{report!r}\n证据索引（已裁剪，原文通过 hash 追溯）：{_prompt_evidence(evidence)!r}"
     )
 
 
