@@ -200,6 +200,22 @@ M3 和 M4 可以并行，但都必须先于任务/环境重建。
 
 public_paths 的语义固定为 Agent 可见的 instruction.md 与 workspace/**。hidden_control_paths 固定为 tests/control/**；hidden_verifier_paths 兼容记录 solution/** 和其余 tests/**。task.toml、environment/** 是 runner-only metadata，不得被当成 public workspace。
 
+## 3.2 模型执行状态规范
+
+artifact 的节点状态与模型调用状态分开记录：
+
+| 字段 | 允许值 | 语义 |
+| --- | --- | --- |
+| pipeline node status | COMPLETED | 确定性节点已产出并通过自身校验 |
+| pipeline node status | PENDING_MODEL | 节点契约已声明，但模型/外部执行尚未发生 |
+| pipeline node status | BLOCKED | 上游 artifact 缺失或校验未通过 |
+| pipeline node status | FAILED | 节点曾执行但发生不可恢复错误 |
+| run receipt model_status | NOT_RUN | 本次 run 没有模型或外部 sandbox 调用 |
+| run receipt model_status | COMPLETED | 模型调用完成并有可追溯输出 |
+| run receipt model_status | FAILED | 模型调用发生错误，必须带 error code |
+
+PENDING_MODEL 不能解释为模型判断为负面结果；它只表示尚未调用。NOT_RUN 不能解释为“没有失败”或“候选被拒绝”。候选分流使用 CandidateDecision（ELIGIBLE、REVIEW、DEFER、REJECT），不得复用节点状态表达业务结论。
+
 ## 4. Orchestrator 调度
 
 使用确定性的 DAG，不让多个 Agent 自由聊天：
