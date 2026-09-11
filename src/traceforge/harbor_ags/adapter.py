@@ -103,6 +103,8 @@ def validate_bundle_layout(task_dir: Path | str) -> dict[str, Any]:
         "tests": _tree(root / "tests"),
         "public_workspace_source": "workspace/",
         "runtime_definition_source": "environment/",
+        "agent_visible_sources": ["instruction.md", "workspace/"],
+        "runner_only_sources": ["task.toml", "environment/"],
         "reference_solution_source": "solution/",
         "verifier_source": "tests/",
         "hidden_control_source": "tests/control/",
@@ -190,7 +192,7 @@ def build_boundary_plan(
             "public_workspace_source": "workspace/",
             "remote_workspace": "/home/user/workspace",
             "visible_roots": ["/home/user/workspace"],
-            "excluded_sources": ["environment/", "solution/", "tests/"],
+            "excluded_sources": ["task.toml", "environment/", "solution/", "tests/"],
             "toolsets": ["file", "terminal"],
         },
         "verifier_surface": {

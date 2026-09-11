@@ -28,9 +28,23 @@ def _bind_reports(bundle: Any, *, run_id: str, mapping: Any | None) -> Any:
     if mapping is None:
         reports = []
         for report in bundle.reports:
-            episode_ref = f"mapping_pending:episode:{report.capture_occurrence_id}"
-            attempt_ref = f"mapping_pending:attempt:{report.capture_occurrence_id}"
-            reports.append(replace(report, report_id=failure_analysis_report_id(m4_run_id=run_id, task_episode_id=episode_ref, target_attempt_id=attempt_ref), episode_ref=episode_ref, attempt_ref=attempt_ref, reconstruction_relevance={**report.reconstruction_relevance, "mapping_status": "MAPPING_PENDING"}))
+            # 未提供 M1D 时不构造伪 episode/attempt；下游必须显式处理空引用。
+            reports.append(
+                replace(
+                    report,
+                    report_id=failure_analysis_report_id(
+                        m4_run_id=run_id,
+                        task_episode_id=None,
+                        target_attempt_id=None,
+                    ),
+                    episode_ref=None,
+                    attempt_ref=None,
+                    reconstruction_relevance={
+                        **report.reconstruction_relevance,
+                        "mapping_status": "MAPPING_PENDING",
+                    },
+                )
+            )
         return replace(bundle, reports=tuple(reports))
     by_capture = {}
     for episode in mapping.episodes:
@@ -42,12 +56,14 @@ def _bind_reports(bundle: Any, *, run_id: str, mapping: Any | None) -> Any:
     for report in bundle.reports:
         candidates=by_capture.get(report.capture_occurrence_id, ())
         if not candidates:
-            reports.append(report); continue
+            # capture 未出现在 M1D 中时保持未绑定，不能猜测 episode。
+            reports.append(report)
+            continue
         episode=sorted(candidates, key=lambda e: e.turn_ordinal)[0]
         attempts=sorted(attempts_by_episode.get(episode.episode_ref, ()), key=lambda a: a.step_ordinal)
         attempt=attempts[0] if attempts else None
         episode_ref=episode.episode_ref
-        attempt_ref=attempt.attempt_ref if attempt else f"attempt-pending:{episode_ref}"
+        attempt_ref=attempt.attempt_ref if attempt else None
         reports.append(replace(report, report_id=failure_analysis_report_id(m4_run_id=run_id, task_episode_id=episode_ref, target_attempt_id=attempt_ref), session_ref=episode.session_ref, episode_ref=episode_ref, attempt_ref=attempt_ref, reconstruction_relevance={**report.reconstruction_relevance, "mapping_status": "BOUND"}))
     return replace(bundle, reports=tuple(reports))
 

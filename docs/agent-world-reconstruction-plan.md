@@ -185,6 +185,21 @@ M3 和 M4 可以并行，但都必须先于任务/环境重建。
 
 输入原始轨迹、新 rollout、verdict、FailureReport。负责判断新轨迹是否真正解决原任务，过滤伪成功和 verifier loophole，标记 recovery behavior，生成 SFT tool/loss mask，做 near-duplicate、benchmark contamination 和 split isolation。
 
+## 3.1 Harbor/AGS 可见性规范
+
+所有重建候选必须在生成阶段声明文件的 bundle 归属 和 Agent 运行时可见性，不能把两者混用：
+
+| 路径 | bundle 归属 | Agent 是否可见 | 备注 |
+| --- | --- | --- | --- |
+| instruction.md | public | 是（prompt） | 由 TaskRecovery 生成 |
+| workspace/** | public | 是 | 初始工作区 |
+| task.toml | runner metadata | 否 | Harbor/AGS 调度配置 |
+| environment/** | runner metadata | 否（默认） | 构造运行时；需暴露时复制到 workspace |
+| solution/** | protected reference | 否 | 禁止进入 Agent surface |
+| tests/** | protected verifier | 否 | 包含 tests/control/** |
+
+public_paths 的语义固定为 Agent 可见的 instruction.md 与 workspace/**。hidden_control_paths 固定为 tests/control/**；hidden_verifier_paths 兼容记录 solution/** 和其余 tests/**。task.toml、environment/** 是 runner-only metadata，不得被当成 public workspace。
+
 ## 4. Orchestrator 调度
 
 使用确定性的 DAG，不让多个 Agent 自由聊天：

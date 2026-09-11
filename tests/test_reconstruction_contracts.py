@@ -12,7 +12,10 @@ def test_manifest_visibility(tmp_path):
     for d in ('workspace','environment','solution','tests/control'): (tmp_path/d).mkdir(parents=True,exist_ok=True)
     (tmp_path/'workspace/a').write_text('1'); (tmp_path/'environment/e').write_text('2'); (tmp_path/'solution/s').write_text('3'); (tmp_path/'tests/grader.py').write_text('g'); (tmp_path/'tests/control/g').write_text('h')
     m=harbor_bundle_manifest(bundle_root=tmp_path,bundle_id='b',task_name='t',task_recovery_id='tr',environment_recovery_id='er',source_attempt_ref='a')
-    assert 'workspace/a' in m.public_paths and 'tests/control/g' in m.hidden_control_paths and 'tests/grader.py' in m.hidden_verifier_paths
+    assert 'workspace/a' in m.public_paths and 'instruction.md' in m.public_paths
+    assert 'environment/e' not in m.public_paths and 'solution/s' not in m.public_paths
+    assert 'tests/control/g' in m.hidden_control_paths and 'tests/grader.py' in m.hidden_verifier_paths
+    assert 'solution/s' in m.hidden_verifier_paths
     assert len(m.bundle_sha256)==64
 
 def test_rollout_and_verifier_bounds():

@@ -18,17 +18,32 @@ traceforge harbor-ags plan \
 
 ## 边界映射
 
-| source bundle | Agent AGS sandbox | verifier AGS sandbox |
-| --- | --- | --- |
-| `instruction.md` + runtime appendix | 最终 user prompt | 不可见 |
-| `workspace/` | `/home/user/workspace` | 由 Harbor/AGS 按 verifier 需要提供结果与 artifact |
-| `environment/` | 仅作为运行定义输入 | 仅作为运行定义输入 |
-| `solution/` | 不可见 | verifier 侧可用于受控参考（不得泄漏给 Agent） |
-| `tests/grader.py`、`tests/test.sh`、`tests/rubric.json` | 不可见 | `/tests` |
-| `tests/control/` | 不可见 | `/tests/control/` |
-| Agent 产物 | `/logs/artifacts/traceforge/` | verifier 读取受控副本 |
+本项目区分 Bundle 文件归属 与 Agent 运行时可见性。public_paths 只表示可作为 Agent 初始工作区发布的文件；runner 元数据即使随 Bundle 分发，也不等于 Agent 可读。
 
-适配器在计划中冻结以下安全约束：verifier 使用 `environment_mode=separate`、`network_mode=no-network`；Agent 使用 `harbor_ags.agent:LosslessHermesAgent`，环境使用 `harbor_ags.environment:AGSPrebuiltEnvironment`；每个 Trial 删除沙盒并审计 `_control/ags-sandbox-ledger.jsonl`。
+| Bundle 路径 | 归属 | Agent 运行时 | verifier 运行时 |
+| --- | --- | --- | --- |
+| instruction.md | public agent surface | 作为最终 user prompt 注入 | 不需要 |
+| workspace/** | public agent surface | 挂载为 /home/user/workspace | 可按测试需要读取受控副本 |
+| task.toml | runner metadata | 不挂载 | Harbor/AGS 调度读取 |
+| environment/** | runner metadata | 不直接挂载；仅用于构造运行时 | verifier sandbox 的运行定义输入 |
+| solution/** | hidden reference | 不可见 | 仅 verifier/离线审计可读，禁止泄漏 |
+| tests/grader.py, tests/test.sh, tests/rubric.json | hidden verifier | 不可见 | 挂载到 /tests |
+| tests/control/** | hidden control truth | 不可见 | 挂载到 /tests/control/ |
+
+environment/ 是构造运行时的输入，不是 Agent public workspace。若某个环境文件确实需要让 Agent 在任务中读取，必须复制到 workspace/ 并在 EnvironmentRecovery 中留下 provenance；不能因为它位于 environment/ 就默认可见。
+
+solution/ 与 tests/ 永远属于 Agent 隐藏面。兼容当前 HarborBundleManifestV1 时，hidden_verifier_paths 可以同时记录 solution/** 和非 control 的 tests/**；消费者必须将该字段解释为“受保护路径”，不能据字段名推断 solution 会暴露给 Agent。
+
+Agent surface 的规范化声明：
+
+{
+  "visible_sources": ["instruction.md", "workspace/"],
+  "runner_only_sources": ["task.toml", "environment/"],
+  "hidden_sources": ["solution/", "tests/"],
+  "visible_roots": ["/home/user/workspace"]
+}
+
+Verifier 使用 environment_mode=separate、network_mode=no-network；每个 Trial 删除沙盒并审计 _control/ags-sandbox-ledger.jsonl。Agent 只能看到 instruction 和 public workspace，最终 artifact 写入 /logs/artifacts/traceforge/。
 
 ## 输出
 

@@ -163,8 +163,8 @@ class FailureAnalysisReportV1(SerializableContract):
     schema_version: str
     report_id: str
     session_ref: str
-    episode_ref: str
-    attempt_ref: str
+    episode_ref: str | None
+    attempt_ref: str | None
     capture_occurrence_id: str
     primary_failure: str
     failure_layer: str
@@ -182,13 +182,13 @@ class FailureAnalysisReportV1(SerializableContract):
     uncertainty_codes: tuple[str, ...]
 
     @property
-    def task_episode_id(self) -> str:
+    def task_episode_id(self) -> str | None:
         """兼容旧称；episode_ref 是唯一序列化字段。"""
 
         return self.episode_ref
 
     @property
-    def target_attempt_id(self) -> str:
+    def target_attempt_id(self) -> str | None:
         """兼容旧称；attempt_ref 是唯一序列化字段。"""
 
         return self.attempt_ref
@@ -251,7 +251,7 @@ def failure_analysis_run_id(*, m1b_run_id: str, m1d_run_id: str, input_manifest_
     )
 
 
-def failure_analysis_report_id(*, m4_run_id: str, task_episode_id: str, target_attempt_id: str) -> str:
+def failure_analysis_report_id(*, m4_run_id: str, task_episode_id: str | None, target_attempt_id: str | None) -> str:
     """报告身份绑定到 M4 run 和目标 attempt，重复运行可区分。"""
 
     return stable_id(
