@@ -53,4 +53,4 @@ Verifier 使用 environment_mode=separate、network_mode=no-network；每个 Tri
 - `artifact_manifest.json`：计划文件摘要；
 - `run_receipt.json`：运行身份和 `model_status=NOT_RUN`。
 
-计划的 `status=READY_FOR_ROLLOUT` 只在现有 Harbor validator 通过时出现。真实 rollout 仍由 Harbor runner 单独发起，不能把计划生成视为 teacher 已运行。
+计划的 `status=READY_FOR_ROLLOUT` 只在现有 Harbor validator 通过时出现。真实 rollout 仍由 Harbor runner 单独发起，不能把计划生成视为 teacher 已运行。 计划生成阶段的 `model_status=NOT_RUN` 是事实状态；若上游重建节点尚未调用模型，应在 pipeline 中保持 `PENDING_MODEL`，不能提前写成 `COMPLETED`。
