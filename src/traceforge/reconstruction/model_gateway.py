@@ -100,8 +100,8 @@ class OpusClient:
     def __init__(
         self,
         *,
-        api_key_env: str = "ANTHROPIC_API_KEY",
-        base_url: str = "https://api.anthropic.com/v1/messages",
+        api_key_env: str = "TOKENHUB_KEY",
+        base_url: str | None = None,
         max_retries: int = 2,
         retry_backoff_seconds: float = 1.0,
         transport: Transport | None = None,
@@ -109,7 +109,12 @@ class OpusClient:
         if max_retries < 0 or retry_backoff_seconds < 0:
             raise ValueError("重试参数必须非负")
         self.api_key_env = api_key_env
-        self.base_url = base_url
+        configured_url = base_url or os.environ.get(
+            "TOKENHUB_BASE_URL", "https://tokenhub.sensetime.com"
+        )
+        self.base_url = configured_url.rstrip("/")
+        if not self.base_url.endswith("/messages"):
+            self.base_url += "/messages" if self.base_url.endswith("/v1") else "/v1/messages"
         self.max_retries = max_retries
         self.retry_backoff_seconds = retry_backoff_seconds
         self._transport = transport or _default_transport
