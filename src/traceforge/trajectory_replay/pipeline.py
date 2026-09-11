@@ -57,12 +57,21 @@ def _tool_name(event: dict[str, Any]) -> str:
     return str(payload.get("tool_name", "")).lower()
 
 
-def _path(arguments: dict[str, Any]) -> str | None:
+def _path(arguments: dict[str, Any], source_workspace_root: Path | None = None) -> str | None:
     for key in ("path", "file_path", "filename", "file"):
         value = arguments.get(key)
         if isinstance(value, str) and value.strip():
             path = value.strip().replace("\\", "/")
-            if path.startswith("/") or ".." in Path(path).parts:
+            if path.startswith("/"):
+                if source_workspace_root is None:
+                    return None
+                try:
+                    return (
+                        Path(path).resolve().relative_to(source_workspace_root.resolve()).as_posix()
+                    )
+                except ValueError:
+                    return None
+            if ".." in Path(path).parts:
                 return None
             return path.lstrip("./")
     return None
@@ -80,6 +89,7 @@ def _result_text(event: dict[str, Any]) -> str | None:
 
 def _replay_capture(
     events: list[dict[str, Any]],
+    source_workspace_root: Path | None = None,
 ) -> tuple[dict[str, str], list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     ordered = sorted(events, key=lambda item: int(item.get("sequence_number", 0)))
     pending: dict[str, tuple[str, str]] = {}
@@ -87,14 +97,33 @@ def _replay_capture(
     changes: list[dict[str, Any]] = []
     partial: list[dict[str, Any]] = []
     barriers: list[str] = []
+    mutation_started = False
     for event in ordered:
         kind = str(event.get("event_kind", ""))
         name = _tool_name(event)
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         call_id = str(payload.get("tool_call_id", ""))
         args = _args(event)
-        path = _path(args)
-        if kind == "TOOL_CALL" and path and ("read" in name or name in {"cat", "head", "tail"}):
+        path = _path(args, source_workspace_root)
+        if kind == "TOOL_CALL" and path and name == "read":
+            if mutation_started:
+                partial.append(
+                    {
+                        "path": path,
+                        "reason": "read_after_first_mutation",
+                        "source_event_id": event.get("event_occurrence_id"),
+                    }
+                )
+                continue
+            if any(key in args for key in ("offset", "limit", "line_start", "line_end")):
+                partial.append(
+                    {
+                        "path": path,
+                        "reason": "partial_read_range",
+                        "source_event_id": event.get("event_occurrence_id"),
+                    }
+                )
+                continue
             pending[call_id] = (path, str(event.get("event_occurrence_id", "")))
         elif kind == "TOOL_RESULT" and call_id in pending:
             file_path, source_id = pending.pop(call_id)
@@ -117,7 +146,8 @@ def _replay_capture(
                 }
             )
         elif kind == "TOOL_CALL" and any(
-            token in name for token in ("shell", "exec", "terminal", "command")
+            token in name
+            for token in ("shell", "exec", "terminal", "command", "bash", "powershell")
         ):
             barriers.append(str(event.get("event_occurrence_id", "unknown")))
     workspace = {}
@@ -139,10 +169,17 @@ def _replay_capture(
 
 
 def build_trajectory_replay(
-    *, normalized_run_dir: str | Path, output_root: str | Path, capture_id: str | None = None
+    *,
+    normalized_run_dir: str | Path,
+    output_root: str | Path,
+    capture_id: str | None = None,
+    source_workspace_root: str | Path | None = None,
 ) -> Path:
     """从 normalized run 生成 replay manifest 与只读初始 workspace。"""
     source = Path(normalized_run_dir)
+    workspace_root = (
+        Path(source_workspace_root).resolve() if source_workspace_root is not None else None
+    )
     events = _jsonl(source / "private/event_occurrences.jsonl")
     grouped: dict[str, list[dict[str, Any]]] = {}
     for event in events:
@@ -160,7 +197,7 @@ def build_trajectory_replay(
     captures = []
     try:
         for cid in sorted(grouped):
-            files, changes, partial, barriers = _replay_capture(grouped[cid])
+            files, changes, partial, barriers = _replay_capture(grouped[cid], workspace_root)
             base = Path("workspaces") / cid
             for file_path, text in sorted(files.items()):
                 target = workspace.staging_path / base / file_path
