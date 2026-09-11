@@ -334,6 +334,10 @@ def _parse_result(
     if unknown_refs:
         errors.append("UNKNOWN_EVIDENCE_REF:" + ",".join(unknown_refs))
     refs = tuple(ref for ref in refs if ref in allowed_refs)
+    if decision == GateDecision.ELIGIBLE.value and not refs:
+        errors.append("ELIGIBLE_REQUIRES_EVIDENCE")
+    if outcome in {EpisodeOutcome.FAILURE.value, EpisodeOutcome.INCOMPLETE.value} and not refs:
+        errors.append("NON_SUCCESS_REQUIRES_EVIDENCE")
 
     rubric_value = payload.get("rubric")
     rubric: dict[str, int] = {}
@@ -455,6 +459,10 @@ def analyze_failure(
         raise TypeError("report 必须是 object")
     if not isinstance(evidence, list):
         raise TypeError("evidence 必须是 array")
+    if not isinstance(report.get("report_id"), str) or not report["report_id"].strip():
+        return _base_result(
+            report, model_name, status=ModelAnalysisStatus.REVIEW, errors=("REPORT_ID_MISSING",)
+        )
     request = ModelRequest(
         request_id=_request_id(report, model_name),
         model=model_name,
