@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -12,6 +13,12 @@ from traceforge.failure_analysis.reader import FailureAnalysisInputError
 from traceforge.failure_analysis.mapping_reader import MappingInputError
 from traceforge.lineage.pipeline import build_lineage
 from traceforge.harbor_ags.adapter import HarborAgsAdapterError, build_boundary_plan
+from traceforge.harbor_ags.rollout import (
+    HarborRolloutConfig,
+    HarborRolloutError,
+    build_rollout_plan,
+    execute_rollout_plan,
+)
 from traceforge.lineage.reader import LineageInputError
 from traceforge.query_turns.pipeline import build_query_turns
 from traceforge.query_turns.reader import QueryTurnInputError
@@ -83,6 +90,23 @@ def _parser() -> argparse.ArgumentParser:
     harbor_ags_plan.add_argument("--output", type=Path, required=True, help="artifact 根目录")
     harbor_ags_plan.add_argument("--harbor-root", type=Path, default=None, help="可选 harbor_ags 项目根目录")
     harbor_ags_plan.add_argument("--source-ref", action="append", default=[], help="来源 artifact 引用，可重复")
+    prepare_rollout = harbor_ags_commands.add_parser(
+        "prepare-rollout", help="物化 Harbor Dataset 并生成显式 dry-run 计划"
+    )
+    prepare_rollout.add_argument("--task-dir", type=Path, required=True)
+    prepare_rollout.add_argument("--harbor-root", type=Path, required=True)
+    prepare_rollout.add_argument("--output", type=Path, required=True)
+    prepare_rollout.add_argument("--jobs-root", type=Path, required=True)
+    prepare_rollout.add_argument("--model", default="anthropic/claude-opus-4-8")
+    prepare_rollout.add_argument("--trials", type=int, default=1)
+    prepare_rollout.add_argument("--concurrency", type=int, default=1)
+    prepare_rollout.add_argument("--timeout-seconds", type=int, default=900)
+    prepare_rollout.add_argument("--expected-hermes-commit")
+    execute_rollout = harbor_ags_commands.add_parser(
+        "execute-rollout", help="显式执行已审核的 rollout plan"
+    )
+    execute_rollout.add_argument("--plan-dir", type=Path, required=True)
+    execute_rollout.add_argument("--timeout-seconds", type=int, default=900)
 
     lineage = commands.add_parser("lineage", help="跨 capture 关系图（M1C）")
     lineage_commands = lineage.add_subparsers(
@@ -207,6 +231,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         print(output_path)
         return 0
+    if arguments.command == "harbor-ags" and arguments.harbor_ags_command == "prepare-rollout":
+        try:
+            output_path = build_rollout_plan(
+                HarborRolloutConfig(
+                    task_dir=arguments.task_dir,
+                    harbor_root=arguments.harbor_root,
+                    output_root=arguments.output,
+                    jobs_root=arguments.jobs_root,
+                    model=arguments.model,
+                    trials=arguments.trials,
+                    concurrency=arguments.concurrency,
+                    timeout_seconds=arguments.timeout_seconds,
+                    expected_hermes_commit=arguments.expected_hermes_commit,
+                )
+            )
+        except (HarborAgsAdapterError, HarborRolloutError, ArtifactPublishError, OSError) as exc:
+            print(f"Harbor/AGS rollout 计划构建失败：{exc}", file=sys.stderr)
+            return 2
+        print(output_path)
+        return 0
+    if arguments.command == "harbor-ags" and arguments.harbor_ags_command == "execute-rollout":
+        try:
+            result = execute_rollout_plan(
+                arguments.plan_dir, timeout_seconds=arguments.timeout_seconds
+            )
+        except (HarborRolloutError, OSError) as exc:
+            print(f"Harbor/AGS rollout 执行失败：{exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result.get("status") == "COMPLETED" else 2
     if arguments.command == "lineage" and arguments.lineage_command == "build":
         try:
             output_path = build_lineage(

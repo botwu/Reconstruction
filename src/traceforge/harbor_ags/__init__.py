@@ -6,10 +6,22 @@ from .adapter import (
     build_boundary_plan,
     validate_bundle_layout,
 )
+from .rollout import (
+    ROLLOUT_BRIDGE_SCHEMA,
+    HarborRolloutConfig,
+    HarborRolloutError,
+    build_rollout_plan,
+    execute_rollout_plan,
+)
 
 __all__ = [
     "HARBOR_AGS_PLAN_SCHEMA",
+    "ROLLOUT_BRIDGE_SCHEMA",
     "HarborAgsAdapterError",
+    "HarborRolloutConfig",
+    "HarborRolloutError",
     "build_boundary_plan",
+    "build_rollout_plan",
+    "execute_rollout_plan",
     "validate_bundle_layout",
 ]
