@@ -51,8 +51,7 @@ def test_newapi_supports_v1_endpoint_and_content_parts():
     def transport(url, headers, body, timeout):
         assert url == "https://gateway.example/v1/chat/completions"
         return 200, (
-            b'{"choices":[{"message":{"content":[{"type":"text","text":"a"},'
-            b'{"text":"b"}]}}]}'
+            b'{"choices":[{"message":{"content":[{"type":"text","text":"a"},{"text":"b"}]}}]}'
         )
 
     client = NewAPIClient(api_key="k", base_url="https://gateway.example/v1", transport=transport)
@@ -82,3 +81,15 @@ def test_build_chat_model_uses_config_channel(tmp_path):
         resolve_model_name("gemini-2.5-flash", config_path=config, channel="gemini")
         == "gemini-2.5-flash"
     )
+
+
+def test_timeout_is_normalized_to_gateway_error():
+    def transport(*_args):
+        raise TimeoutError("socket timed out")
+
+    client = NewAPIClient(
+        api_key="k", base_url="https://gateway.example/v1", max_retries=0, transport=transport
+    )
+    with pytest.raises(ModelGatewayError, match="超时") as exc_info:
+        client.complete(ModelRequest("r", "model", "system", "prompt", "schema"))
+    assert exc_info.value.code == "NETWORK_TIMEOUT"

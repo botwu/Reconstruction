@@ -205,6 +205,14 @@ class NewAPIClient:
         for attempt in range(self.max_retries + 1):
             try:
                 status, raw = self._transport(self.base_url, headers, body, request.timeout_seconds)
+            except TimeoutError as exc:
+                error = ModelGatewayError(
+                    "模型网络请求超时", code="NETWORK_TIMEOUT", retryable=True
+                )
+                if attempt >= self.max_retries:
+                    raise error from exc
+                time.sleep(self.retry_backoff_seconds * (2**attempt))
+                continue
             except ModelGatewayError as exc:
                 if not exc.retryable or attempt >= self.max_retries:
                     raise
@@ -263,6 +271,8 @@ def _default_transport(
         return exc.code, exc.read()
     except urllib.error.URLError as exc:
         raise ModelGatewayError("模型网络请求失败", code="NETWORK_ERROR", retryable=True) from exc
+    except TimeoutError as exc:
+        raise ModelGatewayError("模型网络请求超时", code="NETWORK_TIMEOUT", retryable=True) from exc
 
 
 class OpusClient:
@@ -321,6 +331,14 @@ class OpusClient:
         for attempt in range(self.max_retries + 1):
             try:
                 status, raw = self._transport(self.base_url, headers, body, request.timeout_seconds)
+            except TimeoutError as exc:
+                error = ModelGatewayError(
+                    "模型网络请求超时", code="NETWORK_TIMEOUT", retryable=True
+                )
+                if attempt >= self.max_retries:
+                    raise error from exc
+                time.sleep(self.retry_backoff_seconds * (2**attempt))
+                continue
             except ModelGatewayError as exc:
                 if not exc.retryable or attempt >= self.max_retries:
                     raise
@@ -408,8 +426,10 @@ def resolve_model_name(
 ) -> str:
     """为配置驱动调用提供安全默认模型，避免把 Claude 名称发给 Gemini。"""
 
-    if requested and requested.strip() and not (
-        config_path is not None and requested.startswith("claude-")
+    if (
+        requested
+        and requested.strip()
+        and not (config_path is not None and requested.startswith("claude-"))
     ):
         return requested
     if config_path is not None:

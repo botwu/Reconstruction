@@ -93,3 +93,104 @@ def test_missing_key_is_blocked(monkeypatch):
     request = ModelRequest("r", "claude-opus-4-8", "s", "p", "schema")
     with pytest.raises(ModelGatewayError, match="TRACEFORGE_TEST_KEY"):
         client.complete(request)
+
+
+def test_prompt_projection_keeps_structured_calls_and_auditable_coverage():
+    from traceforge.reconstruction.semantic_recovery import _prompt, _prompt_evidence
+
+    evidence = [
+        {
+            "evidence_ref_id": "e-call",
+            "role": "AGENT_ACTION",
+            "event_kind": "TOOL_CALL",
+            "phase": "attempt",
+            "source_id": "event-1",
+            "source_pointer": "/events/1",
+            "content_sha256": "abc",
+            "tool_name": "chat_history_get",
+            "tool_args": {"rounds": [1, 19]},
+            "tool_result": {"status": "RESULT_NOT_OBSERVED", "messages": ["x"]},
+            "text": "user visible text",
+        }
+    ]
+    projected = _prompt_evidence(evidence)
+    assert projected[0]["tool_name"] == "chat_history_get"
+    assert projected[0]["tool_args"]["rounds"] == [1, 19]
+    assert projected[0]["source_pointer"] == "/events/1"
+    assert projected[-1]["_projection_coverage"]["covered_count"] == 1
+    prompt = _prompt("task", {}, evidence)
+    assert "原 agent 建议/猜测" in prompt
+    assert "RESULT_NOT_OBSERVED 不是执行失败" in prompt
+
+
+def test_projection_marks_long_trace_omissions_and_preserves_refs():
+    from traceforge.reconstruction.semantic_recovery import _prompt_evidence
+
+    evidence = [
+        {"evidence_ref_id": f"e-{i}", "source_pointer": f"/events/{i}", "text": "x" * 200}
+        for i in range(20)
+    ]
+    projected = _prompt_evidence(evidence, max_chars=900)
+    coverage = projected[-1]["_projection_coverage"]
+    assert coverage["truncated"] is True
+    assert coverage["omitted_count"] > 0
+    assert all(ref.startswith("e-") for ref in coverage["omitted_evidence_ref_ids"])
+
+
+def test_model_evidence_reference_uses_authoritative_metadata():
+    response = _task("e")
+
+    class CapturingModel(FakeModel):
+        def complete(self, request):
+            return super().complete(request)
+
+    outcome = recover(
+        kind="task",
+        attempt_ref="a",
+        source_report_id="r",
+        report={},
+        evidence=[
+            {
+                "evidence_ref_id": "e",
+                "role": "USER",
+                "source_pointer": "/authoritative",
+                "content_sha256": "hash",
+            }
+        ],
+        model=FakeModel(
+            response.replace(
+                '"role": "observed", "source_pointer": "e"',
+                '"role": "MODEL", "source_pointer": "/rewritten", "content_sha256": "bad"',
+            )
+        ),
+    )
+    assert outcome.candidates[0].evidence[0].role == "USER"
+    assert outcome.candidates[0].evidence[0].source_pointer == "/authoritative"
+    assert outcome.candidates[0].evidence[0].content_sha256 == "hash"
+
+
+def test_priority_target_and_attempt_events_are_covered_before_context():
+    from traceforge.reconstruction.semantic_recovery import _prompt_evidence
+
+    evidence = [
+        {"evidence_ref_id": "ctx-0", "role": "SYSTEM", "text": "c" * 500},
+        {"evidence_ref_id": "target", "role": "TARGET_REQUEST", "text": "do task"},
+        {
+            "evidence_ref_id": "action",
+            "role": "ATTEMPT_ACTION",
+            "tool_name": "chat_history_get",
+            "tool_args": {"rounds": [1, 19]},
+        },
+        {
+            "evidence_ref_id": "obs",
+            "role": "ATTEMPT_OBSERVATION",
+            "tool_result": {"status": "RESULT_NOT_OBSERVED"},
+        },
+        {"evidence_ref_id": "response", "role": "ATTEMPT_RESPONSE", "text": "unfinished"},
+        {"evidence_ref_id": "ctx-1", "role": "SYSTEM", "text": "c" * 500},
+    ]
+    projected = _prompt_evidence(evidence, max_chars=1000)
+    coverage = projected[-1]["_projection_coverage"]
+    assert {"target", "action", "obs", "response"}.issubset(
+        set(coverage["priority_covered_evidence_ref_ids"])
+    )
