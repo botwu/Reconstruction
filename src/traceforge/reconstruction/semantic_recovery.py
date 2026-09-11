@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any
 
@@ -51,16 +51,11 @@ class SemanticRecoveryOutcome:
             "kind": self.kind,
             "attempt_ref": self.attempt_ref,
             "source_report_id": self.source_report_id,
-            "candidates": [candidate.to_dict() for candidate in self.candidates],
+            "candidates": [asdict(candidate) for candidate in self.candidates],
             "open_questions": list(self.open_questions),
             "errors": list(self.errors),
             "model_receipt": (
-                {
-                    field: getattr(self.model_receipt, field)
-                    for field in self.model_receipt.__dataclass_fields__
-                }
-                if self.model_receipt is not None
-                else None
+                asdict(self.model_receipt) if self.model_receipt is not None else None
             ),
         }
 
