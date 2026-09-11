@@ -366,6 +366,13 @@ def validate_invariant_check(check: InvariantCheckV1) -> None:
         raise ValueError("非 ERROR 结果不应携带 error_code")
 
 
+# 业务模块使用无版本别名；V1 名称保留用于跨模块 schema 对齐。
+EvidenceRef = EvidenceRefV1
+InvariantCheck = InvariantCheckV1
+FailureAnalysisReport = FailureAnalysisReportV1
+ReconstructabilityGate = ReconstructabilityGateV1
+
+
 def analysis_run_id(*, m1b_run_id: str, m1b_manifest_sha256: str) -> str:
     """兼容 M4 pipeline 的上游 M1B 运行身份公式。"""
 
@@ -397,9 +404,13 @@ __all__ = [
     "GateDecision",
     "GateRoute",
     "EvidenceRefV1",
+    "EvidenceRef",
     "InvariantCheckV1",
+    "InvariantCheck",
     "FailureAnalysisReportV1",
+    "FailureAnalysisReport",
     "ReconstructabilityGateV1",
+    "ReconstructabilityGate",
     "failure_analysis_run_id",
     "analysis_run_id",
     "evidence_ref_id",
