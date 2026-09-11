@@ -98,7 +98,9 @@ def normalize_trajectory(raw: dict[str, Any]) -> TrajectoryIR:
         for subpos, sub in enumerate(subs, 1):
             if not isinstance(sub, dict):
                 raise ValueError(f"STEP_{idx}_SUBSTEP_{subpos}_INVALID")
-            raw_event_id = sub.get("event_id") or (step.get("event_id") if sub is not step else "")
+            raw_event_id = sub.get("event_id")
+            if not raw_event_id and len(subs) == 1:
+                raw_event_id = step.get("event_id")
             event_id = str(raw_event_id).strip() if raw_event_id is not None else ""
             if not event_id:
                 raise ValueError(f"STEP_{idx}_EVENT_ID_REQUIRED")
