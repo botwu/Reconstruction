@@ -59,6 +59,11 @@ class HarborRolloutConfig:
             raise HarborRolloutError("timeout_seconds 必须大于 0")
         if not self.model.strip():
             raise HarborRolloutError("model 不能为空")
+        if self.agent_mode == "hermes" and not self.model.startswith("anthropic/"):
+            raise HarborRolloutError(
+                "Hermes 当前只支持 anthropic/<model>；DeepSeek 只能用于重建阶段，"
+                "不能直接作为 LosslessHermesAgent 的 rollout 模型"
+            )
 
 
 def _sha256_file(path: Path) -> str:
