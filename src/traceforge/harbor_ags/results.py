@@ -100,6 +100,7 @@ def read_rollout_results(job_dir: Path | str, *, agent_mode: str = "hermes") -> 
         verdict_path = trial_dir / "verifier/verdict.json"
         verdict = _read_json(verdict_path) if verdict_path.is_file() else None
         trajectory_path = trial_dir / "agent/trajectory.full.json"
+        artifact_manifest_path = trial_dir / "artifacts/manifest.json"
         agent_result = (
             result.get("agent_result")
             if isinstance(result.get("agent_result"), dict)
@@ -119,6 +120,7 @@ def read_rollout_results(job_dir: Path | str, *, agent_mode: str = "hermes") -> 
                 "reward": rewards.get("task") if isinstance(rewards, dict) else None,
                 "verdict_status": verdict.get("status") if verdict else None,
                 "trajectory_present": trajectory_path.is_file(),
+                "artifact_manifest_present": artifact_manifest_path.is_file(),
                 "tokens": token_info,
                 "duration_seconds": _duration_seconds(result),
                 "result_path": str(result_path),
@@ -129,6 +131,7 @@ def read_rollout_results(job_dir: Path | str, *, agent_mode: str = "hermes") -> 
     completed = sum(item["status"] in {"PASS", "FAIL"} for item in trials)
     passed = sum(item["status"] == "PASS" for item in trials)
     trajectory_count = sum(item["trajectory_present"] for item in trials)
+    artifact_manifest_count = sum(item["artifact_manifest_present"] for item in trials)
     durations = [
         item["duration_seconds"] for item in trials if item["duration_seconds"] is not None
     ]
@@ -147,19 +150,31 @@ def read_rollout_results(job_dir: Path | str, *, agent_mode: str = "hermes") -> 
             "completion_rate": completed / total if total else 0.0,
             "pass_rate": passed / total if total else 0.0,
             "trajectory_capture_rate": trajectory_count / total if total else 0.0,
+            "artifact_manifest_rate": artifact_manifest_count / total if total else 0.0,
             "cleanup_rate": 1.0 if cleanup is True else 0.0,
             "total_tokens": token_totals,
             "mean_duration_seconds": sum(durations) / len(durations) if durations else None,
         },
         "cleanup": {"ok": cleanup},
         "quality_gate": {
-            "ok": bool(total and completed == total and cleanup is True),
+            "ok": bool(
+                total
+                and completed == total
+                and cleanup is True
+                and artifact_manifest_count == total
+                and (agent_mode != "hermes" or trajectory_count == total)
+            ),
             "reasons": [
                 reason
                 for reason, condition in (
                     ("NO_TRIAL_RESULTS", total == 0),
                     ("TRIAL_INCOMPLETE_OR_INFRA_ERROR", completed != total),
                     ("SANDBOX_CLEANUP_UNCONFIRMED", cleanup is not True),
+                    ("ARTIFACT_MANIFEST_MISSING", artifact_manifest_count != total),
+                    (
+                        "TRAJECTORY_MISSING",
+                        agent_mode == "hermes" and trajectory_count != total,
+                    ),
                 )
                 if condition
             ],
