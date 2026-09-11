@@ -9,8 +9,10 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from traceforge.failure_analysis.mapping_reader import MappingInputError
+from traceforge.failure_analysis.model_runner import run_failure_analysis_model
 from traceforge.failure_analysis.pipeline import build_failure_analysis
 from traceforge.failure_analysis.reader import FailureAnalysisInputError
+from traceforge.failure_analysis.review_batch import build_review_batch
 from traceforge.harbor_ags.adapter import HarborAgsAdapterError, build_boundary_plan
 from traceforge.harbor_ags.results import HarborResultError, read_rollout_results
 from traceforge.harbor_ags.rollout import (
@@ -85,6 +87,20 @@ def _parser() -> argparse.ArgumentParser:
     failure_analysis_build.add_argument(
         "--output", type=Path, required=True, help="failure-analysis artifact root"
     )
+    failure_model = failure_analysis_commands.add_parser(
+        "model-judge", help="对单条结构化失败报告执行模型裁决并发布 artifact"
+    )
+    failure_model.add_argument("--report-json", type=Path, required=True)
+    failure_model.add_argument("--evidence-json", type=Path, required=True)
+    failure_model.add_argument("--output", type=Path, required=True)
+    failure_model.add_argument("--model-name", default="claude-opus-4-8")
+    failure_batch = failure_analysis_commands.add_parser(
+        "review-batch", help="按固定规则生成待人工复核批次"
+    )
+    failure_batch.add_argument("--input-jsonl", type=Path, required=True)
+    failure_batch.add_argument("--output", type=Path, required=True)
+    failure_batch.add_argument("--limit", type=int, default=50)
+    failure_batch.add_argument("--batch-name", default="initial-manual-review")
 
     harbor_ags = commands.add_parser(
         "harbor-ags", help="Harbor/AGS Task Bundle 边界适配（不启动 rollout）"
@@ -282,6 +298,41 @@ def main(argv: Sequence[str] | None = None) -> int:
             ValueError,
         ) as exc:
             print(f"失败分析构建失败：{exc}", file=sys.stderr)
+            return 2
+        print(output_path)
+        return 0
+    if (
+        arguments.command == "failure-analysis"
+        and arguments.failure_analysis_command == "model-judge"
+    ):
+        try:
+            report = json.loads(arguments.report_json.read_text(encoding="utf-8"))
+            evidence = json.loads(arguments.evidence_json.read_text(encoding="utf-8"))
+            output_path = run_failure_analysis_model(
+                report=report,
+                evidence=evidence,
+                model=OpusClient(),
+                output_root=arguments.output,
+                model_name=arguments.model_name,
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
+            print(f"模型失败分析失败：{exc}", file=sys.stderr)
+            return 2
+        print(output_path)
+        return 0
+    if (
+        arguments.command == "failure-analysis"
+        and arguments.failure_analysis_command == "review-batch"
+    ):
+        try:
+            output_path = build_review_batch(
+                input_jsonl=arguments.input_jsonl,
+                output_root=arguments.output,
+                limit=arguments.limit,
+                batch_name=arguments.batch_name,
+            )
+        except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
+            print(f"人工复核批次构建失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
         return 0
