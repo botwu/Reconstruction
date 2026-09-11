@@ -5,8 +5,10 @@ import json
 from pathlib import Path
 
 from traceforge.reconstruction.model_gateway import ModelRequest, ModelResponse
-from traceforge.reconstruction.workflow import run_reconstruction_workflow
-from traceforge.reconstruction.workflow import ReconstructionWorkflowError
+from traceforge.reconstruction.workflow import (
+    ReconstructionWorkflowError,
+    run_reconstruction_workflow,
+)
 
 
 class WorkflowModel:
