@@ -42,7 +42,20 @@ def _bundle(root: Path) -> Path:
 
 def _harbor_root(root: Path) -> Path:
     (root / "configs").mkdir(parents=True)
-    (root / "configs/hermes-batch.yaml").write_text("jobs_dir: runs\n")
+    config = """jobs_dir: runs
+n_concurrent_trials: 1
+agents:
+  - import_path: harbor_ags.agent:LosslessHermesAgent
+    model_name: anthropic/claude-opus-4-8
+    kwargs:
+      expected_commit: abc
+environment:
+  import_path: harbor_ags.environment:AGSPrebuiltEnvironment
+  kwargs:
+    sandbox_timeout_sec: 900
+"""
+    for name in ("hermes-batch.yaml", "oracle.yaml", "nop.yaml"):
+        (root / "configs" / name).write_text(config)
     executable = root / ".venv/bin/harbor"
     executable.parent.mkdir(parents=True)
     executable.write_text("#!/bin/sh\nexit 0\n")
@@ -70,6 +83,10 @@ def test_prepare_rollout_materializes_dataset_without_executing(
     assert plan["external_execution"] is False
     assert plan["verifier"]["environment_mode"] == "separate"
     assert plan["verifier"]["network_mode"] == "no-network"
+    assert plan["agent"]["mode"] == "hermes"
+    config_text = (output / "harbor-config.yaml").read_text()
+    assert "n_concurrent_trials: 2" in config_text
+    assert 'model_name: "anthropic/claude-opus-4-8"' in config_text
     assert Path(plan["dataset"]["dataset_root"]).is_dir()
     assert Path(plan["dataset"]["dataset_root"], "dataset.toml").is_file()
     assert "ags-secret-value" not in plan_text
@@ -101,9 +118,7 @@ def test_execute_rollout_requires_credentials(tmp_path: Path) -> None:
                 os.environ[name] = value
 
 
-def test_execute_rollout_is_explicit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_execute_rollout_is_explicit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     output = build_rollout_plan(
         HarborRolloutConfig(
             task_dir=_bundle(tmp_path / "task"),
@@ -126,3 +141,25 @@ def test_execute_rollout_is_explicit(
     assert len(observed) == 1
     assert observed[0][1] == "run"
 
+
+def test_oracle_mode_does_not_require_tokenhub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = build_rollout_plan(
+        HarborRolloutConfig(
+            task_dir=_bundle(tmp_path / "task"),
+            harbor_root=_harbor_root(tmp_path / "harbor"),
+            output_root=tmp_path / "plans",
+            jobs_root=tmp_path / "jobs",
+            agent_mode="oracle",
+        )
+    )
+    monkeypatch.setenv("AGS_API_KEY", "ags-secret")
+    monkeypatch.delenv("TOKENHUB_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert execute_rollout_plan(output)["status"] == "COMPLETED"

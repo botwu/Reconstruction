@@ -19,6 +19,7 @@ from traceforge.harbor_ags.rollout import (
     build_rollout_plan,
     execute_rollout_plan,
 )
+from traceforge.harbor_ags.results import HarborResultError, read_rollout_results
 from traceforge.lineage.reader import LineageInputError
 from traceforge.query_turns.pipeline import build_query_turns
 from traceforge.query_turns.reader import QueryTurnInputError
@@ -29,6 +30,7 @@ from traceforge.trajectory.artifacts import ArtifactPublishError
 from traceforge.trajectory.pipeline import compile_trajectory
 from traceforge.trajectory.source import SourceError
 from traceforge.trajectory.source_adapter import SUPPORTED_SOURCE_SCHEMAS
+from traceforge.trajectory_replay.pipeline import ReplayInputError, build_trajectory_replay
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -97,6 +99,7 @@ def _parser() -> argparse.ArgumentParser:
     prepare_rollout.add_argument("--harbor-root", type=Path, required=True)
     prepare_rollout.add_argument("--output", type=Path, required=True)
     prepare_rollout.add_argument("--jobs-root", type=Path, required=True)
+    prepare_rollout.add_argument("--agent-mode", choices=("hermes", "oracle", "nop"), default="hermes")
     prepare_rollout.add_argument("--model", default="anthropic/claude-opus-4-8")
     prepare_rollout.add_argument("--trials", type=int, default=1)
     prepare_rollout.add_argument("--concurrency", type=int, default=1)
@@ -107,6 +110,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     execute_rollout.add_argument("--plan-dir", type=Path, required=True)
     execute_rollout.add_argument("--timeout-seconds", type=int, default=900)
+    read_results = harbor_ags_commands.add_parser(
+        "read-results", help="读取 Harbor Job 结果并计算 rollout 指标"
+    )
+    read_results.add_argument("--job-dir", type=Path, required=True)
+    read_results.add_argument("--agent-mode", choices=("hermes", "oracle", "nop"), default="hermes")
 
     lineage = commands.add_parser("lineage", help="跨 capture 关系图（M1C）")
     lineage_commands = lineage.add_subparsers(
@@ -158,6 +166,11 @@ def _parser() -> argparse.ArgumentParser:
     reconstruct_pipeline.add_argument("--m1b-run", type=Path, required=True, help="已发布 M1B run")
     reconstruct_pipeline.add_argument("--m1d-run", type=Path, default=None, help="可选：已发布 M1D run")
     reconstruct_pipeline.add_argument("--output", type=Path, required=True, help="pipeline artifact 根目录")
+
+    replay = commands.add_parser("trajectory-replay", help="恢复任务开始前的初始 workspace（不执行历史命令）")
+    replay.add_argument("--normalized-run", type=Path, required=True, help="规范化 trajectory run")
+    replay.add_argument("--capture-id", default=None, help="可选 capture occurrence id")
+    replay.add_argument("--output", type=Path, required=True, help="replay artifact 根目录")
 
     source_projection = commands.add_parser(
         "source-projection", help="来源投影：USER 事件结构注解（M2 前置）"
@@ -239,6 +252,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     harbor_root=arguments.harbor_root,
                     output_root=arguments.output,
                     jobs_root=arguments.jobs_root,
+                    agent_mode=arguments.agent_mode,
                     model=arguments.model,
                     trials=arguments.trials,
                     concurrency=arguments.concurrency,
@@ -261,6 +275,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("status") == "COMPLETED" else 2
+    if arguments.command == "harbor-ags" and arguments.harbor_ags_command == "read-results":
+        try:
+            result = read_rollout_results(arguments.job_dir, agent_mode=arguments.agent_mode)
+        except HarborResultError as exc:
+            print(f"Harbor/AGS 结果读取失败：{exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0 if result["quality_gate"]["ok"] else 2
     if arguments.command == "lineage" and arguments.lineage_command == "build":
         try:
             output_path = build_lineage(
@@ -292,6 +314,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except (ReconstructionPipelineInputError, FailureAnalysisInputError, MappingInputError, ArtifactPublishError, ValueError) as exc:
             print(f"重建流程编排失败：{exc}", file=sys.stderr)
+            return 2
+        print(output_path)
+        return 0
+    if arguments.command == "trajectory-replay":
+        try:
+            output_path = build_trajectory_replay(
+                normalized_run_dir=arguments.normalized_run,
+                capture_id=arguments.capture_id,
+                output_root=arguments.output,
+            )
+        except (ReplayInputError, ArtifactPublishError, ValueError, OSError) as exc:
+            print(f"轨迹回放失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
         return 0

@@ -6,6 +6,7 @@ from .adapter import (
     build_boundary_plan,
     validate_bundle_layout,
 )
+from .results import ROLLOUT_RESULTS_SCHEMA, HarborResultError, read_rollout_results
 from .rollout import (
     ROLLOUT_BRIDGE_SCHEMA,
     HarborRolloutConfig,
@@ -17,11 +18,14 @@ from .rollout import (
 __all__ = [
     "HARBOR_AGS_PLAN_SCHEMA",
     "ROLLOUT_BRIDGE_SCHEMA",
+    "ROLLOUT_RESULTS_SCHEMA",
     "HarborAgsAdapterError",
+    "HarborResultError",
     "HarborRolloutConfig",
     "HarborRolloutError",
     "build_boundary_plan",
     "build_rollout_plan",
     "execute_rollout_plan",
+    "read_rollout_results",
     "validate_bundle_layout",
 ]
