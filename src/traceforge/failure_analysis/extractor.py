@@ -74,6 +74,7 @@ def analyze_capture(*, run_id: str, m1b_run_id: str, capture: CaptureFact,
                          None, (terminal_ref,), terminal_target))
     failed = [c for c in checks if c.result == InvariantResult.FAIL.value]
     unclear = [c for c in checks if c.result == InvariantResult.UNCLEAR.value]
+    uncertainty_codes = tuple(c.check_code for c in unclear)
     if failed:
         primary = failed[0].taxonomy_targets[0] if failed[0].taxonomy_targets else FailureCategory.INCONCLUSIVE.value
         recoverability = Recoverability.UNKNOWN
@@ -84,7 +85,7 @@ def analyze_capture(*, run_id: str, m1b_run_id: str, capture: CaptureFact,
         # Passing structural checks is absence of a deterministic failure
         # signal, not evidence that reconstruction is impossible.
         primary, recoverability, confidence = FailureCategory.INCONCLUSIVE.value, Recoverability.UNKNOWN, 0.0
-        unclear = [*unclear, "no_deterministic_failure_signal"]
+        uncertainty_codes = ("no_deterministic_failure_signal",)
     critical = tuple(sorted({e for c in failed for r in c.evidence_ref_ids for e in [next((x.source_id for x in refs if x.evidence_id == r and x.evidence_kind == EvidenceKind.EVENT.value), "")] if e}))
     report = FailureAnalysisReportV1(
         schema_version=FAILURE_ANALYSIS_REPORT_SCHEMA,
@@ -97,8 +98,8 @@ def analyze_capture(*, run_id: str, m1b_run_id: str, capture: CaptureFact,
         causal_hypotheses=(), recoverability=recoverability.value,
         attribution={"UNKNOWN": 1.0}, reconstruction_targets=(),
         reconstruction_relevance={"task_recovery": "NOT_RUN", "environment_recovery": "NOT_RUN"},
-        open_questions=tuple(c.check_code for c in unclear), confidence=confidence,
-        uncertainty_codes=tuple(c.check_code for c in unclear),
+        open_questions=uncertainty_codes, confidence=confidence,
+        uncertainty_codes=uncertainty_codes,
     )
     return report, tuple(refs), tuple(checks)
 
