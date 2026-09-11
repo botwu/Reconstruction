@@ -388,6 +388,7 @@ __all__ = [
     "FailureAnalysisReportV1",
     "ReconstructabilityGateV1",
     "failure_analysis_run_id",
+    "analysis_run_id",
     "evidence_ref_id",
     "failure_analysis_report_id",
     "reconstructability_gate_id",
@@ -397,8 +398,13 @@ __all__ = [
 ]
 
 def analysis_run_id(*, m1b_run_id: str, m1b_manifest_sha256: str) -> str:
-    return stable_id("m4-failure-analysis-run-v1", {
-        "contract_version": FAILURE_ANALYSIS_CONTRACT_VERSION,
-        "m1b_run_id": m1b_run_id,
-        "m1b_manifest_sha256": m1b_manifest_sha256,
-    })
+    """兼容 M4 pipeline 的上游 M1B 运行身份公式。"""
+
+    return stable_id(
+        FAILURE_ANALYSIS_RUN_ID_NAMESPACE,
+        {
+            "contract_version": FAILURE_ANALYSIS_CONTRACT_VERSION,
+            "m1b_run_id": m1b_run_id,
+            "m1b_manifest_sha256": m1b_manifest_sha256,
+        },
+    )
