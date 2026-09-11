@@ -1,6 +1,7 @@
 """Harbor/AGS 边界适配器测试。"""
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -31,7 +32,7 @@ def _bundle(root: Path) -> Path:
 
 def test_layout_rejects_missing_control(tmp_path: Path) -> None:
     root = _bundle(tmp_path / "task")
-    (root / "tests/control").rmdir()
+    shutil.rmtree(root / "tests/control")
     with pytest.raises(HarborAgsAdapterError):
         validate_bundle_layout(root)
 
