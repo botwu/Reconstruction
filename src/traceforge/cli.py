@@ -239,6 +239,12 @@ def _parser() -> argparse.ArgumentParser:
     reconstruct_workflow.add_argument("--output", type=Path, required=True)
     reconstruct_workflow.add_argument("--model-name", default="claude-opus-4-8")
     reconstruct_workflow.add_argument(
+        "--rollout-model",
+        default=None,
+        help=("Harbor agent 的 provider/model；非 Claude 模型必须显式指定，"
+              "例如 vol/deepseek-v4-flash-0731"),
+    )
+    reconstruct_workflow.add_argument(
         "--config", type=Path, default=None, help="NewAPI 配置文件（可选）"
     )
     reconstruct_workflow.add_argument("--channel", default="gemini", help="配置中的 channel 名")
@@ -530,6 +536,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     config_path=arguments.config,
                     channel=arguments.channel,
                 ),
+                rollout_model=arguments.rollout_model,
                 rollout_trials=arguments.rollout_trials,
             )
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RuntimeError) as exc:

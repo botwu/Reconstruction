@@ -119,6 +119,23 @@ def _red_case(
     )
 
 
+def _resolve_rollout_model(model_name: str, rollout_model: str | None) -> str:
+    """解析 Harbor agent 的 provider/model，避免误把非 Claude 模型冒用成 anthropic。"""
+    if rollout_model is not None:
+        value = rollout_model.strip()
+        if not value or "/" not in value:
+            raise ReconstructionWorkflowError(
+                "rollout_model 必须显式包含 provider/model，例如 vol/deepseek-v4-flash-0731"
+            )
+        return value
+    value = model_name.strip()
+    if value.startswith("claude-"):
+        return f"anthropic/{value}"
+    raise ReconstructionWorkflowError(
+        "非 Claude 模型不能隐式用于 Harbor rollout；请显式设置 rollout_model(provider/model)"
+    )
+
+
 def run_reconstruction_workflow(
     *,
     attempt_ref: str,
@@ -132,6 +149,7 @@ def run_reconstruction_workflow(
     harbor_root: str | Path,
     execute_rollout: bool = False,
     model_name: str = "claude-opus-4-8",
+    rollout_model: str | None = None,
     rollout_trials: int = 1,
     curation_thresholds: CurationThresholds | None = None,
 ) -> Path:
@@ -302,6 +320,7 @@ def run_reconstruction_workflow(
     oracle_bundle = oracle_bundle_root / "task"
     mutation_bundle = mutation_bundle_root / "task"
     jobs_root = root / "harbor-jobs"
+    harbor_model = _resolve_rollout_model(model_name, rollout_model)
 
     def plan(bundle_path: Path, mode: str, name: str) -> Path:
         return build_rollout_plan(
@@ -311,7 +330,7 @@ def run_reconstruction_workflow(
                 output_root=stages / "rollout" / name,
                 jobs_root=jobs_root / name,
                 agent_mode=mode,
-                model=f"anthropic/{model_name}",
+                model=harbor_model,
                 trials=rollout_trials,
                 concurrency=1,
             )
@@ -434,6 +453,7 @@ def run_reconstruction_workflow(
                 },
                 "execute_rollout": execute_rollout,
                 "model": model_name,
+                "rollout_model": harbor_model,
             },
         ),
         write_json_artifact(
@@ -479,4 +499,3 @@ def run_reconstruction_workflow(
 
 
 __all__ = ["WORKFLOW_SCHEMA", "ReconstructionWorkflowError", "run_reconstruction_workflow"]
-

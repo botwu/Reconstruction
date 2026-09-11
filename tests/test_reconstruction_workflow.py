@@ -110,3 +110,19 @@ def test_red_case_rejects_incomplete_harbor_quality_gate():
     case = _red_case("oracle_pass", run, "PASS", 1.0)
     assert case.status == "INFRA_ERROR"
 
+
+
+def test_rollout_model_requires_provider_for_non_claude():
+    from traceforge.reconstruction.workflow import (
+        ReconstructionWorkflowError,
+        _resolve_rollout_model,
+    )
+
+    assert _resolve_rollout_model("claude-opus-4-8", None) == "anthropic/claude-opus-4-8"
+    assert _resolve_rollout_model("deepseek-v4-flash-0731", "vol/deepseek-v4-flash-0731") == "vol/deepseek-v4-flash-0731"
+    try:
+        _resolve_rollout_model("deepseek-v4-flash-0731", None)
+    except ReconstructionWorkflowError as exc:
+        assert "rollout_model" in str(exc)
+    else:
+        raise AssertionError("non-Claude rollout must require explicit provider/model")
