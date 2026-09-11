@@ -223,7 +223,7 @@ def build_completion_prompt(
     replay: ReplayResult,
     evidence: list[dict[str, Any]],
     *,
-    max_candidates: int = 3,
+    max_candidates: int = 5,
 ) -> str:
     """Return the B.1 contract, adapted from Terminal-Universe verbatim in spirit."""
     if max_candidates < 1 or max_candidates > 5:
