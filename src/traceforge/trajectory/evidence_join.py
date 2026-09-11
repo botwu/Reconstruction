@@ -23,11 +23,15 @@ def _emit(*, capture_id: str, rows: list[dict[str, Any]], output_path: str | Pat
     users=[x for x in selected if x["event_kind"]=="USER" and x.get("text")]
     pending=[x for x in selected if x["event_kind"]=="TOOL_CALL"]
     miss=missing or []
+    pending_count=len(pending)
+    reasons=(['MISSING_EVIDENCE'] if miss else [])+(['NO_USER_QUERY'] if not users else [])
+    if pending_count:
+        reasons.append('PENDING_TOOL_RESULT')
     result={"schema_version":"traceforge.task-reconstruction-input.v1","capture_id":capture_id,
       "task_query_candidates":[x["text"] for x in users],"evidence":selected,"missing_evidence_ids":miss,
       "selection":{"evidence_requested":len(selected)+len(miss),"evidence_resolved":len(selected),"missing_count":len(miss),"user_query_count":len(users),"pending_tool_call_count":len(pending)},
-      "quality":{"usable":bool(users and selected),"requires_review":bool(miss) or not users,
-        "reason_codes":(["MISSING_EVIDENCE"] if miss else [])+(["NO_USER_QUERY"] if not users else [])}}
+      "quality":{"usable":bool(users and selected),"requires_review":bool(reasons),
+        "reason_codes":reasons}}
     out=Path(output_path); out.parent.mkdir(parents=True,exist_ok=True); out.write_text(json.dumps(result,ensure_ascii=False,indent=2)+"\n"); return result
 
 def build_capture_input(*, event_occurrences_path: str|Path, capture_id: str, output_path: str|Path, max_events: int=200) -> dict[str,Any]:
@@ -50,6 +54,8 @@ def build_query_task_input(*, event_occurrences_path: str|Path, capture_id: str,
     all_rows.sort(key=lambda r:(r.get("sequence_number",0),r.get("event_occurrence_id","")))
     starts=[i for i,r in enumerate(all_rows) if r.get("event_kind")=="USER"]
     if not starts: return _emit(capture_id=capture_id,rows=[],output_path=output_path,missing=["NO_USER_QUERY"])
+    if not -len(starts) <= query_ordinal < len(starts):
+        return _emit(capture_id=capture_id,rows=[],output_path=output_path,missing=["QUERY_ORDINAL_OUT_OF_RANGE"])
     idx=starts[query_ordinal]
     end=starts[query_ordinal+1] if query_ordinal >= 0 and query_ordinal+1 < len(starts) else (starts[query_ordinal+1] if query_ordinal < -1 and abs(query_ordinal+1)<=len(starts) else len(all_rows))
     return _emit(capture_id=capture_id,rows=all_rows[idx:end],output_path=output_path)
