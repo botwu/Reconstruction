@@ -23,6 +23,7 @@
 
 2. **Environment Completion**（environment_completion.py）  
    复制确定性回放 workspace，只允许补充 PARTIAL 或缺失文件。COMPLETE/UNKNOWN 文件、solution、tests、environment、路径穿越和无证据内容都会被拒绝。产物中的每个文件带 provenance 和 evidence 引用。
+   论文对齐的底层实现位于 `terminal_universe_environment.py`：Stage 1 按首次完整读取恢复初始文件，首次 mutation 之后的读取不再倒灌到初始状态；Agent 写入和未知 shell mutation 进入 `withheld_changes`；Stage 2 生成最多 5 个“solvable but NOT solved”候选；候选物化时再次执行隐藏路径、证据引用和答案泄漏检查。该模块输出 `workspace/` 与 `hidden_control/` 两个边界，可直接映射 Harbor public workspace 和 hidden control。
 
 3. **Workspace Sufficiency**（sufficiency_judge.py）  
    独立只读判断环境是否“可解但未解”。UNKNOWN、缺证据或 REVIEW 均不能进入 Harbor。
@@ -81,4 +82,3 @@ CLI：
 - 与原始失败轨迹相比的任务通过率、轨迹长度、token 成本和错误类型分布。
 
 rollout_trials=1 只能证明单次结果，不能证明可复现；SFT 门禁会将其标为 REVIEW。
-
