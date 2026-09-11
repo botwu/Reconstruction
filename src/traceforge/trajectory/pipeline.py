@@ -40,7 +40,6 @@ from traceforge.trajectory.json_codec import stable_id
 from traceforge.trajectory.provenance import collect_git_provenance
 from traceforge.trajectory.source import iter_verified_records, scan_jsonl_source
 from traceforge.trajectory.source_adapter import (
-    RESTORED_LONG_CAPTURE_SCHEMA,
     SUPPORTED_SOURCE_SCHEMAS,
     SourceRecordAdaptError,
     UnsupportedSourceSchemaError,

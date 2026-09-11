@@ -7,6 +7,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from traceforge.failure_analysis.pipeline import build_failure_analysis
+from traceforge.failure_analysis.reader import FailureAnalysisInputError
 from traceforge.lineage.pipeline import build_lineage
 from traceforge.lineage.reader import LineageInputError
 from traceforge.query_turns.pipeline import build_query_turns
@@ -47,6 +49,22 @@ def _parser() -> argparse.ArgumentParser:
         help="可选的冻结输入 SHA-256",
     )
     compile_parser.add_argument("--output", type=Path, required=True, help="artifact 根目录")
+
+    failure_analysis = commands.add_parser(
+        "failure-analysis", help="deterministic failure evidence analysis (M4)"
+    )
+    failure_analysis_commands = failure_analysis.add_subparsers(
+        dest="failure_analysis_command", required=True
+    )
+    failure_analysis_build = failure_analysis_commands.add_parser(
+        "build", help="build failure-analysis artifacts from a published M1B run"
+    )
+    failure_analysis_build.add_argument(
+        "--m1b-run", type=Path, required=True, help="published M1B run (read only)"
+    )
+    failure_analysis_build.add_argument(
+        "--output", type=Path, required=True, help="failure-analysis artifact root"
+    )
 
     lineage = commands.add_parser("lineage", help="跨 capture 关系图（M1C）")
     lineage_commands = lineage.add_subparsers(
@@ -138,6 +156,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except (SourceError, ArtifactPublishError, ValueError) as exc:
             print(f"轨迹编译失败：{exc}", file=sys.stderr)
+            return 2
+        print(output_path)
+        return 0
+    if arguments.command == "failure-analysis" and arguments.failure_analysis_command == "build":
+        try:
+            output_path = build_failure_analysis(
+                m1b_run_dir=arguments.m1b_run,
+                output_root=arguments.output,
+            )
+        except (FailureAnalysisInputError, ArtifactPublishError, ValueError) as exc:
+            print(f"失败分析构建失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
         return 0

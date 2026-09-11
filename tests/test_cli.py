@@ -356,3 +356,28 @@ def test_source_projection_build_command_reports_invalid_input_without_traceback
     assert exit_code == 2
     assert "来源投影构建失败" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_failure_analysis_build_command_dispatches(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    published = tmp_path / "m4-run"
+    published.mkdir()
+    monkeypatch.setattr(
+        "traceforge.cli.build_failure_analysis",
+        lambda *, m1b_run_dir, output_root: published,
+    )
+    exit_code = main(
+        [
+            "failure-analysis",
+            "build",
+            "--m1b-run",
+            str(tmp_path / "m1b"),
+            "--output",
+            str(tmp_path / "artifacts"),
+        ]
+    )
+    assert exit_code == 0
+    assert capsys.readouterr().out.strip() == str(published)
