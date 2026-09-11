@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TypeAlias
 
 from traceforge.trajectory.contracts import SerializableContract
 from traceforge.trajectory.json_codec import stable_id
@@ -16,7 +15,7 @@ MAPPING_INDEX_SCHEMA = "traceforge.failure-analysis-mapping-index.v1"
 EPISODE_REF_NAMESPACE = "m4-episode-ref-v1"
 ATTEMPT_REF_NAMESPACE = "m4-attempt-ref-v1"
 
-MappingSession: TypeAlias = dict[str, str]
+type MappingSession = dict[str, str]
 
 
 class MappingBasis(StrEnum):

@@ -199,20 +199,12 @@ def analyze_capture(
         )
     )
 
-    failed_checks = [
-        check for check in checks if check.result == InvariantResult.FAIL.value
-    ]
-    unclear_checks = [
-        check for check in checks if check.result == InvariantResult.UNCLEAR.value
-    ]
+    failed_checks = [check for check in checks if check.result == InvariantResult.FAIL.value]
+    unclear_checks = [check for check in checks if check.result == InvariantResult.UNCLEAR.value]
     uncertainty_codes = tuple(check.check_code for check in unclear_checks)
     if failed_checks:
         primary_failure = next(
-            (
-                target
-                for check in failed_checks
-                for target in check.taxonomy_targets
-            ),
+            (target for check in failed_checks for target in check.taxonomy_targets),
             FailureCategory.INCONCLUSIVE.value,
         )
         recoverability = Recoverability.UNKNOWN
@@ -284,9 +276,7 @@ def extract_failure_bundle(view: FailureInputView, run_id: str) -> AnalysisBundl
     return AnalysisBundle(
         reports=tuple(reports),
         evidence_refs=tuple(sorted(evidence_refs, key=lambda item: item.evidence_id)),
-        invariant_checks=tuple(
-            sorted(invariant_checks, key=lambda item: item.invariant_id)
-        ),
+        invariant_checks=tuple(sorted(invariant_checks, key=lambda item: item.invariant_id)),
     )
 
 

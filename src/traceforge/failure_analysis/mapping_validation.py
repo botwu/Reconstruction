@@ -37,9 +37,11 @@ def _validate_attempt(attempt: AttemptRefV1, episode_ids: set[str]) -> None:
     if attempt.mapping_basis == MappingBasis.AGENT_STEP.value:
         if attempt.agent_step_id is None:
             raise ValueError("AGENT_STEP 映射必须包含 agent_step_id")
-    elif attempt.mapping_basis == MappingBasis.TURN_FALLBACK.value:
-        if attempt.agent_step_id is not None:
-            raise ValueError("TURN_FALLBACK 映射不能包含 agent_step_id")
+    elif (
+        attempt.mapping_basis == MappingBasis.TURN_FALLBACK.value
+        and attempt.agent_step_id is not None
+    ):
+        raise ValueError("TURN_FALLBACK 映射不能包含 agent_step_id")
 
 
 def validate_mapping_index(index: MappingIndexV1) -> None:

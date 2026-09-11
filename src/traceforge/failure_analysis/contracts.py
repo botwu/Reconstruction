@@ -251,7 +251,9 @@ def failure_analysis_run_id(*, m1b_run_id: str, m1d_run_id: str, input_manifest_
     )
 
 
-def failure_analysis_report_id(*, m4_run_id: str, task_episode_id: str | None, target_attempt_id: str | None) -> str:
+def failure_analysis_report_id(
+    *, m4_run_id: str, task_episode_id: str | None, target_attempt_id: str | None
+) -> str:
     """报告身份绑定到 M4 run 和目标 attempt，重复运行可区分。"""
 
     return stable_id(
@@ -390,35 +392,35 @@ def analysis_run_id(*, m1b_run_id: str, m1b_manifest_sha256: str) -> str:
 __all__ = [
     "EVIDENCE_REF_SCHEMA",
     "FAILURE_ANALYSIS_CONTRACT_VERSION",
-    "FAILURE_ANALYSIS_RUN_ID_NAMESPACE",
     "FAILURE_ANALYSIS_REPORT_SCHEMA",
+    "FAILURE_ANALYSIS_RUN_ID_NAMESPACE",
     "FAILURE_ANALYSIS_SUMMARY_SCHEMA",
     "INVARIANT_CHECK_SCHEMA",
     "RECONSTRUCTABILITY_GATE_SCHEMA",
     "EvidenceKind",
+    "EvidenceRef",
+    "EvidenceRefV1",
     "EvidenceRole",
-    "InvariantKind",
-    "InvariantResult",
+    "FailureAnalysisReport",
+    "FailureAnalysisReportV1",
+    "FailureAttribution",
     "FailureCategory",
     "FailureLayer",
-    "FailureAttribution",
-    "Recoverability",
     "GateDecision",
     "GateRoute",
-    "EvidenceRefV1",
-    "EvidenceRef",
-    "InvariantCheckV1",
     "InvariantCheck",
-    "FailureAnalysisReportV1",
-    "FailureAnalysisReport",
-    "ReconstructabilityGateV1",
+    "InvariantCheckV1",
+    "InvariantKind",
+    "InvariantResult",
     "ReconstructabilityGate",
-    "failure_analysis_run_id",
+    "ReconstructabilityGateV1",
+    "Recoverability",
     "analysis_run_id",
     "evidence_ref_id",
     "failure_analysis_report_id",
+    "failure_analysis_run_id",
     "reconstructability_gate_id",
-    "validate_invariant_check",
     "validate_failure_analysis_report",
+    "validate_invariant_check",
     "validate_reconstructability_gate",
 ]

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +15,8 @@ from traceforge.trajectory.json_codec import (
 from .mapping_contracts import (
     ATTEMPT_REF_SCHEMA,
     EPISODE_REF_SCHEMA,
-    MAPPING_INDEX_SCHEMA,
     M4_MAPPING_CONTRACT_VERSION,
+    MAPPING_INDEX_SCHEMA,
     AttemptRefV1,
     EpisodeRefV1,
     MappingBasis,
@@ -48,13 +47,9 @@ def _read_jsonl(root: Path, relative_path: str) -> list[dict[str, Any]]:
         try:
             value = strict_json_loads(raw_line)
         except StrictJsonError as exc:
-            raise MappingInputError(
-                f"M1D 表 JSON 非法：{relative_path}:{line_number}"
-            ) from exc
+            raise MappingInputError(f"M1D 表 JSON 非法：{relative_path}:{line_number}") from exc
         if not isinstance(value, dict):
-            raise MappingInputError(
-                f"M1D 表记录不是对象：{relative_path}:{line_number}"
-            )
+            raise MappingInputError(f"M1D 表记录不是对象：{relative_path}:{line_number}")
         rows.append(value)
     return rows
 
@@ -136,9 +131,7 @@ def load_mapping_index(
         return capture_id, _non_negative_integer(row, "turn_ordinal", "query_turns")
 
     turns = sorted(turns, key=turn_sort_key)
-    query_turn_ids = [
-        _required_string(row, "query_turn_id", "query_turns") for row in turns
-    ]
+    query_turn_ids = [_required_string(row, "query_turn_id", "query_turns") for row in turns]
     _validate_unique(query_turn_ids, "query_turn_id")
 
     episodes: list[EpisodeRefV1] = []
@@ -180,9 +173,7 @@ def load_mapping_index(
         turn_steps = []
         for step_id in raw_step_ids:
             if step_id not in step_rows:
-                raise MappingInputError(
-                    f"query_turns 引用了不存在的 agent_step_id：{step_id}"
-                )
+                raise MappingInputError(f"query_turns 引用了不存在的 agent_step_id：{step_id}")
             turn_steps.append(step_rows[step_id])
 
         if not turn_steps:
@@ -192,9 +183,7 @@ def load_mapping_index(
 
         for step_ordinal, step in enumerate(turn_steps):
             agent_step_id = _optional_string(step, "agent_step_id", "agent_steps")
-            assistant_event_id = _optional_string(
-                step, "assistant_event_id", "agent_steps"
-            )
+            assistant_event_id = _optional_string(step, "assistant_event_id", "agent_steps")
             attempts.append(
                 AttemptRefV1(
                     schema_version=ATTEMPT_REF_SCHEMA,
@@ -232,10 +221,7 @@ def load_mapping_index(
         m1d_run_id=m1d_run_id,
         m1d_artifact_manifest_sha256=sha256_bytes(manifest_bytes),
         m1b_run_id=m1b_run_id,
-        sessions=tuple(
-            sessions_by_ref[session_ref]
-            for session_ref in sorted(sessions_by_ref)
-        ),
+        sessions=tuple(sessions_by_ref[session_ref] for session_ref in sorted(sessions_by_ref)),
         episodes=tuple(episodes),
         attempts=tuple(attempts),
     )
