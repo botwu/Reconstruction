@@ -23,7 +23,7 @@ def _bundle(root: Path) -> Path:
     (root / "tests/control/truth.txt").write_text("hidden\n")
     (root / "tests/test.sh").write_text("#!/bin/sh\nset -eu\n\npython3 /tests/grader.py\n")
     (root / "task.toml").write_text(
-        'schema_version = "1.4"\n[task]\nname = "traceforge/test"\n[verifier]\nenvironment_mode = "separate"\n[verifier.environment]\nnetwork_mode = "no-network"\n'
+        'schema_version = "1.4"\n[task]\nname = "traceforge/test"\n[verifier]\nenvironment_mode = "separate"\n[verifier.environment]\nnetwork_mode = "no-network"\n'  # noqa: E501
     )
     (root / "instruction.md").write_text("Do the task.\n")
     return root
