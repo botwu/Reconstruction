@@ -267,6 +267,7 @@ def failure_analysis_report_id(
             "m4_run_id": m4_run_id,
             "task_episode_id": task_episode_id,
             "target_attempt_id": target_attempt_id,
+            "capture_occurrence_id": capture_occurrence_id,
         },
     )
 
