@@ -331,29 +331,35 @@ def run_agentrx_diagnosis(
     )
     receipts.append(rec)
     root = payload or {
-        reason_for_failure: judge unavailable,
-        failure_case: 10,
-        failure_step: None,
-        confidence: 0.0,
-        evidence_ref_ids: [],
+        "reason_for_failure": "judge unavailable",
+        "failure_case": 10,
+        "failure_step": None,
+        "confidence": 0.0,
+        "evidence_ref_ids": [],
     }
     if not isinstance(root, dict):
-        errors.append(JUDGE_RESPONSE_MUST_BE_OBJECT)
-        root = {reason_for_failure: invalid judge response, failure_case: 10, failure_step: None, confidence: 0.0, evidence_ref_ids: []}
+        errors.append("JUDGE_RESPONSE_MUST_BE_OBJECT")
+        root = {
+            "reason_for_failure": "invalid judge response",
+            "failure_case": 10,
+            "failure_step": None,
+            "confidence": 0.0,
+            "evidence_ref_ids": [],
+        }
     try:
-        case = int(root.get(failure_case, 10))
+        case = int(root.get("failure_case", 10))
     except (TypeError, ValueError):
         case = 10
-        errors.append(JUDGE_FAILURE_CASE_INVALID)
+        errors.append("JUDGE_FAILURE_CASE_INVALID")
     if case < 1 or case > 10:
         case = 10
-        errors.append(JUDGE_FAILURE_CASE_OUT_OF_RANGE)
-    root[failure_case] = case
-    if not isinstance(root.get(evidence_ref_ids, []), list) or any(
-        x not in refs for x in root.get(evidence_ref_ids, [])
+        errors.append("JUDGE_FAILURE_CASE_OUT_OF_RANGE")
+    root["failure_case"] = case
+    if not isinstance(root.get("evidence_ref_ids", []), list) or any(
+        x not in refs for x in root.get("evidence_ref_ids", [])
     ):
-        errors.append(JUDGE_UNKNOWN_EVIDENCE)
-        root[evidence_ref_ids] = []
+        errors.append("JUDGE_UNKNOWN_EVIDENCE")
+        root["evidence_ref_ids"] = []
     statuses = {s.value: sum(1 for c in checks if c.status == s.value) for s in CheckStatus}
     coverage = {
         "invariant_count": len(all_inv),
