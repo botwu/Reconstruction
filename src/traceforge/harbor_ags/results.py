@@ -36,7 +36,9 @@ def _duration_seconds(value: dict[str, Any]) -> float | None:
         return None
     details = value.get("agent_result")
     if isinstance(details, dict):
-        elapsed = details.get("metadata", {}).get("_harbor_ags_evidence", {}).get("elapsed_s")
+        metadata = details.get("metadata")
+        evidence = metadata.get("_harbor_ags_evidence") if isinstance(metadata, dict) else None
+        elapsed = evidence.get("elapsed_s") if isinstance(evidence, dict) else None
         if isinstance(elapsed, int | float):
             return float(elapsed)
     return None
@@ -47,7 +49,9 @@ def _trial_status(result: dict[str, Any], verdict: dict[str, Any] | None) -> str
     if isinstance(exception, dict):
         kind = str(exception.get("exception_type", ""))
         return "TIMEOUT" if "Timeout" in kind else "INFRA_ERROR"
-    reward = result.get("verifier_result", {}).get("rewards", {}).get("task")
+    verifier_result = result.get("verifier_result")
+    rewards = verifier_result.get("rewards") if isinstance(verifier_result, dict) else None
+    reward = rewards.get("task") if isinstance(rewards, dict) else None
     verdict_status = verdict.get("status") if verdict else None
     if reward == 1.0 and verdict_status in {"TASK_PASS", "PASS"}:
         return "PASS"
@@ -97,8 +101,12 @@ def read_rollout_results(job_dir: Path | str, *, agent_mode: str = "hermes") -> 
         verdict = _read_json(verdict_path) if verdict_path.is_file() else None
         trajectory_path = trial_dir / "agent/trajectory.full.json"
         agent_result = (
-            result.get("agent_result") if isinstance(result.get("agent_result"), dict) else {}
+            result.get("agent_result")
+            if isinstance(result.get("agent_result"), dict)
+            else {}
         )
+        verifier_result = result.get("verifier_result")
+        rewards = verifier_result.get("rewards") if isinstance(verifier_result, dict) else None
         token_info = {
             "input": agent_result.get("n_input_tokens"),
             "cache": agent_result.get("n_cache_tokens"),
@@ -108,7 +116,7 @@ def read_rollout_results(job_dir: Path | str, *, agent_mode: str = "hermes") -> 
             {
                 "trial_name": trial_dir.name,
                 "status": _trial_status(result, verdict),
-                "reward": result.get("verifier_result", {}).get("rewards", {}).get("task"),
+                "reward": rewards.get("task") if isinstance(rewards, dict) else None,
                 "verdict_status": verdict.get("status") if verdict else None,
                 "trajectory_present": trajectory_path.is_file(),
                 "tokens": token_info,
