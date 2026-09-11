@@ -61,3 +61,32 @@ def test_completion_prompt_exposes_paper_contract():
     assert "solvable, but NOT solved" in prompt
     assert "at most 5 candidates" in prompt
     assert "/app" in prompt
+
+
+def test_stage3_selection_requires_independent_sufficiency():
+    from traceforge.reconstruction.terminal_universe_environment import select_sufficient_candidate
+
+    candidates = [
+        {"decision": "READY", "confidence": 0.99, "uncertainties": []},
+        {"decision": "READY", "confidence": 0.8, "uncertainties": []},
+        {"decision": "REVIEW", "confidence": 1.0, "uncertainties": []},
+    ]
+    judges = [
+        {"label": "INSUFFICIENT", "decision": "REVIEW"},
+        {"label": "SUFFICIENT", "decision": "READY"},
+        {"label": "SUFFICIENT", "decision": "READY"},
+    ]
+    selected, audit = select_sufficient_candidate(candidates, judges)
+    assert selected == 1
+    assert audit["eligible_count"] == 1
+
+
+def test_stage3_returns_no_candidate_when_label_unknown():
+    from traceforge.reconstruction.terminal_universe_environment import select_sufficient_candidate
+
+    selected, audit = select_sufficient_candidate(
+        [{"decision": "READY", "confidence": 1.0}],
+        [{"label": "UNKNOWN", "decision": "REVIEW"}],
+    )
+    assert selected is None
+    assert audit["status"] == "NO_SUFFICIENT_CANDIDATE"

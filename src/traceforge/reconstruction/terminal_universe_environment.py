@@ -223,7 +223,7 @@ def build_completion_prompt(
     replay: ReplayResult,
     evidence: list[dict[str, Any]],
     *,
-    max_candidates: int = 5,
+    max_candidates: int = 3,
 ) -> str:
     """Return the B.1 contract, adapted from Terminal-Universe verbatim in spirit."""
     if max_candidates < 1 or max_candidates > 5:
@@ -329,6 +329,60 @@ def validate_completion_candidate(
     return not errors, tuple(errors)
 
 
+def select_sufficient_candidate(
+    candidates: Iterable[dict[str, Any]],
+    sufficiency: Iterable[dict[str, Any]] | None = None,
+) -> tuple[int | None, dict[str, Any]]:
+    """Apply Terminal-Universe Stage 3 and deterministic candidate screening.
+
+    A candidate is eligible only when both completion and the independent
+    read-only sufficiency judge say ``READY/SUFFICIENT``.  Selection never
+    uses rollout reward (that belongs to RED-check); ties are resolved by
+    confidence, uncertainty count, then original order.
+    """
+    rows = list(candidates)
+    judges = list(sufficiency or ())
+    eligible: list[tuple[float, int, int]] = []
+    rejected: list[dict[str, Any]] = []
+    for index, candidate in enumerate(rows):
+        if not isinstance(candidate, dict):
+            rejected.append({"index": index, "reason": "CANDIDATE_NOT_OBJECT"})
+            continue
+        decision = str(candidate.get("decision", candidate.get("status", "REVIEW")))
+        judge = judges[index] if index < len(judges) and isinstance(judges[index], dict) else {}
+        label = str(judge.get("label", "UNKNOWN"))
+        judge_decision = str(judge.get("decision", "REVIEW"))
+        if decision != "READY":
+            rejected.append({"index": index, "reason": "COMPLETION_NOT_READY"})
+            continue
+        if label != "SUFFICIENT" or judge_decision != "READY":
+            rejected.append({"index": index, "reason": "WORKSPACE_NOT_SUFFICIENT", "label": label})
+            continue
+        try:
+            confidence = float(candidate.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        uncertainty_count = (
+            len(candidate.get("uncertainties", []))
+            if isinstance(candidate.get("uncertainties", []), list)
+            else 0
+        )
+        eligible.append((confidence, -uncertainty_count, index))
+    if not eligible:
+        return None, {
+            "status": "NO_SUFFICIENT_CANDIDATE",
+            "eligible_count": 0,
+            "rejected": rejected,
+        }
+    _, _, selected = max(eligible, key=lambda row: (row[0], row[1], -row[2]))
+    return selected, {
+        "status": "SELECTED",
+        "selected_index": selected,
+        "eligible_count": len(eligible),
+        "rejected": rejected,
+    }
+
+
 def materialize_environment(
     replay: ReplayResult,
     candidate: dict[str, Any],
@@ -387,5 +441,6 @@ __all__ = [
     "build_completion_prompt",
     "materialize_environment",
     "replay_initial_workspace",
+    "select_sufficient_candidate",
     "validate_completion_candidate",
 ]
