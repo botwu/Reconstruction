@@ -60,6 +60,68 @@ def _safe_path(value: str) -> str:
     return path.as_posix()
 
 
+def _compact_evidence(
+    evidence: list[dict[str, Any]], max_chars: int = 18000
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """环境模型只接收有优先级的事实投影，避免完整回答挤掉任务和工具状态。"""
+    priority = {
+        "TARGET_REQUEST": 0,
+        "ATTEMPT_ACTION": 0,
+        "ATTEMPT_OBSERVATION": 0,
+        "ATTEMPT_RESPONSE": 0,
+    }
+    ordered = sorted(
+        enumerate(evidence), key=lambda x: (priority.get(str(x[1].get("phase")), 1), x[0])
+    )
+    rows: list[dict[str, Any]] = []
+    omitted: list[str] = []
+    used = 0
+    for index, item in ordered:
+        if not isinstance(item, dict):
+            continue
+        row = {
+            key: item.get(key)
+            for key in (
+                "evidence_ref_id",
+                "source_id",
+                "source_pointer",
+                "sequence_number",
+                "phase",
+                "role",
+                "event_kind",
+                "content_sha256",
+            )
+        }
+        text = item.get("text")
+        if isinstance(text, str):
+            row["text"] = text[:3000]
+            row["text_truncated"] = len(text) > 3000
+        payload = item.get("payload")
+        if item.get("event_kind") == "TOOL_CALL" and isinstance(payload, dict):
+            function = payload.get("function", {})
+            if isinstance(function, dict):
+                row["tool_name"] = function.get("name")
+                arguments = function.get("arguments")
+                row["tool_args"] = (
+                    arguments.get("value") if isinstance(arguments, dict) else arguments
+                )
+            row["tool_call_id"] = payload.get("tool_call_id")
+        encoded = repr(row)
+        if used + len(encoded) > max_chars:
+            omitted.append(str(row.get("evidence_ref_id") or f"index:{index}"))
+            continue
+        rows.append(row)
+        used += len(encoded)
+    return rows, {
+        "budget_chars": max_chars,
+        "used_chars": used,
+        "input_count": len(evidence),
+        "covered_count": len(rows),
+        "omitted_count": len(omitted),
+        "omitted_evidence_ref_ids": omitted,
+    }
+
+
 def _prompt(
     task: dict[str, Any], replay_files: list[dict[str, Any]], evidence: list[dict[str, Any]]
 ) -> str:
@@ -76,7 +138,7 @@ def _prompt(
         "runtime_constraints:[],uncertainties:[],decision:READY|REVIEW|DEFER|REJECT}],"
         f"open_questions:[]}}，最多 {MAX_ENVIRONMENT_CANDIDATES} 个候选。"
         f"\n任务：{task!r}\n确定性重放文件（含实际内容）：{replay_files!r}"
-        f"\n证据索引：{evidence!r}"
+        f"\n证据索引（工具参数、来源和覆盖范围保留）：{_compact_evidence(evidence)!r}"
     )
 
 

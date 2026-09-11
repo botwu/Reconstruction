@@ -194,3 +194,16 @@ def test_priority_target_and_attempt_events_are_covered_before_context():
     assert {"target", "action", "obs", "response"}.issubset(
         set(coverage["priority_covered_evidence_ref_ids"])
     )
+
+
+def test_source_quality_gate_overrides_ready():
+    outcome = recover(
+        kind="task",
+        attempt_ref="a",
+        source_report_id="r",
+        report={"status": "INCONCLUSIVE", "selection": {"pending_tool_call_count": 1}},
+        evidence=[{"evidence_ref_id": "e", "phase": "TARGET_REQUEST"}],
+        model=FakeModel(_task("e")),
+    )
+    assert outcome.status == RecoveryStatus.REVIEW
+    assert "SOURCE_QUALITY_REVIEW_REQUIRED" in outcome.errors

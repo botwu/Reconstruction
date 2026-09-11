@@ -85,7 +85,7 @@ def _json_preview(value: Any, limit: int = 4000) -> tuple[str, bool]:
 
 
 def _evidence_projection(
-    evidence: list[dict[str, Any]], *, max_chars: int = 22000
+    evidence: list[dict[str, Any]], *, max_chars: int = 32000
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """构造可审计证据视图；目标和尝试事实优先，长上下文才可被裁剪。"""
 
@@ -136,7 +136,11 @@ def _evidence_projection(
         text = item.get("text")
         if isinstance(text, str) and text:
             row["text"] = text
-        if payload is not None and not any(k in row for k in ("tool_args", "tool_result")):
+        if (
+            payload is not None
+            and "text" not in row
+            and not any(k in row for k in ("tool_args", "tool_result"))
+        ):
             preview, truncated = _json_preview(payload)
             row["payload_summary"] = preview
             row["payload_summary_truncated"] = truncated
@@ -207,7 +211,7 @@ def _evidence_projection(
 
 
 def _prompt_evidence(
-    evidence: list[dict[str, Any]], *, max_chars: int = 22000
+    evidence: list[dict[str, Any]], *, max_chars: int = 32000
 ) -> list[dict[str, Any]]:
     """返回带结构化调用、来源引用和覆盖元数据的证据投影。"""
     rows, coverage = _evidence_projection(evidence, max_chars=max_chars)
@@ -456,6 +460,24 @@ def recover(
             tuple(parsed),
             questions,
             tuple(errors),
+            receipt,
+        )
+    source_quality_review = bool(
+        report.get("status") in {"INCONCLUSIVE", "REVIEW"}
+        or report.get("quality", {}).get("requires_review")
+        or report.get("selection", {}).get("pending_tool_call_count", 0)
+        or report.get("provenance", {}).get("snapshot")
+        or any(item.get("phase") == "ATTEMPT_ACTION" for item in evidence if isinstance(item, dict))
+    )
+    if source_quality_review and all(x.decision == Decision.READY.value for x in parsed):
+        return SemanticRecoveryOutcome(
+            RecoveryStatus.REVIEW.value,
+            kind,
+            attempt_ref,
+            source_report_id,
+            tuple(parsed),
+            questions,
+            ("SOURCE_QUALITY_REVIEW_REQUIRED",),
             receipt,
         )
     status = (
