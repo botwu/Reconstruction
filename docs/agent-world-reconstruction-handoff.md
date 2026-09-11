@@ -4,6 +4,461 @@
 
 本文档面向后续继续开发的工程师，描述当前远程项目的真实代码状态、数据流、模块职责、产物契约、运行方式和未完成事项。本文档以代码为准；如果设计文档与代码冲突，应先以代码行为和测试为准，再更新本文档。
 
+
+> **2026-09-12 实现更新（优先于本文档后面的历史记录）**
+>
+> 本节是当前分支 `codex/agent-world-reconstruction` 的事实基线。此前文档中“Terminal-Universe replay 尚未接入 workflow”“Cross-WS/Multi-Round 完全不存在”等表述已经过时；它们描述的是更新前状态。当前仍未完成的部分在“尚未完成与禁止误报”中单独列出。
+
+### 当前目标与 Terminal-Universe 对齐标准
+
+本项目采用 Terminal-Universe 的环境重建策略：
+
+```text
+normalized trajectory
+  → deterministic replay
+  → recovered intent/task
+  → agentic environment completion
+  → workspace sufficiency filtering
+  → verifier construction
+  → Harbor/AGS teacher rollout
+  → RED-check
+  → SFT admission/export
+```
+
+论文的 Stage 1 只恢复 Agent 首次修改前观测到的文件；Agent 创建、修改和未建模 shell mutation 必须 withheld。Stage 2 才允许 completion agent 根据任务和证据补充上下文；Stage 3 由只读 judge 判断环境是否足以完成任务。三阶段的输出不能相互混淆：模型推断不能覆盖 replay 事实，sufficiency 不能由模型的“READY”字符串替代，rollout 通过也不能绕过 RED-check。
+
+### 规则、模型、Agent 的边界
+
+**规则系统（确定性、可复现）**
+
+- `trajectory`：读取和校验 JSONL、事件排序、schema、source hash、capture 和 request boundary；
+- `trajectory_replay`：按时间回放 read/write/edit，保存首次完整 read，隐藏写入和创建文件，记录 partial/barrier；不执行历史 shell；
+- `trajectory.evidence_join`：选择目标 USER、历史上下文、尝试动作、尝试观察和尝试回答；工具结果按 `tool_pairings` 判断，不把 `RESULT_NOT_OBSERVED` 解释成失败；
+- `environment_completion`：路径安全、禁止覆盖 COMPLETE 文件、只允许合法 evidence 引用、隐藏目录保护；
+- `sufficiency`：输入/输出 schema、证据存在性和 `UNKNOWN/REVIEW` 门禁；
+- `verifier`：测试语法、验收义务覆盖、oracle/mutation 数量和隐藏目录访问限制；
+- `harbor_ags`：Bundle 布局、Harbor 配置、凭据环境变量、trial 结果和 artifact 读取；
+- `red_check`：oracle 必须通过，nop/mutation 必须失败；
+- `curation`：reward、verifier、泄漏、可复现性、confidence 和人工复核门禁；
+- `control_plane`：阶段顺序、预算、retry、immutable artifact 和 review 状态。
+
+**模型调用**
+
+- `failure_analysis.model_analyzer`：从确定性 failure report 中判断根因和重建价值；
+- `semantic_recovery` / `task_recovery`：重述用户任务、提取意图、验收义务和歧义；
+- `environment_completion`：生成补全文件、依赖和环境候选；
+- `sufficiency_judge`：只读判断 workspace 是否充分；
+- `verifier.synthesis`：提出隐藏测试、oracle solution 和 mutation solution；
+- `verifier.iterative`：接收执行器反馈并有限次重新生成 verifier；
+- 后续 Cross-WS dependency judge 和 Multi-Round user agent 应通过相同 `ChatModel` 接口接入。
+
+模型永远只能提出候选。模型输出的路径、hash、evidence pointer、READY 状态和“可解”判断都必须经过规则系统复核。
+
+**Agent**
+
+Agent 是带状态的流程角色，不等同于一次模型请求：
+
+```text
+Failure Analysis Agent
+Task Recovery Agent
+Environment Completion Agent
+Sufficiency Agent
+Verifier Agent
+Hermes Solver Agent
+Oracle/NOP/Mutation Agent
+User Agent（Multi-Round）
+```
+
+当前已实现的 Agent 大多是单次模型调用包装器；`verifier.iterative` 已提供“生成—执行器—反馈—再生成”协议，但真实 Harbor executor 尚未接入。`ControlPlane` 是确定性状态机，不是模型 Agent。
+
+### 当前代码模块地图
+
+```text
+src/traceforge/trajectory/
+  编译、事件契约、来源 hash、证据 provenance
+src/traceforge/trajectory_replay/pipeline.py
+  Terminal-Universe Stage 1 deterministic replay
+src/traceforge/trajectory/evidence_join.py
+  Query 级证据投影与工具配对
+src/traceforge/failure_analysis/
+  M4 规则分析、AgentRx/TRACE 适配、模型裁决
+src/traceforge/reconstruction/semantic_recovery.py
+  Task/Environment 语义候选和证据回填
+src/traceforge/reconstruction/task_recovery.py
+  Task recovery artifact runner
+src/traceforge/reconstruction/environment_completion.py
+  环境候选物化、路径和泄漏保护
+src/traceforge/reconstruction/sufficiency_judge.py
+  workspace 只读充分性判断
+src/traceforge/verifier/synthesis.py
+  verifier 候选生成与结构校验
+src/traceforge/verifier/iterative.py
+  verifier 生成—执行反馈循环协议
+src/traceforge/verifier/bundle.py
+  Harbor task / public workspace / hidden verifier bundle
+src/traceforge/harbor_ags/
+  Harbor plan、执行桥接、结果解析
+src/traceforge/requery/
+  Cross-WS profile/gap、Multi-Round tracker、SFT JSONL exporter
+src/traceforge/curation/sft.py
+  SFT eligibility 规则
+```
+
+### 主 workflow 的当前入口
+
+推荐入口必须使用 normalized trajectory：
+
+```python
+run_reconstruction_workflow(
+    attempt_ref=<attempt-ref>,
+    source_report_id=<failure-report-id>,
+    report=<failure-analysis-report>,
+    evidence=<evidence-index>,
+    normalized_run_dir=<normalized-run>,
+    capture_id=<唯一-capture-id>,
+    model=<ChatModel>,
+    output_root=<output-root>,
+    harbor_root=<harbor-ags-project>,
+)
+```
+
+当 `normalized_run_dir` 存在时，workflow 首先调用 `build_trajectory_replay()`，然后从 `replay_manifest.json` 中读取唯一 capture 的 workspace 和文件索引，再传给 Environment Completion。未指定 normalized run 时仍兼容旧的 `replay_workspace/replay_files` 参数，但这条兼容路径不会自动证明 workspace 与 session 绑定；生产运行应禁止使用它。
+
+workflow 的顺序和停止条件：
+
+```text
+1. deterministic replay
+2. task recovery
+   - task artifact 必须 status=COMPLETE
+3. environment completion
+4. candidate sufficiency judge
+   - 仅 SUFFICIENT + READY 候选继续
+5. verifier synthesis
+6. Harbor bundle compilation
+7. Harbor rollout plan
+8. 可选真实执行（execute_rollout=True）
+9. oracle/nop/mutation RED-check
+10. SFT curation
+11. SFT JSONL export
+```
+
+任何 Task `REVIEW`、Environment `REVIEW`、Sufficiency `UNKNOWN`、Verifier 未校准、Harbor 结果缺失或 RED-check 失败都会停止向 SFT 传递。
+
+### Stage 1：Deterministic Replay 契约
+
+`trajectory_replay.build_trajectory_replay()` 的输入是 normalized artifact，不是原始 session 任意文本。其输出目录包含：
+
+```text
+replay_manifest.json
+metrics.json
+workspaces/<capture-id>/...
+```
+
+每个 capture 的 manifest 至少包含：
+
+```json
+{
+  "capture_occurrence_id": "...",
+  "workspace_path": "workspaces/<capture-id>",
+  "files": [
+    {
+      "path": "...",
+      "completeness": "COMPLETE|PARTIAL",
+      "source_event_id": "...",
+      "content_sha256": "..."
+    }
+  ],
+  "withheld_changes": [],
+  "partial_evidence": [],
+  "unknown_mutation_barriers": [],
+  "status": "RECOVERED|PARTIAL"
+}
+```
+
+规则：
+
+- 只接受首次 mutation 前的完整 read-result；
+- offset/limit/line range 读取进入 PARTIAL；
+- mutation 后的 read 不作为初始完整文件；
+- write/edit/create/delete 的新内容永不复制；
+- shell、exec、terminal 等未建模修改形成 barrier；
+- 不执行 trajectory 中的历史命令；
+- capture 不唯一时必须显式传 `capture_id`，禁止跨 session 猜 workspace。
+
+### Stage 2：Task Recovery 契约
+
+Task recovery 的输入不是“最后一条消息”，而是证据投影：
+
+```text
+PRE_TASK_CONTEXT
+TARGET_REQUEST
+ATTEMPT_RESPONSE
+ATTEMPT_ACTION
+ATTEMPT_OBSERVATION
+```
+
+模型提示会保留：
+
+- 用户原始目标；
+- 任务前历史用户问题和可见上下文；
+- Agent 工具名称、参数、调用 ID；
+- 工具结果是否真正观测到；
+- source_id、source_pointer、content_sha256；
+- 证据覆盖和裁剪情况。
+
+模型返回的 evidence 只允许引用输入 ID。返回的 role、source pointer 和 hash 会由输入索引回填，不能信任模型改写。
+
+Task 候选必须包含：
+
+```text
+task_title
+task_instruction
+user_intent
+acceptance_obligations
+explicit_constraints
+ambiguities
+do_not_infer
+evidence
+confidence
+decision
+```
+
+如果来源是 snapshot、存在 pending tool result、输入被截断或 report 为 INCONCLUSIVE，即使模型返回 READY，最终 recovery status 也必须是 REVIEW。
+
+### Stage 2：Environment Completion 契约
+
+Environment Completion 接收：
+
+```text
+task candidate
+replayed workspace
+replay file completeness
+trajectory evidence
+```
+
+模型只允许提出：
+
+```text
+files
+  path
+  content
+  provenance
+  evidence_ref_ids
+dependencies
+runtime_constraints
+uncertainties
+decision
+```
+
+规则门禁：
+
+- 文件路径必须位于 workspace 内；
+- 不允许 `..`、绝对宿主机路径、`.git`、solution、tests、hidden_control；
+- COMPLETE replay 文件不可覆盖；
+- 新文件必须引用真实 evidence ID；
+- completion 不得写任务答案、测试、solution 或 expected output；
+- 所有候选必须保留 uncertainty；
+- 模型返回非 JSON、超时或未知 evidence 时发布 FAILED/REVIEW artifact，不伪造成功。
+
+当前环境 completion 已支持多个候选，但真正进入下游前还必须通过只读 sufficiency judge。
+
+### Stage 3：Sufficiency Judge 契约
+
+Sufficiency judge 只读取 workspace，不修改 workspace。输出：
+
+```json
+{
+  "label": "SUFFICIENT|INSUFFICIENT|UNKNOWN",
+  "decision": "READY|REVIEW",
+  "reason": "...",
+  "missing_context": [],
+  "evidence_ref_ids": [],
+  "confidence": 0.0
+}
+```
+
+`UNKNOWN`、缺 evidence、非法 label、非法 confidence 或模型调用失败都会进入 REVIEW。当前 judge 的真实容器执行尚未完成，不能把本地目录读取等同于论文中的容器内只读审查。
+
+### Verifier 与论文的对应
+
+论文要求 verifier agent 在目标容器中生成测试，并通过执行反馈迭代校正。当前实现分为两层：
+
+1. `verifier.synthesis`：模型生成 pytest、oracle 和 mutation solution；规则只做 AST、字段、义务覆盖和隐藏路径检查；
+2. `verifier.iterative`：调用外部 `VerifierExecutor.run(candidate)`，将 PASS/FAIL/INFRA_ERROR 反馈给模型，最多重试 3 轮。
+
+当前 `VerifierExecutor` 仍是协议，固定替身测试已覆盖；真实 Harbor executor 需要把候选测试复制到 verifier sandbox 中执行，再将有界 stdout/stderr 和测试摘要反馈给模型。模型生成的 Python 禁止在宿主机直接执行。
+
+### Harbor/AGS 与 Hermes
+
+`harbor_ags.rollout.build_rollout_plan()` 负责：
+
+- 校验 Harbor task bundle；
+- 复制成 Harbor dataset；
+- 生成冻结 Harbor config；
+- 写入 Hermes/oracle/nop 模式和 trials；
+- 记录凭据需求但不保存凭据。
+
+`execute_rollout_plan()` 才会启动外部 Harbor。真实执行需要：
+
+```text
+AGS_API_KEY
+TOKENHUB_KEY 或 ANTHROPIC_API_KEY
+Harbor .venv/bin/harbor
+harbor_ags/configs/{hermes-batch,oracle,nop}.yaml
+```
+
+没有完整 Harbor CLI、AGS sandbox 和至少一次 oracle pass+nop fail+mutation fail 结果时，不能报告“Harbor/AGS 已打通”，只能报告 PLAN_ONLY。
+
+### Cross-WS 实现状态
+
+`traceforge.requery.cross_workspace` 当前完成 deterministic 基础层：
+
+- 读取 workspace 文件；
+- 过滤隐藏目录；
+- 提取语言、tokens 和 capability markers；
+- 计算方向性 capability gap；
+- 生成 reference workspace 只读挂载的任务提示。
+
+论文完整策略还需要：
+
+```text
+workspace profile agent
+  → TF-IDF nearest-neighbor retrieval
+  → LLM directional dependency judge
+  → target writable + reference read-only Harbor mount
+  → verifier-filtered rollout
+```
+
+当前尚未实现 TF-IDF 检索、LLM dependency judge 和真实双 workspace Harbor rollout。
+
+### Multi-Round 实现状态
+
+`traceforge.requery.multi_round` 当前完成 deterministic 基础层：
+
+- requirement tracker；
+- active/satisfied/updated/replaced 状态；
+- 根据 PASS/FAIL 生成后续用户反馈提示；
+- 连续 round 序号校验；
+- 至少两个 PASS round 的保留门禁。
+
+论文完整策略还需要：
+
+```text
+初始 rollout
+  → user agent 更新 requirement tracker
+  → verifier 为当前 round 生成测试
+  → Harbor 持久 workspace 执行
+  → 自然语言用户反馈
+  → 最多六个 follow-up round
+  → 至少两个 verified PASS round 保留
+```
+
+当前还没有真实 user agent、持久 Harbor workspace 和多轮 rollout。
+
+### SFT 数据契约
+
+`traceforge.requery.sft_export.export_sft_jsonl()` 只接受明确 `ELIGIBLE` 的 row，并强制检查：
+
+```text
+candidate_id
+ task
+ trajectory
+solution_leakage == False
+reproducible == True
+```
+
+实际进入训练集还必须同时满足 `curation.sft.curate_candidate()`：
+
+- verifier status PASS；
+- reward 达到阈值；
+- task/environment confidence 达标；
+- trajectory quality 达标；
+- leakage 明确为 False；
+- reproducible 明确为 True。
+
+当前 exporter 和规则测试已经存在，但由于真实 Harbor 尚未产出合格 trial，当前项目没有可以声称“论文标准 SFT 已生成”的样本。
+
+### 真实样本走查记录
+
+样本 capture 是一次请求快照，不是完整 session。实际观察到：
+
+```text
+10 events
+7 PRE_TASK_CONTEXT
+1 TARGET_REQUEST
+1 ATTEMPT_RESPONSE
+1 ATTEMPT_ACTION
+0 ATTEMPT_OBSERVATION
+1 RESULT_NOT_OBSERVED tool pairing
+```
+
+目标问题是根据之前提问推测用户画像；工具调用是 `chat_history_get(rounds=1..19)`。完整返回没有出现在 capture 中，所以：
+
+- Task recovery 可以生成候选，但必须 REVIEW；
+- Environment completion 不能猜测缺失历史内容；
+- 环境模型返回的未知 evidence 路径会被拒绝；
+- 该样本不能进入 SFT。
+
+这不是 pipeline 失败，而是正确的数据充分性判定。
+
+### 测试和提交记录
+
+最近一轮针对性测试：
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest -q \
+  tests/test_trajectory_replay.py \
+  tests/test_reconstruction_workflow.py \
+  tests/test_evidence_join.py \
+  tests/test_semantic_recovery.py \
+  tests/test_model_gateway_config.py \
+  tests/test_recovery_artifact_runners.py \
+  tests/test_requery.py \
+  tests/test_verifier_iterative.py
+```
+
+结果：`38 passed`。相关提交：
+
+```text
+74f6548  修复: 保留回流轨迹关键执行证据
+6c4d8db  修复: 持久化环境模型调用失败
+998ab21  修复: 对证据不足候选启用重建门禁
+0ac088a  修复: 扩大环境候选响应预算
+c6ceca7  修复: 工作流阻断未通过任务门禁的候选
+a695889  功能: 增加跨工作区多轮与 SFT 导出
+a05ee61  功能: 将确定性回放接入重建工作流
+6a03f90  功能: 增加验证器容器反馈循环
+```
+
+### 尚未完成与禁止误报
+
+以下项目仍然明确未完成：
+
+1. 将真实 Harbor verifier executor 接入 `verifier.iterative`；
+2. 在真实 Harbor/AGS 容器中运行 sufficiency judge；
+3. 配置可用 Harbor CLI、Hermes、AGS sandbox 并产出 oracle pass/nop fail/mutation fail；
+4. 将 Cross-WS 的 TF-IDF、dependency judge 和双 workspace mount 接入真实 rollout；
+5. 将 Multi-Round user agent、持久 workspace 和逐轮 verifier 接入 workflow；
+6. 用真实通过的 rollout 生成首批 SFT JSONL；
+7. 将 `ControlPlane` 的 gate decision 写入每个 workflow stage，而不是仅作为独立 engine。
+
+在以上项目完成前，不得在交接、论文或实验报告中使用：
+
+```text
+“完整 Terminal-Universe 已复现”
+“Harbor/AGS 已通过真实 E2E”
+“已生成论文标准 SFT 数据”
+```
+
+应使用：
+
+```text
+“Stage 1 replay 已接入”
+“Stage 2 候选生成和安全门禁已实现”
+“Verifier 迭代协议已实现，真实容器执行待接入”
+“Harbor rollout plan 已实现，真实通过样本待产生”
+```
+
 项目位置：
 
 ```text
