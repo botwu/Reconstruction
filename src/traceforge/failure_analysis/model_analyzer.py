@@ -293,6 +293,21 @@ def _parse_result(
     critical_events = _string_list(
         payload.get("critical_event_ids", []), "critical_event_ids", errors
     )
+    allowed_events = {
+        str(item.get(key))
+        for item in evidence
+        if isinstance(item, dict)
+        for key in ("source_id", "event_id")
+        if isinstance(item.get(key), str) and item.get(key)
+    }
+    allowed_events.update(
+        str(event_id)
+        for event_id in report.get("critical_event_ids", [])
+        if isinstance(event_id, str) and event_id
+    )
+    unknown_events = sorted(set(critical_events) - allowed_events)
+    if unknown_events:
+        errors.append("UNKNOWN_CRITICAL_EVENT_ID:" + ",".join(unknown_events))
 
     intent = payload.get("user_intent_boundary")
     if not isinstance(intent, dict):

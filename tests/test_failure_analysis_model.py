@@ -141,3 +141,15 @@ def test_non_object_inputs_are_rejected_before_model_call():
         analyze_failure(report=[], evidence=EVIDENCE, model=FakeModel(payload()))
     with pytest.raises(TypeError):
         analyze_failure(report=REPORT, evidence={}, model=FakeModel(payload()))
+
+
+def test_unknown_critical_event_is_reviewed():
+    result = analyze_failure(
+        report=REPORT,
+        evidence=EVIDENCE,
+        model=FakeModel(payload(critical_event_ids=["event-not-provided"])),
+    )
+    assert result.status == ModelAnalysisStatus.REVIEW
+    assert result.decision == "REVIEW"
+    assert result.needs_reconstruction is None
+    assert any("UNKNOWN_CRITICAL_EVENT_ID" in reason for reason in result.review_reasons)
