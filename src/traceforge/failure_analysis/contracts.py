@@ -366,6 +366,19 @@ def validate_invariant_check(check: InvariantCheckV1) -> None:
         raise ValueError("非 ERROR 结果不应携带 error_code")
 
 
+def analysis_run_id(*, m1b_run_id: str, m1b_manifest_sha256: str) -> str:
+    """兼容 M4 pipeline 的上游 M1B 运行身份公式。"""
+
+    return stable_id(
+        FAILURE_ANALYSIS_RUN_ID_NAMESPACE,
+        {
+            "contract_version": FAILURE_ANALYSIS_CONTRACT_VERSION,
+            "m1b_run_id": m1b_run_id,
+            "m1b_manifest_sha256": m1b_manifest_sha256,
+        },
+    )
+
+
 __all__ = [
     "EVIDENCE_REF_SCHEMA",
     "FAILURE_ANALYSIS_CONTRACT_VERSION",
@@ -396,15 +409,3 @@ __all__ = [
     "validate_failure_analysis_report",
     "validate_reconstructability_gate",
 ]
-
-def analysis_run_id(*, m1b_run_id: str, m1b_manifest_sha256: str) -> str:
-    """兼容 M4 pipeline 的上游 M1B 运行身份公式。"""
-
-    return stable_id(
-        FAILURE_ANALYSIS_RUN_ID_NAMESPACE,
-        {
-            "contract_version": FAILURE_ANALYSIS_CONTRACT_VERSION,
-            "m1b_run_id": m1b_run_id,
-            "m1b_manifest_sha256": m1b_manifest_sha256,
-        },
-    )
