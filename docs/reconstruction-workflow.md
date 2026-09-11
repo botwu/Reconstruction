@@ -15,6 +15,9 @@
 
 ## 语义模块与职责
 
+0. **Failure Analysis Agent**（failure_analysis/model_analyzer.py）  
+   在确定性结构分析之后判断 SUCCESS/FAILURE/INCOMPLETE/UNCERTAIN，定位首个未解决失败步骤，给出用户意图边界、重建价值 rubric 和 needs_reconstruction。未知证据、未知事件、状态矛盾一律 REVIEW；不会把缺失标签当失败。
+
 1. **Task Recovery**（task_recovery.py / semantic_recovery.py）  
    依据用户显式请求重述任务、验收义务、约束和歧义。模型只能引用 evidence 索引；未知引用、缺失验收义务或低置信度进入人工复核。
 
