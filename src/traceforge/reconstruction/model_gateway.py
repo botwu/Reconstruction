@@ -227,7 +227,7 @@ class NewAPIClient:
                         str(part.get("text", "")) for part in content if isinstance(part, dict)
                     )
                 else:
-                    text = str(content)
+                    text = content if isinstance(content, str) else ""
             except (
                 UnicodeDecodeError,
                 json.JSONDecodeError,
@@ -413,7 +413,13 @@ def resolve_model_name(
     ):
         return requested
     if config_path is not None:
-        defaults = {"gemini": "gemini-2.5-pro", "gpt": "gpt-5", "claude": "claude-opus-4-8"}
+        defaults = {
+            "gemini": "gemini-2.5-pro",
+            "gpt": "gpt-5",
+            "claude": "claude-opus-4-8",
+            # TokenHub 当前 deepseek channel 暴露的稳定低成本模型。
+            "deepseek": "vol/deepseek-v4-flash-0731",
+        }
         return defaults.get(channel, channel)
     return requested or "claude-opus-4-8"
 

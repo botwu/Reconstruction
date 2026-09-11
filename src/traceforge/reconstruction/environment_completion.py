@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
@@ -33,10 +34,25 @@ class EnvironmentCompletionError(RuntimeError):
 
 
 def _safe_path(value: str) -> str:
-    path = PurePosixPath(value)
-    if not value or path.is_absolute() or ".." in path.parts:
+    normalized = value.replace("\\", "/")
+    # 模型有时沿用提示中的容器根 `/app/`；只允许剥离这一固定前缀，
+    # 其它绝对路径仍然拒绝，避免把候选写到宿主机路径。
+    if normalized.startswith("/app/"):
+        normalized = normalized[5:]
+    path = PurePosixPath(normalized)
+    if (
+        not value
+        or normalized.startswith("/")
+        or any(
+            ":" in part and not (index == 0 and re.fullmatch(r"[A-Za-z]:", part))
+            for index, part in enumerate(path.parts)
+        )
+        or path.is_absolute()
+        or "." in path.parts
+        or ".." in path.parts
+    ):
         raise EnvironmentCompletionError(f"不安全的 workspace 路径：{value!r}")
-    if path.parts[0] in {"solution", "tests", "environment"}:
+    if any(part in {"solution", "tests", "environment", "hidden_control", ".git"} for part in path.parts):
         raise EnvironmentCompletionError(f"补全不得写入隐藏或运行时目录：{value}")
     return path.as_posix()
 
@@ -104,7 +120,13 @@ def _materialize(
     replay: dict[str, dict[str, Any]],
     allowed_refs: set[str],
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    shutil.copytree(root, destination)
+    # 只复制经过索引和 hash 校验的回放文件。原始 workspace 中未索引的
+    # 文件可能包含答案、测试或宿主机秘密，不能因 copytree 被带入 public。
+    destination.mkdir(parents=True, exist_ok=False)
+    for path, item in replay.items():
+        target = destination / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(str(item["content"]), encoding="utf-8")
     errors: list[str] = []
     proposed = candidate.get("files")
     if not isinstance(proposed, list):
@@ -165,9 +187,7 @@ def _materialize(
                     "path": relative,
                     "content": content,
                     "content_sha256": hashlib.sha256(content.encode()).hexdigest(),
-                    "provenance": provenance.get(
-                        relative, {"kind": "REPLAYED_UNINDEXED", "evidence_ref_ids": []}
-                    ),
+                    "provenance": provenance.get(relative, {"kind": "REPLAYED", "evidence_ref_ids": []}),
                 }
             )
     return files, []

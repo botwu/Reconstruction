@@ -126,3 +126,15 @@ def test_rollout_model_requires_provider_for_non_claude():
         assert "rollout_model" in str(exc)
     else:
         raise AssertionError("non-Claude rollout must require explicit provider/model")
+
+
+def test_latest_job_dir_handles_direct_and_trial_layouts(tmp_path: Path):
+    from traceforge.reconstruction.workflow import _latest_job_dir
+    root = tmp_path / "jobs"
+    (root / "job-direct").mkdir(parents=True)
+    (root / "job-direct" / "result.json").write_text("{}")
+    assert _latest_job_dir(root, set()) == root / "job-direct"
+    trial = root / "job-trial" / "trial-1"
+    (trial / "agent").mkdir(parents=True)
+    (trial / "result.json").write_text("{}")
+    assert _latest_job_dir(root, {root / "job-direct"}) == root / "job-trial"

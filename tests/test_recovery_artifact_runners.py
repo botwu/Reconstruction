@@ -110,3 +110,18 @@ def test_environment_completion_rejects_complete_overwrite(tmp_path):
     record = json.loads((out / "environment_completion.json").read_text())
     assert record["candidates"][0]["status"] == "REVIEW"
     assert "PROTECTED_FILE_OVERWRITE:a.txt" in record["candidates"][0]["errors"]
+
+
+def test_environment_completion_excludes_unindexed_files(tmp_path):
+    replay = tmp_path / "replay"
+    replay.mkdir()
+    (replay / "observed.txt").write_text("seen", encoding="utf-8")
+    (replay / "solution.txt").write_text("secret answer", encoding="utf-8")
+    payload = {"candidates": [{"files": [], "decision": "READY"}]}
+    out = run_environment_completion(
+        task={}, attempt_ref="a", replay_workspace=replay,
+        replay_files=[{"path": "observed.txt", "completeness": "COMPLETE"}],
+        evidence=[{"evidence_ref_id": "e"}], model=FakeModel(payload), output_root=tmp_path / "out",
+    )
+    files = json.loads((out / "environment_completion.json").read_text())["candidates"][0]["files"]
+    assert [item["path"] for item in files] == ["observed.txt"]

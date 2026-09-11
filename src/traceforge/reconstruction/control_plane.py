@@ -97,11 +97,17 @@ def evaluate_gate(
         observation = {**observation, "retryable": True}
     candidate_count = observation.get("candidate_count", 1)
     evidence_count = observation.get("evidence_count", 0)
+    malformed_counts = False
     try:
+        if isinstance(candidate_count, bool) or isinstance(evidence_count, bool):
+            raise ValueError
         candidate_count = int(candidate_count)
         evidence_count = int(evidence_count)
+        if candidate_count < 0 or evidence_count < 0:
+            raise ValueError
     except (TypeError, ValueError):
-        candidate_count, evidence_count = -1, -1
+        candidate_count, evidence_count = 0, 0
+        malformed_counts = True
     if (
         artifact is None
         and policy.immutable_artifacts
@@ -116,11 +122,13 @@ def evaluate_gate(
             status, reasons = GateStatus.RETRY, [f"RETRYABLE_ERROR:{error_code}"]
         else:
             status, reasons = GateStatus.FAIL, [f"STAGE_ERROR:{error_code}"]
-    elif budget.max_candidates < int(observation.get("candidate_count", 1)):
+    elif malformed_counts:
+        status, reasons = GateStatus.BLOCKED, ["INVALID_GATE_COUNTS"]
+    elif budget.max_candidates < candidate_count:
         status, reasons = GateStatus.REVIEW, ["CANDIDATE_LIMIT_EXCEEDED"]
     elif (
         budget.require_evidence
-        and int(observation.get("evidence_count", 0)) < policy.min_evidence_refs
+        and evidence_count < policy.min_evidence_refs
     ):
         status, reasons = GateStatus.BLOCKED, ["INSUFFICIENT_EVIDENCE"]
     elif observation.get("uncertain") and policy.require_human_review_for_uncertain:
@@ -129,7 +137,7 @@ def evaluate_gate(
         status, reasons = GateStatus.REVIEW, ["HUMAN_REVIEW_REQUIRED"]
     elif observation.get("quality_gate") is False:
         status, reasons = GateStatus.FAIL, ["QUALITY_GATE_FAILED"]
-    elif observation.get("status") in {"FAIL", "REJECT", "BLOCKED"}:
+    elif observation.get("status") in {"FAIL", "REJECT", "BLOCKED", "FAILED", "INCONCLUSIVE", "DEFER"}:
         status, reasons = GateStatus.FAIL, [f"UPSTREAM_STATUS:{observation['status']}"]
     else:
         reasons = ["ALL_GATES_PASSED"]
@@ -149,8 +157,8 @@ def evaluate_gate(
         next_stage=next_stage,
         retryable=retryable,
         metrics={
-            "candidate_count": observation.get("candidate_count", 0),
-            "evidence_count": observation.get("evidence_count", 0),
+            "candidate_count": candidate_count,
+            "evidence_count": evidence_count,
         },
     )
 
@@ -212,6 +220,7 @@ class ControlPlane:
                 retryable=False,
                 metrics=decision.metrics,
             )
+            status = RunStatus.BLOCKED.value
         elif decision.status == GateStatus.PASS.value:
             if decision.next_stage is None:
                 status = RunStatus.COMPLETE.value

@@ -85,3 +85,29 @@ def test_review_cannot_be_bypassed_without_resolution():
     blocked = cp.gate(Stage.FAILURE_ANALYSIS, {"evidence_count": 1})
     assert blocked.status == GateStatus.REVIEW
     assert cp.state.status == "REVIEW"
+
+
+def test_gate_rejects_malformed_counts_and_unknown_upstream_status():
+    policy = default_policy()
+    invalid = evaluate_gate(
+        run_id="run", stage=Stage.TASK_RECOVERY, attempt=1,
+        observation={"candidate_count": "many", "evidence_count": 1}, policy=policy,
+    )
+    assert invalid.status == GateStatus.BLOCKED
+    assert "INVALID_GATE_COUNTS" in invalid.reasons
+    inconclusive = evaluate_gate(
+        run_id="run", stage=Stage.TASK_RECOVERY, attempt=1,
+        observation={"candidate_count": 1, "evidence_count": 1, "status": "INCONCLUSIVE"}, policy=policy,
+    )
+    assert inconclusive.status == GateStatus.FAIL
+
+
+def test_retry_budget_moves_control_plane_to_blocked():
+    policy = type(default_policy())(
+        budgets=default_policy().budgets, max_total_retries=0,
+    )
+    cp = ControlPlane("run", policy)
+    cp.gate(Stage.INGESTION, {"evidence_count": 1})
+    decision = cp.gate(Stage.FAILURE_ANALYSIS, {"error_code": "TRANSIENT", "retryable": True})
+    assert decision.status == GateStatus.BLOCKED
+    assert cp.state.status == "BLOCKED"

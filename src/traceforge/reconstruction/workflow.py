@@ -63,8 +63,16 @@ def _latest_job_dir(jobs_root: Path, before: set[Path]) -> Path | None:
     if not jobs_root.is_dir():
         return None
     for result in jobs_root.rglob("result.json"):
-        job = result.parent.parent
-        if job not in before:
+        # Harbor 的标准布局是 job/trial/result.json；某些版本则直接写
+        # job/result.json。根据 trial 旁的 verifier/agent 目录判定层级，
+        # 不能无条件 parent.parent（直接布局会误选 jobs 根目录）。
+        trial_or_job = result.parent
+        job = (
+            trial_or_job.parent
+            if (trial_or_job / "agent").is_dir() or (trial_or_job / "verifier").is_dir()
+            else trial_or_job
+        )
+        if job not in before and job != jobs_root:
             candidates.append(job)
     if not candidates:
         return None
@@ -389,7 +397,17 @@ def run_reconstruction_workflow(
         }
         result = hermes_run.get("results")
         trials = result.get("trials", []) if isinstance(result, dict) else []
+        reproducible = (
+            len(trials) == rollout_trials
+            and rollout_trials >= 2
+            and all(isinstance(trial, dict) and trial.get("status") == "PASS" for trial in trials)
+        )
         rows = []
+        hermes_quality = (
+            isinstance(result, dict)
+            and isinstance(result.get("quality_gate"), dict)
+            and result["quality_gate"].get("ok") is True
+        )
         for index, trial in enumerate(trials):
             rows.append(
                 {
@@ -403,9 +421,15 @@ def run_reconstruction_workflow(
                     "reward": trial.get("reward"),
                     "task_recovery_confidence": task.get("confidence", 0.0),
                     "environment_recovery_confidence": environment.get("confidence", 0.0),
-                    "trajectory_quality": 1.0 if trial.get("trajectory_present") else 0.0,
+                    "trajectory_quality": (
+                        1.0
+                        if hermes_quality
+                        and trial.get("trajectory_present") is True
+                        and trial.get("artifact_manifest_present") is True
+                        else 0.0
+                    ),
                     "solution_leakage": not red_report.passed,
-                    "reproducible": rollout_trials >= 2 and trial.get("status") == "PASS",
+                    "reproducible": reproducible,
                     "trajectory_artifact": trial.get("result_path"),
                 }
             )
@@ -413,11 +437,6 @@ def run_reconstruction_workflow(
         for row in rows:
             candidate = curate_candidate(row, curation_thresholds or CurationThresholds())
             curated.append(candidate.to_dict())
-        hermes_quality = (
-            isinstance(result, dict)
-            and isinstance(result.get("quality_gate"), dict)
-            and result["quality_gate"].get("ok") is True
-        )
         eligible_count = sum(
             item.get("eligibility") == "ELIGIBLE" for item in curated
             if isinstance(item, dict)

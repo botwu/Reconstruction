@@ -100,6 +100,10 @@ def _evidence(items: Any, allowed: set[str]) -> tuple[tuple[RecoveryEvidenceV1, 
     output: list[RecoveryEvidenceV1] = []
     errors: list[str] = []
     for item in items:
+        # 模型常将只含 id 的证据写成字符串；在允许集合内可无损规范化，
+        # 仍然要求该 id 来自输入索引，不能借此引入新证据。
+        if isinstance(item, str):
+            item = {"evidence_ref_id": item, "role": "MODEL_REFERENCED", "source_pointer": ""}
         if not isinstance(item, dict):
             errors.append("EVIDENCE_ITEM_NOT_OBJECT")
             continue
@@ -151,6 +155,15 @@ def _files(candidate: dict[str, Any], key: str, visibility: str) -> tuple[Enviro
             )
         )
     return tuple(output)
+
+
+def _confidence_value(value: Any) -> float:
+    """规范化模型常见的 low/medium/high 标签；未知值仍保持拒绝。"""
+    if isinstance(value, str):
+        labels = {"low": 0.3, "medium": 0.6, "high": 0.9}
+        if value.strip().lower() in labels:
+            return labels[value.strip().lower()]
+    return float(value)
 
 
 def canonicalize_evidence(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -248,7 +261,7 @@ def recover(
                     tuple(x for x in candidate.get("ambiguities", []) if isinstance(x, str)),
                     tuple(x for x in candidate.get("do_not_infer", []) if isinstance(x, str)),
                     refs,
-                    float(candidate.get("confidence", 0.0)),
+                    _confidence_value(candidate.get("confidence", 0.0)),
                     decision,
                 )
                 validate_task_recovery(value)
@@ -270,7 +283,7 @@ def recover(
                     ),
                     tuple(x for x in candidate.get("completion_actions", []) if isinstance(x, str)),
                     tuple(x for x in candidate.get("uncertainties", []) if isinstance(x, str)),
-                    float(candidate.get("confidence", 0.0)),
+                    _confidence_value(candidate.get("confidence", 0.0)),
                     decision,
                 )
                 validate_environment_recovery(value)

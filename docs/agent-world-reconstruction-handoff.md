@@ -795,7 +795,7 @@ trajectory_quality >= 0.8
 reward >= 1.0
 verifier_status == PASS
 solution_leakage == false
-reproducible == false
+reproducible == true
 ```
 
 其中 `solution_leakage` 和 `reproducible` 必须是上游显式计算的布尔值：
