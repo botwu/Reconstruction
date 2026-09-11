@@ -33,11 +33,11 @@
 
 ## 当前状态
 
-未修改 TraceForge 代码，未调用 teacher，未构建 TaskHypothesis，未启动 AGS。
+已修改 TraceForge 代码完成 R01 adapter 和 M4 CLI 接入；尚未调用 teacher 或启动 AGS。
 ## 已完成验证（2026-09-11）
 
 - 输入记录：103/103 JSONL 记录解析成功。
-- 规范化 capture：102；明确隔离 1 条，原因是 （第 25 行消息 content 既不是字符串也不是 content block 数组）。
+- 规范化 capture：102；明确隔离 1 条，原因是 MESSAGE_CONTENT_INVALID（第 25 行消息 content 既不是字符串也不是 content block 数组）。
 - 事件：26,681；工具调用/结果配对：8,238；action batch：7,310。
-- ：通过；source schema 为 。
+- validate_compiled_run：通过；source schema 为 traceforge.r01-sessions.v1。
 - 在干净 provenance 的 M1B 产物上运行 M4 确定性 Failure Analysis：102 条报告、无结构 FAIL，说明后续必须由语义模型分析任务/环境/solver 归因，不能把 M1B 结构完整性当作失败标签。
