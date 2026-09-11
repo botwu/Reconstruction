@@ -109,4 +109,4 @@ def test_environment_completion_rejects_complete_overwrite(tmp_path):
     )
     record = json.loads((out / "environment_completion.json").read_text())
     assert record["candidates"][0]["status"] == "REVIEW"
-    assert "COMPLETE_FILE_OVERWRITE:a.txt" in record["candidates"][0]["errors"]
+    assert "PROTECTED_FILE_OVERWRITE:a.txt" in record["candidates"][0]["errors"]
