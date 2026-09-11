@@ -39,6 +39,22 @@ from .contracts import (
 MODEL_ANALYSIS_SCHEMA = "traceforge.failure-analysis-model.v1"
 MODEL_ANALYSIS_PROMPT_VERSION = "agentrx-trace-rubric-failure-analysis.v1"
 
+def canonicalize_evidence(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """接受 M4 evidence_id，并归一化为模型分析契约的 evidence_ref_id。"""
+    output: list[dict[str, Any]] = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            output.append(item)
+            continue
+        value = dict(item)
+        if not value.get("evidence_ref_id") and isinstance(value.get("evidence_id"), str):
+            value["evidence_ref_id"] = value["evidence_id"]
+        if not value.get("source_id") and isinstance(value.get("event_id"), str):
+            value["source_id"] = value["event_id"]
+        output.append(value)
+    return output
+
+
 RUBRIC_KEYS = (
     "task_identifiability",
     "failure_evidence",
@@ -495,4 +511,5 @@ __all__ = [
     "FailureAnalysisModelResult",
     "ModelAnalysisStatus",
     "analyze_failure",
+    "canonicalize_evidence",
 ]

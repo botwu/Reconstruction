@@ -153,6 +153,24 @@ def _files(candidate: dict[str, Any], key: str, visibility: str) -> tuple[Enviro
     return tuple(output)
 
 
+def canonicalize_evidence(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """统一 M4 evidence_id 与重建阶段 evidence_ref_id 的字段名。"""
+    if not isinstance(evidence, list):
+        raise TypeError("evidence 必须是 array")
+    output: list[dict[str, Any]] = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            output.append(item)
+            continue
+        value = dict(item)
+        if not value.get("evidence_ref_id") and isinstance(value.get("evidence_id"), str):
+            value["evidence_ref_id"] = value["evidence_id"]
+        if not value.get("source_id") and isinstance(value.get("event_id"), str):
+            value["source_id"] = value["event_id"]
+        output.append(value)
+    return output
+
+
 def recover(
     *,
     kind: str,
@@ -166,6 +184,7 @@ def recover(
     """执行一次恢复；模型输出不完整时不会构造伪造候选。"""
     if kind not in {"task", "environment"}:
         raise ValueError("kind 必须是 task 或 environment")
+    evidence = canonicalize_evidence(evidence)
     allowed = {str(item.get("evidence_ref_id")) for item in evidence if item.get("evidence_ref_id")}
     request = ModelRequest(
         request_id=_request_id(kind, attempt_ref, source_report_id),
@@ -293,4 +312,10 @@ def recovery_metrics(outcomes: list[SemanticRecoveryOutcome]) -> dict[str, float
     }
 
 
-__all__ = ["RecoveryStatus", "SemanticRecoveryOutcome", "recover", "recovery_metrics"]
+__all__ = [
+    "RecoveryStatus",
+    "SemanticRecoveryOutcome",
+    "canonicalize_evidence",
+    "recover",
+    "recovery_metrics",
+]

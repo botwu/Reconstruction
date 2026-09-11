@@ -29,6 +29,7 @@ from traceforge.verifier.red_check import RedCheckCase, evaluate_red_check
 from traceforge.verifier.synthesis import synthesize_verifier
 
 from .environment_completion import run_environment_completion
+from .semantic_recovery import canonicalize_evidence
 from .sufficiency_judge import run_sufficiency_judge
 from .task_recovery import run_task_recovery
 
@@ -138,6 +139,7 @@ def run_reconstruction_workflow(
     """
     if rollout_trials < 1:
         raise ReconstructionWorkflowError("rollout_trials 必须大于 0")
+    evidence = canonicalize_evidence(evidence)
     root = Path(output_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     stages = root / "stages"
