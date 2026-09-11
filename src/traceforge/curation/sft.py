@@ -35,8 +35,30 @@ def _number(row: dict[str, Any], key: str) -> float:
     return float(value)
 
 
+def _explicit_bool(row: dict[str, Any], key: str) -> bool | None:
+    """读取必须由上游显式计算的布尔证据。
+
+    缺失值代表没有完成该检查，不能把它解释成安全或可复现；调用方会将其
+    标记为 REVIEW。非布尔值是输入契约错误，直接拒绝处理，避免字符串等
+    真值语义造成静默放行。
+    """
+
+    if key not in row:
+        return None
+    value = row[key]
+    if not isinstance(value, bool):
+        raise CurationInputError(f"{key} 必须是显式布尔值")
+    return value
+
+
 def curate_candidate(row: dict[str, Any], thresholds: CurationThresholds) -> SFTCandidateV1:
-    """对一条 rollout 应用可解释的 pass-only 质量门禁。"""
+    """对一条 rollout 应用可解释的 pass-only 质量门禁。
+
+    只有在泄漏检查和可复现性检查都明确给出 ``False``，且其它门禁均通过时，
+    候选才会进入 ``ELIGIBLE``。缺失这两类证据时返回 ``REVIEW``，绝不默认
+    认为安全或可复现。
+    """
+
     required = ("candidate_id", "bundle_id", "rollout_id", "trial_id", "verifier_status")
     missing = [key for key in required if not isinstance(row.get(key), str) or not row[key]]
     if missing:
@@ -47,8 +69,12 @@ def curate_candidate(row: dict[str, Any], thresholds: CurationThresholds) -> SFT
     reward = row.get("reward")
     if reward is not None:
         reward = _number(row, "reward")
+    leakage = _explicit_bool(row, "solution_leakage")
+    reproducible = _explicit_bool(row, "reproducible")
+
     reasons: list[str] = []
     rejects: list[str] = []
+    reviews: list[str] = []
     if row["verifier_status"] != VerificationStatus.PASS.value:
         rejects.append("VERIFIER_NOT_PASS")
     if reward is None or reward < thresholds.required_reward:
@@ -59,15 +85,33 @@ def curate_candidate(row: dict[str, Any], thresholds: CurationThresholds) -> SFT
         rejects.append("ENVIRONMENT_CONFIDENCE_LOW")
     if trajectory_quality < thresholds.trajectory_quality:
         rejects.append("TRAJECTORY_QUALITY_LOW")
-    if bool(row.get("solution_leakage", False)):
+    if leakage is True:
         rejects.append("SOLUTION_LEAKAGE")
-    if bool(row.get("reproducible", True)) is not True:
+    elif leakage is None:
+        reviews.append("SOLUTION_LEAKAGE_UNVERIFIED")
+    if reproducible is False:
         rejects.append("NOT_REPRODUCIBLE")
-    if not rejects:
-        eligibility = SFTEligibility.ELIGIBLE.value
-        reasons.extend(["VERIFIER_PASS", "REWARD_PASS", "CONFIDENCE_PASS", "REPRODUCIBLE"])
-    else:
+    elif reproducible is None:
+        reviews.append("REPRODUCIBILITY_UNVERIFIED")
+
+    # Hard failures always reject. If all hard checks pass but an audit signal is
+    # absent, retain the sample for human review rather than training on an
+    # unverified trajectory.
+    if rejects:
         eligibility = SFTEligibility.REJECT.value
+    elif reviews:
+        eligibility = SFTEligibility.REVIEW.value
+        rejects.extend(reviews)
+    else:
+        eligibility = SFTEligibility.ELIGIBLE.value
+        reasons.extend([
+            "VERIFIER_PASS",
+            "REWARD_PASS",
+            "CONFIDENCE_PASS",
+            "LEAKAGE_CHECK_PASS",
+            "REPRODUCIBLE",
+        ])
+
     candidate = SFTCandidateV1(
         schema_version=SFT_CANDIDATE_SCHEMA,
         candidate_id=row["candidate_id"],
@@ -90,16 +134,21 @@ def curate_candidate(row: dict[str, Any], thresholds: CurationThresholds) -> SFT
 def curate_candidates(
     rows: list[dict[str, Any]], thresholds: CurationThresholds | None = None
 ) -> tuple[list[SFTCandidateV1], dict[str, Any]]:
-    """批量筛选并返回候选和可复现指标。"""
+    """批量筛选并返回可复现指标（eligible/review/reject 分开统计）。"""
+
     thresholds = thresholds or CurationThresholds()
     candidates = [curate_candidate(row, thresholds) for row in rows]
     eligible = sum(item.eligibility == SFTEligibility.ELIGIBLE.value for item in candidates)
+    review = sum(item.eligibility == SFTEligibility.REVIEW.value for item in candidates)
+    rejected = sum(item.eligibility == SFTEligibility.REJECT.value for item in candidates)
     return candidates, {
         "metric_version": "traceforge.sft-curation-metrics.v1",
         "input_count": len(candidates),
         "eligible_count": eligible,
-        "rejected_count": len(candidates) - eligible,
+        "review_count": review,
+        "rejected_count": rejected,
         "eligibility_rate": eligible / len(candidates) if candidates else 0.0,
+        "review_rate": review / len(candidates) if candidates else 0.0,
         "thresholds": {
             "task_confidence": thresholds.task_confidence,
             "environment_confidence": thresholds.environment_confidence,
