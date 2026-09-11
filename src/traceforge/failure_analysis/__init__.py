@@ -31,6 +31,7 @@ from .contracts import (
 
 __all__ = [
     "MODEL_ANALYSIS_RUN_SCHEMA",
+    "REVIEW_BATCH_SCHEMA",
     "EpisodeOutcome",
     "EvidenceKind",
     "EvidenceRef",
@@ -52,8 +53,10 @@ __all__ = [
     "ReconstructabilityGate",
     "ReconstructabilityGateV1",
     "Recoverability",
+    "ReviewBatchInputError",
     "analysis_run_id",
     "analyze_failure",
+    "build_review_batch",
     "evidence_ref_id",
     "failure_analysis_report_id",
     "failure_analysis_run_id",
@@ -71,3 +74,4 @@ from .model_analyzer import (
     analyze_failure,
 )
 from .model_runner import MODEL_ANALYSIS_RUN_SCHEMA, run_failure_analysis_model
+from .review_batch import REVIEW_BATCH_SCHEMA, ReviewBatchInputError, build_review_batch

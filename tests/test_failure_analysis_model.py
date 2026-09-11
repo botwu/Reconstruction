@@ -9,6 +9,7 @@ from traceforge.failure_analysis.model_analyzer import (
     ModelAnalysisStatus,
     analyze_failure,
 )
+from traceforge.failure_analysis.review_batch import build_review_batch
 from traceforge.reconstruction.model_gateway import ModelResponse
 
 
@@ -191,4 +192,27 @@ def test_model_runner_publishes_auditable_artifacts(tmp_path):
     assert (out / "model_analysis.json").is_file()
     assert (out / "metrics.json").is_file()
     assert (out / "private/model_exchange.json").is_file()
+
+
+
+
+def test_review_batch_selects_deterministically_and_caps_limit(tmp_path):
+    source = tmp_path / "analysis.jsonl"
+    rows = [
+        {
+            "analysis_id": f"a-{index}",
+            "decision": "ELIGIBLE" if index == 1 else "REVIEW",
+            "outcome": "FAILURE",
+            "recoverability": "HIGH",
+            "confidence": 0.8,
+            "rubric": {"task_identifiability": 3},
+        }
+        for index in range(4)
+    ]
+    source.write_text("\n".join(json.dumps(row) for row in rows), encoding="utf-8")
+    output = build_review_batch(input_jsonl=source, output_root=tmp_path / "out", limit=2)
+    payload = json.loads((output / "review_batch.json").read_text(encoding="utf-8"))
+    assert payload["status"] == "PENDING_HUMAN_REVIEW"
+    assert len(payload["items"]) == 2
+    assert payload["items"][0]["source"]["analysis_id"] == "a-1"
 
