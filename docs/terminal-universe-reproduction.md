@@ -55,7 +55,7 @@
 - `AGSRuntimeAdapter` 将 `AGSPrebuiltEnvironment` 映射为 `start/read_only、exec、upload_dir、download_dir、stop`。AGS 的 `start` 使用 `force_build=False`，停止后调用 `assert_cleanup_verified`。
 - `run_completion_container` 先记录 replay workspace 的逐文件 SHA-256，再上传到 `/home/user/workspace`。`agent_runner(runtime, prompt)` 必须在 runtime 内调用 shell/file 工具并返回 `evidence_ref_ids_by_path`。下载后检查 replay 文件删除、内容改写、隐藏目录写入、未知证据引用；任一项失败为 `REVIEW`。
 - `run_sufficiency_container` 以只读语义启动 runtime，上传后由 root 去除 workspace 写权限，再以 `user` 执行写入探针；judge 只能通过 runtime 主动 inspect，返回 `label/confidence/reason/missing_critical`。写探针成功、模型 JSON 非法或容器错误均不能通过。
-- `run_verifier_red_calibration` 分离执行 missing-capability 与 protective 两组测试；前者必须全部 `FAIL`，后者必须全部 `PASS`，任何 `TIMEOUT/INFRA_ERROR` 进入 `REVIEW`。
+- `pytest_test_runner` 在 verifier AGS 沙盒中逐个执行 `/tests/test_outputs.py::test_*`，把 pytest exit code 映射成 PASS/FAIL/INFRA_ERROR/TIMEOUT；`run_verifier_red_calibration` 再分离执行 missing-capability 与 protective 两组测试。前者必须全部 `FAIL`，后者必须全部 `PASS`，任何 `TIMEOUT/INFRA_ERROR` 进入 `REVIEW`。
 
 `run_reconstruction_workflow` 新增三个注入点：
 
