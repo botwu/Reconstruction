@@ -6,7 +6,20 @@ from pathlib import Path
 
 import pytest
 
-from traceforge.trajectory.provenance import collect_git_provenance
+from traceforge.trajectory.provenance import (
+    GIT_COMMAND_TIMEOUT_SECONDS,
+    collect_git_provenance,
+)
+
+
+def test_git_command_timeout_tolerates_slow_network_filesystem() -> None:
+    """慢速网络盘（AFS）实测 `git status --porcelain` 需 35–41 秒（194 个跟踪文件、
+    每次 lstat 约 150–200ms）。超时上限必须留足余量：30 秒会让就地 run 的
+    `collect_git_provenance` 因 `git status` 超时而恒返回 available=False，进而被 M1
+    完整性校验判为 RUN_RECEIPT_GIT_PROVENANCE_UNVERIFIED，阻断整条重建闭环。
+    此处只钉一个「足够大」的下限，不锁死具体值。"""
+
+    assert GIT_COMMAND_TIMEOUT_SECONDS >= 60
 
 
 @pytest.mark.parametrize(

@@ -81,7 +81,72 @@ def run_sufficiency_judge(
         prompt,
         SUFFICIENCY_JUDGE_SCHEMA,
     )
-    response = model.complete(request)
+    try:
+        response = model.complete(request)
+    except ModelGatewayError as exc:
+        # 模型调用本身失败（网络/协议/缺钥）也要留下可审计的失败判定，
+        # 让 workflow 记录并跳过该候选，而不是被未捕获异常打穿整个编排。
+        gateway_status = "BLOCKED" if exc.code == "API_KEY_MISSING" else "FAILED"
+        judgement = {
+            "schema_version": SUFFICIENCY_JUDGE_SCHEMA,
+            "request_id": request_id,
+            "label": "UNKNOWN",
+            "decision": "REVIEW",
+            "reason": "模型调用失败，无法判断 workspace 充分性",
+            "missing_context": [],
+            "evidence_ref_ids": [],
+            "confidence": 0.0,
+            "errors": [exc.code],
+        }
+        run_id = stable_id(
+            "traceforge.workspace-sufficiency-failed-v1",
+            {"request_id": request_id, "error_code": exc.code},
+        )
+        workspace = ArtifactWorkspace(Path(output_root), run_id)
+        try:
+            entries = [
+                write_json_artifact(
+                    workspace.staging_path, "sufficiency_judgement.json", judgement
+                ),
+                write_json_artifact(
+                    workspace.staging_path,
+                    "metrics.json",
+                    {
+                        "schema_version": "traceforge.workspace-sufficiency-metrics.v1",
+                        "run_id": run_id,
+                        "sample_count": 1,
+                        "sufficient_count": 0,
+                        "review_count": 1,
+                        "unknown_count": 1,
+                        "model_error_code": exc.code,
+                    },
+                ),
+            ]
+            manifest = write_json_artifact(
+                workspace.staging_path,
+                "artifact_manifest.json",
+                {
+                    "schema_version": "traceforge.workspace-sufficiency-run.v1",
+                    "run_id": run_id,
+                    "status": gateway_status,
+                    "files": artifact_entry_dicts(entries),
+                },
+            )
+            write_json_artifact(
+                workspace.staging_path,
+                "run_receipt.json",
+                {
+                    "schema_version": "traceforge.workspace-sufficiency-receipt.v1",
+                    "run_id": run_id,
+                    "artifact_manifest_sha256": manifest.sha256,
+                    "model_calls": 1,
+                    "model_error_code": exc.code,
+                },
+            )
+            return workspace.publish()
+        except BaseException:
+            workspace.abort()
+            raise
     receipt = receipt_for_response(response)
     errors: list[str] = []
     try:

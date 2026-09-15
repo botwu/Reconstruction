@@ -10,9 +10,12 @@ from typing import Any
 
 GitCommandRunner = Callable[[tuple[str, ...], Path], str]
 
-# 单条 git 命令的硬上限。慢速网络盘（AFS）上 `git status` 实测 4–8 秒，原 5 秒阈值使就地 run 的
-# 回执恒为 available=False 而被 validator 拒绝；30 秒仍是有界的，只防真正挂起。
-GIT_COMMAND_TIMEOUT_SECONDS = 30
+# 单条 git 命令的硬上限。慢速网络盘（AFS）上 `git status --porcelain` 实测需 35–41 秒
+# （仅 194 个跟踪文件，但每次 lstat 约 150–200ms，且预热无效），30 秒会使就地 run 的
+# provenance 因 `git status` 超时而恒为 available=False，被 M1 完整性校验判为
+# RUN_RECEIPT_GIT_PROVENANCE_UNVERIFIED 而拒绝整个 run。90 秒对实测值留约 2 倍余量，
+# 仍是有界的，只防真正挂起。
+GIT_COMMAND_TIMEOUT_SECONDS = 90
 
 
 @dataclass(frozen=True, slots=True)

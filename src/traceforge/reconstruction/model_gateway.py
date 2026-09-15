@@ -16,6 +16,15 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+# OpenAI 兼容端点上的推理模型（gpt-5 类）把隐藏推理 token 计入 max_tokens 预算：
+# nominal 4096 会在产出任何正文前被推理耗尽，端点返回空 content 且 finish_reason=length，
+# 历史网关只能抛不透明的 EMPTY_RESPONSE，既跑不通也无法辨识根因。这里为送往 OpenAI 兼容
+# channel 的输出预算施加一个足够容纳推理的下限，使小的 nominal max_tokens 不会饿死推理
+# 模型输出；非推理模型的 max_tokens 只是上限，自然 EOS 前停止、并不多耗，故不受影响。
+# 显式给出的更大预算不被降低。Claude 原生（OpusClient）默认不把隐藏推理计入 max_tokens，
+# 故不施加下限，只补 stop_reason=max_tokens 的截断辨识。
+MIN_COMPLETION_TOKENS = 32768
+
 
 class ModelGatewayError(RuntimeError):
     """模型请求失败，或返回内容不满足调用契约。"""
@@ -193,7 +202,7 @@ class NewAPIClient:
                     {"role": "user", "content": request.prompt},
                 ],
                 "temperature": request.temperature,
-                "max_tokens": request.max_tokens,
+                "max_tokens": max(request.max_tokens, MIN_COMPLETION_TOKENS),
             },
             ensure_ascii=False,
         ).encode("utf-8")
@@ -245,6 +254,12 @@ class NewAPIClient:
             ) as exc:
                 raise ModelGatewayError("模型响应不是合法 JSON", code="INVALID_RESPONSE") from exc
             if not text.strip():
+                finish_reason = choices[0].get("finish_reason") if choices else None
+                if finish_reason == "length":
+                    raise ModelGatewayError(
+                        "模型在产出正文前耗尽输出预算（finish_reason=length，疑似推理占满 max_tokens）",
+                        code="RESPONSE_TRUNCATED",
+                    )
                 raise ModelGatewayError("模型响应没有文本内容", code="EMPTY_RESPONSE")
             usage = payload.get("usage", {}) if isinstance(payload, dict) else {}
             return ModelResponse(
@@ -360,6 +375,11 @@ class OpusClient:
             except (UnicodeDecodeError, json.JSONDecodeError, AttributeError, TypeError) as exc:
                 raise ModelGatewayError("模型响应不是合法 JSON", code="INVALID_RESPONSE") from exc
             if not text.strip():
+                if payload.get("stop_reason") == "max_tokens":
+                    raise ModelGatewayError(
+                        "模型在产出正文前耗尽输出预算（stop_reason=max_tokens）",
+                        code="RESPONSE_TRUNCATED",
+                    )
                 raise ModelGatewayError("模型响应没有文本内容", code="EMPTY_RESPONSE")
             usage = payload.get("usage", {}) if isinstance(payload, dict) else {}
             return ModelResponse(

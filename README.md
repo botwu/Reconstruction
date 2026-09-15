@@ -7,7 +7,7 @@ TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并
 新开发会话必须依次阅读：
 
 1. [AGENTS.md](AGENTS.md)：唯一开发规范；
-2. [当前会话交接](docs/session-handoff.md)：当前检查点、证据、停止线和下一步；
+2. [当前会话交接](docs/agent-world-reconstruction-handoff.md)：当前检查点、证据、停止线和下一步；
 3. [背景与目标](docs/background-and-goals.md)：问题背景、数据事实、目标和主张边界；
 4. [总体实施计划](docs/overall-plan.md)：架构、模块、数据契约、阶段和验收；
 5. [R01 回流处理实施规格](docs/r01-processing-spec.md)：当前模块的输入、契约、输出与停止线；
@@ -42,7 +42,7 @@ TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并
 
 M1A/M1B v3 已正式通过。三项 P1 及脱敏 Data URL 终态的同步重签变体已经闭合；冻结 R01 已在干净代码冻结点完成两次独立全量编译、两次 validator、确定性对比和轻量留证。输入 `source_schema` 仍是 `traceforge.restored-long-capture.v1`。
 
-M1C 已正式通过（[R01 M1C 全量验收报告](docs/r01-m1c-validation.md)）：在冻结 M1B run 之上两次独立建图、两次独立 validator、确定性对比与门②/森林拓扑独立复算均通过；v2 实现 3 类 Grade-A 关系（`SHARED_SOURCE_REQUEST` / `EXPLICIT_REQUEST_SUCCESSOR` / `COMPLETE_DUPLICATE_CAPTURE`），全部只依赖 M1B 已发布的可重算可见事实；上游不透明摘要（`raw_request_hash`、`target_hash`）不进入任何关系证据。Grade-B `NORMALIZED_VISIBLE_PREFIX_OF` 按规格缓做。当前正式停点在 M1C；M1D 规格处于评审稿，其实现尚未验收。
+M1C 已正式通过（[R01 M1C 全量验收报告](docs/r01-m1c-validation.md)）：在冻结 M1B run 之上两次独立建图、两次独立 validator、确定性对比与门②/森林拓扑独立复算均通过；v2 实现 3 类 Grade-A 关系（`SHARED_SOURCE_REQUEST` / `EXPLICIT_REQUEST_SUCCESSOR` / `COMPLETE_DUPLICATE_CAPTURE`），全部只依赖 M1B 已发布的可重算可见事实；上游不透明摘要（`raw_request_hash`、`target_hash`）不进入任何关系证据。Grade-B `NORMALIZED_VISIBLE_PREFIX_OF` 按规格缓做。当前正式验收停点在 M1C。M1D（[M1D 处理规格](docs/m1d-processing-spec.md)）已实现（含单测与 `query-turns` CLI），状态为「已实现、待 R01 正式验收」；`UserTextProjection` 来源投影（[M2 前置规格](docs/m2-source-projection-spec.md)）已冻结、已实现并已正式验收。代码库另含 M1C 之后未正式验收的重建生态实现，「止于 M1C」仅指已正式验收的阶段，不代表代码库到此为止。
 
 当前实现边界：
 
@@ -55,7 +55,7 @@ R01 JSONL
 → RequestLineageForest / CaptureRelationGraph（M1C，只读派生于已发布 M1B run）
 ```
 
-已验收实现停止在 M1C；尚未验收 QueryTurn，也未实现 TaskEpisode、任务画像、World、认证、难度或 Harbor 接入。进入 M2 前必须单独冻结并审核最小、带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`。
+已正式验收的实现停止在 M1C；QueryTurn（M1D）与 `UserTextProjection` 来源投影均已实现，前者待正式验收、后者已验收。代码库另含未正式验收的重建生态实现（确定性失败分析、任务恢复、环境补全、逐候选充分性、验证器合成、Harbor/AGS rollout 接入与 SFT 治理等）；其中论文级不变量（control plane 预算/重试、迭代式验证器、Terminal-Universe 引擎、Truth/Reference/Verifier 模型独立性）尚未接线到生产路径，文档不据其宣称已生效。进入 M2 消费 `domain_meta` 前，仍须单独冻结并审核带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`。
 
 在一个已发布 M1B run 之上构建并验收 M1C 关系图：
 
@@ -86,7 +86,7 @@ uv run ruff format --check .
 
 编译结果采用内容寻址目录。确定性业务产物、私有事件表与公共聚合报告物理分离；真实产物已由 `.gitignore` 排除。
 
-编译器和 validator 不内置 R01 的路径、摘要或统计值。`source_schema` 显式声明语义输入契约：当前只有一个 restored-long adapter，不会猜测或尝试多种 JSON 结构。不支持的 schema 在读取来源和创建 staging 前整批失败。validator 只重算并检查已发布 run 的通用契约：
+编译器和 validator 不内置 R01 的路径、摘要或统计值。`source_schema` 显式声明语义输入契约：当前提供两个 adapter（`traceforge.restored-long-capture.v1` 与 `traceforge.r01-sessions.v1`），按声明的 schema 精确选择，不会猜测或尝试多种 JSON 结构。不支持的 schema 在读取来源和创建 staging 前整批失败。validator 只重算并检查已发布 run 的通用契约：
 
 ```bash
 uv run python scripts/validate_m1_run.py <content_addressed_run_dir>

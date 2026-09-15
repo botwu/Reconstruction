@@ -414,3 +414,56 @@ def test_failure_analysis_review_batch_command(tmp_path: Path, capsys: pytest.Ca
     output = Path(capsys.readouterr().out.strip())
     assert (output / "review_batch.json").is_file()
 
+
+def test_reconstruct_prepare_command_publishes_inputs(
+    stable_git_provenance: None,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    compile_dataset: Callable[..., Path],
+    capture_factory: Callable[..., dict[str, Any]],
+) -> None:
+    """reconstruct prepare 在单 capture 的 M1B run 上产出 report.json + evidence.json，回打印清单路径。"""
+
+    capture = capture_factory(
+        messages=[
+            {"role": "user", "content": "虚构检索任务。"},
+            {"role": "assistant", "content": "虚构完成。"},
+        ],
+        terminal_prefix_depths=[2],
+        request_ids=["prep-cli-1"],
+    )
+    m1b_run = compile_dataset([capture], label="cli-prepare")
+    output = tmp_path / "prepare-artifacts"
+
+    exit_code = main(
+        ["reconstruct", "prepare", "--m1b-run", str(m1b_run), "--output", str(output)]
+    )
+
+    assert exit_code == 0
+    manifest_path = Path(capsys.readouterr().out.strip())
+    assert manifest_path.is_file()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert Path(manifest["report_path"]).is_file()
+    assert Path(manifest["evidence_path"]).is_file()
+    report = json.loads(Path(manifest["report_path"]).read_text(encoding="utf-8"))
+    assert report["status"] == "READY"
+
+
+def test_reconstruct_prepare_command_reports_invalid_m1b_without_traceback(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """指向非 M1B 目录 → fail-closed 为 exit 2 且不外泄 traceback。"""
+
+    not_a_run = tmp_path / "空目录"
+    not_a_run.mkdir()
+
+    exit_code = main(
+        ["reconstruct", "prepare", "--m1b-run", str(not_a_run), "--output", str(tmp_path / "out")]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert "重建输入准备失败" in captured.err
+    assert "Traceback" not in captured.err
+
