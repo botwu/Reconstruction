@@ -7,6 +7,7 @@ from traceforge.reconstruction.terminal_universe_environment import (
     build_completion_prompt,
     materialize_environment,
     replay_initial_workspace,
+    select_max_exposed_trajectory,
     validate_completion_candidate,
 )
 
@@ -90,3 +91,35 @@ def test_stage3_returns_no_candidate_when_label_unknown():
     )
     assert selected is None
     assert audit["status"] == "NO_SUFFICIENT_CANDIDATE"
+
+
+def test_seed_selection_uses_maximum_replay_exposure_not_reward():
+    small = replay_initial_workspace(events())
+    rich_events = [*events()[:2],
+        {
+            "sequence_number": 3,
+            "event_kind": "TOOL_CALL",
+            "event_occurrence_id": "e4",
+            "payload": {"tool_name": "read", "arguments": {"path": "README.md"}, "call_id": "c2"},
+        },
+        {
+            "sequence_number": 4,
+            "event_kind": "TOOL_RESULT",
+            "event_occurrence_id": "e5",
+            "payload": {"call_id": "c2", "content": "project documentation"},
+        },
+        {
+            "sequence_number": 5,
+            "event_kind": "TOOL_CALL",
+            "event_occurrence_id": "e6",
+            "payload": {"tool_name": "write", "arguments": {"path": "src/app.py"}},
+        },
+    ]
+    rich = replay_initial_workspace(rich_events)
+    selected = select_max_exposed_trajectory(
+        [
+            {"trajectory_id": "small", "repository": "r", "base_commit": "c", "problem_statement": "p", "reward": 1, "replay": small},
+            {"trajectory_id": "rich", "repository": "r", "base_commit": "c", "problem_statement": "p", "reward": 0, "replay": rich},
+        ]
+    )
+    assert [item["trajectory_id"] for item in selected] == ["rich"]

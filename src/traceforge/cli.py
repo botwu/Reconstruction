@@ -41,6 +41,10 @@ from traceforge.reconstruction.prepare import (
     build_reconstruction_inputs,
 )
 from traceforge.reconstruction.workflow import run_reconstruction_workflow
+from traceforge.requery.single_workspace import (
+    SingleWorkspaceSynthesisError,
+    synthesize_single_workspace_tasks,
+)
 from traceforge.screening import ScreeningInputError, run_reconstruction_screening
 from traceforge.source_projection.contracts import UserTextProjectionInputError
 from traceforge.source_projection.pipeline import build_user_text_projection
@@ -329,6 +333,20 @@ def _parser() -> argparse.ArgumentParser:
         "--config", type=Path, default=None, help="NewAPI 配置文件（可选）"
     )
     screening_run.add_argument("--channel", default="gemini", help="配置中的 channel 名")
+
+    requery = commands.add_parser(
+        "requery", help="Terminal-Universe C.2/C.3/C.4 任务扩展"
+    )
+    requery_commands = requery.add_subparsers(dest="requery_command", required=True)
+    single_ws = requery_commands.add_parser(
+        "single-ws", help="在一个重建 workspace 上生成五个候选并选择一个"
+    )
+    single_ws.add_argument("--workspace", type=Path, required=True)
+    single_ws.add_argument("--output", type=Path, required=True)
+    single_ws.add_argument("--model-name", default="claude-opus-4-8")
+    single_ws.add_argument("--config", type=Path, default=None)
+    single_ws.add_argument("--channel", default="gemini")
+    single_ws.add_argument("--selection-seed", default="0")
 
     replay = commands.add_parser(
         "trajectory-replay", help="恢复任务开始前的初始 workspace（不执行历史命令）"
@@ -682,6 +700,41 @@ def main(argv: Sequence[str] | None = None) -> int:
             ValueError,
         ) as exc:
             print(f"重建筛选失败：{exc}", file=sys.stderr)
+            return 2
+        print(output_path)
+        return 0
+    if arguments.command == "requery" and arguments.requery_command == "single-ws":
+        try:
+            workspace = arguments.workspace.resolve()
+            if not workspace.is_dir():
+                raise ValueError(f"workspace 不存在：{workspace}")
+            files = {
+                path.relative_to(workspace).as_posix(): path.read_text(
+                    encoding="utf-8", errors="ignore"
+                )[:20000]
+                for path in sorted(workspace.rglob("*"))
+                if path.is_file()
+                and not any(part in {".git", "hidden_control", "solution"} for part in path.parts)
+            }
+            result = synthesize_single_workspace_tasks(
+                workspace_inventory=sorted(files),
+                workspace_files=files,
+                model=build_chat_model(config_path=arguments.config, channel=arguments.channel),
+                model_name=resolve_model_name(
+                    arguments.model_name,
+                    config_path=arguments.config,
+                    channel=arguments.channel,
+                ),
+                selection_seed=arguments.selection_seed,
+            )
+            arguments.output.mkdir(parents=True, exist_ok=True)
+            output_path = arguments.output / "single_workspace_synthesis.json"
+            output_path.write_text(
+                json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except (OSError, UnicodeError, ModelGatewayError, SingleWorkspaceSynthesisError, ValueError) as exc:
+            print(f"Single-WS 任务合成失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
         return 0

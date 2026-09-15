@@ -158,7 +158,9 @@ def synthesize_verifier(
     missing = _strings(
         payload.get("missing_capability_tests"), "missing_capability_tests", required=True
     )
-    protective = _strings(payload.get("protective_tests"), "protective_tests")
+    # 附录 D 要求保护性测试在初始 workspace 上通过；没有保护性测试时无法
+    # 证明 verifier 没有把既有行为误报为新能力，因此直接进入 REVIEW。
+    protective = _strings(payload.get("protective_tests"), "protective_tests", required=True)
     coverage = payload.get("obligation_coverage")
     if not isinstance(coverage, dict) or set(coverage) != set(ids):
         raise VerifierSynthesisError("测试覆盖必须与用户验收义务完全对应")

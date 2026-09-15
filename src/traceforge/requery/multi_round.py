@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -30,7 +30,9 @@ class RequirementTracker:
         return tuple(x for x in self.requirements.values() if x.status in {"ACTIVE", "UPDATED"})
 
     def to_dict(self) -> dict[str, Any]:
-        return {"requirements": [r.__dict__ for r in self.requirements.values()]}
+        # Requirement 使用 slots=True，不存在 __dict__；asdict 同时保证输出
+        # 与论文中的私有 requirement ledger 保持稳定、可序列化。
+        return {"requirements": [asdict(r) for r in self.requirements.values()]}
 
 
 @dataclass(frozen=True, slots=True)

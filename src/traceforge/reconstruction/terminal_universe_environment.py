@@ -126,6 +126,40 @@ class ReplayResult:
         }
 
 
+def select_max_exposed_trajectory(
+    trajectories: Iterable[dict[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """按论文 B.1 在同一任务重复 rollout 中选 replay 暴露最多者。
+
+    分组键是 repository、base commit 和 problem statement。评分只使用
+    deterministic replay 暴露的文件数量、文本行数和字节数，不看最终 reward，
+    避免把某一次策略的成功与环境质量混为一谈。
+    """
+
+    groups: dict[tuple[str, str, str], list[tuple[tuple[int, int, int, str], dict[str, Any]]]] = {}
+    for item in trajectories:
+        if not isinstance(item, dict):
+            raise EnvironmentReconstructionError("trajectory 必须是对象")
+        replay = item.get("replay")
+        if not isinstance(replay, ReplayResult):
+            raise EnvironmentReconstructionError("trajectory.replay 必须是 ReplayResult")
+        identity = (
+            str(item.get("repository") or item.get("repo") or ""),
+            str(item.get("base_commit") or item.get("commit") or ""),
+            str(item.get("problem_statement") or item.get("task") or ""),
+        )
+        if not all(identity):
+            raise EnvironmentReconstructionError("trajectory 缺少 repository/base_commit/problem_statement")
+        lines = sum(file.content.count("\n") + (1 if file.content else 0) for file in replay.files)
+        bytes_count = sum(len(file.content.encode("utf-8")) for file in replay.files)
+        score = (len(replay.files), lines, bytes_count, str(item.get("trajectory_id") or ""))
+        groups.setdefault(identity, []).append((score, item))
+    selected: list[dict[str, Any]] = []
+    for rows in groups.values():
+        selected.append(max(rows, key=lambda pair: pair[0])[1])
+    return tuple(sorted(selected, key=lambda item: str(item.get("trajectory_id") or "")))
+
+
 def replay_initial_workspace(
     events: Iterable[dict[str, Any]], destination: str | Path | None = None
 ) -> ReplayResult:
@@ -441,6 +475,7 @@ __all__ = [
     "build_completion_prompt",
     "materialize_environment",
     "replay_initial_workspace",
+    "select_max_exposed_trajectory",
     "select_sufficient_candidate",
     "validate_completion_candidate",
 ]

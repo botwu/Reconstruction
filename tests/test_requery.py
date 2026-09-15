@@ -2,6 +2,44 @@ from pathlib import Path
 import json
 import pytest
 from traceforge.requery import *
+from traceforge.reconstruction.model_gateway import ModelRequest, ModelResponse
+
+
+class _SingleWorkspaceModel:
+    def complete(self, request: ModelRequest) -> ModelResponse:
+        tasks = [
+            "Add deterministic validation for the parser entry point using the existing fixtures and preserve current CLI behavior.",
+            "Extend the configuration loader to reject malformed values with stable local error output and add offline coverage.",
+            "Improve the export command so its generated artifact preserves schema compatibility and handles an empty input.",
+            "Add a backward-compatible cache invalidation path for the server adapter and verify it through existing local interfaces.",
+            "Implement robust handling for missing client metadata in the import pipeline and validate the observable result offline.",
+        ]
+        return ModelResponse(request.request_id, request.model, "fake", json.dumps(tasks), 1, 0.01)
+
+
+def test_single_workspace_emits_five_and_selects_one():
+    result = synthesize_single_workspace_tasks(
+        workspace_inventory=["src/app.py", "pyproject.toml"],
+        workspace_files={"src/app.py": "def main(): pass"},
+        model=_SingleWorkspaceModel(),
+        selection_seed=7,
+    )
+    assert result.status == "READY"
+    assert len(result.candidates) == 5
+    assert result.selected_index in range(5)
+
+
+def test_single_workspace_rejects_short_or_duplicate_candidates():
+    class Model:
+        def complete(self, request):
+            values = ["too short", "too short", "x" * 45, "y" * 45, "z" * 45]
+            return ModelResponse(request.request_id, request.model, "fake", json.dumps(values), 1, 0.01)
+
+    result = synthesize_single_workspace_tasks(
+        workspace_inventory=["src/app.py"], model=Model(), workspace_files=None
+    )
+    assert result.status == "REVIEW"
+    assert result.selected_index is None
 
 def test_profile_and_directional_pair(tmp_path: Path):
     a=tmp_path/'a'; b=tmp_path/'b'; a.mkdir(); b.mkdir()
