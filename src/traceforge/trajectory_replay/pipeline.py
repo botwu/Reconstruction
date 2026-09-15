@@ -91,7 +91,7 @@ def _result_text(event: dict[str, Any]) -> str | None:
 def _replay_capture(
     events: list[dict[str, Any]],
     source_workspace_root: Path | None = None,
-) -> tuple[dict[str, str], list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+) -> tuple[dict[str, tuple[str, str]], list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     ordered = sorted(events, key=lambda item: int(item.get("sequence_number", 0)))
     pending: dict[str, tuple[str, str]] = {}
     observed: dict[str, tuple[str, str]] = {}
@@ -106,6 +106,26 @@ def _replay_capture(
         call_id = str(payload.get("tool_call_id", ""))
         args = _args(event)
         path = _path(args, source_workspace_root)
+        is_mutation = any(
+            token in name
+            for token in (
+                "write",
+                "edit",
+                "patch",
+                "replace",
+                "create",
+                "shell",
+                "exec",
+                "terminal",
+                "command",
+                "bash",
+                "powershell",
+            )
+        )
+        if kind == "TOOL_CALL" and is_mutation:
+            # Any write-like or shell operation makes subsequent reads unsafe as
+            # initial workspace evidence, even when the operation has no path.
+            mutation_started = True
         if kind == "TOOL_CALL" and path and name == "read":
             if mutation_started:
                 partial.append(
@@ -162,7 +182,7 @@ def _replay_capture(
                     "source_event_id": source_id,
                 }
             )
-        workspace[file_path] = text
+        workspace[file_path] = (text, source_id)
     for item in changes:
         if not item["old_content_available"]:
             item["classification"] = "agent_created_file"
@@ -207,7 +227,7 @@ def build_trajectory_replay(
                 if isinstance(item, dict) and item.get("path")
             }
             file_records: list[dict[str, Any]] = []
-            for file_path, text in sorted(files.items()):
+            for file_path, (text, source_event_id) in sorted(files.items()):
                 target = workspace.staging_path / base / file_path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(text, encoding="utf-8")
@@ -215,14 +235,7 @@ def build_trajectory_replay(
                     {
                         "path": file_path,
                         "completeness": "PARTIAL" if file_path in partial_paths else "COMPLETE",
-                        "source_event_id": next(
-                            (
-                                item.get("source_event_id")
-                                for item in partial
-                                if item.get("path") == file_path
-                            ),
-                            None,
-                        ),
+                        "source_event_id": source_event_id,
                         "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                     }
                 )
