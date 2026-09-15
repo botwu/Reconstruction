@@ -47,3 +47,31 @@
 ```
 
 每一阶段都必须发布输入 hash、模型 receipt、candidate provenance、失败原因和可重算指标；任何 `REVIEW`、上下文溢出、缺失 trial 或 verifier infrastructure error 都不得进入 SFT。
+
+## 容器验证路径（已实现）
+
+`reconstruction/container_verification.py` 是生产 workflow 与 Harbor/AGS 之间的窄接口：
+
+- `AGSRuntimeAdapter` 将 `AGSPrebuiltEnvironment` 映射为 `start/read_only、exec、upload_dir、download_dir、stop`。AGS 的 `start` 使用 `force_build=False`，停止后调用 `assert_cleanup_verified`。
+- `run_completion_container` 先记录 replay workspace 的逐文件 SHA-256，再上传到 `/home/user/workspace`。`agent_runner(runtime, prompt)` 必须在 runtime 内调用 shell/file 工具并返回 `evidence_ref_ids_by_path`。下载后检查 replay 文件删除、内容改写、隐藏目录写入、未知证据引用；任一项失败为 `REVIEW`。
+- `run_sufficiency_container` 以只读语义启动 runtime，上传后由 root 去除 workspace 写权限，再以 `user` 执行写入探针；judge 只能通过 runtime 主动 inspect，返回 `label/confidence/reason/missing_critical`。写探针成功、模型 JSON 非法或容器错误均不能通过。
+- `run_verifier_red_calibration` 分离执行 missing-capability 与 protective 两组测试；前者必须全部 `FAIL`，后者必须全部 `PASS`，任何 `TIMEOUT/INFRA_ERROR` 进入 `REVIEW`。
+
+`run_reconstruction_workflow` 新增三个注入点：
+
+```python
+container_runtime_factory=...       # 每个 candidate 创建新的 AGS runtime
+container_completion_runner=...     # async (runtime, prompt) -> JSON manifest
+container_sufficiency_runner=...    # async (runtime, prompt) -> judge JSON
+verifier_executor=...                # 同步 executor，驱动 iterative verifier
+```
+
+同时提供 `run_environment_completion_container`，它把容器下载结果发布为标准 `environment_completion.json`，可直接被后续 Harbor bundle 消费。没有传入这些注入点时，workflow 仍为 plan-only/兼容的 JSON gateway 路径，不能把该路径标成论文级容器验收。
+
+### Harbor/AGS 的 public 与 hidden 边界
+
+`/home/user/workspace` 是 replay + completion 的 public workspace；`/tests`、`/solution`、`/hidden_control`、`.git` 和 verifier 目录属于 hidden control，不上传给 completion agent。RED calibration 必须在同一个初始 workspace 上先执行，再允许 solver rollout；solver 只能看到 task 与 public workspace，不能看到 `test_outputs.py`、gold solution 或 calibration 结果。
+
+### 最小验收记录
+
+每次容器阶段至少保存：runtime/sandbox id、输入 workspace hash、上传/下载路径、agent/judge 原始 JSON、逐文件变更、证据引用、写入探针结果、missing/protective 测试结果、cleanup audit。只有 `READY` 且上述字段完整的 candidate 才能进入后续 workflow。

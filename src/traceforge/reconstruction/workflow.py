@@ -28,10 +28,12 @@ from traceforge.trajectory.artifacts import (
 )
 from traceforge.trajectory_replay.pipeline import ReplayInputError, build_trajectory_replay
 from traceforge.verifier.bundle import compile_bundle
+from traceforge.verifier.iterative import synthesize_verifier_iterative
 from traceforge.verifier.red_check import RedCheckCase, evaluate_red_check
 from traceforge.verifier.synthesis import synthesize_verifier
 
-from .environment_completion import run_environment_completion
+from .container_verification import run_sufficiency_container
+from .environment_completion import run_environment_completion, run_environment_completion_container
 from .semantic_recovery import canonicalize_evidence
 from .sufficiency_judge import run_sufficiency_judge
 from .task_recovery import run_task_recovery
@@ -246,6 +248,10 @@ def run_reconstruction_workflow(
     rollout_model: str | None = None,
     rollout_trials: int = 1,
     curation_thresholds: CurationThresholds | None = None,
+    container_runtime_factory: Any | None = None,
+    container_completion_runner: Any | None = None,
+    container_sufficiency_runner: Any | None = None,
+    verifier_executor: Any | None = None,
 ) -> Path:
     """执行 Task→Environment→Verifier→Bundle→RED-check→Rollout→SFT。
 
@@ -308,16 +314,32 @@ def run_reconstruction_workflow(
         )
     task = _ready_candidate(task_payload, "candidates")
 
-    environment_root = run_environment_completion(
-        task=task,
-        attempt_ref=attempt_ref,
-        replay_workspace=replay_workspace,
-        replay_files=replay_files,
-        evidence=evidence,
-        model=model,
-        output_root=stages / "environment",
-        model_name=model_name,
-    )
+    if (container_runtime_factory is None) != (container_completion_runner is None):
+        raise ReconstructionWorkflowError(
+            "container_runtime_factory 与 container_completion_runner 必须同时提供"
+        )
+    if container_runtime_factory is not None:
+        runtime = container_runtime_factory()
+        environment_root = run_environment_completion_container(
+            task=task,
+            attempt_ref=attempt_ref,
+            replay_workspace=replay_workspace,
+            evidence=evidence,
+            output_root=stages / "environment",
+            runtime=runtime,
+            agent_runner=container_completion_runner,
+        )
+    else:
+        environment_root = run_environment_completion(
+            task=task,
+            attempt_ref=attempt_ref,
+            replay_workspace=replay_workspace,
+            replay_files=replay_files,
+            evidence=evidence,
+            model=model,
+            output_root=stages / "environment",
+            model_name=model_name,
+        )
     environment_payload = _json(environment_root / "environment_completion.json")
     environment_candidates = environment_payload.get("candidates", [])
     if not isinstance(environment_candidates, list):
@@ -344,14 +366,49 @@ def run_reconstruction_workflow(
                 {"index": index, "status": "REVIEW", "reason": "WORKSPACE_MISSING"}
             )
             continue
-        candidate_sufficiency_root = run_sufficiency_judge(
-            task=task,
-            workspace_root=candidate_workspace,
-            evidence=evidence,
-            model=model,
-            output_root=stages / "sufficiency" / f"candidate-{index:03d}",
-            model_name=model_name,
-        )
+        if container_sufficiency_runner is not None:
+            runtime = container_runtime_factory() if container_runtime_factory is not None else None
+            if runtime is None:
+                raise ReconstructionWorkflowError(
+                    "container_sufficiency_runner 需要 container_runtime_factory"
+                )
+            container_result = __import__("asyncio").run(
+                run_sufficiency_container(
+                    runtime=runtime,
+                    workspace=candidate_workspace,
+                    task_prompt=json.dumps(task, ensure_ascii=False),
+                    judge_runner=container_sufficiency_runner,
+                )
+            )
+            candidate_sufficiency_root = stages / "sufficiency" / f"candidate-{index:03d}"
+            candidate_sufficiency_root.mkdir(parents=True, exist_ok=True)
+            (candidate_sufficiency_root / "sufficiency_judgement.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "traceforge.sufficiency-judgement.v1",
+                        "decision": "READY" if not container_result.errors else "REVIEW",
+                        "label": container_result.label.upper(),
+                        "confidence": container_result.confidence,
+                        "reason": container_result.reason,
+                        "missing_critical": list(container_result.missing_critical),
+                        "write_blocked": container_result.write_blocked,
+                        "errors": list(container_result.errors),
+                        "mode": "container-read-only",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        else:
+            candidate_sufficiency_root = run_sufficiency_judge(
+                task=task,
+                workspace_root=candidate_workspace,
+                evidence=evidence,
+                model=model,
+                output_root=stages / "sufficiency" / f"candidate-{index:03d}",
+                model_name=model_name,
+            )
         candidate_sufficiency = _json(candidate_sufficiency_root / "sufficiency_judgement.json")
         record = {
             "index": index,
@@ -391,12 +448,28 @@ def run_reconstruction_workflow(
         for path in sorted(completed_workspace.rglob("*"))
         if path.is_file()
     }
-    verifier, verifier_audit = synthesize_verifier(
-        task=task,
-        workspace_files=workspace_files,
-        model=model,
-        model_name=model_name,
-    )
+    if verifier_executor is not None:
+        iterative = synthesize_verifier_iterative(
+            task=task,
+            workspace_files=workspace_files,
+            model=model,
+            executor=verifier_executor,
+            model_name=model_name,
+        )
+        verifier = iterative.candidate if iterative.status == "READY" else None
+        verifier_audit = {
+            "mode": "iterative-executor",
+            "status": iterative.status,
+            "attempts": list(iterative.attempts),
+            "open_questions": list(iterative.open_questions),
+        }
+    else:
+        verifier, verifier_audit = synthesize_verifier(
+            task=task,
+            workspace_files=workspace_files,
+            model=model,
+            model_name=model_name,
+        )
     if verifier is None:
         raise ReconstructionWorkflowError(
             "Verifier 需要人工复核：" + ",".join(verifier_audit.get("open_questions", []))

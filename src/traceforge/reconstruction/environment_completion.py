@@ -16,6 +16,7 @@ from traceforge.trajectory.artifacts import (
 )
 from traceforge.trajectory.json_codec import canonical_json_bytes, stable_id
 
+from .container_verification import AgentRunner, ContainerRuntime, run_completion_container
 from .model_gateway import (
     ChatModel,
     ModelGatewayError,
@@ -239,6 +240,127 @@ def _materialize(
                 }
             )
     return files, []
+
+
+def run_environment_completion_container(
+    *,
+    task: dict[str, Any],
+    attempt_ref: str,
+    replay_workspace: str | Path,
+    evidence: list[dict[str, Any]],
+    output_root: str | Path,
+    runtime: ContainerRuntime,
+    agent_runner: AgentRunner,
+) -> Path:
+    """Terminal-Universe Stage 2 的真实容器路径。
+
+    agent 只通过 runtime 暴露的 shell/file 工具观察和修改 ``/home/user/workspace``；
+    宿主机只接收下载后的文件树和证据引用清单。该入口不把 workspace 快照拼进模型
+    prompt，因此可直接连接 Harbor/AGS 的 Hermes tool loop。
+    """
+    evidence_refs = {
+        str(item.get("evidence_ref_id"))
+        for item in evidence
+        if isinstance(item, dict) and item.get("evidence_ref_id")
+    }
+    run_id = stable_id(
+        "traceforge.environment-completion-container-v1",
+        {"attempt_ref": attempt_ref, "task": task, "evidence": sorted(evidence_refs)},
+    )
+    workspace = ArtifactWorkspace(Path(output_root), run_id)
+    destination = workspace.staging_path / "candidates" / "candidate-000" / "workspace"
+    prompt = (
+        "Recover the task environment from the replayed session.\n"
+        f"Task: {task!r}\n"
+        "Inspect the existing workspace with shell/file tools. Add only evidence-backed context, "
+        "dependencies, or partial files; do not implement the task, write tests, hints, or answers. "
+        "Return JSON {evidence_ref_ids_by_path:{path:[ref_id]}, confidence:0..1, uncertainties:[...]}"
+    )
+    result = None
+    try:
+        result = __import__("asyncio").run(
+            run_completion_container(
+                runtime=runtime,
+                replay_workspace=Path(replay_workspace),
+                task_prompt=prompt,
+                evidence_refs=evidence_refs,
+                output_workspace=destination,
+                agent_runner=agent_runner,
+            )
+        )
+        files: list[dict[str, Any]] = []
+        if result.workspace is not None:
+            for path in sorted(result.workspace.rglob("*")):
+                if path.is_file():
+                    rel = path.relative_to(result.workspace).as_posix()
+                    files.append(
+                        {
+                            "path": rel,
+                            "content": path.read_text(encoding="utf-8"),
+                            "content_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                            "provenance": {
+                                "kind": "REPLAYED" if rel in result.unchanged_files else "MODEL_COMPLETED",
+                                "evidence_ref_ids": (
+                                    result.agent_output.get("evidence_ref_ids_by_path", {}).get(rel, [])
+                                    if isinstance(result.agent_output.get("evidence_ref_ids_by_path", {}), dict)
+                                    else []
+                                ),
+                            },
+                        }
+                    )
+        candidate = {
+            "index": 0,
+            "status": "READY" if result.status == "READY" else "REVIEW",
+            "decision": "READY" if result.status == "READY" else "REVIEW",
+            "workspace": str(destination.relative_to(workspace.staging_path)) if result.workspace else None,
+            "files": files,
+            "dependencies": result.agent_output.get("dependencies", []) if result else [],
+            "runtime_constraints": result.agent_output.get("runtime_constraints", []) if result else [],
+            "uncertainties": result.agent_output.get("uncertainties", []) if result else [],
+            "confidence": result.agent_output.get("confidence", 0.0) if result else 0.0,
+            "errors": list(result.errors) if result else ["CONTAINER_RESULT_MISSING"],
+        }
+        entries = [
+            write_json_artifact(
+                workspace.staging_path,
+                "environment_completion.json",
+                {
+                    "schema_version": ENVIRONMENT_COMPLETION_RUN_SCHEMA,
+                    "run_id": run_id,
+                    "attempt_ref": attempt_ref,
+                    "mode": "container-agentic",
+                    "candidates": [candidate],
+                    "open_questions": list(result.errors) if result else ["CONTAINER_RESULT_MISSING"],
+                },
+            ),
+            write_json_artifact(
+                workspace.staging_path,
+                "metrics.json",
+                {
+                    "schema_version": "traceforge.environment-completion-metrics.v1",
+                    "run_id": run_id,
+                    "mode": "container-agentic",
+                    "candidate_count": 1,
+                    "ready_count": int(candidate["status"] == "READY"),
+                    "changed_file_count": len(result.added_files) if result else 0,
+                    "replay_file_mutation_checked": True,
+                },
+            ),
+        ]
+        write_json_artifact(
+            workspace.staging_path,
+            "private/container_agent_output.json",
+            {"prompt": prompt, "agent_output": result.agent_output if result else {}, "errors": list(result.errors) if result else []},
+        )
+        write_json_artifact(
+            workspace.staging_path,
+            "artifact_manifest.json",
+            {"schema_version": ENVIRONMENT_COMPLETION_RUN_SCHEMA, "run_id": run_id, "status": candidate["status"], "files": artifact_entry_dicts(entries)},
+        )
+        return workspace.publish()
+    except BaseException:
+        workspace.abort()
+        raise
 
 
 def run_environment_completion(
@@ -479,4 +601,5 @@ __all__ = [
     "MAX_ENVIRONMENT_CANDIDATES",
     "EnvironmentCompletionError",
     "run_environment_completion",
+    "run_environment_completion_container",
 ]
