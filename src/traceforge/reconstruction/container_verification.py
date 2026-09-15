@@ -8,6 +8,7 @@ AGSPrebuiltEnvironment` 可以通过 adapter 实现该接口，单测则使用 f
 from __future__ import annotations
 
 import hashlib
+import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -275,6 +276,48 @@ async def run_sufficiency_container(
     )
 
 
+async def pytest_test_runner(
+    runtime: ContainerRuntime,
+    test_names: tuple[str, ...],
+    *,
+    test_file: str = "/tests/test_outputs.py",
+    workspace: str = "/home/user/workspace",
+    timeout_sec: int = 120,
+) -> tuple[ContainerTestRun, ...]:
+    """在 verifier AGS 沙盒中逐个执行 pytest；用于初始 RED calibration。"""
+    if not test_file.startswith("/") or not workspace.startswith("/"):
+        raise ContainerVerificationError("test_file/workspace 必须是绝对路径")
+    runs: list[ContainerTestRun] = []
+    for name in test_names:
+        if not name.startswith("test_") or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for ch in name):
+            runs.append(ContainerTestRun(name, "INFRA_ERROR", error_code="INVALID_TEST_NAME"))
+            continue
+        command = (
+            f"TRACEFORGE_WORKSPACE={shlex.quote(workspace)} python -m pytest -q "
+            f"{shlex.quote(test_file)}::{shlex.quote(name)}"
+        )
+        try:
+            result = await runtime.exec(command, cwd="/", timeout_sec=timeout_sec, user="root")
+            code = getattr(result, "return_code", None)
+            stdout = str(getattr(result, "stdout", "") or "")
+            stderr = str(getattr(result, "stderr", "") or "")
+            if code == 0:
+                status = "PASS"
+                error_code = None
+            elif code == 5:
+                status = "INFRA_ERROR"
+                error_code = "NO_TESTS_COLLECTED"
+            else:
+                status = "FAIL"
+                error_code = f"PYTEST_EXIT_{code}"
+            runs.append(ContainerTestRun(name, status, stdout, stderr, error_code))
+        except TimeoutError:
+            runs.append(ContainerTestRun(name, "TIMEOUT", error_code="TIMEOUT"))
+        except BaseException as exc:
+            runs.append(ContainerTestRun(name, "INFRA_ERROR", error_code=f"{type(exc).__name__}:{exc}"))
+    return tuple(runs)
+
+
 async def run_verifier_red_calibration(
     *,
     runtime: ContainerRuntime,
@@ -311,6 +354,7 @@ __all__ = [
     "ContainerVerificationError",
     "RedCalibrationResult",
     "SufficiencyContainerResult",
+    "pytest_test_runner",
     "run_completion_container",
     "run_sufficiency_container",
     "run_verifier_red_calibration",

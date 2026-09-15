@@ -4,14 +4,15 @@ import asyncio
 import shutil
 from pathlib import Path
 
-from traceforge.reconstruction.environment_completion import run_environment_completion_container
 from traceforge.reconstruction.container_verification import (
-    ContainerTestRun,
     AGSRuntimeAdapter,
+    ContainerTestRun,
+    pytest_test_runner,
     run_completion_container,
     run_sufficiency_container,
     run_verifier_red_calibration,
 )
+from traceforge.reconstruction.environment_completion import run_environment_completion_container
 
 
 class FakeRuntime:
@@ -138,19 +139,26 @@ def test_ags_runtime_adapter_maps_lifecycle(tmp_path):
         def __init__(self): self.calls = []
         async def start(self, force_build): self.calls.append(("start", force_build))
         async def stop(self, delete): self.calls.append(("stop", delete))
-        async def exec(self, command, **kwargs): self.calls.append(("exec", kwargs["user"])); return "ok"
+        async def exec(self, command, **kwargs):
+            self.calls.append(("exec", kwargs["user"]))
+            return "ok"
         async def upload_dir(self, source, target): self.calls.append(("upload", target))
         async def download_dir(self, source, target): self.calls.append(("download", source))
         def assert_cleanup_verified(self): self.calls.append(("audit",))
     async def case():
-        env = Environment(); adapter = AGSRuntimeAdapter(env)
-        await adapter.start(read_only=True); await adapter.exec("ls"); await adapter.stop()
+        env = Environment()
+        adapter = AGSRuntimeAdapter(env)
+        await adapter.start(read_only=True)
+        await adapter.exec("ls")
+        await adapter.stop()
         assert env.calls == [("start", False), ("exec", "user"), ("stop", True), ("audit",)]
     asyncio.run(case())
 
 
 def test_environment_completion_publishes_standard_artifact(tmp_path):
-    source = tmp_path / "source"; source.mkdir(); (source / "app.py").write_text("before", encoding="utf-8")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "app.py").write_text("before", encoding="utf-8")
     runtime = FakeRuntime(tmp_path)
     async def agent(runtime, prompt):
         (runtime.remote / "context.txt").write_text("evidence", encoding="utf-8")
@@ -163,3 +171,19 @@ def test_environment_completion_publishes_standard_artifact(tmp_path):
     payload = __import__("json").loads((root / "environment_completion.json").read_text())
     assert payload["mode"] == "container-agentic"
     assert payload["candidates"][0]["status"] == "READY"
+
+
+def test_pytest_runner_maps_exit_codes(tmp_path):
+    async def case():
+        runtime = FakeRuntime(tmp_path)
+        class Result:
+            return_code = 0
+            stdout = "1 passed"
+            stderr = ""
+        async def execute(command, **kwargs):
+            assert "test_ok" in command
+            return Result()
+        runtime.exec = execute
+        runs = await pytest_test_runner(runtime, ("test_ok",))
+        assert runs[0].status == "PASS"
+    asyncio.run(case())
