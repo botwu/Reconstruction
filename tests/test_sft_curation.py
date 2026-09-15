@@ -56,3 +56,21 @@ def test_non_boolean_audit_evidence_is_input_error():
         assert "solution_leakage" in str(exc)
     else:
         raise AssertionError("non-boolean leakage evidence must not be interpreted by truthiness")
+
+
+def test_non_finite_or_out_of_range_reward_is_input_error():
+    import math
+
+    row = _row(reward=math.nan)
+    try:
+        curate_candidates([row])
+    except CurationInputError as exc:
+        assert "有限" in str(exc)
+    else:
+        raise AssertionError("NaN reward must not enter curation")
+    try:
+        curate_candidates([_row(reward=2.0)])
+    except CurationInputError as exc:
+        assert "[0,1]" in str(exc)
+    else:
+        raise AssertionError("out-of-range reward must not enter curation")

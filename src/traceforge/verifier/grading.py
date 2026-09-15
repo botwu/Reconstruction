@@ -63,6 +63,7 @@ def grade(
             process = subprocess.run(
                 [
                     sys.executable,
+                    "-I",
                     "-m",
                     "pytest",
                     str(tests),
@@ -72,7 +73,8 @@ def grade(
                     "-p",
                     "no:cacheprovider",
                 ],
-                cwd=workspace,
+                # Never put the untrusted Agent workspace on sys.path[0].
+                cwd=log_dir,
                 env=env,
                 capture_output=True,
                 text=True,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,7 +33,10 @@ def _number(row: dict[str, Any], key: str) -> float:
     value = row.get(key)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise CurationInputError(f"{key} 必须是数值")
-    return float(value)
+    result = float(value)
+    if not math.isfinite(result):
+        raise CurationInputError(f"{key} 必须是有限数值")
+    return result
 
 
 def _explicit_bool(row: dict[str, Any], key: str) -> bool | None:
@@ -69,6 +73,8 @@ def curate_candidate(row: dict[str, Any], thresholds: CurationThresholds) -> SFT
     reward = row.get("reward")
     if reward is not None:
         reward = _number(row, "reward")
+        if not 0.0 <= reward <= 1.0:
+            raise CurationInputError("reward 必须在 [0,1]")
     leakage = _explicit_bool(row, "solution_leakage")
     reproducible = _explicit_bool(row, "reproducible")
 
@@ -104,13 +110,15 @@ def curate_candidate(row: dict[str, Any], thresholds: CurationThresholds) -> SFT
         rejects.extend(reviews)
     else:
         eligibility = SFTEligibility.ELIGIBLE.value
-        reasons.extend([
-            "VERIFIER_PASS",
-            "REWARD_PASS",
-            "CONFIDENCE_PASS",
-            "LEAKAGE_CHECK_PASS",
-            "REPRODUCIBLE",
-        ])
+        reasons.extend(
+            [
+                "VERIFIER_PASS",
+                "REWARD_PASS",
+                "CONFIDENCE_PASS",
+                "LEAKAGE_CHECK_PASS",
+                "REPRODUCIBLE",
+            ]
+        )
 
     candidate = SFTCandidateV1(
         schema_version=SFT_CANDIDATE_SCHEMA,

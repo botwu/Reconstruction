@@ -82,7 +82,12 @@ def _cleanup_ok(ledger: Path) -> bool | None:
     return bool(created) and created <= terminal
 
 
-def read_rollout_results(job_dir: Path | str, *, agent_mode: str = "hermes") -> dict[str, Any]:
+def read_rollout_results(
+    job_dir: Path | str,
+    *,
+    agent_mode: str = "hermes",
+    expected_trial_count: int | None = None,
+) -> dict[str, Any]:
     """读取 Job 下每个 trial 的 reward/verdict/trajectory 并聚合指标。"""
 
     root = Path(job_dir).resolve()
@@ -95,6 +100,21 @@ def read_rollout_results(job_dir: Path | str, *, agent_mode: str = "hermes") -> 
     for trial_dir in trial_dirs:
         result_path = trial_dir / "result.json"
         if not result_path.is_file():
+            trials.append(
+                {
+                    "trial_name": trial_dir.name,
+                    "status": "INFRA_ERROR",
+                    "reward": None,
+                    "verdict_status": None,
+                    "trajectory_present": False,
+                    "artifact_manifest_present": False,
+                    "tokens": {"input": None, "cache": None, "output": None},
+                    "duration_seconds": None,
+                    "result_path": str(result_path),
+                    "verdict_path": None,
+                    "error_code": "TRIAL_RESULT_MISSING",
+                }
+            )
             continue
         result = _read_json(result_path)
         verdict_path = trial_dir / "verifier/verdict.json"
@@ -102,9 +122,7 @@ def read_rollout_results(job_dir: Path | str, *, agent_mode: str = "hermes") -> 
         trajectory_path = trial_dir / "agent/trajectory.full.json"
         artifact_manifest_path = trial_dir / "artifacts/manifest.json"
         agent_result = (
-            result.get("agent_result")
-            if isinstance(result.get("agent_result"), dict)
-            else {}
+            result.get("agent_result") if isinstance(result.get("agent_result"), dict) else {}
         )
         verifier_result = result.get("verifier_result")
         rewards = verifier_result.get("rewards") if isinstance(verifier_result, dict) else None
@@ -120,6 +138,7 @@ def read_rollout_results(job_dir: Path | str, *, agent_mode: str = "hermes") -> 
                 "reward": rewards.get("task") if isinstance(rewards, dict) else None,
                 "verdict_status": verdict.get("status") if verdict else None,
                 "trajectory_present": trajectory_path.is_file(),
+                "trajectory_path": str(trajectory_path) if trajectory_path.is_file() else None,
                 "artifact_manifest_present": artifact_manifest_path.is_file(),
                 "tokens": token_info,
                 "duration_seconds": _duration_seconds(result),
@@ -127,6 +146,26 @@ def read_rollout_results(job_dir: Path | str, *, agent_mode: str = "hermes") -> 
                 "verdict_path": str(verdict_path) if verdict_path.is_file() else None,
             }
         )
+    if expected_trial_count is not None:
+        if expected_trial_count < 1:
+            raise HarborResultError("expected_trial_count 必须大于 0")
+        missing_count = expected_trial_count - len(trials)
+        for index in range(max(0, missing_count)):
+            trials.append(
+                {
+                    "trial_name": f"missing-trial-{index + 1:03d}",
+                    "status": "INFRA_ERROR",
+                    "reward": None,
+                    "verdict_status": None,
+                    "trajectory_present": False,
+                    "artifact_manifest_present": False,
+                    "tokens": {"input": None, "cache": None, "output": None},
+                    "duration_seconds": None,
+                    "result_path": None,
+                    "verdict_path": None,
+                    "error_code": "TRIAL_RESULT_MISSING",
+                }
+            )
     total = len(trials)
     completed = sum(item["status"] in {"PASS", "FAIL"} for item in trials)
     passed = sum(item["status"] == "PASS" for item in trials)

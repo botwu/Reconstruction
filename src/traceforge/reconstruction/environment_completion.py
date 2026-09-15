@@ -61,41 +61,25 @@ def _safe_path(value: str) -> str:
 
 
 def _compact_evidence(
-    evidence: list[dict[str, Any]], max_chars: int = 18000
+    evidence: list[dict[str, Any]], max_chars: int | None = None
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """环境模型只接收有优先级的事实投影，避免完整回答挤掉任务和工具状态。"""
-    priority = {
-        "TARGET_REQUEST": 0,
-        "ATTEMPT_ACTION": 0,
-        "ATTEMPT_OBSERVATION": 0,
-        "ATTEMPT_RESPONSE": 0,
-    }
-    ordered = sorted(
-        enumerate(evidence), key=lambda x: (priority.get(str(x[1].get("phase")), 1), x[0])
-    )
+    """构造完整、按 session 原始顺序排列的证据投影。
+
+    ``max_chars`` 仅为旧调用方保留的兼容参数，不能用于静默裁剪轨迹。
+    如果模型上下文确实不足，应由模型网关显式返回失败并进入 REVIEW，而不是
+    丢弃工具参数、结果或历史消息后继续重建。
+    """
+    ordered = list(enumerate(evidence))
     rows: list[dict[str, Any]] = []
-    omitted: list[str] = []
-    used = 0
-    for index, item in ordered:
+    for _index, item in ordered:
         if not isinstance(item, dict):
             continue
-        row = {
-            key: item.get(key)
-            for key in (
-                "evidence_ref_id",
-                "source_id",
-                "source_pointer",
-                "sequence_number",
-                "phase",
-                "role",
-                "event_kind",
-                "content_sha256",
-            )
-        }
+        # 保留所有上游 provenance 字段，保证跨 capture 聚合后的完整上下文可追溯。
+        row = dict(item)
         text = item.get("text")
         if isinstance(text, str):
-            row["text"] = text[:3000]
-            row["text_truncated"] = len(text) > 3000
+            row["text"] = text
+            row["text_truncated"] = False
         payload = item.get("payload")
         if item.get("event_kind") == "TOOL_CALL" and isinstance(payload, dict):
             function = payload.get("function", {})
@@ -106,19 +90,16 @@ def _compact_evidence(
                     arguments.get("value") if isinstance(arguments, dict) else arguments
                 )
             row["tool_call_id"] = payload.get("tool_call_id")
-        encoded = repr(row)
-        if used + len(encoded) > max_chars:
-            omitted.append(str(row.get("evidence_ref_id") or f"index:{index}"))
-            continue
         rows.append(row)
-        used += len(encoded)
+    serialized_size = sum(len(repr(row)) for row in rows)
     return rows, {
-        "budget_chars": max_chars,
-        "used_chars": used,
+        "budget_chars": None,
+        "used_chars": serialized_size,
         "input_count": len(evidence),
         "covered_count": len(rows),
-        "omitted_count": len(omitted),
-        "omitted_evidence_ref_ids": omitted,
+        "omitted_count": 0,
+        "omitted_evidence_ref_ids": [],
+        "truncated": False,
     }
 
 

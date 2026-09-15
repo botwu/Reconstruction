@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from traceforge.reconstruction.model_gateway import ModelRequest, ModelResponse
 from traceforge.reconstruction.workflow import (
     ReconstructionWorkflowError,
@@ -164,21 +166,57 @@ def test_red_case_rejects_incomplete_harbor_quality_gate():
     assert case.status == "INFRA_ERROR"
 
 
+def test_red_case_checks_all_trials():
+    from traceforge.reconstruction.workflow import _red_case
+
+    case = _red_case(
+        "oracle_pass",
+        {
+            "results": {
+                "quality_gate": {"ok": True},
+                "trials": [
+                    {"status": "PASS", "reward": 1.0},
+                    {"status": "FAIL", "reward": 0.0},
+                ],
+            },
+            "job_dir": "/tmp/job",
+        },
+        "PASS",
+        1.0,
+    )
+    assert case.status == "FAIL"
+
+
 
 def test_rollout_model_requires_provider_for_non_claude():
     from traceforge.reconstruction.workflow import (
-        ReconstructionWorkflowError,
+        _ROLLOUT_MODEL_UNRESOLVED,
         _resolve_rollout_model,
     )
 
-    assert _resolve_rollout_model("claude-opus-4-8", None) == "anthropic/claude-opus-4-8"
-    assert _resolve_rollout_model("deepseek-v4-flash-0731", "vol/deepseek-v4-flash-0731") == "vol/deepseek-v4-flash-0731"
-    try:
-        _resolve_rollout_model("deepseek-v4-flash-0731", None)
-    except ReconstructionWorkflowError as exc:
-        assert "rollout_model" in str(exc)
-    else:
-        raise AssertionError("non-Claude rollout must require explicit provider/model")
+    # Claude 恢复模型隐式解析为 anthropic/<model>。
+    assert (
+        _resolve_rollout_model("claude-opus-4-8", None, execute_rollout=False)
+        == "anthropic/claude-opus-4-8"
+    )
+    # 显式合法 provider/model 原样返回。
+    assert (
+        _resolve_rollout_model(
+            "deepseek-v4-flash-0731", "vol/deepseek-v4-flash-0731", execute_rollout=True
+        )
+        == "vol/deepseek-v4-flash-0731"
+    )
+    # 显式畸形 rollout_model 任何模式都拒绝（真实用户错误）。
+    with pytest.raises(ReconstructionWorkflowError, match="rollout_model"):
+        _resolve_rollout_model("claude-opus-4-8", "deepseek-no-slash", execute_rollout=False)
+    # PLAN_ONLY 下非 Claude 恢复模型 + 未给 rollout_model：冻结占位符，不再无谓抛错。
+    assert (
+        _resolve_rollout_model("deepseek-v4-flash-0731", None, execute_rollout=False)
+        == _ROLLOUT_MODEL_UNRESOLVED
+    )
+    # 但 execute_rollout=True 时仍必须显式给出 provider/model。
+    with pytest.raises(ReconstructionWorkflowError, match="rollout_model"):
+        _resolve_rollout_model("deepseek-v4-flash-0731", None, execute_rollout=True)
 
 
 def test_latest_job_dir_handles_direct_and_trial_layouts(tmp_path: Path):

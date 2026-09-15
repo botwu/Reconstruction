@@ -123,6 +123,53 @@ def test_prompt_projection_keeps_structured_calls_and_auditable_coverage():
     assert "RESULT_NOT_OBSERVED 不是执行失败" in prompt
 
 
+def test_projection_exposes_only_citable_ref_not_confusable_hashes():
+    # 回归：投影曾在同一行同时暴露 evidence_ref_id / source_id / content_sha256 三个
+    # 同形 sha256，而只有 evidence_ref_id 可被引用。推理模型（gpt-5）据此引用了不可
+    # 引用的 source_id，触发 EVIDENCE_REF_UNKNOWN、打断整条重建。模型可见行只应保留
+    # 可引用的 evidence_ref_id 与人类可读的 source_pointer，不得暴露 source_id /
+    # content_sha256 这类不可引用的同形哈希（其权威值另由输入索引在校验期回填）。
+    from traceforge.reconstruction.semantic_recovery import _prompt_evidence
+
+    evidence = [
+        {
+            "evidence_ref_id": "a" * 64,
+            "source_id": "b" * 64,
+            "content_sha256": "c" * 64,
+            "source_pointer": "/events/7",
+            "role": "TARGET_REQUEST",
+            "text": "用户请求",
+        }
+    ]
+    row = _prompt_evidence(evidence)[0]
+    assert row["evidence_ref_id"] == "a" * 64
+    assert row["source_pointer"] == "/events/7"
+    assert "source_id" not in row
+    assert "content_sha256" not in row
+
+
+def test_recover_completes_when_model_cites_ref_amid_distinct_source_id():
+    # 端到端：证据带有与 evidence_ref_id 不同的 source_id / content_sha256，模型正确
+    # 引用 evidence_ref_id 时应 COMPLETE —— 证明收窄投影未破坏真实多哈希证据的正常路径。
+    outcome = recover(
+        kind="task",
+        attempt_ref="a",
+        source_report_id="r",
+        report={},
+        evidence=[
+            {
+                "evidence_ref_id": "e" * 64,
+                "source_id": "s" * 64,
+                "content_sha256": "h" * 64,
+                "source_pointer": "/events/1",
+            }
+        ],
+        model=FakeModel(_task("e" * 64)),
+    )
+    assert outcome.status == RecoveryStatus.COMPLETE
+    assert outcome.candidates[0].evidence[0].evidence_ref_id == "e" * 64
+
+
 def test_projection_marks_long_trace_omissions_and_preserves_refs():
     from traceforge.reconstruction.semantic_recovery import _prompt_evidence
 
@@ -132,9 +179,9 @@ def test_projection_marks_long_trace_omissions_and_preserves_refs():
     ]
     projected = _prompt_evidence(evidence, max_chars=900)
     coverage = projected[-1]["_projection_coverage"]
-    assert coverage["truncated"] is True
-    assert coverage["omitted_count"] > 0
-    assert all(ref.startswith("e-") for ref in coverage["omitted_evidence_ref_ids"])
+    assert coverage["truncated"] is False
+    assert coverage["omitted_count"] == 0
+    assert coverage["covered_count"] == len(evidence)
 
 
 def test_model_evidence_reference_uses_authoritative_metadata():
@@ -203,6 +250,53 @@ def test_source_quality_gate_overrides_ready():
         source_report_id="r",
         report={"status": "INCONCLUSIVE", "selection": {"pending_tool_call_count": 1}},
         evidence=[{"evidence_ref_id": "e", "phase": "TARGET_REQUEST"}],
+        model=FakeModel(_task("e")),
+    )
+    assert outcome.status == RecoveryStatus.REVIEW
+    assert "SOURCE_QUALITY_REVIEW_REQUIRED" in outcome.errors
+
+
+def test_paired_observed_tool_trajectory_completes():
+    # 工具调用已配对+已观测、候选全 READY、report 干净：应自动 COMPLETE。
+    # 仅凭 evidence 里出现 ATTEMPT_ACTION 阶段不构成来源质量风险，
+    # 否则任何带工具调用的真实轨迹都无法通过 COMPLETE 门禁。
+    outcome = recover(
+        kind="task",
+        attempt_ref="a",
+        source_report_id="r",
+        report={},
+        evidence=[
+            {"evidence_ref_id": "e", "phase": "ATTEMPT_ACTION"},
+            {"evidence_ref_id": "obs", "phase": "ATTEMPT_OBSERVATION"},
+        ],
+        model=FakeModel(_task("e")),
+    )
+    assert outcome.status == RecoveryStatus.COMPLETE
+    assert "SOURCE_QUALITY_REVIEW_REQUIRED" not in outcome.errors
+
+
+def test_pending_tool_call_still_reviews():
+    # 未配对/未观测的工具调用（pending>0）才是真实的“工具交互不完整”风险，仍须人审。
+    outcome = recover(
+        kind="task",
+        attempt_ref="a",
+        source_report_id="r",
+        report={"selection": {"pending_tool_call_count": 1}},
+        evidence=[{"evidence_ref_id": "e", "phase": "ATTEMPT_ACTION"}],
+        model=FakeModel(_task("e")),
+    )
+    assert outcome.status == RecoveryStatus.REVIEW
+    assert "SOURCE_QUALITY_REVIEW_REQUIRED" in outcome.errors
+
+
+def test_inconclusive_report_still_reviews():
+    # 失败分析未能定性（INCONCLUSIVE）时，即使候选 READY 也须人审。
+    outcome = recover(
+        kind="task",
+        attempt_ref="a",
+        source_report_id="r",
+        report={"status": "INCONCLUSIVE"},
+        evidence=[{"evidence_ref_id": "e"}],
         model=FakeModel(_task("e")),
     )
     assert outcome.status == RecoveryStatus.REVIEW

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from traceforge.harbor_ags.rollout import (
     build_rollout_plan,
     execute_rollout_plan,
 )
+from traceforge.requery.sft_export import export_sft_jsonl
 from traceforge.trajectory.artifacts import (
     ArtifactWorkspace,
     artifact_entry_dicts,
@@ -94,7 +96,13 @@ def _run_plan_and_read(plan: Path, jobs_root: Path, *, agent_mode: str) -> dict[
             "error": "HARBOR_JOB_DIR_NOT_FOUND",
         }
     try:
-        results = read_rollout_results(job_dir, agent_mode=agent_mode)
+        plan_payload = _json(plan / "rollout_plan.json")
+        expected_trials = plan_payload.get("trials")
+        results = read_rollout_results(
+            job_dir,
+            agent_mode=agent_mode,
+            expected_trial_count=expected_trials if isinstance(expected_trials, int) else None,
+        )
     except HarborResultError as exc:
         return {
             "execution": execution,
@@ -110,13 +118,35 @@ def _red_case(
 ) -> RedCheckCase:
     results = run.get("results") or {}
     trials = results.get("trials") if isinstance(results, dict) else []
-    first = trials[0] if isinstance(trials, list) and trials else {}
     quality_gate = results.get("quality_gate") if isinstance(results, dict) else None
-    status = str(first.get("status", "INCONCLUSIVE"))
+    if not isinstance(trials, list) or not trials:
+        return RedCheckCase(
+            label, label, "INFRA_ERROR", None, expected_status, expected_reward, "NO_TRIALS"
+        )
     if not isinstance(quality_gate, dict) or quality_gate.get("ok") is not True:
+        return RedCheckCase(
+            label, label, "INFRA_ERROR", None, expected_status, expected_reward, "QUALITY_GATE"
+        )
+    statuses = [
+        str(item.get("status", "INCONCLUSIVE")) for item in trials if isinstance(item, dict)
+    ]
+    rewards = [item.get("reward") for item in trials if isinstance(item, dict)]
+    all_expected = bool(statuses) and all(status == expected_status for status in statuses)
+    reward_value = (
+        expected_reward
+        if all_expected
+        and all(
+            isinstance(value, (int, float)) and float(value) == expected_reward for value in rewards
+        )
+        else None
+    )
+    if all_expected and reward_value == expected_reward:
+        status = expected_status
+    elif statuses and all(status in {"PASS", "FAIL"} for status in statuses):
+        status = "FAIL" if expected_status == "PASS" else "PASS"
+        reward_value = 0.0 if status == "FAIL" else 1.0
+    else:
         status = "INFRA_ERROR"
-    reward = first.get("reward")
-    reward_value = float(reward) if isinstance(reward, (int, float)) else None
     return RedCheckCase(
         case_id=label,
         kind=label,
@@ -124,12 +154,22 @@ def _red_case(
         reward=reward_value,
         expected_status=expected_status,
         expected_reward=expected_reward,
-        detail=str(run.get("job_dir") or run.get("error") or ""),
+        detail=f"{run.get('job_dir') or run.get('error') or ''}; trials={len(trials)} statuses={statuses}",
     )
 
 
-def _resolve_rollout_model(model_name: str, rollout_model: str | None) -> str:
-    """解析 Harbor agent 的 provider/model，避免误把非 Claude 模型冒用成 anthropic。"""
+_ROLLOUT_MODEL_UNRESOLVED = "unresolved/rollout-model-required"
+
+
+def _resolve_rollout_model(
+    model_name: str, rollout_model: str | None, *, execute_rollout: bool
+) -> str:
+    """解析 Harbor agent 的 provider/model，避免误把非 Claude 模型冒用成 anthropic。
+
+    PLAN_ONLY（execute_rollout=False）时，非 Claude 恢复模型即使未显式给出 rollout_model，
+    也不再无谓抛错，而是冻结一个显式占位符：计划本身不可执行，真正 rollout 时须补全
+    rollout_model。显式给出的畸形 rollout_model 仍视为用户错误，任何模式下都拒绝。
+    """
     if rollout_model is not None:
         value = rollout_model.strip()
         if not value or "/" not in value:
@@ -140,6 +180,8 @@ def _resolve_rollout_model(model_name: str, rollout_model: str | None) -> str:
     value = model_name.strip()
     if value.startswith("claude-"):
         return f"anthropic/{value}"
+    if not execute_rollout:
+        return _ROLLOUT_MODEL_UNRESOLVED
     raise ReconstructionWorkflowError(
         "非 Claude 模型不能隐式用于 Harbor rollout；请显式设置 rollout_model(provider/model)"
     )
@@ -212,6 +254,14 @@ def run_reconstruction_workflow(
     """
     if rollout_trials < 1:
         raise ReconstructionWorkflowError("rollout_trials 必须大于 0")
+    if execute_rollout and rollout_trials < 2:
+        # 可复现性判定要求至少 2 次一致 PASS（见下方 reproducible 计算），
+        # 否则 SFT 恒不可能 ELIGIBLE。默认 1 次不阻断，但必须显式告警。
+        warnings.warn(
+            "execute_rollout=True 但 rollout_trials<2：可复现性判定要求至少 2 次一致 PASS，"
+            "本次运行不可能产出 ELIGIBLE 的 SFT 样本（reproducible 恒为 False）。",
+            stacklevel=2,
+        )
     root = Path(output_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     stages = root / "stages"
@@ -399,7 +449,9 @@ def run_reconstruction_workflow(
     oracle_bundle = oracle_bundle_root / "task"
     mutation_bundle = mutation_bundle_root / "task"
     jobs_root = root / "harbor-jobs"
-    harbor_model = _resolve_rollout_model(model_name, rollout_model)
+    harbor_model = _resolve_rollout_model(
+        model_name, rollout_model, execute_rollout=execute_rollout
+    )
 
     def plan(bundle_path: Path, mode: str, name: str) -> Path:
         return build_rollout_plan(
@@ -497,9 +549,12 @@ def run_reconstruction_workflow(
                         and trial.get("artifact_manifest_present") is True
                         else 0.0
                     ),
-                    "solution_leakage": not red_report.passed,
+                    # RED-check verifies the verifier's contrast cases, not that
+                    # public context is free of withheld answer material. That
+                    # independent leakage audit is still unavailable here.
+                    "solution_leakage": None,
                     "reproducible": reproducible,
-                    "trajectory_artifact": trial.get("result_path"),
+                    "trajectory_artifact": trial.get("trajectory_path"),
                 }
             )
         curated = []
@@ -509,12 +564,32 @@ def run_reconstruction_workflow(
         eligible_count = sum(
             item.get("eligibility") == "ELIGIBLE" for item in curated if isinstance(item, dict)
         )
+        # Do not claim an SFT export until a trajectory artifact and a complete
+        # task/trajectory payload have been independently checked. The current
+        # Harbor result contract only gives a path, so this branch deliberately
+        # remains REVIEW when leakage evidence is unavailable.
+        export_rows = []
+        for row, candidate in zip(rows, curated, strict=True):
+            trajectory_path = row.get("trajectory_artifact")
+            if candidate.get("eligibility") != "ELIGIBLE" or not isinstance(trajectory_path, str):
+                continue
+            path = Path(trajectory_path)
+            if not path.is_file():
+                continue
+            try:
+                trajectory = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                continue
+            export_rows.append({**row, "task": task, "trajectory": trajectory, **candidate})
+        export_path = stages / "sft" / "training.jsonl"
+        export_result = export_sft_jsonl(export_rows, export_path)
         sft_result = {
             "status": "READY"
-            if red_report.passed and hermes_quality and eligible_count > 0
+            if red_report.passed and hermes_quality and export_result["exported_count"] > 0
             else "REVIEW",
             "eligible_count": eligible_count,
             "candidates": curated,
+            "export": export_result,
         }
 
     final = ArtifactWorkspace(

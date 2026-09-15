@@ -145,6 +145,9 @@ def _emit(
                 "content_sha256": row.get("visible_payload_sha256"),
                 "text": _text(payload),
                 "payload": payload,
+                "_source_occurrence_ids": list(
+                    row.get("_source_occurrence_ids") or [str(event_id or "")]
+                ),
             }
         )
     users = [item for item in selected if item["event_kind"] == "USER" and item.get("text")]
@@ -392,3 +395,132 @@ def build_task_input(
         capture_meta=capture,
         boundary=boundary,
     )
+
+
+def build_session_input(
+    *,
+    event_occurrences_path: str | Path,
+    capture_id: str,
+    output_path: str | Path,
+    captures_path: str | Path | None = None,
+    request_boundaries_path: str | Path | None = None,
+    tool_pairings_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """按 candidate_group_id 聚合完整 session；不按 USER 回合或事件预算裁剪。"""
+    captures = _jsonl(captures_path)
+    selected_capture = next(
+        (item for item in captures if item.get("capture_occurrence_id") == capture_id), {}
+    )
+    group_id = selected_capture.get("candidate_group_id")
+    if group_id is None:
+        group_id = selected_capture.get("thread_id") or selected_capture.get("session_ref")
+    members = [
+        item
+        for item in captures
+        if group_id is not None
+        and (
+            item.get("candidate_group_id") == group_id
+            or (not item.get("candidate_group_id") and item.get("thread_id") == group_id)
+        )
+    ]
+    if not members:
+        members = (
+            [selected_capture] if selected_capture else [{"capture_occurrence_id": capture_id}]
+        )
+    member_ids = {str(item.get("capture_occurrence_id")) for item in members}
+    raw_rows = [
+        row
+        for row in _jsonl(event_occurrences_path)
+        if str(row.get("capture_occurrence_id")) in member_ids
+        and row.get("event_kind")
+        in {"SYSTEM", "USER", "TOOL_CALL", "TOOL_RESULT", "ASSISTANT_MESSAGE"}
+    ]
+    member_order = {
+        str(item.get("capture_occurrence_id")): (
+            str(item.get("request_time_start") or ""),
+            str(item.get("response_time_end") or ""),
+            str(item.get("source_capture_id") or ""),
+            str(item.get("capture_occurrence_id") or ""),
+        )
+        for item in members
+    }
+    raw_rows.sort(
+        key=lambda row: (
+            member_order.get(str(row.get("capture_occurrence_id")), ("", "", "", "")),
+            int(row.get("sequence_number") or 0),
+            str(row.get("event_occurrence_id") or ""),
+        )
+    )
+    canonical: list[dict[str, Any]] = []
+    by_fingerprint: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for row in raw_rows:
+        try:
+            payload_key = json.dumps(
+                row.get("payload"), ensure_ascii=False, sort_keys=True, default=str
+            )
+        except (TypeError, ValueError):
+            payload_key = repr(row.get("payload"))
+        key = (int(row.get("sequence_number") or 0), str(row.get("event_kind") or ""), payload_key)
+        existing = by_fingerprint.get(key)
+        if existing is None:
+            existing = dict(row)
+            existing["_source_occurrence_ids"] = [str(row.get("event_occurrence_id") or "")]
+            by_fingerprint[key] = existing
+            canonical.append(existing)
+        else:
+            existing["_source_occurrence_ids"].append(str(row.get("event_occurrence_id") or ""))
+    # raw_rows has already been ordered by capture chronology and then each
+    # capture's local sequence. Do not sort by local sequence again: sequence
+    # numbers restart in every capture and that would reorder a whole session.
+    boundaries = [
+        row
+        for row in _jsonl(request_boundaries_path)
+        if str(row.get("capture_occurrence_id")) in member_ids
+    ]
+    pairings = [
+        row
+        for row in _jsonl(tool_pairings_path)
+        if str(row.get("capture_occurrence_id")) in member_ids
+    ]
+    capture_meta = {
+        "session_identity": {
+            "candidate_group_id": group_id,
+            "capture_occurrence_ids": sorted(member_ids),
+            "target_capture_occurrence_id": capture_id,
+        },
+        "captures": sorted(
+            members,
+            key=lambda item: member_order.get(
+                str(item.get("capture_occurrence_id")), ("", "", "", "")
+            ),
+        ),
+        "request_boundaries": boundaries,
+        "deduplication": {
+            "raw_event_count": len(raw_rows),
+            "resolved_event_count": len(canonical),
+            "shared_prefix_dedup_count": len(raw_rows) - len(canonical),
+            "strategy": "sequence,event_kind,payload fingerprint; source ids retained",
+        },
+    }
+    result = _emit(
+        capture_id=capture_id,
+        rows=canonical,
+        output_path=output_path,
+        source_row_count=len(raw_rows),
+        truncated=False,
+        pairings=pairings,
+        capture_meta=capture_meta,
+        boundary={"capture_occurrence_ids": sorted(member_ids), "boundaries": boundaries},
+    )
+    result["selection"]["session_capture_count"] = len(members)
+    result["selection"]["raw_session_event_count"] = len(raw_rows)
+    result["selection"]["deduplicated_session_event_count"] = len(canonical)
+    result["selection"]["query_ordinal"] = None
+    result["selection"]["truncated"] = False
+    result["provenance"]["session_identity"] = capture_meta["session_identity"]
+    result["provenance"]["request_boundaries"] = boundaries
+    result["provenance"]["captures"] = capture_meta["captures"]
+    Path(output_path).write_text(
+        json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return result

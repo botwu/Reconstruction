@@ -85,9 +85,14 @@ def _json_preview(value: Any, limit: int = 4000) -> tuple[str, bool]:
 
 
 def _evidence_projection(
-    evidence: list[dict[str, Any]], *, max_chars: int = 32000
+    evidence: list[dict[str, Any]], *, max_chars: int | None = None
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """构造可审计证据视图；目标和尝试事实优先，长上下文才可被裁剪。"""
+    """构造完整 session 证据视图；结构化事件与正文均不静默裁剪。
+
+    max_chars 保留为兼容参数，但完整 session 输入不受模型预算影响。调用方必须在
+    网关层发现上下文无法容纳时显式阻断，不能删除事件或正文后继续推理。
+    """
+    import json
 
     def make_row(index: int, item: dict[str, Any]) -> dict[str, Any]:
         ref = item.get("evidence_ref_id") or item.get("evidence_id")
@@ -97,23 +102,10 @@ def _evidence_projection(
             "phase": item.get("phase")
             or item.get("stage")
             or item.get("event_phase")
-            or (
-                item.get("role")
-                if item.get("role")
-                in {
-                    "TARGET_REQUEST",
-                    "ATTEMPT_ACTION",
-                    "ATTEMPT_OBSERVATION",
-                    "ATTEMPT_RESPONSE",
-                    "PRE_TASK_CONTEXT",
-                }
-                else None
-            ),
+            or item.get("role"),
             "event_kind": item.get("event_kind") or item.get("evidence_kind"),
             "role": item.get("role"),
-            "source_id": item.get("source_id") or item.get("event_id"),
             "source_pointer": item.get("source_pointer"),
-            "content_sha256": item.get("content_sha256"),
         }
         payload = item.get("payload")
         if isinstance(payload, dict):
@@ -139,73 +131,33 @@ def _evidence_projection(
         if (
             payload is not None
             and "text" not in row
-            and not any(k in row for k in ("tool_args", "tool_result"))
+            and not any(key in row for key in ("tool_args", "tool_result"))
         ):
-            preview, truncated = _json_preview(payload)
-            row["payload_summary"] = preview
-            row["payload_summary_truncated"] = truncated
+            try:
+                row["payload_summary"] = json.dumps(
+                    payload, ensure_ascii=False, sort_keys=True, default=str
+                )
+            except (TypeError, ValueError):
+                row["payload_summary"] = repr(payload)
+        if isinstance(item.get("_source_occurrence_ids"), list):
+            row["source_occurrence_ids"] = list(item["_source_occurrence_ids"])
         return row
 
-    indexed = [(i, make_row(i, x)) for i, x in enumerate(evidence) if isinstance(x, dict)]
-
-    # 目标、工具动作/观察和尝试回答是重建不可替代的事实；上下文按原序填充。
-    def priority(row: dict[str, Any]) -> tuple[int, int]:
-        phase = row.get("phase")
-        return (
-            0
-            if phase
-            in {"TARGET_REQUEST", "ATTEMPT_ACTION", "ATTEMPT_OBSERVATION", "ATTEMPT_RESPONSE"}
-            else 1,
-            int(row.get("sequence_number", 0)),
-        )
-
-    ordered = sorted(indexed, key=lambda pair: priority(pair[1]))
-    rows: list[dict[str, Any]] = []
-    covered_ids: list[str] = []
-    omitted_ids: list[str] = []
-    used = 0
-    for index, row in ordered:
-        ref = row.get("evidence_ref_id") or f"index:{index}"
-        encoded = str(row)
-        remaining = max_chars - used
-        if remaining <= 0:
-            omitted_ids.append(str(ref))
-            continue
-        if len(encoded) > remaining:
-            # 可裁剪正文，但关键结构化调用字段和引用必须保留；若仍放不下则记录为省略。
-            text = row.get("text")
-            if isinstance(text, str):
-                row["text"] = text[: max(0, remaining - 700)]
-                row["text_truncated"] = len(text) > len(row["text"])
-            row["projection_truncated"] = True
-            encoded = str(row)
-        if len(encoded) > remaining:
-            omitted_ids.append(str(ref))
-            continue
-        rows.append(row)
-        covered_ids.append(str(ref))
-        used += len(encoded)
+    # build_session_input 已按 capture 时间和 capture 内局部序号排列；局部序号会在
+    # 每个 capture 重新从 1 开始，不能在这里再次全局排序，否则历史 session 会乱序。
+    rows = [make_row(index, item) for index, item in enumerate(evidence) if isinstance(item, dict)]
+    refs = [str(row.get("evidence_ref_id") or f"index:{index}") for index, row in enumerate(rows)]
     coverage = {
-        "budget_chars": max_chars,
-        "used_chars": used,
+        "budget_chars": None,
+        "used_chars": len(json.dumps(rows, ensure_ascii=False, default=str)),
         "input_count": len(evidence),
         "covered_count": len(rows),
-        "omitted_count": len(omitted_ids),
-        "covered_evidence_ref_ids": covered_ids,
-        "omitted_evidence_ref_ids": omitted_ids,
-        "truncated": bool(omitted_ids) or any(x.get("projection_truncated") for x in rows),
-        "priority_phases": [
-            "TARGET_REQUEST",
-            "ATTEMPT_ACTION",
-            "ATTEMPT_OBSERVATION",
-            "ATTEMPT_RESPONSE",
-        ],
-        "priority_covered_evidence_ref_ids": [
-            x.get("evidence_ref_id")
-            for x in rows
-            if x.get("phase")
-            in {"TARGET_REQUEST", "ATTEMPT_ACTION", "ATTEMPT_OBSERVATION", "ATTEMPT_RESPONSE"}
-        ],
+        "omitted_count": 0,
+        "covered_evidence_ref_ids": refs,
+        "omitted_evidence_ref_ids": [],
+        "truncated": False,
+        "priority_phases": [],
+        "priority_covered_evidence_ref_ids": refs,
     }
     return rows, coverage
 
@@ -462,12 +414,15 @@ def recover(
             tuple(errors),
             receipt,
         )
+    # 来源质量门禁只看真实的“事实不完整/未定性”信号：报告未定性或转人审、
+    # 存在未配对/未观测的工具调用（pending>0，即 RESULT_NOT_OBSERVED）、快照来源。
+    # 注意：证据中“出现过 ATTEMPT_ACTION 阶段”本身不是风险 —— 只要工具调用全部
+    # 配对且被观测，就是合法的可重建轨迹；否则任何带工具调用的真实轨迹都无法 COMPLETE。
     source_quality_review = bool(
         report.get("status") in {"INCONCLUSIVE", "REVIEW"}
         or report.get("quality", {}).get("requires_review")
         or report.get("selection", {}).get("pending_tool_call_count", 0)
         or report.get("provenance", {}).get("snapshot")
-        or any(item.get("phase") == "ATTEMPT_ACTION" for item in evidence if isinstance(item, dict))
     )
     if source_quality_review and all(x.decision == Decision.READY.value for x in parsed):
         return SemanticRecoveryOutcome(

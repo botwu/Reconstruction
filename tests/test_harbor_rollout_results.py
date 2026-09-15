@@ -77,3 +77,13 @@ def test_results_reject_pass_without_artifact_manifest(tmp_path: Path) -> None:
     assert report["trials"][0]["status"] == "PASS"
     assert report["quality_gate"]["ok"] is False
     assert "ARTIFACT_MANIFEST_MISSING" in report["quality_gate"]["reasons"]
+
+
+def test_results_count_trial_directory_without_result_as_infra_error(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    (job / "task--trial-001").mkdir(parents=True)
+    report = read_rollout_results(job, expected_trial_count=2)
+    assert report["trial_count"] == 2
+    assert all(item["status"] == "INFRA_ERROR" for item in report["trials"])
+    assert report["quality_gate"]["ok"] is False
+    assert "TRIAL_INCOMPLETE_OR_INFRA_ERROR" in report["quality_gate"]["reasons"]

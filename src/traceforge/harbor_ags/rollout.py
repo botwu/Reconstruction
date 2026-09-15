@@ -141,27 +141,22 @@ def _ensure_workspace_snapshot_hook(task_toml: Path) -> None:
     marker = (
         "\n# TraceForge workspace snapshot hook\n"
         "[[verifier.collect]]\n"
-        "command = \"set -eu; rm -rf /logs/artifacts/traceforge/workspace; "
+        'command = "set -eu; rm -rf /logs/artifacts/traceforge/workspace; '
         "mkdir -p /logs/artifacts/traceforge/workspace; "
-        "cp -a /home/user/workspace/. /logs/artifacts/traceforge/workspace/\"\n"
-        "service = \"main\"\n"
-        "user = \"root\"\n"
+        'cp -a /home/user/workspace/. /logs/artifacts/traceforge/workspace/"\n'
+        'service = "main"\n'
+        'user = "root"\n'
         "timeout_sec = 120.0\n"
     )
-    lines = raw.splitlines(keepends=True)
-    verifier_index = next(
-        (index for index, line in enumerate(lines) if line.strip() == "[verifier]"),
-        None,
-    )
-    if verifier_index is not None:
-        insert_at = verifier_index + 1
-    else:
-        insert_at = next(
-            (index for index, line in enumerate(lines) if line.lstrip().startswith("[")),
-            len(lines),
-        )
-    lines.insert(insert_at, marker)
-    task_toml.write_text("".join(lines), encoding="utf-8")
+    # Array-of-table must be appended after all existing tables. Inserting it
+    # inside [verifier] would re-parent later fields and can create duplicate
+    # keys when the hook declares timeout/user itself.
+    rendered = raw.rstrip() + "\n" + marker.lstrip("\n")
+    try:
+        tomllib.loads(rendered)
+    except tomllib.TOMLDecodeError as exc:
+        raise HarborRolloutError("snapshot hook 生成了非法 task.toml") from exc
+    task_toml.write_text(rendered, encoding="utf-8")
 
 
 def _credential_status(agent_mode: str) -> dict[str, Any]:
