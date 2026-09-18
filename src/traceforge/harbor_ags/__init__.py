@@ -8,6 +8,7 @@ from .adapter import (
 )
 from .results import ROLLOUT_RESULTS_SCHEMA, HarborResultError, read_rollout_results
 from .rollout import (
+    DEFAULT_RUNTIME_CONFIG,
     ROLLOUT_BRIDGE_SCHEMA,
     HarborRolloutConfig,
     HarborRolloutError,
@@ -16,6 +17,7 @@ from .rollout import (
 )
 
 __all__ = [
+    "DEFAULT_RUNTIME_CONFIG",
     "HARBOR_AGS_PLAN_SCHEMA",
     "ROLLOUT_BRIDGE_SCHEMA",
     "ROLLOUT_RESULTS_SCHEMA",

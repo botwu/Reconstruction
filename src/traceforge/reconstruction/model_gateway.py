@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -88,6 +89,48 @@ class ChatModel(Protocol):
 Transport = Callable[[str, Mapping[str, str], bytes, int], tuple[int, bytes]]
 
 
+_SANDBOX_KEY_ALIASES = frozenset(
+    {"e2bapikey", "e2b_api_key", "e2b-api-key", "ags_api_key", "agsapikey"}
+)
+
+
+def _parse_config_value(raw: str) -> Any:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw.strip().strip("'\"")
+
+
+def _iter_config_items(path: str | os.PathLike[str]) -> list[tuple[str, Any]]:
+    """解析顶层 key / 一行 JSON 或标量，结果只留在进程内存。"""
+
+    try:
+        with open(path, encoding="utf-8") as config_file:
+            raw_lines = config_file.read().splitlines()
+    except OSError as exc:
+        raise ModelGatewayError("无法读取模型配置", code="CONFIG_READ_ERROR") from exc
+    items: list[tuple[str, Any]] = []
+    current: str | None = None
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indented = line.startswith((" ", "\t"))
+        if not indented and ":" in stripped:
+            name, _, rest = stripped.partition(":")
+            current = name.strip()
+            rest = rest.strip()
+            if rest:
+                items.append((current, _parse_config_value(rest)))
+                current = None
+            continue
+        if current is None:
+            continue
+        items.append((current, _parse_config_value(stripped)))
+        current = None
+    return items
+
+
 def _config_channels(path: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
     """读取 ``newapi_channel_conn`` 配置而不将密钥写入日志或 artifact。
 
@@ -96,30 +139,41 @@ def _config_channels(path: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
     做了最小兼容，便于测试配置迁移。
     """
 
-    try:
-        with open(path, encoding="utf-8") as config_file:
-            raw_lines = config_file.read().splitlines()
-    except OSError as exc:
-        raise ModelGatewayError("无法读取模型配置", code="CONFIG_READ_ERROR") from exc
     channels: dict[str, dict[str, Any]] = {}
-    current: str | None = None
-    for line in raw_lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if not line.startswith((" ", "\t")) and stripped.endswith(":"):
-            current = stripped[:-1].strip()
-            continue
-        if current is None:
-            continue
-        # 配置格式中的值是一行 JSON；拒绝任意代码或复杂 YAML。
-        try:
-            value = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
+    for name, value in _iter_config_items(path):
         if isinstance(value, dict):
-            channels[current] = value
+            channels[name] = value
     return channels
+
+
+def load_e2b_api_key(path: str | os.PathLike[str]) -> str | None:
+    """读取 AGS/E2B 沙盒密钥；只返回内存中的字符串，不写日志。"""
+
+    for name, value in _iter_config_items(path):
+        if name.lower() not in _SANDBOX_KEY_ALIASES:
+            continue
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            raw = value.get("key") or value.get("api_key")
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+    return None
+
+
+def load_channel_connection(path: str | os.PathLike[str], channel: str) -> tuple[str, str]:
+    """读取 channel 的 url/key，只留在内存，不写日志。"""
+
+    entry = _config_channels(path).get(channel)
+    if not isinstance(entry, dict):
+        raise ModelGatewayError(f"配置未找到 channel：{channel}", code="CHANNEL_MISSING")
+    api_key = entry.get("key") or entry.get("api_key")
+    raw_url = entry.get("url") or entry.get("base_url")
+    if not isinstance(api_key, str) or not api_key.strip():
+        raise ModelGatewayError("模型配置缺少密钥", code="API_KEY_MISSING")
+    if not isinstance(raw_url, str) or not raw_url.strip():
+        raise ModelGatewayError("模型配置缺少 endpoint", code="BASE_URL_MISSING")
+    return raw_url.rstrip("/"), api_key
 
 
 class NewAPIClient:
@@ -170,19 +224,10 @@ class NewAPIClient:
         retry_backoff_seconds: float = 1.0,
         transport: Transport | None = None,
     ) -> NewAPIClient:
-        channels = _config_channels(path)
-        entry = channels.get(channel)
-        if not isinstance(entry, dict):
-            raise ModelGatewayError("模型配置未找到指定 channel", code="CONFIG_CHANNEL_MISSING")
-        api_key = entry.get("key") or entry.get("api_key")
-        base_url = entry.get("url") or entry.get("base_url")
-        if not isinstance(api_key, str) or not api_key.strip():
-            raise ModelGatewayError("模型配置缺少密钥", code="API_KEY_MISSING")
-        if not isinstance(base_url, str) or not base_url.strip():
-            raise ModelGatewayError("模型配置缺少 endpoint", code="CONFIG_ENDPOINT_MISSING")
+        url, key = load_channel_connection(path, channel)
         return cls(
-            api_key=api_key,
-            base_url=base_url,
+            api_key=key,
+            base_url=url,
             channel=channel,
             max_retries=max_retries,
             retry_backoff_seconds=retry_backoff_seconds,
@@ -395,21 +440,61 @@ class OpusClient:
         raise AssertionError("unreachable")
 
 
+_ROLE_JSON_KEYS = frozenset(
+    {
+        "label",
+        "decision",
+        "task_instruction",
+        "acceptance_obligations",
+        "candidates",
+        "status",
+        "missing_context",
+    }
+)
+
+
 def parse_json_object(text: str) -> dict[str, Any]:
-    """解析模型 JSON；允许 fenced block，但不允许前后额外文本。"""
+    """解析模型 JSON object。允许 fenced block，也允许 JSON 前后有说明文字。
+
+    说明文字里常出现 stub 示例 `{"_comment": ...}`。优先最后一个 fenced JSON，
+    否则取最后一个带角色字段的 object，避免误解析中间的示例花括号。
+    """
 
     candidate = text.strip()
     fence = chr(96) * 3
-    if candidate.startswith(fence) and candidate.endswith(fence):
-        lines = candidate.splitlines()
-        candidate = "\n".join(lines[1:-1]).strip()
-    try:
-        value = json.loads(candidate)
-    except json.JSONDecodeError as exc:
-        raise ModelGatewayError("模型输出不是合法 JSON", code="INVALID_JSON") from exc
-    if not isinstance(value, dict):
-        raise ModelGatewayError("模型输出必须是 JSON object", code="JSON_OBJECT_REQUIRED")
-    return value
+    fenced = re.findall(
+        rf"{re.escape(fence)}(?:json)?\s*\n(.*?){re.escape(fence)}",
+        candidate,
+        flags=re.S | re.I,
+    )
+    objects: list[dict[str, Any]] = []
+    for block in fenced:
+        try:
+            value = json.loads(block.strip())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            objects.append(value)
+    decoder = json.JSONDecoder()
+    index = 0
+    while True:
+        start = candidate.find("{", index)
+        if start < 0:
+            break
+        try:
+            value, consumed = decoder.raw_decode(candidate[start:])
+        except json.JSONDecodeError:
+            index = start + 1
+            continue
+        if isinstance(value, dict):
+            objects.append(value)
+        index = start + max(consumed, 1)
+    if not objects:
+        raise ModelGatewayError("模型输出不是合法 JSON", code="INVALID_JSON")
+    for value in reversed(objects):
+        if _ROLE_JSON_KEYS & set(value):
+            return value
+    return objects[-1]
 
 
 def receipt_for_response(response: ModelResponse) -> ModelCallReceipt:
@@ -438,6 +523,30 @@ def build_chat_model(
     return OpusClient(transport=transport)
 
 
+CHANNEL_MODEL_DEFAULTS = {
+    "gemini": "gemini-2.5-pro",
+    "gpt": "gpt-5",
+    "claude": "claude-opus-4-8",
+    # TokenHub deepseek channel 实测可用名；vol/ 前缀会 model_not_found。
+    "deepseek": "bailian/deepseek-v4-flash-0731",
+}
+
+
+def load_channel_model(
+    path: str | os.PathLike[str], channel: str
+) -> str | None:
+    """读取 channel 上持久化的 model / model_name，不读密钥。"""
+
+    entry = _config_channels(path).get(channel)
+    if not isinstance(entry, dict):
+        return None
+    for key in ("model", "model_name"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def resolve_model_name(
     requested: str | None,
     *,
@@ -446,21 +555,19 @@ def resolve_model_name(
 ) -> str:
     """为配置驱动调用提供安全默认模型，避免把 Claude 名称发给 Gemini。"""
 
-    if (
-        requested
-        and requested.strip()
-        and not (config_path is not None and requested.startswith("claude-"))
-    ):
-        return requested
+    if requested and requested.strip():
+        rewrite_claude_for_other_channel = (
+            config_path is not None
+            and requested.startswith("claude-")
+            and channel not in {"claude", "anthropic"}
+        )
+        if not rewrite_claude_for_other_channel:
+            return requested
     if config_path is not None:
-        defaults = {
-            "gemini": "gemini-2.5-pro",
-            "gpt": "gpt-5",
-            "claude": "claude-opus-4-8",
-            # TokenHub 当前 deepseek channel 暴露的稳定低成本模型。
-            "deepseek": "vol/deepseek-v4-flash-0731",
-        }
-        return defaults.get(channel, channel)
+        configured = load_channel_model(config_path, channel)
+        if configured:
+            return configured
+        return CHANNEL_MODEL_DEFAULTS.get(channel, channel)
     return requested or "claude-opus-4-8"
 
 
@@ -474,6 +581,10 @@ __all__ = [
     "OpusClient",
     "Transport",
     "build_chat_model",
+    "CHANNEL_MODEL_DEFAULTS",
+    "load_channel_connection",
+    "load_channel_model",
+    "load_e2b_api_key",
     "parse_json_object",
     "receipt_for_response",
     "resolve_model_name",

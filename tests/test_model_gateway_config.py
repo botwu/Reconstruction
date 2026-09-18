@@ -7,6 +7,8 @@ from traceforge.reconstruction.model_gateway import (
     ModelRequest,
     NewAPIClient,
     build_chat_model,
+    load_channel_connection,
+    load_e2b_api_key,
     resolve_model_name,
 )
 
@@ -81,6 +83,26 @@ def test_build_chat_model_uses_config_channel(tmp_path):
         resolve_model_name("gemini-2.5-flash", config_path=config, channel="gemini")
         == "gemini-2.5-flash"
     )
+
+
+def test_config_loads_e2b_scalar_and_channel_without_exposing_secret(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "e2bapikey:\n"
+        "  e2b_unit_sandbox\n"
+        "deepseek:\n"
+        '  {"_type":"newapi_channel_conn","key":"unit-channel-secret",'
+        '"url":"https://tokenhub.example"}\n',
+        encoding="utf-8",
+    )
+    assert load_e2b_api_key(config) == "e2b_unit_sandbox"
+    url, key = load_channel_connection(config, "deepseek")
+    assert url == "https://tokenhub.example"
+    assert key == "unit-channel-secret"
+    with pytest.raises(ModelGatewayError, match="channel") as exc_info:
+        load_channel_connection(config, "missing")
+    assert "unit-channel-secret" not in str(exc_info.value)
+    assert "e2b_unit_sandbox" not in str(exc_info.value)
 
 
 def test_timeout_is_normalized_to_gateway_error():

@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from traceforge.cli import main
 from traceforge.reconstruction.model_gateway import ModelRequest, ModelResponse
-from traceforge.screening.contracts import ScreeningDecision, ScreeningRoute
+from traceforge.screening.contracts import ScreeningDecision, ScreeningRoute, TRIAGE_PROMPT_VERSION
+from traceforge.screening.model_triage import _prompt
 from traceforge.screening.observable import build_observable_evidence
 from traceforge.screening.pipeline import run_reconstruction_screening
 from traceforge.screening.rubric import admit_after_model, admit_after_tasks
 from traceforge.screening.rules import decide_rule
 from traceforge.screening.scan import scan_source_record
+from traceforge.screening.task_labels import normalize_task_labels
 
 
 def _line(payload: dict[str, object]) -> str:
@@ -298,7 +301,7 @@ def test_observable_keeps_middle_failure_and_later_chat() -> None:
     assert evidence["shared_context"][0]["role"] == "system"
 
 
-def test_observable_bounds_huge_tool_body_keeps_user() -> None:
+def test_observable_keeps_complete_huge_tool_body_and_marks_oversized() -> None:
     huge = "ERROR_LINE\n" + ("x" * 5000) + "\nTAIL_MARKER"
     raw = _line(
         {
@@ -318,10 +321,10 @@ def test_observable_bounds_huge_tool_body_keeps_user() -> None:
     features = scan_source_record(raw, line_number=1)
     evidence = build_observable_evidence(raw, features, max_input_chars=800)
     dumped = json.dumps(evidence, ensure_ascii=False)
-    assert "omitted_chars=" in dumped
-    assert "hash=" in dumped
-    assert evidence["serialization"]["truncated"] is True
-    assert huge not in dumped
+    assert "ERROR_LINE" in dumped
+    assert "TAIL_MARKER" in dumped
+    assert evidence["serialization"]["truncated"] is False
+    assert evidence["serialization"]["oversized"] is True
     assert "跑测试" in dumped
     assert "ERROR_LINE" in dumped
     assert "TAIL_MARKER" in dumped
@@ -412,19 +415,20 @@ def test_rubric_cannot_override_rule_reject() -> None:
     assert admitted["route"] == ScreeningRoute.RULE_HARD_REJECT.value
 
 
-def test_rubric_reviews_when_no_environment_handle() -> None:
+def test_rubric_admits_valid_task_without_tools() -> None:
     admitted = admit_after_model(
         rule={"decision": "REVIEW", "rule_pass": True, "blocking_reason_codes": ()},
-        outcome="FAILURE",
+        outcome="INCOMPLETE",
         needs_reconstruction=True,
         domain_route="other",
         rubric=_ready_rubric(),
         parse_errors=(),
     )
-    assert admitted["decision"] == ScreeningDecision.REVIEW.value
+    assert admitted["decision"] == ScreeningDecision.ELIGIBLE.value
+    assert admitted["route"] == ScreeningRoute.ELIGIBLE_TASK.value
 
 
-def test_rubric_defers_retrieval() -> None:
+def test_rubric_admits_retrieval_when_task_not_done() -> None:
     admitted = admit_after_model(
         rule={"decision": "REVIEW", "rule_pass": True, "blocking_reason_codes": ()},
         outcome="FAILURE",
@@ -433,8 +437,28 @@ def test_rubric_defers_retrieval() -> None:
         rubric=_ready_rubric(),
         parse_errors=(),
     )
-    assert admitted["decision"] == ScreeningDecision.DEFER.value
-    assert admitted["route"] == ScreeningRoute.RETRIEVAL_BACKEND_NOT_READY.value
+    assert admitted["decision"] == ScreeningDecision.ELIGIBLE.value
+    assert admitted["route"] == ScreeningRoute.ELIGIBLE_TASK.value
+
+
+def test_admit_after_tasks_selects_incomplete_without_workspace_tools() -> None:
+    admitted = admit_after_tasks(
+        rule={"decision": "REVIEW", "rule_pass": True, "blocking_reason_codes": ()},
+        tasks=[
+            {
+                "span_ids": ["span_no_tool"],
+                "outcome": "INCOMPLETE",
+                "needs_reconstruction": True,
+                "domain_route": "other",
+                "rubric": _ready_rubric(),
+                "reason": "有效任务但没有本该有的工具",
+            }
+        ],
+        parse_errors=(),
+    )
+    assert admitted["decision"] == ScreeningDecision.ELIGIBLE.value
+    assert admitted["route"] == ScreeningRoute.ELIGIBLE_TASK.value
+    assert admitted["selected_span_ids"] == ("span_no_tool",)
 
 
 class _FakeTriage:
@@ -442,7 +466,7 @@ class _FakeTriage:
         self.payload = payload
 
     def complete(self, request: ModelRequest) -> ModelResponse:
-        assert request.response_schema == "traceforge.reconstruction-screening-triage.v1"
+        assert request.response_schema == "traceforge.reconstruction-screening-triage.v2"
         return ModelResponse(
             request.request_id, request.model, "fake", json.dumps(self.payload), 1, 0.01
         )
@@ -475,14 +499,18 @@ def test_pipeline_model_can_mark_eligible(tmp_path: Path) -> None:
             {
                 "tasks": [
                     {
+                        "task_id": "task-1",
                         "span_ids": [span_id],
+                        "is_actionable": True,
                         "outcome": "INCOMPLETE",
                         "needs_reconstruction": True,
                         "domain_route": "code_file",
                         "rubric": _ready_rubric(),
                         "reason": "用户要求改文档，尝试未完成",
+                        "evidence_refs": {"message_indices": [0], "span_ids": [span_id]},
                     }
-                ]
+                ],
+                "relations": [],
             }
         ),
         model_name="fake",
@@ -497,3 +525,200 @@ def test_pipeline_model_can_mark_eligible(tmp_path: Path) -> None:
     assert manifest["eligible_source_refs"]
     assert manifest["policy"]["model_triage"] == "RUN"
     assert rows[0]["triage"]["selected_span_ids"] == [span_id]
+
+
+def _label_evidence() -> dict[str, object]:
+    return {
+        "source_ref": "capture-1",
+        "span_ids": ["span_a", "span_b"],
+        "span_audit": {"message_count": 6},
+        "spans": [
+            {"span_id": "span_a", "message_start": 0, "message_end": 3},
+            {"span_id": "span_b", "message_start": 3, "message_end": 6},
+        ],
+    }
+
+
+def _label_task(task_id: str, span_id: str, outcome: str, need: bool | None) -> dict[str, object]:
+    return {
+        "task_id": task_id,
+        "span_ids": [span_id],
+        "is_actionable": True,
+        "outcome": outcome,
+        "needs_reconstruction": need,
+        "domain_route": "code_file",
+        "rubric": _ready_rubric(),
+        "reason": "有用户证据",
+        "evidence_refs": {"message_indices": [0 if span_id == "span_a" else 3], "span_ids": [span_id]},
+    }
+
+
+def test_v10_labels_generate_stable_ids_and_validate_relations() -> None:
+    payload = {
+        "tasks": [
+            _label_task("m-a", "span_a", "FAILURE", True),
+            _label_task("m-b", "span_b", "INCOMPLETE", True),
+        ],
+        "relations": [
+            {
+                "from_task_id": "m-a",
+                "to_task_id": "m-b",
+                "type": "continuation",
+                "evidence_refs": {"message_indices": [0, 3], "span_ids": ["span_a", "span_b"]},
+                "reason": "后续继续同一交付物",
+            }
+        ],
+    }
+    first = normalize_task_labels(payload, evidence=_label_evidence(), source_ref="capture-1")
+    second = normalize_task_labels(payload, evidence=_label_evidence(), source_ref="capture-1")
+    tasks, relations, errors, status = first
+    assert status == "COMPLETE"
+    assert errors == ()
+    assert tasks[0]["task_id"] == second[0][0]["task_id"]
+    assert relations[0]["from_task_id"] == tasks[0]["task_id"]
+
+
+def test_v10_rejects_overlapping_or_unanchored_relation() -> None:
+    first = _label_task("m-a", "span_a", "FAILURE", True)
+    second = _label_task("m-b", "span_b", "INCOMPLETE", True)
+    second["span_ids"] = ["span_a", "span_b"]
+    payload = {
+        "tasks": [first, second],
+        "relations": [
+            {
+                "from_task_id": "m-b",
+                "to_task_id": "m-a",
+                "type": "dependency",
+                "evidence_refs": {"message_indices": [0], "span_ids": ["span_a"]},
+                "reason": "逆序关系不应通过",
+            }
+        ],
+    }
+    _, _, errors, status = normalize_task_labels(
+        payload, evidence=_label_evidence(), source_ref="capture-1"
+    )
+    assert status == "INVALID"
+    assert any(error.startswith("TASK_SPAN_OVERLAP") for error in errors)
+    assert any(error.startswith("RELATION_NOT_FORWARD") for error in errors)
+
+
+def test_v9_labels_are_readable_but_fail_closed() -> None:
+    legacy = {
+        "tasks": [
+            {
+                "span_ids": ["span_a", "span_b"],
+                "outcome": "FAILURE",
+                "needs_reconstruction": True,
+                "domain_route": "code_file",
+                "rubric": _ready_rubric(),
+                "reason": "旧记录没有详细证据标签",
+            }
+        ],
+        "relations": [],
+    }
+    tasks, _, errors, status = normalize_task_labels(
+        legacy, evidence=_label_evidence(), source_ref="capture-1"
+    )
+    assert status == "LEGACY_INCOMPLETE"
+    assert tasks[0]["reconstruction_eligible"] is False
+    assert "TASK_ID_REQUIRED:0" in errors
+    admitted = admit_after_tasks(
+        rule={"decision": "REVIEW", "rule_pass": True, "blocking_reason_codes": ()},
+        tasks=tasks,
+        relations=[],
+        label_status=status,
+        parse_errors=errors,
+    )
+    assert admitted["decision"] == ScreeningDecision.REVIEW.value
+
+
+def test_later_same_goal_success_suppresses_earlier_failure() -> None:
+    tasks = [
+        _label_task("m-a", "span_a", "FAILURE", True),
+        _label_task("m-b", "span_b", "SUCCESS", False),
+    ]
+    admitted = admit_after_tasks(
+        rule={"decision": "REVIEW", "rule_pass": True, "blocking_reason_codes": ()},
+        tasks=tasks,
+        relations=[
+            {
+                "from_task_id": "m-a",
+                "to_task_id": "m-b",
+                "type": "correction",
+            }
+        ],
+        label_status="COMPLETE",
+        parse_errors=(),
+    )
+    assert admitted["decision"] == ScreeningDecision.REJECT.value
+    assert tasks[0]["reconstruction_eligible"] is False
+    assert "LATER_SAME_GOAL_SUCCESS" in tasks[0]["eligibility"]["blocking_reason_codes"]
+
+
+def test_pipeline_concurrency_keeps_line_order(tmp_path: Path) -> None:
+    payload = {
+        "messages": [
+            {"role": "user", "content": "修文件"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "1", "function": {"name": "read"}}],
+            },
+            {"role": "tool", "name": "read", "content": "x"},
+        ],
+        "meta": {"source_request_count": 1},
+        "tools": [],
+    }
+    source = tmp_path / "sessions.jsonl"
+    source.write_text("\n".join(_line(payload) for _ in range(3)) + "\n", encoding="utf-8")
+
+    class _SuccessTriage:
+        def complete(self, request: ModelRequest) -> ModelResponse:
+            found = re.findall(r"span_[0-9a-fA-F]+", request.prompt)
+            evidence_span = found[0] if found else "span_missing"
+            payload = {
+                "tasks": [
+                        {
+                            "task_id": "task-1",
+                            "span_ids": [evidence_span],
+                            "is_actionable": True,
+                            "outcome": "SUCCESS",
+                        "needs_reconstruction": False,
+                        "domain_route": "code_file",
+                        "rubric": _ready_rubric(),
+                            "reason": "完成",
+                            "evidence_refs": {"message_indices": [0], "span_ids": [evidence_span]},
+                        }
+                    ],
+                    "relations": [],
+            }
+            return ModelResponse(
+                request.request_id,
+                request.model,
+                "fake",
+                json.dumps(payload),
+                1,
+                0.01,
+            )
+
+    published = run_reconstruction_screening(
+        input_path=source,
+        output_root=tmp_path / "out",
+        model=_SuccessTriage(),
+        model_name="fake",
+        concurrency=3,
+    )
+    rows = [
+        json.loads(line)
+        for line in (published / "private/records.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [row["line_number"] for row in rows] == [1, 2, 3]
+    assert all(row["decision"] == "REJECT" for row in rows)
+
+
+def test_triage_prompt_merges_by_final_completeness() -> None:
+    text = _prompt({"span_ids": ["span_a"]})
+    assert TRIAGE_PROMPT_VERSION == "reconstruction-screening-triage-v10"
+    assert "按最终完成度合并" in text
+    assert "中间 SUCCESS 后纠错仍要并" in text

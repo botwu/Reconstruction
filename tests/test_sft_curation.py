@@ -1,4 +1,9 @@
-from traceforge.curation.sft import CurationInputError, CurationThresholds, curate_candidates
+from traceforge.curation.sft import (
+    CurationInputError,
+    CurationThresholds,
+    curate_candidates,
+    write_reconstruction_sft_curation,
+)
 
 
 def _row(**updates):
@@ -74,3 +79,21 @@ def test_non_finite_or_out_of_range_reward_is_input_error():
         assert "[0,1]" in str(exc)
     else:
         raise AssertionError("out-of-range reward must not enter curation")
+
+
+def test_write_reconstruction_sft_curation_pending_and_not_applicable(tmp_path) -> None:
+    path = write_reconstruction_sft_curation(
+        tmp_path,
+        [
+            {"task_id": "t1", "status": "PENDING_EXECUTION", "errors": []},
+            {
+                "task_id": "t2",
+                "status": "REVIEW",
+                "verification": {"status": "NOT_APPLICABLE", "errors": ["NO_FILE_ACCEPTANCE"]},
+            },
+        ],
+    )
+    payload = path.read_text(encoding="utf-8")
+    assert "traceforge.sft-curation.v1" in payload
+    assert "PENDING" in payload
+    assert "NO_FILE_ACCEPTANCE" in payload

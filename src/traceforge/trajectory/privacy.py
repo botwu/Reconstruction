@@ -9,6 +9,9 @@ from typing import Any
 from traceforge.trajectory.json_codec import canonical_json_bytes, sha256_bytes
 
 REASONING_FIELD = "reasoning_content"
+PRIVATE_REASONING_FIELDS = frozenset(
+    {"reasoning", "reasoning_content", "thinking", "thinking_content"}
+)
 PRIVACY_ENVELOPE_MARKER = "__traceforge_privacy_envelope__"
 ESCAPED_OBJECT_V1 = "traceforge.privacy.escaped-object.v1"
 DATA_URL_SUMMARY_V1 = "traceforge.privacy.data-url-summary.v1"
@@ -213,6 +216,20 @@ def sanitize_value(value: Any, pointer: str) -> Any:
         return _sanitize_value(value, pointer, 0)
     except RecursionError as exc:
         raise _recursion_transform_error() from exc
+
+
+def omit_private_reasoning(value: Any) -> Any:
+    """删除 thinking/reasoning 原文；完整 session 仍保留可见消息与工具。"""
+
+    if isinstance(value, dict):
+        return {
+            key: omit_private_reasoning(item)
+            for key, item in value.items()
+            if key not in PRIVATE_REASONING_FIELDS
+        }
+    if isinstance(value, list):
+        return [omit_private_reasoning(item) for item in value]
+    return value
 
 
 def visible_value_without_reasoning(value: Any) -> Any:

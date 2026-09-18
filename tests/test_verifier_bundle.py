@@ -44,6 +44,8 @@ def test_bundle_keeps_solution_and_verifier_outside_workspace(tmp_path):
     assert not (output / "task/workspace/tests").exists()
     assert (output / "task/solution/solve.sh").is_file()
     assert (output / "task/tests/test_outputs.py").is_file()
+    assert (output / "task/tests/vendor_lock.json").is_file()
+    assert list((output / "task/tests/vendor").glob("pytest-*.whl"))
     assert (output / "artifact_manifest.json").is_file()
 
 

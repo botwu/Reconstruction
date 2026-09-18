@@ -1,7 +1,7 @@
 """Harbor/AGS rollout 桥接测试。"""
 
+import hashlib
 import json
-import os
 import subprocess
 import tomllib
 from pathlib import Path
@@ -48,6 +48,7 @@ n_concurrent_trials: 1
 agents:
   - import_path: harbor_ags.agent:LosslessHermesAgent
     model_name: anthropic/claude-opus-4-8
+    n_concurrent: 8
     kwargs:
       expected_commit: abc
 environment:
@@ -87,6 +88,10 @@ def test_prepare_rollout_materializes_dataset_without_executing(
     assert plan["agent"]["mode"] == "hermes"
     config_text = (output / "harbor-config.yaml").read_text()
     assert "n_concurrent_trials: 2" in config_text
+    assert "n_concurrent: 2" in config_text
+    assert "n_concurrent: 8" not in config_text
+    assert f"job_name: {json.dumps(plan['job_name'])}" in config_text
+    assert plan["job_name"] == plan["run_id"]
     assert 'model_name: "anthropic/claude-opus-4-8"' in config_text
     assert Path(plan["dataset"]["dataset_root"]).is_dir()
     assert Path(plan["dataset"]["dataset_root"], "dataset.toml").is_file()
@@ -102,7 +107,9 @@ def test_prepare_rollout_materializes_dataset_without_executing(
     assert "tokenhub-secret-value" not in plan_text
 
 
-def test_execute_rollout_requires_credentials(tmp_path: Path) -> None:
+def test_execute_rollout_requires_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     output = build_rollout_plan(
         HarborRolloutConfig(
             task_dir=_bundle(tmp_path / "task"),
@@ -111,20 +118,17 @@ def test_execute_rollout_requires_credentials(tmp_path: Path) -> None:
             jobs_root=tmp_path / "jobs",
         )
     )
-    old_ags = os.environ.pop("AGS_API_KEY", None)
-    old_tokenhub = os.environ.pop("TOKENHUB_KEY", None)
-    old_anthropic = os.environ.pop("ANTHROPIC_API_KEY", None)
-    try:
-        with pytest.raises(HarborRolloutError, match="缺少凭据"):
-            execute_rollout_plan(output)
-    finally:
-        for name, value in (
-            ("AGS_API_KEY", old_ags),
-            ("TOKENHUB_KEY", old_tokenhub),
-            ("ANTHROPIC_API_KEY", old_anthropic),
-        ):
-            if value is not None:
-                os.environ[name] = value
+    for name in (
+        "AGS_API_KEY",
+        "E2B_API_KEY",
+        "ROLLOUT_E2B_API_KEY",
+        "TOKENHUB_KEY",
+        "ANTHROPIC_API_KEY",
+        "ROLLOUT_LLM_API_KEY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(HarborRolloutError, match="缺少凭据"):
+        execute_rollout_plan(output)
 
 
 def test_execute_rollout_is_explicit(
@@ -153,6 +157,34 @@ def test_execute_rollout_is_explicit(
     assert observed[0][1] == "run"
 
 
+def test_execute_rollout_rejects_unbound_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = build_rollout_plan(
+        HarborRolloutConfig(
+            task_dir=_bundle(tmp_path / "task"),
+            harbor_root=_harbor_root(tmp_path / "harbor"),
+            output_root=tmp_path / "plans",
+            jobs_root=tmp_path / "jobs",
+        )
+    )
+    plan_path = output / "rollout_plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["command"] = ["/bin/echo", "not-harbor"]
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    manifest_path = output / "artifact_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    for entry in manifest["files"]:
+        if entry.get("relative_path") == "rollout_plan.json":
+            entry["sha256"] = digest
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setenv("AGS_API_KEY", "ags-secret")
+    monkeypatch.setenv("TOKENHUB_KEY", "llm-secret")
+    with pytest.raises(HarborRolloutError, match="绑定"):
+        execute_rollout_plan(output)
+
+
 def test_oracle_mode_does_not_require_tokenhub(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -174,3 +206,100 @@ def test_oracle_mode_does_not_require_tokenhub(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     assert execute_rollout_plan(output)["status"] == "COMPLETED"
+
+
+def test_execute_rollout_maps_aliases_and_rejects_loopback_tokenhub(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harbor = _harbor_root(tmp_path / "harbor")
+    appendix = harbor / "configs" / "runtime-appendix.md"
+    appendix.write_text("appendix\n")
+    config_path = harbor / "configs" / "hermes-batch.yaml"
+    config_path.write_text(
+        config_path.read_text()
+        + "extra_instruction_paths:\n  - configs/runtime-appendix.md\n"
+    )
+    output = build_rollout_plan(
+        HarborRolloutConfig(
+            task_dir=_bundle(tmp_path / "task"),
+            harbor_root=harbor,
+            output_root=tmp_path / "plans",
+            jobs_root=tmp_path / "jobs",
+        )
+    )
+    rendered = (output / "harbor-config.yaml").read_text()
+    assert str(appendix) in rendered
+    monkeypatch.delenv("AGS_API_KEY", raising=False)
+    monkeypatch.delenv("TOKENHUB_KEY", raising=False)
+    monkeypatch.delenv("TOKENHUB_BASE_URL", raising=False)
+    monkeypatch.setenv("E2B_API_KEY", "e2b-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://localhost:8443")
+    captured: dict[str, str] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        captured.update({key: str(value) for key, value in env.items()})
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert execute_rollout_plan(output)["status"] == "COMPLETED"
+    assert captured["AGS_API_KEY"] == "e2b-secret"
+    assert captured["TOKENHUB_KEY"] == "anthropic-secret"
+    assert captured["TOKENHUB_BASE_URL"] == "https://tokenhub.sensetime.com"
+    assert captured["ANTHROPIC_BASE_URL"] == "https://tokenhub.sensetime.com"
+    assert captured["AGS_TEMPLATE_ID"] == "node-python-hermes"
+    assert captured["AGS_DOMAIN"] == "ap-beijing.tencentags.com"
+    assert captured["E2B_VALIDATE_API_KEY"] == "false"
+
+
+def test_execute_rollout_loads_ags_and_channel_from_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = build_rollout_plan(
+        HarborRolloutConfig(
+            task_dir=_bundle(tmp_path / "task"),
+            harbor_root=_harbor_root(tmp_path / "harbor"),
+            output_root=tmp_path / "plans",
+            jobs_root=tmp_path / "jobs",
+        )
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "e2bapikey:\n"
+        "  e2b_unit_test_sandbox_key\n"
+        "deepseek:\n"
+        '  {"_type":"newapi_channel_conn","key":"unit-tokenhub-key",'
+        '"url":"https://tokenhub.example"}\n',
+        encoding="utf-8",
+    )
+    for name in (
+        "AGS_API_KEY",
+        "E2B_API_KEY",
+        "TOKENHUB_KEY",
+        "TOKENHUB_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    captured: dict[str, str] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        captured.update({key: str(value) for key, value in env.items()})
+        return subprocess.CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert (
+        execute_rollout_plan(output, config_path=config, channel="deepseek")["status"]
+        == "COMPLETED"
+    )
+    assert captured["AGS_API_KEY"] == "e2b_unit_test_sandbox_key"
+    assert captured["E2B_API_KEY"] == "e2b_unit_test_sandbox_key"
+    assert captured["TOKENHUB_KEY"] == "unit-tokenhub-key"
+    assert captured["TOKENHUB_BASE_URL"] == "https://tokenhub.example"
+    plan_text = (output / "rollout_plan.json").read_text()
+    assert "e2b_unit_test_sandbox_key" not in plan_text
+    assert "unit-tokenhub-key" not in plan_text

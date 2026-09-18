@@ -1,4 +1,8 @@
-"""重建流水线的数据契约和公共校验函数。"""
+"""重建流水线的数据契约和公共校验函数。
+
+生产入口只有 ``screening run`` → ``reconstruct run`` / ``reconstruct source``。
+旧的 prepare / workflow / M1B pipeline 已删除。
+"""
 
 from .contracts import (
     ENVIRONMENT_RECOVERY_SCHEMA,
@@ -39,20 +43,8 @@ from .contracts import (
     validate_task_recovery,
     validate_verification_result,
 )
-from .environment_completion import (
-    ENVIRONMENT_COMPLETION_RUN_SCHEMA,
-    EnvironmentCompletionError,
-    run_environment_completion,
-)
-from .sufficiency_judge import (
-    SUFFICIENCY_JUDGE_SCHEMA,
-    SUFFICIENCY_PROMPT_VERSION,
-    run_sufficiency_judge,
-)
-from .task_recovery import TASK_RECOVERY_RUN_SCHEMA, run_task_recovery
 
 __all__ = [
-    "ENVIRONMENT_COMPLETION_RUN_SCHEMA",
     "ENVIRONMENT_RECOVERY_SCHEMA",
     "EXECUTION_PLAN_SCHEMA",
     "HARBOR_BUNDLE_MANIFEST_SCHEMA",
@@ -63,20 +55,15 @@ __all__ = [
     "ROLLOUT_TRIAL_SCHEMA",
     "SELECTION_MANIFEST_SCHEMA",
     "SFT_CANDIDATE_SCHEMA",
-    "SUFFICIENCY_JUDGE_SCHEMA",
-    "SUFFICIENCY_PROMPT_VERSION",
-    "TASK_RECOVERY_RUN_SCHEMA",
     "TASK_RECOVERY_SCHEMA",
     "VERIFICATION_RESULT_SCHEMA",
     "CandidateDecision",
-    "EnvironmentCompletionError",
     "EnvironmentFileV1",
     "EnvironmentRecoveryV1",
     "HarborBundleManifestV1",
     "NodeStatus",
     "PipelineNodeV1",
     "ReconstructionCandidateV1",
-    "ReconstructionWorkflowError",
     "RecoveryEvidenceV1",
     "RolloutRequestV1",
     "RolloutStatus",
@@ -90,26 +77,9 @@ __all__ = [
     "pipeline_run_id",
     "recovery_id",
     "rollout_id",
-    "run_environment_completion",
-    "run_reconstruction_workflow",
-    "run_sufficiency_judge",
-    "run_task_recovery",
     "validate_environment_recovery",
     "validate_rollout_request",
     "validate_sft_candidate",
     "validate_task_recovery",
     "validate_verification_result",
 ]
-def run_reconstruction_workflow(*args, **kwargs):
-    """延迟导入完整 workflow，避免 verifier.synthesis 与 reconstruction 的循环依赖。"""
-    from .workflow import run_reconstruction_workflow as _run
-
-    return _run(*args, **kwargs)
-
-
-def __getattr__(name: str):
-    if name == "ReconstructionWorkflowError":
-        from .workflow import ReconstructionWorkflowError
-
-        return ReconstructionWorkflowError
-    raise AttributeError(name)

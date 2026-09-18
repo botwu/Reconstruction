@@ -105,6 +105,10 @@ class WithheldChange:
     classification: str
     old_content_available: bool
     new_content_withheld: bool = True
+    # Captured only when the original tool call exposes the written bytes.
+    # Shell writes remain withheld with final_content=None.
+    final_content: str | None = None
+    provenance: str = "TRAJECTORY_MUTATION"
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,12 +119,24 @@ class ReplayResult:
     unknown_mutation_barriers: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
+        # Replay artifacts may be published for debugging.  Never put withheld
+        # solution bytes in that public artifact; the full value is retained
+        # only in hidden_control/withheld_changes.json at materialisation time.
+        public_changes = []
+        for item in self.withheld_changes:
+            row = asdict(item)
+            final = row.pop("final_content", None)
+            row["final_content_sha256"] = (
+                hashlib.sha256(final.encode("utf-8")).hexdigest()
+                if isinstance(final, str) else None
+            )
+            public_changes.append(row)
         return {
             "schema_version": TERMINAL_UNIVERSE_ENVIRONMENT_SCHEMA,
             "files": [
                 asdict(item) | {"content_sha256": item.content_sha256} for item in self.files
             ],
-            "withheld_changes": [asdict(item) for item in self.withheld_changes],
+            "withheld_changes": public_changes,
             "partial_evidence": list(self.partial_evidence),
             "unknown_mutation_barriers": list(self.unknown_mutation_barriers),
         }
@@ -149,7 +165,9 @@ def select_max_exposed_trajectory(
             str(item.get("problem_statement") or item.get("task") or ""),
         )
         if not all(identity):
-            raise EnvironmentReconstructionError("trajectory 缺少 repository/base_commit/problem_statement")
+            raise EnvironmentReconstructionError(
+                "trajectory 缺少 repository/base_commit/problem_statement"
+            )
         lines = sum(file.content.count("\n") + (1 if file.content else 0) for file in replay.files)
         bytes_count = sum(len(file.content.encode("utf-8")) for file in replay.files)
         score = (len(replay.files), lines, bytes_count, str(item.get("trajectory_id") or ""))
@@ -207,6 +225,12 @@ def replay_initial_workspace(
             for token in ("write", "edit", "patch", "replace", "create", "delete", "remove")
         ):
             mutation_started = True
+            args = _arguments(event)
+            final_content = next(
+                (args[key] for key in ("content", "contents", "new_content")
+                 if isinstance(args.get(key), str)),
+                None,
+            )
             mutations.append(
                 WithheldChange(
                     path,
@@ -214,6 +238,7 @@ def replay_initial_workspace(
                     name,
                     "withheld_change" if path in observed else "agent_created_file",
                     path in observed,
+                    final_content=final_content,
                 )
             )
             if path in observed:
@@ -303,16 +328,40 @@ def validate_completion_candidate(
     evidence_refs: set[str],
     *,
     max_file_bytes: int = 2_000_000,
+    listing_names: frozenset[str] | set[str] | None = None,
+    body_paths: frozenset[str] | set[str] | None = None,
+    required_paths: list[str] | tuple[str, ...] | None = None,
+    env_origin: str | None = None,
 ) -> tuple[bool, tuple[str, ...]]:
     """Validate B.1 safety and answer non-leakage before materialisation."""
+    from traceforge.reconstruction.completion_holes import (
+        _needs_real_generated_body,
+        is_runtime_log,
+        listing_stub_error,
+    )
+    from traceforge.reconstruction.environment_bindings import (
+        expand_tree_paths,
+        looks_like_synthetic_stub,
+        path_present,
+    )
+
     if not isinstance(candidate, dict):
         return False, ("CANDIDATE_NOT_OBJECT",)
     files = candidate.get("files")
     if not isinstance(files, list):
         return False, ("FILES_MUST_BE_ARRAY",)
     errors: list[str] = []
+    for key in ("dependencies", "runtime_constraints", "uncertainties"):
+        value = candidate.get(key, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            errors.append(f"INVALID_{key.upper()}")
+    if files and not replay.files and env_origin != "DEFAULT_EMPTY":
+        errors.append("EMPTY_TREE_INVENTION")
     replay_map = {x.path: x for x in replay.files}
-    withheld_paths = {x.path for x in replay.withheld_changes if x.path}
+    listing = set(listing_names or ())
+    bodies = set(body_paths or ())
+    resolved: dict[str, str] = {path: item.content for path, item in replay_map.items()}
+    seen_paths: set[str] = set()
     for item in files:
         if not isinstance(item, dict):
             errors.append("FILE_NOT_OBJECT")
@@ -322,17 +371,32 @@ def validate_completion_candidate(
         except EnvironmentReconstructionError as exc:
             errors.append(str(exc))
             continue
+        if path in seen_paths:
+            errors.append(f"DUPLICATE_FILE_PATH:{path}")
+            continue
+        seen_paths.add(path)
         if path in replay_map and replay_map[path].completeness in {"COMPLETE", "UNKNOWN"}:
             errors.append(f"PROTECTED_FILE_OVERWRITE:{path}")
-        if path in withheld_paths and any(
-            x.classification == "agent_created_file" and x.path == path
-            for x in replay.withheld_changes
-        ):
-            errors.append(f"WITHHELD_CHANGE_PATH:{path}")
+        if is_runtime_log(path):
+            errors.append(f"RUNTIME_LOG_NOT_WRITABLE:{path}")
         content = item.get("content")
         if not isinstance(content, str) or len(content.encode()) > max_file_bytes:
             errors.append(f"INVALID_FILE_CONTENT:{path}")
             continue
+        stub_error = listing_stub_error(
+            path,
+            content,
+            listing_names=listing,
+            body_paths=bodies,
+            replay_paths=set(replay_map),
+            required_paths=required_paths,
+        )
+        if stub_error:
+            errors.append(stub_error)
+        resolved[path] = content
+        if path in replay_map and replay_map[path].completeness == "PARTIAL":
+            if replay_map[path].content not in content:
+                errors.append(f"PARTIAL_OBSERVED_CONTENT_LOST:{path}")
         refs = item.get("evidence_ref_ids")
         if (
             not isinstance(refs, list)
@@ -340,8 +404,17 @@ def validate_completion_candidate(
             or any(str(ref) not in evidence_refs for ref in refs)
         ):
             errors.append(f"EVIDENCE_REF_UNKNOWN:{path}")
-        if item.get("provenance", "MODEL_COMPLETED") != "MODEL_COMPLETED":
+        provenance = item.get("provenance", "MODEL_COMPLETED")
+        if provenance not in {"MODEL_COMPLETED", "SYNTHETIC_STUB", "NEIGHBOR"}:
             errors.append(f"PROVENANCE_FORGERY:{path}")
+        if provenance == "SYNTHETIC_STUB" and _needs_real_generated_body(
+            path,
+            listing_names=listing,
+            body_paths=bodies,
+            replay_paths=set(replay_map),
+            required_paths=required_paths,
+        ):
+            errors.append(f"BINDING_PATH_STUB_ONLY:{path}")
         # Optional final content in richer replay records enables deterministic leak checking.
         for change in replay.withheld_changes:
             final = getattr(change, "final_content", None)
@@ -357,6 +430,17 @@ def validate_completion_candidate(
                 )
             ):
                 errors.append(f"SOLUTION_LEAKAGE:{path}")
+    present = expand_tree_paths(set(replay_map) | seen_paths)
+    for required in required_paths or ():
+        req = str(required)
+        if not path_present(req, present):
+            errors.append(f"BINDING_PATH_MISSING:{req}")
+            continue
+        if req.endswith("/"):
+            continue
+        body = resolved.get(req)
+        if isinstance(body, str) and looks_like_synthetic_stub(body):
+            errors.append(f"BINDING_PATH_STUB_ONLY:{req}")
     decision = str(candidate.get("decision", "REVIEW"))
     if decision not in {"READY", "REVIEW", "DEFER", "REJECT"}:
         errors.append("INVALID_DECISION")
@@ -423,9 +507,21 @@ def materialize_environment(
     destination: str | Path,
     *,
     evidence_refs: set[str],
+    listing_names: frozenset[str] | set[str] | None = None,
+    body_paths: frozenset[str] | set[str] | None = None,
+    required_paths: list[str] | tuple[str, ...] | None = None,
+    env_origin: str | None = None,
 ) -> dict[str, Any]:
     """Write Harbor-compatible public ``workspace`` and private control metadata."""
-    ok, errors = validate_completion_candidate(candidate, replay, evidence_refs)
+    ok, errors = validate_completion_candidate(
+        candidate,
+        replay,
+        evidence_refs,
+        listing_names=listing_names,
+        body_paths=body_paths,
+        required_paths=required_paths,
+        env_origin=env_origin,
+    )
     if not ok:
         raise EnvironmentReconstructionError(";".join(errors))
     root = Path(destination)
@@ -435,18 +531,29 @@ def materialize_environment(
     hidden = root / "hidden_control"
     public.mkdir(parents=True)
     hidden.mkdir(parents=True)
-    provenance: dict[str, str] = {}
+    provenance: dict[str, Any] = {}
     for item in replay.files:
         target = public / item.path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(item.content, encoding="utf-8")
-        provenance[item.path] = "REPLAYED"
+        provenance[item.path] = {
+            "kind": "REPLAYED",
+            "evidence_ref_ids": [item.first_observation_event_id],
+            "content_sha256": item.content_sha256,
+        }
     for item in candidate.get("files", []):
         path = _safe_path(str(item["path"]))
         target = public / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(item["content"], encoding="utf-8")
-        provenance[path] = "MODEL_COMPLETED"
+        kind = str(item.get("provenance") or "MODEL_COMPLETED")
+        if kind not in {"MODEL_COMPLETED", "SYNTHETIC_STUB", "NEIGHBOR"}:
+            kind = "MODEL_COMPLETED"
+        provenance[path] = {
+            "kind": kind,
+            "evidence_ref_ids": list(item.get("evidence_ref_ids", [])),
+            "content_sha256": hashlib.sha256(item["content"].encode("utf-8")).hexdigest(),
+        }
     (hidden / "withheld_changes.json").write_text(
         json.dumps([asdict(x) for x in replay.withheld_changes], ensure_ascii=False, indent=2)
         + "\n",
@@ -459,6 +566,9 @@ def materialize_environment(
         "provenance": provenance,
         "withheld_change_count": len(replay.withheld_changes),
         "candidate_decision": candidate.get("decision", "REVIEW"),
+        "dependencies": list(candidate.get("dependencies", [])) if isinstance(candidate.get("dependencies", []), list) else [],
+        "runtime_constraints": list(candidate.get("runtime_constraints", [])) if isinstance(candidate.get("runtime_constraints", []), list) else [],
+        "uncertainties": list(candidate.get("uncertainties", [])) if isinstance(candidate.get("uncertainties", []), list) else [],
     }
     (root / "env_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"

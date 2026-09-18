@@ -18,6 +18,7 @@ from traceforge.failure_analysis.trace_capabilities import aggregate_capability_
 from traceforge.harbor_ags.adapter import HarborAgsAdapterError, build_boundary_plan
 from traceforge.harbor_ags.results import HarborResultError, read_rollout_results
 from traceforge.harbor_ags.rollout import (
+    DEFAULT_RUNTIME_CONFIG,
     HarborRolloutConfig,
     HarborRolloutError,
     build_rollout_plan,
@@ -27,20 +28,43 @@ from traceforge.lineage.pipeline import build_lineage
 from traceforge.lineage.reader import LineageInputError
 from traceforge.query_turns.pipeline import build_query_turns
 from traceforge.query_turns.reader import QueryTurnInputError
+from traceforge.reconstruction.agents import HermesUnavailableError, build_hermes_runtime
+from traceforge.reconstruction.agents.runtime import resolve_rollout_model
+from traceforge.reconstruction.eligible_reconstruction import (
+    EligibleReconstructionError,
+    run_eligible_reconstruction,
+)
+from traceforge.reconstruction.env_replay import replay_from_timeline, write_replay_artifacts
 from traceforge.reconstruction.model_gateway import (
     ModelGatewayError,
     build_chat_model,
     resolve_model_name,
 )
-from traceforge.reconstruction.pipeline import (
-    ReconstructionPipelineInputError,
-    build_reconstruction_pipeline,
+from traceforge.reconstruction.session_source import (
+    ReconstructionSourceError,
+    build_reconstruction_source,
+    load_eligible_record,
+    load_raw_line,
+    write_reconstruction_source,
 )
-from traceforge.reconstruction.prepare import (
-    ReconstructionPrepareError,
-    build_reconstruction_inputs,
+from traceforge.reconstruction.container_verification import (
+    SandboxUnavailableError,
+    build_ags_runtime_factory,
+    resolve_sandbox_api_key,
 )
-from traceforge.reconstruction.workflow import run_reconstruction_workflow
+from traceforge.reconstruction.tls import pin_process_tls
+from traceforge.reconstruction.verification import VerificationConfig
+from traceforge.requery.cross_workspace import (
+    build_cross_workspace_prompt,
+    profile_workspace,
+    retrieve_directional_pairs,
+)
+from traceforge.requery.multi_round import (
+    RequirementTracker,
+    RoundResult,
+    build_followup_prompt,
+    retain_verified_session,
+)
 from traceforge.requery.single_workspace import (
     SingleWorkspaceSynthesisError,
     synthesize_single_workspace_tasks,
@@ -52,7 +76,6 @@ from traceforge.trajectory.artifacts import ArtifactPublishError
 from traceforge.trajectory.pipeline import compile_trajectory
 from traceforge.trajectory.source import SourceError
 from traceforge.trajectory.source_adapter import SUPPORTED_SOURCE_SCHEMAS
-from traceforge.trajectory_replay.pipeline import ReplayInputError, build_trajectory_replay
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -175,6 +198,15 @@ def _parser() -> argparse.ArgumentParser:
     )
     execute_rollout.add_argument("--plan-dir", type=Path, required=True)
     execute_rollout.add_argument("--timeout-seconds", type=int, default=900)
+    execute_rollout.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_RUNTIME_CONFIG,
+        help="读取 e2bapikey 与 TokenHub channel 的 config.yaml",
+    )
+    execute_rollout.add_argument(
+        "--channel", default="claude", help="config.yaml 中用于 Hermes 的 channel"
+    )
     read_results = harbor_ags_commands.add_parser(
         "read-results", help="读取 Harbor Job 结果并计算 rollout 指标"
     )
@@ -226,99 +258,78 @@ def _parser() -> argparse.ArgumentParser:
     )
 
     reconstruct = commands.add_parser(
-        "reconstruct", help="重建流程编排（模型阶段仅生成 pending refs）"
+        "reconstruct", help="从 ELIGIBLE 原始 session 重建（官方入口：run）"
     )
     reconstruct_commands = reconstruct.add_subparsers(dest="reconstruct_command", required=True)
-    reconstruct_pipeline = reconstruct_commands.add_parser(
-        "pipeline", help="运行 M1B/M1D → M4 并生成执行计划"
+    reconstruct_source = reconstruct_commands.add_parser(
+        "source",
+        help="从 ELIGIBLE 原始 session 抽出重建源并做 Stage 1 回放（不编译）",
     )
-    reconstruct_pipeline.add_argument("--m1b-run", type=Path, required=True, help="已发布 M1B run")
-    reconstruct_pipeline.add_argument(
-        "--m1d-run", type=Path, default=None, help="可选：已发布 M1D run"
+    reconstruct_source.add_argument("--input", type=Path, required=True, help="原始 session JSONL")
+    reconstruct_source.add_argument(
+        "--records", type=Path, required=True, help="筛选 private/records.jsonl"
     )
-    reconstruct_pipeline.add_argument(
-        "--output", type=Path, required=True, help="pipeline artifact 根目录"
+    reconstruct_source.add_argument(
+        "--line-number", type=int, required=True, help="要重建的原始 JSONL 行号"
     )
-    reconstruct_prepare = reconstruct_commands.add_parser(
-        "prepare",
-        help="在已发布 M1B run 上确定性产出 report.json + 带正文 evidence.json（不调用模型）",
+    reconstruct_source.add_argument("--output", type=Path, required=True, help="重建源输出目录")
+    reconstruct_run = reconstruct_commands.add_parser(
+        "run",
+        help="从 ELIGIBLE 记录重建：source + Stage1 + 四个 Hermes 角色（含 Verifier）",
     )
-    reconstruct_prepare.add_argument(
-        "--m1b-run", type=Path, required=True, help="已发布 M1B run 目录（只读消费）"
+    reconstruct_run.add_argument("--input", type=Path, required=True, help="原始 session JSONL")
+    reconstruct_run.add_argument(
+        "--records", type=Path, required=True, help="筛选 private/records.jsonl"
     )
-    reconstruct_prepare.add_argument(
-        "--m1d-run",
+    reconstruct_run.add_argument(
+        "--line-number", type=int, required=True, help="要重建的原始 JSONL 行号"
+    )
+    reconstruct_run.add_argument("--output", type=Path, required=True, help="重建输出目录")
+    reconstruct_run.add_argument("--model-name", default="claude-opus-4-8")
+    reconstruct_run.add_argument(
+        "--config", type=Path, required=True, help="给 Hermes Agent 配模型的 config.yaml"
+    )
+    reconstruct_run.add_argument("--channel", default="claude", help="配置中的 channel 名")
+    reconstruct_run.add_argument(
+        "--hermes-home",
         type=Path,
         default=None,
-        help="可选：已发布 M1D run（提供即绑定 attempt_ref/episode_ref）",
+        help="本机 hermes-agent 根目录（默认 HERMES_HOME 或本机已有路径）",
     )
-    reconstruct_prepare.add_argument(
-        "--capture-id",
-        default=None,
-        help="可选：run 含多个 capture 时唯一指定 capture occurrence id",
-    )
-    # prepare 始终聚合完整 candidate session；request boundary 仅作为来源元数据保留。
-    reconstruct_prepare.add_argument(
-        "--output", type=Path, required=True, help="prepare artifact 输出目录"
-    )
-    reconstruct_workflow = reconstruct_commands.add_parser(
-        "workflow", help="运行单条失败轨迹的任务、环境、验证器、rollout 与 SFT 闭环"
-    )
-    reconstruct_workflow.add_argument("--attempt-ref", required=True)
-    reconstruct_workflow.add_argument("--source-report-id", required=True)
-    reconstruct_workflow.add_argument("--report-json", type=Path, required=True)
-    reconstruct_workflow.add_argument("--evidence-json", type=Path, required=True)
-    # 回放输入二选一：推荐 --normalized-run（内部 build_trajectory_replay 直接消费确定性回放产物），
-    # 或手工提供 --replay-workspace + --replay-files-json。两条路径互斥。
-    replay_source = reconstruct_workflow.add_mutually_exclusive_group(required=True)
-    replay_source.add_argument(
-        "--normalized-run",
+    reconstruct_run.add_argument(
+        "--harbor-root",
         type=Path,
-        default=None,
-        help="已发布规范化 trajectory run；内部自动回放出任务开始前的初始 workspace（推荐）",
+        default=Path("/mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags"),
+        help="Harbor/AGS 仓库根目录；没有通过校准前不会标记 READY",
     )
-    replay_source.add_argument(
-        "--replay-workspace",
-        type=Path,
-        default=None,
-        help="手工路径：任务开始前的公开 workspace 目录（须配合 --replay-files-json）",
+    reconstruct_run.add_argument(
+        "--sandbox",
+        action="store_true",
+        help="四个角色的文件/pytest 打到 AGS 沙盒；需要 AGS_API_KEY 或 E2B_API_KEY，缺 key 直接失败",
     )
-    reconstruct_workflow.add_argument(
-        "--replay-files-json",
-        type=Path,
-        default=None,
-        help="手工路径：replay 文件索引 JSON（与 --replay-workspace 搭配）",
+    reconstruct_run.add_argument(
+        "--execute-red",
+        action="store_true",
+        help="在 Harbor/AGS 中对初始 workspace 做 RED 校准；通过后才标记重建 READY",
     )
-    reconstruct_workflow.add_argument(
-        "--capture-id",
-        default=None,
-        help="可选：--normalized-run 含多个 capture 时唯一指定 capture occurrence id",
+    reconstruct_run.add_argument(
+        "--execute-rollout",
+        action="store_true",
+        help="READY 之后的 Hermes 解题复验，只写 SFT，不改重建完成态",
     )
-    reconstruct_workflow.add_argument("--harbor-root", type=Path, required=True)
-    reconstruct_workflow.add_argument("--output", type=Path, required=True)
-    reconstruct_workflow.add_argument("--model-name", default="claude-opus-4-8")
-    reconstruct_workflow.add_argument(
+    reconstruct_run.add_argument(
         "--rollout-model",
         default=None,
-        help=("Harbor agent 的 provider/model；非 Claude 模型必须显式指定，"
-              "例如 vol/deepseek-v4-flash-0731"),
+        help="Harbor 的 provider/model；默认由 --channel/--model-name 推导，不伪造 anthropic",
     )
-    reconstruct_workflow.add_argument(
-        "--config", type=Path, default=None, help="NewAPI 配置文件（可选）"
-    )
-    reconstruct_workflow.add_argument("--channel", default="gemini", help="配置中的 channel 名")
-    reconstruct_workflow.add_argument("--rollout-trials", type=int, default=1)
-    reconstruct_workflow.add_argument(
-        "--execute-rollout", action="store_true", help="显式执行 Harbor/AGS 与 RED-check"
-    )
+    reconstruct_run.add_argument("--rollout-trials", type=int, default=2)
+    reconstruct_run.add_argument("--verifier-rounds", type=int, default=2)
 
     screening = commands.add_parser(
         "screening", help="重建筛选：对原始 session 做规则分流，不编译轨迹"
     )
     screening_commands = screening.add_subparsers(dest="screening_command", required=True)
-    screening_run = screening_commands.add_parser(
-        "run", help="扫描 JSONL 并发布 SelectionManifest"
-    )
+    screening_run = screening_commands.add_parser("run", help="扫描 JSONL 并发布 SelectionManifest")
     screening_run.add_argument("--input", type=Path, required=True, help="原始 session JSONL")
     screening_run.add_argument("--output", type=Path, required=True, help="筛选 artifact 根目录")
     screening_run.add_argument("--limit", type=int, default=None, help="最多处理的记录数")
@@ -329,14 +340,16 @@ def _parser() -> argparse.ArgumentParser:
         help="只跑规则粗筛，不调用模型；无法产生 ELIGIBLE",
     )
     screening_run.add_argument("--model-name", default="claude-opus-4-8")
+    screening_run.add_argument("--config", type=Path, default=None, help="NewAPI 配置文件（可选）")
+    screening_run.add_argument("--channel", default="deepseek", help="配置中的 channel 名")
     screening_run.add_argument(
-        "--config", type=Path, default=None, help="NewAPI 配置文件（可选）"
+        "--concurrency",
+        type=int,
+        default=8,
+        help="模型细筛并发数，默认 8",
     )
-    screening_run.add_argument("--channel", default="gemini", help="配置中的 channel 名")
 
-    requery = commands.add_parser(
-        "requery", help="Terminal-Universe C.2/C.3/C.4 任务扩展"
-    )
+    requery = commands.add_parser("requery", help="Terminal-Universe C.2/C.3/C.4 任务扩展")
     requery_commands = requery.add_subparsers(dest="requery_command", required=True)
     single_ws = requery_commands.add_parser(
         "single-ws", help="在一个重建 workspace 上生成五个候选并选择一个"
@@ -347,19 +360,28 @@ def _parser() -> argparse.ArgumentParser:
     single_ws.add_argument("--config", type=Path, default=None)
     single_ws.add_argument("--channel", default="gemini")
     single_ws.add_argument("--selection-seed", default="0")
-
-    replay = commands.add_parser(
-        "trajectory-replay", help="恢复任务开始前的初始 workspace（不执行历史命令）"
+    cross_ws = requery_commands.add_parser(
+        "cross-ws", help="跨 workspace 能力缺口配对（C.3）"
     )
-    replay.add_argument("--normalized-run", type=Path, required=True, help="规范化 trajectory run")
-    replay.add_argument("--capture-id", default=None, help="可选 capture occurrence id")
-    replay.add_argument(
-        "--source-workspace-root",
+    cross_ws.add_argument(
+        "--workspaces-json",
         type=Path,
-        default=None,
-        help="绝对路径映射的原始 workspace 根目录",
+        required=True,
+        help='[{"id":"...","path":"..."}] 工作区清单',
     )
-    replay.add_argument("--output", type=Path, required=True, help="replay artifact 根目录")
+    cross_ws.add_argument("--output", type=Path, required=True)
+    cross_ws.add_argument("--min-overlap", type=int, default=2)
+    multi_round = requery_commands.add_parser(
+        "multi-round", help="多轮需求账本与验证反馈（C.4）"
+    )
+    multi_round.add_argument(
+        "--rounds-json",
+        type=Path,
+        required=True,
+        help="含 requirements 与 rounds 的 JSON",
+    )
+    multi_round.add_argument("--output", type=Path, required=True)
+    multi_round.add_argument("--minimum-passes", type=int, default=2)
 
     source_projection = commands.add_parser(
         "source-projection", help="来源投影：USER 事件结构注解（M2 前置）"
@@ -394,6 +416,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    pin_process_tls()
     parser = _parser()
     arguments = parser.parse_args(argv)
     if arguments.command == "trajectory" and arguments.trajectory_command == "compile":
@@ -549,7 +572,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.command == "harbor-ags" and arguments.harbor_ags_command == "execute-rollout":
         try:
             result = execute_rollout_plan(
-                arguments.plan_dir, timeout_seconds=arguments.timeout_seconds
+                arguments.plan_dir,
+                timeout_seconds=arguments.timeout_seconds,
+                config_path=arguments.config,
+                channel=arguments.channel,
             )
         except (HarborRolloutError, OSError) as exc:
             print(f"Harbor/AGS rollout 执行失败：{exc}", file=sys.stderr)
@@ -586,87 +612,87 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         print(output_path)
         return 0
-    if arguments.command == "reconstruct" and arguments.reconstruct_command == "pipeline":
+    if arguments.command == "reconstruct" and arguments.reconstruct_command == "source":
         try:
-            output_path = build_reconstruction_pipeline(
-                m1b_run_dir=arguments.m1b_run,
-                m1d_run_dir=arguments.m1d_run,
-                output_root=arguments.output,
+            record = load_eligible_record(arguments.records, line_number=arguments.line_number)
+            raw_line = load_raw_line(
+                arguments.input,
+                line_number=arguments.line_number,
+                line_sha256=str(record.get("line_sha256") or "") or None,
             )
-        except (
-            ReconstructionPipelineInputError,
-            FailureAnalysisInputError,
-            MappingInputError,
-            ArtifactPublishError,
-            ValueError,
-        ) as exc:
-            print(f"重建流程编排失败：{exc}", file=sys.stderr)
+            source = build_reconstruction_source(raw_line=raw_line, record=record)
+            output_path = write_reconstruction_source(source, arguments.output)
+            replay = replay_from_timeline(
+                list(source.get("tool_timeline") or []),
+                arguments.output / "initial_workspace",
+            )
+            write_replay_artifacts(replay, arguments.output)
+        except ReconstructionSourceError as exc:
+            print(f"重建源构造失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
         return 0
-    if arguments.command == "reconstruct" and arguments.reconstruct_command == "prepare":
+    if arguments.command == "reconstruct" and arguments.reconstruct_command == "run":
         try:
-            prepared = build_reconstruction_inputs(
-                m1b_run_dir=arguments.m1b_run,
-                output_dir=arguments.output,
-                capture_id=arguments.capture_id,
-                m1d_run_dir=arguments.m1d_run,
+            container_runtime_factory = None
+            if arguments.sandbox:
+                container_runtime_factory = build_ags_runtime_factory(
+                    harbor_root=arguments.harbor_root,
+                    output_root=arguments.output,
+                    config_path=arguments.config,
+                )
+            record = load_eligible_record(arguments.records, line_number=arguments.line_number)
+            raw_line = load_raw_line(
+                arguments.input,
+                line_number=arguments.line_number,
+                line_sha256=str(record.get("line_sha256") or "") or None,
             )
-        except (
-            ReconstructionPrepareError,
-            FailureAnalysisInputError,
-            MappingInputError,
-            ArtifactPublishError,
-            OSError,
-            UnicodeError,
-            json.JSONDecodeError,
-            ValueError,
-        ) as exc:
-            print(f"重建输入准备失败：{exc}", file=sys.stderr)
-            return 2
-        print(prepared.manifest_path)
-        return 0
-    if arguments.command == "reconstruct" and arguments.reconstruct_command == "workflow":
-        try:
-            report = json.loads(arguments.report_json.read_text(encoding="utf-8"))
-            evidence = json.loads(arguments.evidence_json.read_text(encoding="utf-8"))
-            if not isinstance(report, dict) or not isinstance(evidence, list):
-                raise ValueError("report 必须是对象，evidence 必须是数组")
-            replay_workspace = None
-            replay_files = None
-            normalized_run_dir = None
-            if arguments.normalized_run is not None:
-                normalized_run_dir = arguments.normalized_run
-            else:
-                if arguments.replay_files_json is None:
-                    raise ValueError("--replay-workspace 必须配合 --replay-files-json 一起提供")
-                replay_files = json.loads(arguments.replay_files_json.read_text(encoding="utf-8"))
-                if not isinstance(replay_files, list):
-                    raise ValueError("replay-files 必须是数组")
-                replay_workspace = arguments.replay_workspace
-            output_path = run_reconstruction_workflow(
-                attempt_ref=arguments.attempt_ref,
-                source_report_id=arguments.source_report_id,
-                report=report,
-                evidence=evidence,
-                replay_workspace=replay_workspace,
-                replay_files=replay_files,
-                normalized_run_dir=normalized_run_dir,
-                capture_id=arguments.capture_id,
-                model=build_chat_model(config_path=arguments.config, channel=arguments.channel),
-                output_root=arguments.output,
-                harbor_root=arguments.harbor_root,
-                execute_rollout=arguments.execute_rollout,
-                model_name=resolve_model_name(
-                    arguments.model_name,
+            resolved_model = resolve_model_name(
+                arguments.model_name,
+                config_path=arguments.config,
+                channel=arguments.channel,
+            )
+            resolved_rollout = resolve_rollout_model(
+                arguments.rollout_model,
+                channel=arguments.channel,
+                model_name=resolved_model,
+            )
+            verification_model = build_chat_model(
+                config_path=arguments.config, channel=arguments.channel
+            )
+            output_path = run_eligible_reconstruction(
+                raw_line=raw_line,
+                record=record,
+                agent=build_hermes_runtime(
+                    config_path=arguments.config,
+                    channel=arguments.channel,
+                    model_name=resolved_model,
+                    hermes_home=arguments.hermes_home,
+                ),
+                verification_model=verification_model,
+                verification_config=VerificationConfig(
+                    harbor_root=arguments.harbor_root,
+                    model_name=resolved_model,
+                    rollout_model=resolved_rollout,
+                    execute_red=arguments.execute_red,
+                    execute_rollout=arguments.execute_rollout,
+                    rollout_trials=arguments.rollout_trials,
+                    max_rounds=arguments.verifier_rounds,
                     config_path=arguments.config,
                     channel=arguments.channel,
                 ),
-                rollout_model=arguments.rollout_model,
-                rollout_trials=arguments.rollout_trials,
+                output_root=arguments.output,
+                container_runtime_factory=container_runtime_factory,
             )
-        except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RuntimeError) as exc:
-            print(f"重建闭环执行失败：{exc}", file=sys.stderr)
+        except (
+            EligibleReconstructionError,
+            ReconstructionSourceError,
+            ModelGatewayError,
+            HermesUnavailableError,
+            SandboxUnavailableError,
+            ValueError,
+        ) as exc:
+            print(f"重建失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
         return 0
@@ -675,9 +701,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             model = None
             model_name = arguments.model_name
             if not arguments.rules_only:
-                model = build_chat_model(
-                    config_path=arguments.config, channel=arguments.channel
-                )
+                model = build_chat_model(config_path=arguments.config, channel=arguments.channel)
                 model_name = resolve_model_name(
                     arguments.model_name,
                     config_path=arguments.config,
@@ -690,6 +714,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 offset=arguments.offset,
                 model=model,
                 model_name=model_name,
+                concurrency=1 if arguments.rules_only else arguments.concurrency,
             )
         except (
             ScreeningInputError,
@@ -733,21 +758,85 @@ def main(argv: Sequence[str] | None = None) -> int:
                 json.dumps(result.to_dict(), ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
-        except (OSError, UnicodeError, ModelGatewayError, SingleWorkspaceSynthesisError, ValueError) as exc:
+        except (
+            OSError,
+            UnicodeError,
+            ModelGatewayError,
+            SingleWorkspaceSynthesisError,
+            ValueError,
+        ) as exc:
             print(f"Single-WS 任务合成失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
         return 0
-    if arguments.command == "trajectory-replay":
+    if arguments.command == "requery" and arguments.requery_command == "cross-ws":
         try:
-            output_path = build_trajectory_replay(
-                normalized_run_dir=arguments.normalized_run,
-                capture_id=arguments.capture_id,
-                source_workspace_root=arguments.source_workspace_root,
-                output_root=arguments.output,
+            rows = json.loads(arguments.workspaces_json.read_text(encoding="utf-8"))
+            if not isinstance(rows, list):
+                raise ValueError("workspaces-json 必须是数组")
+            profiles = []
+            for row in rows:
+                if not isinstance(row, dict) or not row.get("id") or not row.get("path"):
+                    raise ValueError("每个 workspace 必须有 id 和 path")
+                profiles.append(profile_workspace(str(row["id"]), Path(row["path"])))
+            pairs = retrieve_directional_pairs(profiles, min_overlap=arguments.min_overlap)
+            payload = {
+                "schema_version": "traceforge.requery-cross-workspace.v1",
+                "candidates": [
+                    {
+                        "reference_workspace_id": reference.workspace_id,
+                        "target_workspace_id": target.workspace_id,
+                        "gap": list(gap),
+                        "prompt": build_cross_workspace_prompt(reference, target, gap),
+                    }
+                    for reference, target, gap in pairs
+                ],
+            }
+            arguments.output.mkdir(parents=True, exist_ok=True)
+            output_path = arguments.output / "cross_workspace.json"
+            output_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
             )
-        except (ReplayInputError, ArtifactPublishError, ValueError, OSError) as exc:
-            print(f"轨迹回放失败：{exc}", file=sys.stderr)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            print(f"跨 workspace 配对失败：{exc}", file=sys.stderr)
+            return 2
+        print(output_path)
+        return 0
+    if arguments.command == "requery" and arguments.requery_command == "multi-round":
+        try:
+            raw = json.loads(arguments.rounds_json.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise ValueError("rounds-json 必须是对象")
+            tracker = RequirementTracker()
+            tracker.apply(list(raw.get("requirements") or []))
+            rounds: list[RoundResult] = []
+            followups: list[str] = []
+            for index, item in enumerate(raw.get("rounds") or []):
+                if not isinstance(item, dict):
+                    raise ValueError("rounds 必须是对象数组")
+                result = RoundResult(
+                    int(item.get("round_index", index)),
+                    str(item.get("verifier_status") or ""),
+                    str(item.get("user_feedback") or ""),
+                    tuple(item.get("requirement_ids") or ()),
+                )
+                rounds.append(result)
+                followups.append(build_followup_prompt(tracker, result))
+            payload = {
+                "schema_version": "traceforge.requery-multi-round.v1",
+                "tracker": tracker.to_dict(),
+                "followups": followups,
+                "retain_verified_session": retain_verified_session(
+                    rounds, minimum_passes=arguments.minimum_passes
+                ),
+            }
+            arguments.output.mkdir(parents=True, exist_ok=True)
+            output_path = arguments.output / "multi_round.json"
+            output_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            print(f"多轮 requery 失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
         return 0

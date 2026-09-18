@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from .contracts import (
     ScreeningDecision,
 )
 from .model_triage import judge_reconstructability
+from .task_labels import build_session_tags
 from .observable import build_observable_evidence
 from .rules import decide_rule
 from .scan import scan_source_record
@@ -41,6 +43,7 @@ def run_reconstruction_screening(
     offset: int = 0,
     model: ChatModel | None = None,
     model_name: str = "claude-opus-4-8",
+    concurrency: int = 8,
 ) -> Path:
     """扫描原始 session JSONL。未注入模型时只做规则分流，不编译轨迹。"""
 
@@ -51,12 +54,12 @@ def run_reconstruction_screening(
         raise ScreeningInputError("offset 不能为负")
     if limit is not None and limit < 1:
         raise ScreeningInputError("limit 必须大于 0")
+    if concurrency < 1:
+        raise ScreeningInputError("concurrency 必须大于 0")
 
-    records: list[dict[str, Any]] = []
-    counts: Counter[str] = Counter()
+    jobs: list[dict[str, Any]] = []
     kept = 0
     seen = 0
-    model_calls = 0
     with source.open(encoding="utf-8") as handle:
         for line_number, raw_line in enumerate(handle, start=1):
             if not raw_line.strip():
@@ -68,76 +71,37 @@ def run_reconstruction_screening(
                 break
             features = scan_source_record(raw_line, line_number=line_number)
             rule = decide_rule(features)
-            decision = dict(rule)
-            triage: dict[str, Any] | None = None
-            if (
-                model is not None
-                and rule["decision"] == ScreeningDecision.REVIEW.value
-                and rule["rule_pass"]
-            ):
-                triage = judge_reconstructability(
-                    evidence=build_observable_evidence(raw_line, features),
-                    rule=rule,
-                    model=model,
-                    model_name=model_name,
-                )
-                decision = {
-                    "decision": triage["decision"],
-                    "route": triage["route"],
-                    "rule_pass": triage["rule_pass"],
-                    "blocking_reason_codes": triage["blocking_reason_codes"],
-                }
-                model_calls += 1
-            record = {
-                "schema_version": SCREENING_RECORD_SCHEMA,
-                "source_ref": features["source_ref"],
-                "line_number": features["line_number"],
-                "line_sha256": features["line_sha256"],
-                "record_id": features.get("record_id"),
-                "capture_id": features.get("capture_id"),
-                "thread_id": features.get("thread_id"),
-                "decision": decision["decision"],
-                "route": decision["route"],
-                "rule_pass": decision["rule_pass"],
-                "rule_decision": rule["decision"],
-                "blocking_reason_codes": list(decision["blocking_reason_codes"]),
-                "features": {
-                    "parse_ok": features["parse_ok"],
-                    "has_user_task_like_turn": features["has_user_task_like_turn"],
-                    "has_agent_attempt": features["has_agent_attempt"],
-                    "has_tool_activity": features["has_tool_activity"],
-                    "has_failure_or_unfinished_signal": features[
-                        "has_failure_or_unfinished_signal"
-                    ],
-                    "message_count": features["message_count"],
-                    "user_count": features["user_count"],
-                    "assistant_count": features["assistant_count"],
-                    "tool_message_count": features["tool_message_count"],
-                    "source_request_count": features["source_request_count"],
-                    "last_assistant_empty": features["last_assistant_empty"],
-                    "leaf_response_status": features["leaf_response_status"],
-                },
-                "triage": (
-                    None
-                    if triage is None
-                    else {
-                        "outcome": triage.get("outcome"),
-                        "needs_reconstruction": triage.get("needs_reconstruction"),
-                        "domain_route": triage.get("domain_route"),
-                        "rubric": triage.get("rubric"),
-                        "reason": triage.get("reason"),
-                        "tasks": list(triage.get("tasks") or ()),
-                        "selected_span_ids": list(triage.get("selected_span_ids") or ()),
-                        "prompt_version": triage.get("prompt_version"),
-                        "model": triage.get("model"),
-                        "model_receipt": triage.get("model_receipt"),
-                        "errors": list(triage.get("errors") or ()),
-                    }
-                ),
-            }
-            records.append(record)
-            counts[str(decision["decision"])] += 1
+            jobs.append({"raw_line": raw_line, "features": features, "rule": rule})
             kept += 1
+
+    needs_model = [
+        index
+        for index, job in enumerate(jobs)
+        if (
+            model is not None
+            and job["rule"]["decision"] == ScreeningDecision.REVIEW.value
+            and job["rule"]["rule_pass"]
+        )
+    ]
+    if model is not None and needs_model:
+        workers = min(concurrency, len(needs_model))
+        if workers == 1:
+            for index in needs_model:
+                jobs[index]["triage"] = _triage_job(jobs[index], model, model_name)
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(_triage_job, jobs[index], model, model_name): index
+                    for index in needs_model
+                }
+                for future, index in futures.items():
+                    jobs[index]["triage"] = future.result()
+
+    records: list[dict[str, Any]] = []
+    counts: Counter[str] = Counter()
+    for job in jobs:
+        records.append(_record_from_job(job))
+        counts[str(records[-1]["decision"])] += 1
 
     eligible_refs = [
         item["source_ref"]
@@ -154,6 +118,7 @@ def run_reconstruction_screening(
             "record_count": len(records),
             "model": model_name if model is not None else None,
             "prompt_version": TRIAGE_PROMPT_VERSION if model is not None else None,
+            "concurrency": concurrency if model is not None else 1,
         },
     )
     workspace = ArtifactWorkspace(Path(output_root), run_id)
@@ -183,12 +148,15 @@ def run_reconstruction_screening(
                     "model_triage": "RUN" if model is not None else "NOT_RUN",
                     "model_name": model_name if model is not None else None,
                     "prompt_version": TRIAGE_PROMPT_VERSION if model is not None else None,
+                    "concurrency": concurrency if model is not None else 1,
                     "downstream": "ELIGIBLE_ONLY",
-                    "eligible_requires": {
+                "eligible_requires": {
                         "any_task_passes": True,
+                        "task_labels": "v10 stable task_id/is_actionable/evidence_refs/relations",
+                        "primary": "valid_task_and_not_done_well",
                         "intent": "task_identifiability>=2",
                         "unfinished": "FAILURE|INCOMPLETE and failure_evidence>=2",
-                        "environment_handle": "code_file",
+                        "tools": "auxiliary_not_required",
                         "needs_reconstruction": True,
                     },
                 },
@@ -211,7 +179,8 @@ def run_reconstruction_screening(
                     for item in records
                     if item["features"]["has_failure_or_unfinished_signal"]
                 ),
-                "model_call_count": model_calls,
+                "model_call_count": len(needs_model),
+                "concurrency": concurrency if model is not None else 1,
             },
         ),
     ]
@@ -224,6 +193,85 @@ def run_reconstruction_screening(
         },
     )
     return workspace.publish()
+
+
+def _triage_job(job: dict[str, Any], model: ChatModel, model_name: str) -> dict[str, Any]:
+    return judge_reconstructability(
+        evidence=build_observable_evidence(job["raw_line"], job["features"]),
+        rule=job["rule"],
+        model=model,
+        model_name=model_name,
+    )
+
+
+def _record_from_job(job: dict[str, Any]) -> dict[str, Any]:
+    features = job["features"]
+    rule = job["rule"]
+    triage = job.get("triage")
+    if triage is None:
+        decision = dict(rule)
+    else:
+        decision = {
+            "decision": triage["decision"],
+            "route": triage["route"],
+            "rule_pass": triage["rule_pass"],
+            "blocking_reason_codes": triage["blocking_reason_codes"],
+        }
+    return {
+        "schema_version": SCREENING_RECORD_SCHEMA,
+        "source_ref": features["source_ref"],
+        "line_number": features["line_number"],
+        "line_sha256": features["line_sha256"],
+        "record_id": features.get("record_id"),
+        "capture_id": features.get("capture_id"),
+        "thread_id": features.get("thread_id"),
+        "decision": decision["decision"],
+        "route": decision["route"],
+        "rule_pass": decision["rule_pass"],
+        "rule_decision": rule["decision"],
+        "blocking_reason_codes": list(decision["blocking_reason_codes"]),
+        "features": {
+            "parse_ok": features["parse_ok"],
+            "has_user_task_like_turn": features["has_user_task_like_turn"],
+            "has_agent_attempt": features["has_agent_attempt"],
+            "has_tool_activity": features["has_tool_activity"],
+            "has_failure_or_unfinished_signal": features[
+                "has_failure_or_unfinished_signal"
+            ],
+            "message_count": features["message_count"],
+            "user_count": features["user_count"],
+            "assistant_count": features["assistant_count"],
+            "tool_message_count": features["tool_message_count"],
+            "source_request_count": features["source_request_count"],
+            "last_assistant_empty": features["last_assistant_empty"],
+            "leaf_response_status": features["leaf_response_status"],
+        },
+        "triage": (
+            None
+            if triage is None
+            else {
+                "outcome": triage.get("outcome"),
+                "needs_reconstruction": triage.get("needs_reconstruction"),
+                "domain_route": triage.get("domain_route"),
+                "rubric": triage.get("rubric"),
+                "reason": triage.get("reason"),
+                "tasks": list(triage.get("tasks") or ()),
+                "relations": list(triage.get("relations") or ()),
+                "label_status": triage.get("label_status"),
+                "selected_span_ids": list(triage.get("selected_span_ids") or ()),
+                "selected_task_ids": list(triage.get("selected_task_ids") or ()),
+                "session_tags": build_session_tags(
+                    tasks=list(triage.get("tasks") or ()),
+                    relations=list(triage.get("relations") or ()),
+                    decision=decision["decision"],
+                ),
+                "prompt_version": triage.get("prompt_version"),
+                "model": triage.get("model"),
+                "model_receipt": triage.get("model_receipt"),
+                "errors": list(triage.get("errors") or ()),
+            }
+        ),
+    }
 
 
 def _write_records(root: Path, records: list[dict[str, Any]]) -> ArtifactEntryV1:

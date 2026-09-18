@@ -274,38 +274,14 @@ def build_observable_evidence(
         span_audit=span_audit,
     )
     text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    if len(text) <= max_input_chars:
-        payload["serialization"] = {
-            "content_limit": None,
-            "truncated": False,
-            "oversized": False,
-        }
-        return payload
-
-    compact: dict[str, Any] | None = None
-    for limit in (1200, 400, 120, 60, 24):
-        compact = _serialize_evidence(
-            typed_messages,
-            spans,
-            content_limit=limit,
-            features=features,
-            span_audit=span_audit,
-        )
-        text = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
-        if len(text) <= max_input_chars:
-            compact["serialization"] = {
-                "content_limit": limit,
-                "truncated": True,
-                "oversized": False,
-            }
-            return compact
-
-    assert compact is not None
-    compact["shared_context"] = []
-    text = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
-    compact["serialization"] = {
-        "content_limit": 24,
-        "truncated": True,
+    # The complete session is the screening evidence.  Do not mechanically
+    # truncate a tool result or remove shared context: doing so can hide a
+    # failure or make a cross-span relation impossible to prove.  Callers may
+    # use ``oversized`` for cost routing, but the evidence object stays intact.
+    payload["serialization"] = {
+        "content_limit": None,
+        "truncated": False,
         "oversized": len(text) > max_input_chars,
+        "serialized_chars": len(text),
     }
-    return compact
+    return payload

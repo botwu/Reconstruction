@@ -8,15 +8,106 @@ AGSPrebuiltEnvironment` 可以通过 adapter 实现该接口，单测则使用 f
 from __future__ import annotations
 
 import hashlib
+import os
 import shlex
+import sys
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from traceforge.reconstruction.model_gateway import load_e2b_api_key
+from traceforge.reconstruction.tls import pin_process_tls
+
 
 class ContainerVerificationError(RuntimeError):
     """容器阶段违反了可审计边界。"""
+
+
+class SandboxUnavailableError(RuntimeError):
+    """--sandbox 缺少凭据或无法构造 AGS runtime。"""
+
+
+def resolve_sandbox_api_key() -> str | None:
+    for name in ("AGS_API_KEY", "E2B_API_KEY"):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return None
+
+
+def _ensure_harbor_import(harbor_root: Path) -> None:
+    src = harbor_root / "src"
+    if src.is_dir() and str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    for site in (
+        harbor_root / ".venv/lib/python3.12/site-packages",
+        harbor_root / ".venv/lib64/python3.12/site-packages",
+    ):
+        if site.is_dir() and str(site) not in sys.path:
+            sys.path.insert(0, str(site))
+
+
+def build_ags_runtime_factory(
+    *,
+    harbor_root: str | Path,
+    output_root: str | Path,
+    config_path: str | Path | None = None,
+) -> Callable[[], "AGSRuntimeAdapter"]:
+    """Construct one AGS sandbox per role. Missing keys fail before any Agent starts."""
+
+    pin_process_tls()
+    api_key = resolve_sandbox_api_key()
+    if not api_key:
+        candidate = Path(config_path) if config_path is not None else Path(__file__).resolve().parents[3] / "config.yaml"
+        if candidate.is_file():
+            try:
+                api_key = load_e2b_api_key(candidate)
+            except Exception as exc:
+                raise SandboxUnavailableError(f"无法读取 AGS 配置：{type(exc).__name__}") from exc
+    if not api_key:
+        raise SandboxUnavailableError("--sandbox 需要 AGS_API_KEY 或 E2B_API_KEY")
+    root = Path(harbor_root)
+    dest = Path(output_root)
+    template = os.environ.get("AGS_TEMPLATE_ID", "").strip() or os.environ.get(
+        "ROLLOUT_E2B_TEMPLATE", "node-python-hermes"
+    ).strip()
+    domain = os.environ.get("AGS_DOMAIN", "").strip() or os.environ.get(
+        "E2B_DOMAIN", "ap-beijing.tencentags.com"
+    ).strip()
+
+    def factory() -> AGSRuntimeAdapter:
+        _ensure_harbor_import(root)
+        try:
+            from harbor.models.task.config import EnvironmentConfig
+            from harbor.models.trial.paths import TrialPaths
+            from harbor_ags.environment import AGSPrebuiltEnvironment
+        except ImportError as exc:
+            raise SandboxUnavailableError(f"无法导入 AGS 环境：{exc}") from exc
+        stamp = uuid.uuid4().hex
+        env_dir = dest / "ags_environment" / stamp
+        trial_dir = dest / "ags_trial" / stamp
+        env_dir.mkdir(parents=True, exist_ok=True)
+        # AGSPrebuiltEnvironment validates the public source before start.
+        # The role runtime uploads the actual workspace after construction.
+        (env_dir.parent / "workspace").mkdir(parents=True, exist_ok=True)
+        trial_dir.mkdir(parents=True, exist_ok=True)
+        paths = TrialPaths(trial_dir)
+        paths.mkdir()
+        environment = AGSPrebuiltEnvironment(
+            environment_dir=env_dir,
+            environment_name="reconstruct",
+            session_id=f"reconstruct-{stamp}__env",
+            trial_paths=paths,
+            task_env_config=EnvironmentConfig(),
+            template=template,
+            domain=domain,
+            api_key=api_key,
+        )
+        return AGSRuntimeAdapter(environment)
+
+    return factory
 
 
 class AGSRuntimeAdapter:
@@ -87,6 +178,8 @@ class ContainerTestRun:
     stdout: str = ""
     stderr: str = ""
     error_code: str | None = None
+    input_sha256: str | None = None
+    input_unchanged: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,6 +369,19 @@ async def run_sufficiency_container(
     )
 
 
+def _workspace_digest_command(workspace: str) -> str:
+    script = (
+        "import hashlib,json,os,sys; from pathlib import Path; "
+        "root=Path(sys.argv[1]); "
+        "rows=[(p.relative_to(root).as_posix(), "
+        "('link:'+os.readlink(p)) if p.is_symlink() else "
+        "(hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else 'dir')) "
+        "for p in sorted(root.rglob('*'))]; "
+        "print(hashlib.sha256(json.dumps(rows).encode()).hexdigest())"
+    )
+    return f"python3 -c {shlex.quote(script)} {shlex.quote(workspace)}"
+
+
 async def pytest_test_runner(
     runtime: ContainerRuntime,
     test_names: tuple[str, ...],
@@ -284,7 +390,7 @@ async def pytest_test_runner(
     workspace: str = "/home/user/workspace",
     timeout_sec: int = 120,
 ) -> tuple[ContainerTestRun, ...]:
-    """在 verifier AGS 沙盒中逐个执行 pytest；用于初始 RED calibration。"""
+    """在独立副本中运行每个测试；原始输入与副本都不得被测试改写。"""
     if not test_file.startswith("/") or not workspace.startswith("/"):
         raise ContainerVerificationError("test_file/workspace 必须是绝对路径")
     runs: list[ContainerTestRun] = []
@@ -292,29 +398,55 @@ async def pytest_test_runner(
         if not name.startswith("test_") or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for ch in name):
             runs.append(ContainerTestRun(name, "INFRA_ERROR", error_code="INVALID_TEST_NAME"))
             continue
-        command = (
-            f"TRACEFORGE_WORKSPACE={shlex.quote(workspace)} python -m pytest -q "
-            f"{shlex.quote(test_file)}::{shlex.quote(name)}"
-        )
+        disposable = "/tmp/traceforge-verifier-" + uuid.uuid4().hex
+        before_digest: str | None = None
         try:
-            result = await runtime.exec(command, cwd="/", timeout_sec=timeout_sec, user="root")
-            code = getattr(result, "return_code", None)
+            before = await runtime.exec(_workspace_digest_command(workspace), cwd="/", timeout_sec=30, user="user")
+            before_digest = str(getattr(before, "stdout", "")).strip()
+            if getattr(before, "return_code", 1) != 0 or len(before_digest) != 64:
+                runs.append(ContainerTestRun(name, "INFRA_ERROR", error_code="VERIFIER_INPUT_HASH_FAILED"))
+                continue
+            command = (
+                f"cp -a {shlex.quote(workspace)} {shlex.quote(disposable)} && "
+                f"TRACEFORGE_WORKSPACE={shlex.quote(disposable)} PYTHONDONTWRITEBYTECODE=1 "
+                f"python3 -m pytest -p no:cacheprovider -q {shlex.quote(test_file)}::{shlex.quote(name)}"
+            )
+            result = await runtime.exec(command, cwd="/", timeout_sec=timeout_sec, user="user")
+            after = await runtime.exec(_workspace_digest_command(workspace), cwd="/", timeout_sec=30, user="user")
+            copy_after = await runtime.exec(_workspace_digest_command(disposable), cwd="/", timeout_sec=30, user="user")
+            unchanged = all(
+                getattr(item, "return_code", 1) == 0
+                and str(getattr(item, "stdout", "")).strip() == before_digest
+                for item in (after, copy_after)
+            )
             stdout = str(getattr(result, "stdout", "") or "")
             stderr = str(getattr(result, "stderr", "") or "")
+            if not unchanged:
+                runs.append(ContainerTestRun(name, "INFRA_ERROR", stdout, stderr, "VERIFIER_INPUT_MUTATED", before_digest, False))
+                continue
+            code = getattr(result, "return_code", None)
+            if "PermissionError:" in stdout + stderr or "Read-only file system" in stdout + stderr:
+                runs.append(ContainerTestRun(name, "INFRA_ERROR", stdout, stderr, "VERIFIER_INPUT_WRITE_DENIED", before_digest, True))
+                continue
             if code == 0:
-                status = "PASS"
-                error_code = None
-            elif code == 5:
-                status = "INFRA_ERROR"
-                error_code = "NO_TESTS_COLLECTED"
+                status, error_code = "PASS", None
+            elif code == 1:
+                status, error_code = "FAIL", "PYTEST_EXIT_1"
             else:
-                status = "FAIL"
-                error_code = f"PYTEST_EXIT_{code}"
-            runs.append(ContainerTestRun(name, status, stdout, stderr, error_code))
+                status = "INFRA_ERROR"
+                error_code = "NO_TESTS_COLLECTED" if code == 5 else f"PYTEST_EXIT_{code}"
+            runs.append(ContainerTestRun(name, status, stdout, stderr, error_code, before_digest, True))
         except TimeoutError:
-            runs.append(ContainerTestRun(name, "TIMEOUT", error_code="TIMEOUT"))
-        except BaseException as exc:
-            runs.append(ContainerTestRun(name, "INFRA_ERROR", error_code=f"{type(exc).__name__}:{exc}"))
+            runs.append(ContainerTestRun(name, "TIMEOUT", error_code="TIMEOUT", input_sha256=before_digest))
+        except Exception as exc:
+            runs.append(ContainerTestRun(name, "INFRA_ERROR", error_code=f"{type(exc).__name__}:{exc}", input_sha256=before_digest))
+        finally:
+            try:
+                # The copy is owned by the test user. Restore writable directory
+                # permissions before removing a copy of the read-only input.
+                await runtime.exec(f"if [ -d {shlex.quote(disposable)} ]; then chmod -R u+w {shlex.quote(disposable)}; rm -rf {shlex.quote(disposable)}; fi", cwd="/", timeout_sec=30, user="user")
+            except Exception:
+                pass
     return tuple(runs)
 
 
@@ -353,8 +485,11 @@ __all__ = [
     "ContainerTestRun",
     "ContainerVerificationError",
     "RedCalibrationResult",
+    "SandboxUnavailableError",
     "SufficiencyContainerResult",
+    "build_ags_runtime_factory",
     "pytest_test_runner",
+    "resolve_sandbox_api_key",
     "run_completion_container",
     "run_sufficiency_container",
     "run_verifier_red_calibration",

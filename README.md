@@ -7,16 +7,13 @@ TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并
 新开发会话必须依次阅读：
 
 1. [AGENTS.md](AGENTS.md)：唯一开发规范；
-2. [当前会话交接](docs/agent-world-reconstruction-handoff.md)：当前检查点、证据、停止线和下一步；
+2. [reconstruct run 阅读地图](docs/rebuild-live-map.md)：当前活跑主链、要改的文件、对照产物与清理清单；
 3. [背景与目标](docs/background-and-goals.md)：问题背景、数据事实、目标和主张边界；
 4. [总体实施计划](docs/overall-plan.md)：架构、模块、数据契约、阶段和验收；
-5. [R01 回流处理实施规格](docs/r01-processing-spec.md)：当前模块的输入、契约、输出与停止线；
-6. [R01 M1 v3 验收报告](docs/r01-m1-v3-validation.md)：当前 M1A/M1B 正式验收事实来源；
-   [M1C 处理规格](docs/m1c-processing-spec.md) 与 [R01 M1C 全量验收报告](docs/r01-m1c-validation.md)：M1C 契约与正式验收事实来源；
+5. [R01 回流处理实施规格](docs/r01-processing-spec.md)：M1 模块的输入、契约、输出与停止线；
+6. [R01 M1 v3 验收报告](docs/r01-m1-v3-validation.md)、[M1C 处理规格](docs/m1c-processing-spec.md) 与 [R01 M1C 全量验收报告](docs/r01-m1c-validation.md)：轨迹编译正式验收事实来源；
 7. [参考仓库处理逻辑](docs/reference-repositories.md)：已有项目的真实处理链、采用方式和禁止照搬项；
-8. [M1 实现来源与迁移记录](docs/implementation-sources.md)：旧轨迹审核代码的逐文件来源、采用项和剥离项；
-9. [R01 M1 v2 历史验收报告（结论已撤销）](docs/r01-m1-v2-validation.md)：保留全量运行事实，不作为当前完成证据；
-10. [R01 M1 v1 历史验收报告（结论已撤销）](docs/r01-m1-validation.md)：保留正常路径历史事实，不作为当前完成证据。
+8. [M1 实现来源与迁移记录](docs/implementation-sources.md)：旧轨迹审核代码的逐文件来源、采用项和剥离项。
 
 ## 核心链路
 
@@ -42,7 +39,7 @@ TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并
 
 M1A/M1B v3 已正式通过。三项 P1 及脱敏 Data URL 终态的同步重签变体已经闭合；冻结 R01 已在干净代码冻结点完成两次独立全量编译、两次 validator、确定性对比和轻量留证。输入 `source_schema` 仍是 `traceforge.restored-long-capture.v1`。
 
-M1C 已正式通过（[R01 M1C 全量验收报告](docs/r01-m1c-validation.md)）：在冻结 M1B run 之上两次独立建图、两次独立 validator、确定性对比与门②/森林拓扑独立复算均通过；v2 实现 3 类 Grade-A 关系（`SHARED_SOURCE_REQUEST` / `EXPLICIT_REQUEST_SUCCESSOR` / `COMPLETE_DUPLICATE_CAPTURE`），全部只依赖 M1B 已发布的可重算可见事实；上游不透明摘要（`raw_request_hash`、`target_hash`）不进入任何关系证据。Grade-B `NORMALIZED_VISIBLE_PREFIX_OF` 按规格缓做。当前正式验收停点在 M1C。M1D（[M1D 处理规格](docs/m1d-processing-spec.md)）已实现（含单测与 `query-turns` CLI），状态为「已实现、待 R01 正式验收」；`UserTextProjection` 来源投影（[M2 前置规格](docs/m2-source-projection-spec.md)）已冻结、已实现并已正式验收。代码库另含 M1C 之后未正式验收的重建生态实现，「止于 M1C」仅指已正式验收的阶段，不代表代码库到此为止。
+M1C 已正式通过：在冻结 M1B run 之上两次独立建图、两次独立 validator、确定性对比与门②/森林拓扑独立复算均通过；v2 实现 3 类 Grade-A 关系（`SHARED_SOURCE_REQUEST` / `EXPLICIT_REQUEST_SUCCESSOR` / `COMPLETE_DUPLICATE_CAPTURE`），全部只依赖 M1B 已发布的可重算可见事实；上游不透明摘要（`raw_request_hash`、`target_hash`）不进入任何关系证据。Grade-B `NORMALIZED_VISIBLE_PREFIX_OF` 按规格缓做。轨迹编译的正式验收停点在 M1C（[R01 M1C 全量验收报告](docs/r01-m1c-validation.md)）。M1D（[M1D 处理规格](docs/m1d-processing-spec.md)）已实现（含单测与 `query-turns` CLI），状态为「已实现、待 R01 正式验收」；`UserTextProjection` 来源投影（[M2 前置规格](docs/m2-source-projection-spec.md)）已冻结、已实现并已正式验收。活跑重建走 `reconstruct run`，阅读顺序见 [reconstruct run 阅读地图](docs/rebuild-live-map.md)，不要把 M1C 停点理解成重建主链的入口。
 
 当前实现边界：
 

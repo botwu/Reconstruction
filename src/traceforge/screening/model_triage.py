@@ -20,6 +20,7 @@ from .contracts import (
     DomainRoute,
 )
 from .rubric import admit_after_tasks, coerce_rubric, empty_rubric
+from .task_labels import normalize_task_labels
 
 
 def _prompt(evidence: dict[str, Any]) -> str:
@@ -27,15 +28,15 @@ def _prompt(evidence: dict[str, Any]) -> str:
     span_ids = list(evidence.get("span_ids") or ())
     return "\n".join(
         [
-            "你是重建筛选器。目标是在整条 capture 的可观察轨迹里，找出失败或未完成、",
-            "能拟合用户意图且环境有抓手的任务。不要默认只评最后一问。",
+            "你是重建筛选器。第一性原理：用户 query 是不是一个有效任务，以及这个任务",
+            "有没有完成或完成得好。工具调用只辅助看环境和过程，不是入选硬条件。",
+            "有效任务但轨迹里缺少本该有的工具，也要重建。不要默认只评最后一问。",
             "不要编造未出现的文件、答案或用户身份。",
             "证据是 shared_context + spans[] 内全部用户要求、可见 assistant、",
             "tool_calls 与 tool 结果。",
             "thinking/reasoning 已省略，不得根据其缺失加分或扣分。",
-            "大字段可能被截断（含 omitted_chars/hash）；不得编造被省略的内容。",
+            "模型输入保留完整可观察字段；不得编造证据中没有的内容。",
             "不要把抓取完成（leaf_response_status=completed）当成任务成功。",
-            "不要把末尾未返回的 tool call 单独当成任务失败；需结合用户目标与可见过程判断。",
             "闲聊、已成功问答不要标成需要重建。",
             "同一交付物的追问、纠错、继续可合并到一个 task 的多个 span_ids。",
             f"只能使用这些 span_id：{span_ids}",
@@ -45,22 +46,45 @@ def _prompt(evidence: dict[str, Any]) -> str:
             '  "tasks": [',
             "    {",
             '      "span_ids": ["span_..."],',
+            '      "task_id": "model-task-1",',
+            '      "is_actionable": true,',
             '      "outcome": "SUCCESS|FAILURE|INCOMPLETE|UNCERTAIN",',
             '      "needs_reconstruction": true|false|null,',
             '      "domain_route": "code_file|retrieval|other",',
             f'      "rubric": {{{keys}}},',
-            '      "reason": "简短中文依据"',
+            '      "reason": "简短中文依据",',
+            '      "evidence_refs": {"message_indices": [1], "span_ids": ["span_..."]}',
             "    }",
-            "  ]",
+            "  ],",
+            '  "relations": [{"from_task_id":"model-task-1","to_task_id":"model-task-2",',
+            '    "type":"continuation|correction|dependency",',
+            '    "evidence_refs":{"message_indices":[1,4],"span_ids":["span_a","span_b"]},',
+            '    "reason":"有证据的关系"}]',
             "}",
             "rubric 每个键是 0 到 3 的整数。",
-            "R1 意图可拟合：0 无任务或只能猜，2 目标基本明确，3 目标与交付物都有用户证据。",
-            "R2 没做成：0 无失败/未完成迹象，2 有错误、终止或纠正，3 失败边界可定位。",
-            "环境有抓手用 domain_route，不另打分：出现过文件/代码/工作区操作用 code_file；",
-            "检索问答用 retrieval；闲聊或纯概念用 other。不要求环境完整。",
+            "R1 意图可拟合：0 无任务或只能猜，2 目标基本明确即可，3 目标与交付物都有用户证据。",
+            "R2 没完成或完成不好：只要任务没正常做好，都打 ≥2。包括：",
+            "环境问题；模型答错/卡住/没交交付物/用户纠正；该用工具却没用；",
+            "轨迹截断或不合理。有回复但对不准任务，也算完成不好，不要标 SUCCESS。",
+            "R2=0 只给任务已经做好、过程正常结束。",
+            "domain_route 是辅助标签，不决定能不能入选。对着真实工具和参数认：",
+            "有工作区工具（read/write/edit/glob/grep，或 exec/bash 在读改文件、跑本地命令）→ code_file；",
+            "主要是检索（web_search/url_fetch/chat_history_get）→ retrieval；",
+            "有效任务但没有本该有的工具 → 仍要重建，domain 按用户要的事标，",
+            "不要因为没工具就标 other 并丢掉。wait 只是配对。",
+            "闲聊、不是任务的寒暄才是 other。同一 capture 里按 task 分开标。",
+            "每个 task 必须有 task_id、is_actionable、evidence_refs；每个 span 只能归属一个 task，",
+            "所有 span 必须归属某个 task。task_id 只作本次关系引用，服务端会生成稳定 ID。",
+            "relations 只在有用户/轨迹证据时填写；from 必须早于 to，证据必须触及两端。",
+            "同一目标的澄清/纠错优先合并为一个 task；后续成功不得把此前失败 attempt 当重建样本。",
+            "同一交付物按最终完成度合并：中间 SUCCESS 后纠错仍要并进同一个 task，",
+            "outcome 取最后状态。不要先标 SUCCESS 再拆一个 correction。",
+            "「后续成功不得把此前失败当样本」只适用于后面已经做成；不同交付物仍拆。",
+            "relations 不能代替合并：能并的不要拆开再写 relation。",
             "outcome=SUCCESS 时 needs_reconstruction 必须为 false。",
-            "outcome=UNCERTAIN 时 needs_reconstruction 必须为 null。",
-            "FAILURE/INCOMPLETE 且意图清楚、环境有抓手时 needs_reconstruction 为 true。",
+            "outcome=UNCERTAIN 时 actionable task 的 needs_reconstruction 必须为 null。",
+            "FAILURE/INCOMPLETE 且 R1≥2 时 needs_reconstruction 为 true，",
+            "不论有没有工具、是不是 code_file。",
             "至少返回一个 task；若整条都是闲聊或成功，也要返回对应 task。",
             "",
             "OBSERVABLE_EVIDENCE:",
@@ -194,22 +218,19 @@ def judge_reconstructability(
         for item in (evidence.get("span_ids") or ())
         if isinstance(item, str) and item
     }
-    tasks, errors = _normalize_tasks(payload.get("tasks"), allowed_span_ids=allowed)
-    parse_errors = tuple(
-        item
-        for item in errors
-        if item
-        in {
-            "TASKS_NOT_ARRAY",
-            "TASKS_EMPTY",
-        }
-        or item.startswith("TASK_SPAN_ID_UNKNOWN")
-        or item.startswith("TASK_SPAN_IDS_INVALID")
-        or item.startswith("TASK_NOT_OBJECT")
+    tasks, relations, label_errors, label_status = normalize_task_labels(
+        payload, evidence=evidence, source_ref=evidence.get("source_ref")
     )
+    # The legacy shape checker is retained as a compatibility diagnostic; the
+    # v10 label normalizer is the fail-closed admission contract.
+    _, legacy_errors = _normalize_tasks(payload.get("tasks"), allowed_span_ids=allowed)
+    errors = list(dict.fromkeys([*legacy_errors, *label_errors]))
+    parse_errors = tuple(errors)
     admitted = admit_after_tasks(
         rule=rule,
         tasks=tasks,
+        relations=relations,
+        label_status=label_status,
         parse_errors=parse_errors,
     )
     primary = next(
@@ -224,6 +245,8 @@ def judge_reconstructability(
     return {
         **admitted,
         "tasks": tasks,
+        "relations": relations,
+        "label_status": label_status,
         "outcome": None if primary is None else primary.get("outcome"),
         "needs_reconstruction": None if primary is None else primary.get("needs_reconstruction"),
         "domain_route": None if primary is None else primary.get("domain_route"),

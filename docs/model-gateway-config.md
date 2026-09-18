@@ -13,7 +13,7 @@ PYTHONPATH=src .venv/bin/python -m traceforge failure-analysis agentrx \
   --model-name gemini-2.5-pro
 ```
 
-`model-judge` 和 `reconstruct workflow` 子命令同样支持 `--config` 与 `--channel`。当配置了 NewAPI channel 却仍使用默认的 Claude 模型名时，CLI 会自动选择该 channel 的安全默认模型（Gemini 为 `gemini-2.5-pro`，GPT 为 `gpt-5`）；需要其他模型时显式传入 `--model-name`。
+`model-judge` 和 `reconstruct run` 同样支持 `--config` 与 `--channel`。当配置了 NewAPI channel 却仍使用默认的 Claude 模型名时，CLI 会自动选择该 channel 的安全默认模型（Gemini 为 `gemini-2.5-pro`，GPT 为 `gpt-5`）；需要其他模型时显式传入 `--model-name`。
 
 配置格式是顶层 channel 名和一行 JSON 连接对象，例如：
 
