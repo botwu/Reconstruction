@@ -88,8 +88,8 @@ flowchart LR
 
 看一份产物时只盯：`reconstruction_manifest.json` 的 `stopped_at` / `execution_support_route` → `intent/intent.json` 的 `environment_bindings` → `tasks/*/completion/completion.json` → 若有则 `verification/verification.json`。
 
-- [`artifacts/eligible-live/L22-e2e-5/`](../artifacts/eligible-live/L22-e2e-5/)：当前代码最近一次完整活跑。Intent READY、三条全 NON_FILE；Completion `MODEL_DECISION_REVIEW`。
-- [`artifacts/eligible-live/L22-e2e-3/`](../artifacts/eligible-live/L22-e2e-3/)：旧规则下走到 Verifier 的对照。
+- [`artifacts/eligible-live/L22-e2e-5/`](../artifacts/eligible-live/L22-e2e-5/)：历史活跑对照产物，当前状态为 REVIEW。Intent READY、三条全 NON_FILE；Completion `MODEL_DECISION_REVIEW`。
+- [`artifacts/eligible-live/L22-e2e-3/`](../artifacts/eligible-live/L22-e2e-3/)：旧规则下走到 Verifier 的历史对照，当前状态为 REVIEW。
 
 `artifacts/` 已被 gitignore，不会进仓库。
 
