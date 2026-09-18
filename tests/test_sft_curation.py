@@ -99,7 +99,6 @@ def test_write_reconstruction_sft_curation_pending_and_not_applicable(tmp_path) 
     assert "NO_FILE_ACCEPTANCE" in payload
 
 
-
 def _rollout_verification(*, failed: bool = False, include_leakage: bool = True) -> dict:
     statuses = ["FAIL", "PASS"] if failed else ["PASS", "PASS"]
     rewards = [0.0, 1.0] if failed else [1.0, 1.0]
@@ -143,13 +142,15 @@ def _rollout_verification(*, failed: bool = False, include_leakage: bool = True)
 def test_writer_uses_actual_rollout_evidence_and_ignores_sft_flag(tmp_path) -> None:
     path = write_reconstruction_sft_curation(
         tmp_path,
-        [{
-            "task_id": "task-1",
-            "status": "READY",
-            "task_recovery_confidence": 0.9,
-            "environment_recovery_confidence": 0.9,
-            "verification": _rollout_verification(),
-        }],
+        [
+            {
+                "task_id": "task-1",
+                "status": "READY",
+                "task_recovery_confidence": 0.9,
+                "environment_recovery_confidence": 0.9,
+                "verification": _rollout_verification(),
+            }
+        ],
     )
     payload = path.read_text(encoding="utf-8")
     assert '"status": "ELIGIBLE"' in payload
@@ -161,13 +162,15 @@ def test_writer_missing_evidence_is_review(tmp_path) -> None:
     verification = _rollout_verification(include_leakage=False)
     path = write_reconstruction_sft_curation(
         tmp_path,
-        [{
-            "task_id": "task-1",
-            "status": "READY",
-            "task_recovery_confidence": 0.9,
-            "environment_recovery_confidence": 0.9,
-            "verification": verification,
-        }],
+        [
+            {
+                "task_id": "task-1",
+                "status": "READY",
+                "task_recovery_confidence": 0.9,
+                "environment_recovery_confidence": 0.9,
+                "verification": verification,
+            }
+        ],
     )
     payload = path.read_text(encoding="utf-8")
     assert '"status": "REVIEW"' in payload
@@ -178,13 +181,15 @@ def test_writer_missing_evidence_is_review(tmp_path) -> None:
 def test_writer_failed_rollout_is_rejected(tmp_path) -> None:
     path = write_reconstruction_sft_curation(
         tmp_path,
-        [{
-            "task_id": "task-1",
-            "status": "READY",
-            "task_recovery_confidence": 0.9,
-            "environment_recovery_confidence": 0.9,
-            "verification": _rollout_verification(failed=True),
-        }],
+        [
+            {
+                "task_id": "task-1",
+                "status": "READY",
+                "task_recovery_confidence": 0.9,
+                "environment_recovery_confidence": 0.9,
+                "verification": _rollout_verification(failed=True),
+            }
+        ],
     )
     payload = path.read_text(encoding="utf-8")
     assert '"status": "REVIEW"' in payload
@@ -196,11 +201,13 @@ def test_writer_failed_rollout_is_rejected(tmp_path) -> None:
 def test_writer_missing_rollout_never_uses_sft_flag(tmp_path) -> None:
     path = write_reconstruction_sft_curation(
         tmp_path,
-        [{
-            "task_id": "task-1",
-            "status": "READY",
-            "verification": {"status": "READY", "sft_eligible": True},
-        }],
+        [
+            {
+                "task_id": "task-1",
+                "status": "READY",
+                "verification": {"status": "READY", "sft_eligible": True},
+            }
+        ],
     )
     payload = path.read_text(encoding="utf-8")
     assert '"status": "REVIEW"' in payload
@@ -208,19 +215,20 @@ def test_writer_missing_rollout_never_uses_sft_flag(tmp_path) -> None:
     assert "SFT_NOT_READY" in payload
 
 
-
 def test_writer_missing_reward_is_review(tmp_path) -> None:
     verification = _rollout_verification()
     del verification["rollout"]["results"]["trials"][0]["reward"]
     path = write_reconstruction_sft_curation(
         tmp_path,
-        [{
-            "task_id": "task-1",
-            "status": "READY",
-            "task_recovery_confidence": 0.9,
-            "environment_recovery_confidence": 0.9,
-            "verification": verification,
-        }],
+        [
+            {
+                "task_id": "task-1",
+                "status": "READY",
+                "task_recovery_confidence": 0.9,
+                "environment_recovery_confidence": 0.9,
+                "verification": verification,
+            }
+        ],
     )
     payload = path.read_text(encoding="utf-8")
     assert '"eligibility": "REVIEW"' in payload

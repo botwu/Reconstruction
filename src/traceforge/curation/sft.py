@@ -245,11 +245,7 @@ def _reproducibility_evidence(results: dict[str, Any], trials: list[dict[str, An
             return None
         if any(not isinstance(value, bool) for value in values):
             raise CurationInputError("rollout artifact checks must be explicit booleans")
-        checks.append(
-            trial["status"] == "PASS"
-            and trial["reward"] == 1.0
-            and all(values)
-        )
+        checks.append(trial["status"] == "PASS" and trial["reward"] == 1.0 and all(values))
     if len(trials) != expected or quality_ok in {_MISSING, None} or cleanup_ok in {_MISSING, None}:
         return None if len(trials) == expected else False
     return bool(quality_ok and cleanup_ok and all(checks))
@@ -280,11 +276,13 @@ def _rollout_row(task: dict[str, Any], verification: dict[str, Any]) -> dict[str
     sufficiency = task.get("sufficiency") if isinstance(task.get("sufficiency"), dict) else {}
     confidence_objects = (task, source_task, verification)
     task_confidence = _optional_number(
-        confidence_objects, ("task_recovery_confidence", "task_confidence"),
+        confidence_objects,
+        ("task_recovery_confidence", "task_confidence"),
         "task_recovery_confidence",
     )
     environment_confidence = _optional_number(
-        confidence_objects, ("environment_recovery_confidence", "environment_confidence"),
+        confidence_objects,
+        ("environment_recovery_confidence", "environment_confidence"),
         "environment_recovery_confidence",
     )
     # The sufficiency judge has one combined confidence. Use it only when the
@@ -310,8 +308,7 @@ def _rollout_row(task: dict[str, Any], verification: dict[str, Any]) -> dict[str
     statuses = [item.get("status") for item in trials]
     rewards = [item.get("reward") for item in trials]
     all_pass = all(
-        status == "PASS" and value == 1.0
-        for status, value in zip(statuses, rewards, strict=True)
+        status == "PASS" and value == 1.0 for status, value in zip(statuses, rewards, strict=True)
     )
     quality_gate = results.get("quality_gate")
     quality_ok = quality_gate.get("ok") if isinstance(quality_gate, dict) else None
