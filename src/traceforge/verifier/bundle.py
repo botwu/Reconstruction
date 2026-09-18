@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -16,6 +18,115 @@ from traceforge.trajectory.artifacts import (
 )
 
 from .synthesis import VerifierCandidate
+
+_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v2-python-entrypoint"
+_PYTHON_SHEBANG = re.compile(
+    r"^#!\s*(?:/usr/bin/env(?:\s+-S)?\s+)?(?:\S*/)?"
+    r"(?:python(?:\d+(?:\.\d+)*)?|pypy(?:\d+(?:\.\d+)*)?)\b",
+    re.IGNORECASE,
+)
+_SHELL_COMMANDS = frozenset(
+    {
+        "[",
+        "awk",
+        "bash",
+        "cat",
+        "cd",
+        "command",
+        "cp",
+        "echo",
+        "env",
+        "exec",
+        "exit",
+        "false",
+        "fi",
+        "for",
+        "function",
+        "git",
+        "grep",
+        "if",
+        "install",
+        "make",
+        "mkdir",
+        "mv",
+        "node",
+        "perl",
+        "printf",
+        "python",
+        "python3",
+        "rm",
+        "sed",
+        "set",
+        "sh",
+        "source",
+        "tee",
+        "test",
+        "then",
+        "touch",
+        "true",
+        "trap",
+        "unset",
+        "until",
+        "while",
+        "zsh",
+    }
+)
+
+
+def _first_code_line(script: str) -> str:
+    for line in script.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped
+    return ""
+
+
+def _is_python_solution(script: str) -> bool:
+    """Classify a direct Python file without mistaking shell heredocs for Python."""
+
+    stripped = script.lstrip()
+    if not stripped:
+        return False
+    first_line = stripped.splitlines()[0].strip()
+    if _PYTHON_SHEBANG.match(first_line):
+        return True
+    first_code = _first_code_line(script)
+    if not first_code:
+        return False
+    first_word = first_code.split(None, 1)[0].lower()
+    if first_word in _SHELL_COMMANDS or first_code.startswith(("$", "#!")):
+        return False
+    try:
+        tree = ast.parse(script)
+    except SyntaxError:
+        return False
+    # A bare shell builtin (for example echo) is valid Python syntax as a
+    # name expression. Python solutions generally contain an executable AST
+    # node; accepting those nodes also covers print(...) and Path(...).
+    return any(
+        isinstance(
+            node,
+            (
+                ast.Call,
+                ast.Import,
+                ast.ImportFrom,
+                ast.Assign,
+                ast.AnnAssign,
+                ast.AugAssign,
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+                ast.With,
+                ast.AsyncWith,
+                ast.For,
+                ast.AsyncFor,
+                ast.While,
+                ast.Try,
+                ast.If,
+            ),
+        )
+        for node in ast.walk(tree)
+    )
 
 
 def compile_bundle(
@@ -69,8 +180,10 @@ def compile_bundle(
                     raise ValueError(f"env_manifest.json 缺少 {key}")
             if not isinstance(env_metadata["provenance"], dict):
                 raise ValueError("env_manifest.provenance 必须是 object")
-            if any(not isinstance(raw_manifest[key], list) for key in ("dependencies", "runtime_constraints", "uncertainties")):
-                raise ValueError("env_manifest dependencies/runtime_constraints/uncertainties 必须为数组")
+            required_lists = ("dependencies", "runtime_constraints", "uncertainties")
+            if any(not isinstance(raw_manifest[key], list) for key in required_lists):
+                raise ValueError(
+                    "env_manifest dependencies/runtime_constraints/uncertainties 必须为数组")
         hidden = env_root / "hidden_control"
         if hidden.is_dir():
             hidden_source = hidden
@@ -84,10 +197,21 @@ def compile_bundle(
     digest = hashlib.sha256(
         json.dumps(
             {
+                "compiler_version": _BUNDLE_COMPILER_VERSION,
                 "instruction": instruction,
                 "tree": tree,
                 "verifier": verifier.to_dict(),
+                "variant_set": "oracle" if mutation_index is None else "mutation",
+                "variant_index": index,
                 "variant": variant.name,
+                "variant_script": variant.script,
+                "variant_justification": variant.justification,
+                "entrypoint_contract": {
+                    "workspace_mount": "/home/user/workspace",
+                    "solution_mount": "/solution",
+                    "shell_entrypoint": "solve.sh",
+                    "python_entrypoint": "solve.py",
+                },
                 "environment": env_metadata,
             },
             sort_keys=True,
@@ -124,10 +248,19 @@ def compile_bundle(
             "pytest 由 tests/vendor 离线提供，verifier 无网。\n",
             encoding="utf-8",
         )
-        (root / "solution/solve.sh").write_text(
-            "#!/bin/sh\nset -eu\ncd /home/user/workspace\n" + variant.script + "\n",
-            encoding="utf-8",
-        )
+        if _is_python_solution(variant.script):
+            (root / "solution/solve.py").write_text(
+                variant.script.rstrip() + "\n",
+                encoding="utf-8",
+            )
+            (root / "solution/solve.py").chmod(0o755)
+            solve_script = (
+                "#!/bin/sh\nset -eu\ncd /home/user/workspace\n"
+                "exec python3 /solution/solve.py\n"
+            )
+        else:
+            solve_script = "#!/bin/sh\nset -eu\ncd /home/user/workspace\n" + variant.script + "\n"
+        (root / "solution/solve.sh").write_text(solve_script, encoding="utf-8")
         (root / "solution/solve.sh").chmod(0o755)
         (root / "tests/test_outputs.py").write_text(verifier.test_outputs_py, encoding="utf-8")
         shutil.copyfile(Path(__file__).with_name("grading.py"), root / "tests/grader.py")
@@ -174,11 +307,20 @@ def compile_bundle(
                 "compile_manifest.json",
                 {
                     "schema_version": "traceforge.compiled-bundle.v1",
+                    "compiler_version": _BUNDLE_COMPILER_VERSION,
                     "bundle_id": digest,
                     "task_path": "task",
                     "layout": layout,
                     "verifier_status": "UNVALIDATED",
+                    "variant_set": "oracle" if mutation_index is None else "mutation",
+                    "variant_index": index,
                     "variant": variant.name,
+                    "entrypoint_contract": {
+                        "workspace_mount": "/home/user/workspace",
+                        "solution_mount": "/solution",
+                        "shell_entrypoint": "solve.sh",
+                        "python_entrypoint": "solve.py",
+                    },
                     "workspace_sha256": tree,
                     "environment_metadata": env_metadata,
                 },

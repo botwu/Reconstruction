@@ -1,5 +1,8 @@
 """生成包的隐藏面、路径和 verifier 基础设施错误验证。"""
 
+import subprocess
+from dataclasses import replace
+
 import pytest
 
 from traceforge.verifier.bundle import compile_bundle
@@ -27,6 +30,30 @@ def _verifier():
         "v1",
         "prompt-hash",
         "response-hash",
+    )
+
+
+def _verifier_with_script(script: str) -> VerifierCandidate:
+    return replace(
+        _verifier(),
+        oracle_solutions=(SolutionVariant("fixture", script, "repository fixture"),),
+    )
+
+
+def _run_solution(output, workspace, runner_root):
+    solution = output / "task/solution"
+    script = (solution / "solve.sh").read_text(encoding="utf-8")
+    script = script.replace("/home/user/workspace", workspace.as_posix())
+    script = script.replace("/solution", solution.as_posix())
+    runner = runner_root / "run-solve.sh"
+    runner.write_text(script, encoding="utf-8")
+    runner.chmod(0o755)
+    subprocess.run(
+        ["/bin/sh", runner.as_posix()],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -76,3 +103,99 @@ def test_junit_keeps_collection_errors_distinct(tmp_path):
         '<testsuites><testsuite><testcase name="test_a"><failure/></testcase><testcase name="test_b"><error/></testcase></testsuite></testsuites>'  # noqa: E501
     )
     assert [x["status"] for x in collect_test_results(path)] == ["FAIL", "ERROR"]
+
+
+def test_bundle_wraps_direct_python_solution(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    verifier = _verifier()
+    verifier = VerifierCandidate(
+        verifier.schema_version,
+        verifier.candidate_id,
+        verifier.status,
+        verifier.test_outputs_py,
+        (
+            SolutionVariant(
+                "python",
+                "#!/usr/bin/env python3\n"
+                "from pathlib import Path\n"
+                "Path('done.txt').write_text('ok')",
+                "Python fixture",
+            ),
+        ),
+        verifier.mutation_solutions,
+        verifier.missing_capability_tests,
+        verifier.protective_tests,
+        verifier.obligation_coverage,
+        verifier.expected_value_strategy,
+        verifier.open_questions,
+        verifier.model,
+        verifier.prompt_version,
+        verifier.prompt_sha256,
+        verifier.response_sha256,
+    )
+    output = compile_bundle(
+        task={"core_objective": "????????????"},
+        workspace_root=root,
+        verifier=verifier,
+        output_root=tmp_path / "out",
+    )
+    solve = (output / "task/solution/solve.sh").read_text()
+    assert "exec python3 /solution/solve.py" in solve
+    assert (output / "task/solution/solve.py").read_text().startswith("#!/usr/bin/env python3")
+
+
+def test_bundle_executes_direct_python_fixture(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    script = "value = 'python'\nfrom pathlib import Path\nPath('done.txt').write_text(value)"
+    output = compile_bundle(
+        task={"core_objective": "fixture"},
+        workspace_root=workspace,
+        verifier=_verifier_with_script(script),
+        output_root=tmp_path / "out",
+    )
+    assert (output / "task/solution/solve.py").is_file()
+    _run_solution(output, workspace, tmp_path)
+    assert (workspace / "done.txt").read_text() == "python"
+
+
+def test_bundle_keeps_shell_heredoc_as_shell_fixture(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    script = (
+        "python3 - <<'PY'\n"
+        "from pathlib import Path\n"
+        "Path('done.txt').write_text('heredoc')\n"
+        "PY"
+    )
+    output = compile_bundle(
+        task={"core_objective": "fixture"},
+        workspace_root=workspace,
+        verifier=_verifier_with_script(script),
+        output_root=tmp_path / "out",
+    )
+    assert not (output / "task/solution/solve.py").exists()
+    _run_solution(output, workspace, tmp_path)
+    assert (workspace / "done.txt").read_text() == "heredoc"
+
+
+def test_bundle_digest_includes_compiler_contract(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    output = compile_bundle(
+        task={"core_objective": "fixture"},
+        workspace_root=workspace,
+        verifier=_verifier_with_script("echo fixture"),
+        output_root=tmp_path / "out",
+    )
+    manifest = __import__("json").loads(
+        (output / "compile_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v2-python-entrypoint"
+    assert manifest["entrypoint_contract"] == {
+        "workspace_mount": "/home/user/workspace",
+        "solution_mount": "/solution",
+        "shell_entrypoint": "solve.sh",
+        "python_entrypoint": "solve.py",
+    }
