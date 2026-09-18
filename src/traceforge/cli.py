@@ -9,10 +9,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from traceforge.failure_analysis.agentrx_pipeline import run_agentrx_diagnosis
-from traceforge.failure_analysis.mapping_reader import MappingInputError
 from traceforge.failure_analysis.model_runner import run_failure_analysis_model
-from traceforge.failure_analysis.pipeline import build_failure_analysis
-from traceforge.failure_analysis.reader import FailureAnalysisInputError
 from traceforge.failure_analysis.review_batch import build_review_batch
 from traceforge.failure_analysis.trace_capabilities import aggregate_capability_runs
 from traceforge.harbor_ags.adapter import HarborAgsAdapterError, build_boundary_plan
@@ -24,12 +21,12 @@ from traceforge.harbor_ags.rollout import (
     build_rollout_plan,
     execute_rollout_plan,
 )
-from traceforge.lineage.pipeline import build_lineage
-from traceforge.lineage.reader import LineageInputError
-from traceforge.query_turns.pipeline import build_query_turns
-from traceforge.query_turns.reader import QueryTurnInputError
 from traceforge.reconstruction.agents import HermesUnavailableError, build_hermes_runtime
 from traceforge.reconstruction.agents.runtime import resolve_rollout_model
+from traceforge.reconstruction.container_verification import (
+    SandboxUnavailableError,
+    build_ags_runtime_factory,
+)
 from traceforge.reconstruction.eligible_reconstruction import (
     EligibleReconstructionError,
     run_eligible_reconstruction,
@@ -46,11 +43,6 @@ from traceforge.reconstruction.session_source import (
     load_eligible_record,
     load_raw_line,
     write_reconstruction_source,
-)
-from traceforge.reconstruction.container_verification import (
-    SandboxUnavailableError,
-    build_ags_runtime_factory,
-    resolve_sandbox_api_key,
 )
 from traceforge.reconstruction.tls import pin_process_tls
 from traceforge.reconstruction.verification import VerificationConfig
@@ -70,60 +62,21 @@ from traceforge.requery.single_workspace import (
     synthesize_single_workspace_tasks,
 )
 from traceforge.screening import ScreeningInputError, run_reconstruction_screening
-from traceforge.source_projection.contracts import UserTextProjectionInputError
-from traceforge.source_projection.pipeline import build_user_text_projection
 from traceforge.trajectory.artifacts import ArtifactPublishError
-from traceforge.trajectory.pipeline import compile_trajectory
-from traceforge.trajectory.source import SourceError
-from traceforge.trajectory.source_adapter import SUPPORTED_SOURCE_SCHEMAS
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="traceforge",
-        description="将真实回流轨迹编译成可审计的结构化事实",
+        description="从 ELIGIBLE 原始 session 重建可验证任务与环境",
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    trajectory = commands.add_parser("trajectory", help="轨迹来源与结构编译")
-    trajectory_commands = trajectory.add_subparsers(
-        dest="trajectory_command",
-        required=True,
-    )
-    compile_parser = trajectory_commands.add_parser(
-        "compile",
-        help="编译冻结的 JSONL 回流来源",
-    )
-    compile_parser.add_argument("--input", type=Path, required=True, help="JSONL 输入路径")
-    compile_parser.add_argument("--dataset-id", required=True, help="稳定的数据集标识")
-    compile_parser.add_argument(
-        "--source-schema",
-        required=True,
-        help=f"显式来源契约；当前支持 {', '.join(sorted(SUPPORTED_SOURCE_SCHEMAS))}",
-    )
-    compile_parser.add_argument(
-        "--expected-sha256",
-        default=None,
-        help="可选的冻结输入 SHA-256",
-    )
-    compile_parser.add_argument("--output", type=Path, required=True, help="artifact 根目录")
 
     failure_analysis = commands.add_parser(
         "failure-analysis", help="deterministic failure evidence analysis (M4)"
     )
     failure_analysis_commands = failure_analysis.add_subparsers(
         dest="failure_analysis_command", required=True
-    )
-    failure_analysis_build = failure_analysis_commands.add_parser(
-        "build", help="build failure-analysis artifacts from a published M1B run"
-    )
-    failure_analysis_build.add_argument(
-        "--m1b-run", type=Path, required=True, help="published M1B run (read only)"
-    )
-    failure_analysis_build.add_argument(
-        "--m1d-run", type=Path, default=None, help="可选：已发布 M1D QueryTurn run"
-    )
-    failure_analysis_build.add_argument(
-        "--output", type=Path, required=True, help="failure-analysis artifact root"
     )
     failure_model = failure_analysis_commands.add_parser(
         "model-judge", help="对单条结构化失败报告执行模型裁决并发布 artifact"
@@ -213,50 +166,6 @@ def _parser() -> argparse.ArgumentParser:
     read_results.add_argument("--job-dir", type=Path, required=True)
     read_results.add_argument("--agent-mode", choices=("hermes", "oracle", "nop"), default="hermes")
 
-    lineage = commands.add_parser("lineage", help="跨 capture 关系图（M1C）")
-    lineage_commands = lineage.add_subparsers(
-        dest="lineage_command",
-        required=True,
-    )
-    build_parser = lineage_commands.add_parser(
-        "build",
-        help="在一个已发布 M1B run 之上派生只读关系图产物",
-    )
-    build_parser.add_argument(
-        "--m1b-run",
-        type=Path,
-        required=True,
-        help="已发布 M1B run 目录（只读消费）",
-    )
-    build_parser.add_argument(
-        "--output",
-        type=Path,
-        required=True,
-        help="lineage artifact 根目录",
-    )
-
-    query_turns = commands.add_parser("query-turns", help="结构型 QueryTurn 回合图（M1D）")
-    query_turns_commands = query_turns.add_subparsers(
-        dest="query_turns_command",
-        required=True,
-    )
-    query_turns_build = query_turns_commands.add_parser(
-        "build",
-        help="在一个已发布 M1B run 之上派生只读回合图产物",
-    )
-    query_turns_build.add_argument(
-        "--m1b-run",
-        type=Path,
-        required=True,
-        help="已发布 M1B run 目录（只读消费）",
-    )
-    query_turns_build.add_argument(
-        "--output",
-        type=Path,
-        required=True,
-        help="query-turns artifact 根目录",
-    )
-
     reconstruct = commands.add_parser(
         "reconstruct", help="从 ELIGIBLE 原始 session 重建（官方入口：run）"
     )
@@ -305,7 +214,7 @@ def _parser() -> argparse.ArgumentParser:
     reconstruct_run.add_argument(
         "--sandbox",
         action="store_true",
-        help="四个角色的文件/pytest 打到 AGS 沙盒；需要 AGS_API_KEY 或 E2B_API_KEY，缺 key 直接失败",
+        help="文件/pytest 打到 AGS；需要 AGS_API_KEY 或 E2B_API_KEY，缺 key 失败",
     )
     reconstruct_run.add_argument(
         "--execute-red",
@@ -383,35 +292,6 @@ def _parser() -> argparse.ArgumentParser:
     multi_round.add_argument("--output", type=Path, required=True)
     multi_round.add_argument("--minimum-passes", type=int, default=2)
 
-    source_projection = commands.add_parser(
-        "source-projection", help="来源投影：USER 事件结构注解（M2 前置）"
-    )
-    source_projection_commands = source_projection.add_subparsers(
-        dest="source_projection_command",
-        required=True,
-    )
-    source_projection_build = source_projection_commands.add_parser(
-        "build",
-        help="在一个已发布 M1B run（可选绑定 M1D run）之上派生只读 USER 文本结构注解",
-    )
-    source_projection_build.add_argument(
-        "--m1b-run",
-        type=Path,
-        required=True,
-        help="已发布 M1B run 目录（只读消费）",
-    )
-    source_projection_build.add_argument(
-        "--m1d-run",
-        type=Path,
-        default=None,
-        help="可选：已发布 M1D run 目录（只读消费；提供即绑定并回指 UserBlock）",
-    )
-    source_projection_build.add_argument(
-        "--output",
-        type=Path,
-        required=True,
-        help="source-projection artifact 根目录",
-    )
     return parser
 
 
@@ -419,39 +299,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     pin_process_tls()
     parser = _parser()
     arguments = parser.parse_args(argv)
-    if arguments.command == "trajectory" and arguments.trajectory_command == "compile":
-        try:
-            output_path = compile_trajectory(
-                input_path=arguments.input,
-                dataset_id=arguments.dataset_id,
-                source_schema=arguments.source_schema,
-                expected_sha256=arguments.expected_sha256,
-                output_root=arguments.output,
-            )
-        except (SourceError, ArtifactPublishError, ValueError) as exc:
-            print(f"轨迹编译失败：{exc}", file=sys.stderr)
-            return 2
-        print(output_path)
-        return 0
-    if arguments.command == "failure-analysis" and arguments.failure_analysis_command == "build":
-        try:
-            failure_kwargs = {
-                "m1b_run_dir": arguments.m1b_run,
-                "output_root": arguments.output,
-            }
-            if arguments.m1d_run is not None:
-                failure_kwargs["m1d_run_dir"] = arguments.m1d_run
-            output_path = build_failure_analysis(**failure_kwargs)
-        except (
-            FailureAnalysisInputError,
-            MappingInputError,
-            ArtifactPublishError,
-            ValueError,
-        ) as exc:
-            print(f"失败分析构建失败：{exc}", file=sys.stderr)
-            return 2
-        print(output_path)
-        return 0
     if (
         arguments.command == "failure-analysis"
         and arguments.failure_analysis_command == "model-judge"
@@ -590,28 +437,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result["quality_gate"]["ok"] else 2
-    if arguments.command == "lineage" and arguments.lineage_command == "build":
-        try:
-            output_path = build_lineage(
-                m1b_run_dir=arguments.m1b_run,
-                output_root=arguments.output,
-            )
-        except (LineageInputError, ArtifactPublishError, ValueError) as exc:
-            print(f"关系图构建失败：{exc}", file=sys.stderr)
-            return 2
-        print(output_path)
-        return 0
-    if arguments.command == "query-turns" and arguments.query_turns_command == "build":
-        try:
-            output_path = build_query_turns(
-                m1b_run_dir=arguments.m1b_run,
-                output_root=arguments.output,
-            )
-        except (QueryTurnInputError, ArtifactPublishError, ValueError) as exc:
-            print(f"回合图构建失败：{exc}", file=sys.stderr)
-            return 2
-        print(output_path)
-        return 0
     if arguments.command == "reconstruct" and arguments.reconstruct_command == "source":
         try:
             record = load_eligible_record(arguments.records, line_number=arguments.line_number)
@@ -837,18 +662,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
             print(f"多轮 requery 失败：{exc}", file=sys.stderr)
-            return 2
-        print(output_path)
-        return 0
-    if arguments.command == "source-projection" and arguments.source_projection_command == "build":
-        try:
-            output_path = build_user_text_projection(
-                m1b_run_dir=arguments.m1b_run,
-                output_root=arguments.output,
-                m1d_run_dir=arguments.m1d_run,
-            )
-        except (UserTextProjectionInputError, ArtifactPublishError, ValueError) as exc:
-            print(f"来源投影构建失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
         return 0

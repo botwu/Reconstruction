@@ -1,114 +1,53 @@
 # TraceForge
 
-TraceForge 是一个将真实回流轨迹转化为可验证任务与环境，并进一步进行可解性认证、难度纠偏和模型边界搜索的框架。
+TraceForge 从真实回流 session 重建可验证任务与环境，并在 Harbor 上做 RED 校准。
 
 ## 开始之前
 
-新开发会话必须依次阅读：
+1. [AGENTS.md](AGENTS.md)：唯一开发规范
+2. [reconstruct run 阅读地图](docs/rebuild-live-map.md)：当前主链、要改的文件、对照产物
 
-1. [AGENTS.md](AGENTS.md)：唯一开发规范；
-2. [reconstruct run 阅读地图](docs/rebuild-live-map.md)：当前活跑主链、要改的文件、对照产物与清理清单；
-3. [背景与目标](docs/background-and-goals.md)：问题背景、数据事实、目标和主张边界；
-4. [总体实施计划](docs/overall-plan.md)：架构、模块、数据契约、阶段和验收；
-5. [R01 回流处理实施规格](docs/r01-processing-spec.md)：M1 模块的输入、契约、输出与停止线；
-6. [R01 M1 v3 验收报告](docs/r01-m1-v3-validation.md)、[M1C 处理规格](docs/m1c-processing-spec.md) 与 [R01 M1C 全量验收报告](docs/r01-m1c-validation.md)：轨迹编译正式验收事实来源；
-7. [参考仓库处理逻辑](docs/reference-repositories.md)：已有项目的真实处理链、采用方式和禁止照搬项；
-8. [M1 实现来源与迁移记录](docs/implementation-sources.md)：旧轨迹审核代码的逐文件来源、采用项和剥离项。
-
-## 核心链路
+## 当前主链
 
 ```text
-真实回流 JSONL
-→ SourceRecordRef / RequestBoundary
-→ Immutable Visible EventLog
-→ RequestLineageForest / QueryTurn
-→ TaskEpisode DAG
-→ ObservedTaskDistribution
-  + EnvironmentExposureProfile
-→ ReconstructionCandidate
-→ TaskWorldCandidateRevision
-→ Truth / Reference / Verifier
-→ G0–G5 + G7
-→ RunnableTaskWorldCandidateBundle
-→ Rollout / G6
-→ 六维难度与模型边界
-→ CertifiedTaskWorldRelease
+原始 JSONL + screening records
+→ reconstruct run
+→ Intent → Completion → Sufficiency → Verifier
+→ Harbor RED（--execute-red）
 ```
 
-## 当前阶段
-
-M1A/M1B v3 已正式通过。三项 P1 及脱敏 Data URL 终态的同步重签变体已经闭合；冻结 R01 已在干净代码冻结点完成两次独立全量编译、两次 validator、确定性对比和轻量留证。输入 `source_schema` 仍是 `traceforge.restored-long-capture.v1`。
-
-M1C 已正式通过：在冻结 M1B run 之上两次独立建图、两次独立 validator、确定性对比与门②/森林拓扑独立复算均通过；v2 实现 3 类 Grade-A 关系（`SHARED_SOURCE_REQUEST` / `EXPLICIT_REQUEST_SUCCESSOR` / `COMPLETE_DUPLICATE_CAPTURE`），全部只依赖 M1B 已发布的可重算可见事实；上游不透明摘要（`raw_request_hash`、`target_hash`）不进入任何关系证据。Grade-B `NORMALIZED_VISIBLE_PREFIX_OF` 按规格缓做。轨迹编译的正式验收停点在 M1C（[R01 M1C 全量验收报告](docs/r01-m1c-validation.md)）。M1D（[M1D 处理规格](docs/m1d-processing-spec.md)）已实现（含单测与 `query-turns` CLI），状态为「已实现、待 R01 正式验收」；`UserTextProjection` 来源投影（[M2 前置规格](docs/m2-source-projection-spec.md)）已冻结、已实现并已正式验收。活跑重建走 `reconstruct run`，阅读顺序见 [reconstruct run 阅读地图](docs/rebuild-live-map.md)，不要把 M1C 停点理解成重建主链的入口。
-
-当前实现边界：
-
-```text
-R01 JSONL
-→ SourceRecordRef
-→ NormalizedCapture / RequestBoundary
-→ Immutable Visible EventLog
-→ ActionBatch / ToolPairing
-→ RequestLineageForest / CaptureRelationGraph（M1C，只读派生于已发布 M1B run）
-```
-
-已正式验收的实现停止在 M1C；QueryTurn（M1D）与 `UserTextProjection` 来源投影均已实现，前者待正式验收、后者已验收。代码库另含未正式验收的重建生态实现（确定性失败分析、任务恢复、环境补全、逐候选充分性、验证器合成、Harbor/AGS rollout 接入与 SFT 治理等）；其中论文级不变量（control plane 预算/重试、迭代式验证器、Terminal-Universe 引擎、Truth/Reference/Verifier 模型独立性）尚未接线到生产路径，文档不据其宣称已生效。进入 M2 消费 `domain_meta` 前，仍须单独冻结并审核带来源的 `SourceAnnotationProjection` 或只读 `SourceResolver`。
-
-在一个已发布 M1B run 之上构建并验收 M1C 关系图：
+入口是 `reconstruct run`，不是轨迹编译。筛选用 `screening run`。
 
 ```bash
-uv run traceforge lineage build --m1b-run <m1b_run_dir> --output artifacts/r01/lineage
-uv run python scripts/validate_m1c_run.py <lineage_run_dir> <m1b_run_dir>
+PYTHONPATH=src python -m traceforge reconstruct run \
+    --input return_data/four_batch/by-rubric/R01.jsonl \
+    --records <records.jsonl> \
+    --line-number 22 \
+    --output artifacts/eligible-live/L22 \
+    --config config.yaml \
+    --channel claude \
+    --model-name claude-opus-4-6 \
+    --hermes-home "$HERMES_HOME" \
+    --sandbox \
+    --execute-red
 ```
 
-## 运行当前编译器
+## 测试
 
 ```bash
 uv sync --dev --python 3.12
-uv run traceforge trajectory compile \
-  --input <R01.jsonl> \
-  --dataset-id r01-four-batch-202607-v1 \
-  --source-schema traceforge.restored-long-capture.v1 \
-  --expected-sha256 <frozen_sha256> \
-  --output artifacts/r01
-```
-
-运行单元测试和静态检查：
-
-```bash
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 ```
 
-编译结果采用内容寻址目录。确定性业务产物、私有事件表与公共聚合报告物理分离；真实产物已由 `.gitignore` 排除。
-
-编译器和 validator 不内置 R01 的路径、摘要或统计值。`source_schema` 显式声明语义输入契约：当前提供两个 adapter（`traceforge.restored-long-capture.v1` 与 `traceforge.r01-sessions.v1`），按声明的 schema 精确选择，不会猜测或尝试多种 JSON 结构。不支持的 schema 在读取来源和创建 staging 前整批失败。validator 只重算并检查已发布 run 的通用契约：
-
-```bash
-uv run python scripts/validate_m1_run.py <content_addressed_run_dir>
-```
-
-R01 摘要和统计只作为文档化的外部验收基线。若后续需要机器比较，必须由调用方显式提供独立 expectation/profile，不能把特定数据常量写进核心或通用 validator。validator 只依据已发布结构独立重算 boundary ownership、message/event 覆盖、ActionBatch、完整 pairing 状态、CaptureQuality 和 attrition report，不信任 pairing、quality 或 report 的自报语义。
-
-M1 v3 不保存旧轨迹任意深度的 `reasoning_content` 原文，也不把它作为语义输入；只保留固定审计摘要，并从可见指纹中递归排除。完整 Base64 Data URL 使用版本化隐私 envelope 摘要，孤立的普通文本 `;base64,` 不视为 Data URL。
+`config.yaml`、真实回流和运行产物不进 Git。
 
 ## 核心边界
 
-- 回流提供生成约束，不提供 Ground Truth；
-- 一条 capture 不等于一个 Session 或任务；
-- R01 是来源 cohort，不是业务 Domain；
-- 合成 World 不声称恢复用户原环境；
-- Task 与 World 必须绑定后共同认证；
-- 强模型 rollout 不通过多数投票产生 GT；
-- TraceForge 核心不依赖 Harbor；Harbor/AGS 只能作为仓内独立可选集成接入稳定契约；
-- 真实数据、运行结果、模型缓存和参考仓库不进入本仓库；
-- `claw-eval` 不属于项目范围。
+- 回流提供生成约束，不提供 Ground Truth
+- READY 表示 Harbor 对初始 workspace 做出 RED
+- 不要发明源码、不要写解题、不要写目标测试
+- 真实数据、密钥、模型缓存不进入本仓库
 
-## 开发规范
-
-所有开发工作遵循 [AGENTS.md](AGENTS.md)。README 和设计文档不重复定义代码风格、测试纪律或 Git 规则。
-
-## 参考资源
-
-`refer_repo` 当前可见的旧 `seed2traj`、TRACE、ASTRA、AgentRx、EnvHarness、QC_postprocess、固定任务 artifact、相关论文与运行指南仅作为只读参考。项目采用选择性重写，不整体复制历史实现。此前讨论但当前快照缺失的 AgentHER、CSO 和 GameCraft-Bench 暂不作为实现依据。具体文件和处理边界见 [参考仓库处理逻辑](docs/reference-repositories.md)。
+开发规范只引用 [AGENTS.md](AGENTS.md)。

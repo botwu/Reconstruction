@@ -1,19 +1,10 @@
 # reconstruct run 阅读地图与清理清单
 
-以源码为准。活跑入口只有 `reconstruct run`，不是 `trajectory compile`，也不是已删除的 `reconstruct workflow` / `reconstruct prepare`。
+以源码为准。活跑入口只有 `reconstruct run`。轨迹编译 / lineage / query-turns / source-projection 已删除。
 
 READY 仍表示：Harbor 对**初始 workspace** 做出 RED（nop FAIL / oracle PASS / mutation FAIL）。没有 RED 不能把交付标成 READY。
 
-## 两套栈
-
-仓库里叠了两套东西。
-
-| 栈 | 入口 | 作用 | 现在怎么对待 |
-| --- | --- | --- | --- |
-| M1 轨迹编译 | `traceforge trajectory compile` | JSONL → EventLog / lineage / QueryTurn | 已正式验收。不是当前活跑入口，也不是死代码 |
-| 活跑重建 | `traceforge reconstruct run` | ELIGIBLE 行 → Intent → Completion → Sufficiency → Verifier → Harbor | 你要改的是这一套 |
-
-`reconstruct source` 只抽源、不调模型。`screening run` 产出 records，供 `reconstruct run --records` 使用。`failure-analysis`、`requery` 有 CLI，不是垃圾。
+`reconstruct source` 只抽源、不调模型。`screening run` 产出 records，供 `reconstruct run --records` 使用。
 
 ## 主链
 
@@ -65,7 +56,7 @@ flowchart LR
 **编排**
 
 - [`eligible_reconstruction.py`](../src/traceforge/reconstruction/eligible_reconstruction.py)：筛选回放 → Intent → `_task_result` 重算路由 → Completion → Sufficiency → Verifier。有回放文件就走 `TERMINAL_FILE` 且 `allow_completion=true`。`allow_file_verifier` 只看 Intent 是否给出了明确 FILE 义务；为假时直接 `NO_FILE_ACCEPTANCE`，Harbor 不会启动。`TREE_TOO_THIN` 已从当前路由去掉。
-- [`session_source.py`](../src/traceforge/reconstruction/session_source.py)：原始行 + 筛选记录 → `tool_timeline` / user texts。不调用 trajectory compile。
+- [`session_source.py`](../src/traceforge/reconstruction/session_source.py)：原始行 + 筛选记录 → `tool_timeline` / user texts。
 
 **环境（Stage1，无模型）**
 
@@ -94,7 +85,6 @@ flowchart LR
 
 - [`artifacts/eligible-live/L22-e2e-5/`](../artifacts/eligible-live/L22-e2e-5/)：当前代码最近一次完整活跑。Intent READY、三条全 NON_FILE；Completion `MODEL_DECISION_REVIEW`。
 - [`artifacts/eligible-live/L22-e2e-3/`](../artifacts/eligible-live/L22-e2e-3/)：旧规则下走到 Verifier 的对照。
-- [`artifacts/eligible-live/L22-e2e-4/`](../artifacts/eligible-live/L22-e2e-4/)：薄树对照，可忽略。
 
 `artifacts/` 已被 gitignore，不会进仓库。
 
@@ -125,9 +115,6 @@ PYTHONPATH=src python -m traceforge reconstruct run \
 - 模型通道：[model-gateway-config.md](model-gateway-config.md)
 - Harbor 计划适配：[harbor-ags-boundary-adapter.md](harbor-ags-boundary-adapter.md)
 - 失败分析复用：[failure-analysis-reuse.md](failure-analysis-reuse.md)
-- M1 背景与规格（不是活跑入口）：[background-and-goals.md](background-and-goals.md)、[overall-plan.md](overall-plan.md)、[r01-processing-spec.md](r01-processing-spec.md)、[m1c-processing-spec.md](m1c-processing-spec.md)、[m1d-processing-spec.md](m1d-processing-spec.md)、[m2-source-projection-spec.md](m2-source-projection-spec.md)、[reference-repositories.md](reference-repositories.md)、[implementation-sources.md](implementation-sources.md)
-
-已删除的是过时重建入口文档（`reconstruct workflow` / `prepare` / 过期交接 / 过期审计）。M1 正式规格与验收报告保留。以本文和源码为准读活跑。
 
 ## 清理清单
 
@@ -153,7 +140,7 @@ PYTHONPATH=src python -m traceforge reconstruct run \
 
 **勿当死代码删**
 
-- `trajectory/`、`lineage/`、`query_turns/`、`source_projection/`：M1 已验收层。
+- `trajectory/` 里剩下的 `json_codec` / `privacy` / `artifacts`：筛选、Harbor、重建源仍在用。
 - `failure_analysis/`、`requery/`、`screening/`：有 CLI。
 - [`reconstruction/sufficiency.py`](../src/traceforge/reconstruction/sufficiency.py) + [`tests/test_reconstruction_sufficiency.py`](../tests/test_reconstruction_sufficiency.py)：旧契约，活跑走 `workspace_sufficiency.py`，测试还在用。
 - [`control_plane.py`](../src/traceforge/reconstruction/control_plane.py)：未接到 `reconstruct run`，有单测；不要当无用直接拆。

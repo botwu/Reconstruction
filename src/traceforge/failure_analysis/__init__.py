@@ -1,4 +1,4 @@
-"""失败分析与 M1D 映射的公开契约。"""
+"""失败分析公开契约（AgentRx / 模型裁决 / 复核批次）。"""
 
 from .contracts import (
     EvidenceKind,

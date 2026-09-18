@@ -1,6 +1,6 @@
 # 重建筛选实施计划
 
-> **下一阶段入口已收敛。** 不要再走 `trajectory compile` → `reconstruct prepare` → `reconstruct workflow`。官方路径是 `screening run` → `reconstruct run`。
+> 官方路径是 `screening run` → `reconstruct run`。轨迹编译栈已删除。
 
 更新时间：2026-09-15
 状态：第二期已落地并冻结为 `reconstruction-screening-v9`。筛选不再调尺；下一阶段是把 ELIGIBLE 接到真正重建。
