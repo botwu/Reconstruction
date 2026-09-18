@@ -32,6 +32,12 @@ from traceforge.reconstruction.session_source import (
     timeline_has_file_ops,
     write_reconstruction_source,
 )
+from traceforge.reconstruction.stage_metrics import reconstruction_stage_metrics
+from traceforge.reconstruction.task_environment import (
+    TaskEnvironmentPairError,
+    build_task_environment_pair,
+    write_task_environment_pair,
+)
 from traceforge.reconstruction.terminal_universe_environment import select_sufficient_candidate
 from traceforge.reconstruction.verification import (
     VerificationConfig,
@@ -156,7 +162,38 @@ def _write_eligible_manifest(
     source: dict[str, Any],
     intent: dict[str, Any],
     results: list[dict[str, Any]],
+    prepared: dict[str, tuple[dict[str, Any], Any]],
 ) -> Path:
+    intent_by_id = {
+        str((item.get("task") or {}).get("task_id") or item.get("task_id")): item
+        for item in intent.get("tasks") or []
+    }
+    for result in results:
+        task_id = result["task_id"]
+        screening, replay = prepared[task_id]
+        try:
+            pair = build_task_environment_pair(
+                source_task=screening,
+                intent=intent_by_id.get(task_id, {"status": "NOT_RUN"}),
+                source=source,
+                replay=replay,
+                result=result,
+                root=root,
+            )
+            pair_path = write_task_environment_pair(root / "tasks" / task_id, pair)
+            result["task_environment_pair_path"] = str(pair_path)
+        except TaskEnvironmentPairError as exc:
+            # 契约不完整必须停止交付，不能只写旁路错误后继续导出训练样本。
+            result["status"] = "REVIEW"
+            result["errors"] = [*result.get("errors", []), "TASK_ENVIRONMENT_PAIR_INVALID"]
+            result["task_environment_pair_error"] = str(exc)
+            result.setdefault("stopped_at", "task_environment_pair")
+            if isinstance(result.get("verification"), dict):
+                result["verification"]["sft_eligible"] = False
+    metrics = reconstruction_stage_metrics(source, intent, results)
+    (root / "stage_metrics.json").write_text(
+        json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     statuses = [x.get("status") for x in results]
     if statuses and all(x == "READY" for x in statuses):
         status = "READY"
@@ -180,6 +217,7 @@ def _write_eligible_manifest(
         "task_count": len(results),
         "ready_count": sum(x == "READY" for x in statuses),
         "review_count": sum(x == "REVIEW" for x in statuses),
+        "stage_metrics": metrics,
     }
     if len(results) == 1:
         manifest.update(
@@ -482,10 +520,12 @@ def run_eligible_reconstruction(
         )
     routed: list[tuple[dict[str, Any], dict[str, Any], Any, dict[str, Any]]] = []
     early: dict[str, dict[str, Any]] = {}
+    prepared: dict[str, tuple[dict[str, Any], Any]] = {}
     for screening in screening_tasks:
         task_source, replay, support, _task_root = _replay_and_route(
             task=screening, root=root, source=source
         )
+        prepared[str(screening["task_id"])] = (screening, replay)
         if not support.get("allow_completion"):
             early[str(screening["task_id"])] = _support_route_result(
                 task=screening, support=support
@@ -504,7 +544,7 @@ def run_eligible_reconstruction(
             for task in screening_tasks
             if str(task["task_id"]) in early
         ]
-        manifest = _write_eligible_manifest(root, source, intent, results)
+        manifest = _write_eligible_manifest(root, source, intent, results, prepared)
         write_reconstruction_sft_curation(root, results)
         return manifest
     intent_source = copy.deepcopy(source)
@@ -512,15 +552,15 @@ def run_eligible_reconstruction(
     try:
         intent = run_intent_recovery(source=intent_source, agent=agent, output_root=root / "intent")
     except IntentRecoveryError as exc:
-        return _write_manifest(
-            root,
-            {
-                "schema_version": ELIGIBLE_RECONSTRUCTION_SCHEMA,
+        intent = {
+            "schema_version": INTENT_SCHEMA,
+            "status": "REVIEW",
+            "tasks": [{
+                "task_id": item[0]["task_id"],
                 "status": "REVIEW",
-                "stopped_at": "intent",
                 "errors": [str(exc)],
-            },
-        )
+            } for item in routed],
+        }
     intent_by_id = {
         str((item.get("task") or {}).get("task_id") or item.get("task_id")): item
         for item in intent.get("tasks") or []
@@ -531,7 +571,7 @@ def run_eligible_reconstruction(
         if task_id in early:
             results.append(early[task_id])
             continue
-        prepared = next((item for item in routed if str(item[0]["task_id"]) == task_id), None)
+        routed_task = next((item for item in routed if str(item[0]["task_id"]) == task_id), None)
         item = intent_by_id.get(task_id)
         if item is None or item.get("status") != "READY":
             results.append(
@@ -540,12 +580,12 @@ def run_eligible_reconstruction(
                     "status": "REVIEW",
                     "stopped_at": "intent",
                     "errors": list((item or {}).get("errors") or ["INTENT_REVIEW"]),
-                    "execution_support_route": prepared[3] if prepared else None,
+                    "execution_support_route": routed_task[3] if routed_task else None,
                 }
             )
             continue
-        assert prepared is not None
-        _screening, task_source, replay, support = prepared
+        assert routed_task is not None
+        _screening, task_source, replay, support = routed_task
         results.append(
             _task_result(
                 task=item["task"],
@@ -559,6 +599,6 @@ def run_eligible_reconstruction(
                 task_source=task_source,
             )
         )
-    manifest = _write_eligible_manifest(root, source, intent, results)
+    manifest = _write_eligible_manifest(root, source, intent, results, prepared)
     write_reconstruction_sft_curation(root, results)
     return manifest

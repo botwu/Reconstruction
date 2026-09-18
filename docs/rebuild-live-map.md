@@ -21,6 +21,11 @@ R01.jsonl + screening records.jsonl
   → Hermes rollout（--execute-rollout，只写 SFT，不改 READY）
 ```
 
+每次重建还会在 `tasks/<task_id>/task_environment_pair.json` 保存论文中的
+`q/E` 对：`q` 只投影已通过 Intent 的用户目标、验收义务和环境绑定，`E` 记录回放证据、部分文件、 withheld 变更、候选和验证状态。Intent 未恢复时只写 `unrecovered` 审计记录，不生成执行指令。根目录的 `stage_metrics.json` 汇总 Intent、Completion、Sufficiency、Verification、路由和停止原因，便于区分“未运行”“审计态”和“真正通过”。
+
+SFT 只从真实 rollout 的 `quality_gate`、trial、cleanup、轨迹和内容证据生成；缺少泄漏、可复现或奖励证据会进入 `REVIEW`，不会因为旧的 `sft_eligible` 标志而放行。
+
 ```mermaid
 flowchart LR
   jsonl[R01.jsonl]
@@ -63,7 +68,7 @@ flowchart LR
 - [`env_replay.py`](../src/traceforge/reconstruction/env_replay.py)：按路径回放。具名 dump、只读探测、`cl /Zs` 语法检查、真写屏障都在这里。
 - [`environment_bindings.py`](../src/traceforge/reconstruction/environment_bindings.py)：FILE / NON_FILE。`derive_binding`、`FILE_BINDING_PATHS`、listing 丢路径。NON_FILE 不得带 path。
 
-**四个角色（你要改的两处在这）**
+**各阶段实现与契约**
 
 - Intent：[`intent_recovery.py`](../src/traceforge/reconstruction/intent_recovery.py) + [`roles.py`](../src/traceforge/reconstruction/agents/roles.py) 的 `INTENT_ROLE`。看 `deepen_requires_file`、`_file_obligation_ready`、`FILE_OBLIGATION_REQUIRED`。义务证据只能是 `user:<message_index>`。
 - Completion：[`workspace_completion.py`](../src/traceforge/reconstruction/workspace_completion.py) 的 `complete_from_replayed` / `complete_from_default_empty`。
@@ -89,6 +94,8 @@ flowchart LR
 `artifacts/` 已被 gitignore，不会进仓库。
 
 ## 活跑命令
+
+下面只作为需要凭据和 AGS/E2B 的参考命令，不属于普通回归步骤：
 
 ```text
 export HERMES_HOME=/mnt/afs_toolcall/wujian1/Projects/tokenhub_data_model_eval/R01/hermes-agent

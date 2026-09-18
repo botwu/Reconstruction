@@ -117,6 +117,13 @@ def test_eligible_run_reaches_sufficient_workspace(tmp_path: Path) -> None:
     assert (tmp_path / "run/intent/tasks" / task_result["task_id"] / "intent.json").is_file()
     assert (task_root / "completion/completion.json").is_file()
     assert (task_root / "replay.json").is_file()
+    assert (task_root / "task_environment_pair.json").is_file()
+    pair = json.loads((task_root / "task_environment_pair.json").read_text(encoding="utf-8"))
+    assert pair["q"]["source_task_id"] == task_result["task_id"]
+    assert pair["environment"]["verification_status"] == "PENDING_EXECUTION"
+    stage_metrics = json.loads((tmp_path / "run/stage_metrics.json").read_text(encoding="utf-8"))
+    assert stage_metrics["completion_ready_count"] == 1
+    assert stage_metrics["verification_status_counts"]["PENDING_EXECUTION"] == 1
     assert (tmp_path / "run/reconstruction_manifest.json").is_file()
     assert task_result["stopped_at"] == "verification"
     assert task_result["execution_support_route"]["route"] == "TERMINAL_FILE"
@@ -138,6 +145,7 @@ def test_eligible_run_stops_when_intent_is_review(tmp_path: Path) -> None:
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     assert payload["status"] == "REVIEW"
     assert payload["tasks"][0]["stopped_at"] == "intent"
+    assert list((tmp_path / "run/tasks").glob("*/task_environment_pair.json"))
     assert not list((tmp_path / "run/tasks").glob("*/completion/completion.json"))
 
 
@@ -360,6 +368,11 @@ def test_eligible_non_file_task_stops_at_completion(tmp_path: Path) -> None:
     assert task_result["execution_support_route"]["env_origin"] == "NONE"
     assert task_result["env_origin"] == "NONE"
     assert (tmp_path / "run/intent/intent.json").is_file()
+    pair_paths = list((tmp_path / "run/tasks").glob("*/task_environment_pair.json"))
+    assert pair_paths
+    pair = json.loads(pair_paths[0].read_text(encoding="utf-8"))
+    assert pair["environment"]["origin"] == "NONE"
+    assert pair["environment"]["initial_workspace_ref"] is None
     assert not list((tmp_path / "run/tasks").glob("*/completion/completion.json"))
 
 
