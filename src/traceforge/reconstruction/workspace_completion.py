@@ -34,7 +34,7 @@ from traceforge.reconstruction.terminal_universe_environment import (
 from traceforge.reconstruction.tool_process_sketch import build_tool_process_sketch
 
 COMPLETION_SCHEMA = "traceforge.workspace-completion.v1"
-COMPLETION_PROMPT_VERSION = "workspace-completion-agent-v4-split-paths"
+COMPLETION_PROMPT_VERSION = "workspace-completion-agent-v5-pre-task-context"
 TASK_Q_EVIDENCE_ID = "task:q"
 ENV_REPLAYED = "REPLAYED"
 ENV_DEFAULT_EMPTY = "DEFAULT_EMPTY"
@@ -153,6 +153,10 @@ def _shared_footer(
         "NON_FILE bindings are context; do not invent verifier files for them.",
         "Optional web_search is for typical layout names only. Do not write web source",
         "into user paths. Do not implement the task, write target tests, or overwrite COMPLETE.",
+        "补全的是任务开始前的环境，不是用户要求新增的实现或测试。",
+        "已有测试文件属于上下文：保留观察到的原始测试；不得生成针对目标修复的新测试。",
+        "不得用全量 skip/pass/assert True 的测试骨架满足文件存在要求；无法恢复真实上下文时返回 REVIEW。",
+        "Listing-only 路径只是线索，不要求批量生成。优先补齐任务必要源码及依赖。",
         "Tools: list_dir, read_file, list_evidence, read_evidence, write_file, web_search.",
         "Paths must be workspace-relative (foo.py) or /home/user/workspace/foo.py.",
         "Never use a host absolute path.",

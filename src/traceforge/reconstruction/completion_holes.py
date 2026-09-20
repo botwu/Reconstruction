@@ -219,6 +219,16 @@ def _looks_like_placeholder_test(path: str, content: str) -> bool:
     ]
     if not functions:
         return False
+    def is_trivial_assert(stmt: ast.stmt) -> bool:
+        if not isinstance(stmt, ast.Assert):
+            return False
+        test = stmt.test
+        if isinstance(test, ast.Constant):
+            return True
+        if isinstance(test, ast.Compare) and isinstance(test.left, ast.Constant):
+            return all(isinstance(item, ast.Constant) for item in test.comparators)
+        return False
+
     def is_empty(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
         body = list(node.body)
         if body and isinstance(body[0], ast.Expr) and isinstance(
@@ -227,6 +237,7 @@ def _looks_like_placeholder_test(path: str, content: str) -> bool:
             body = body[1:]
         return all(
             isinstance(stmt, ast.Pass)
+            or is_trivial_assert(stmt)
             or (
                 isinstance(stmt, ast.Expr)
                 and isinstance(getattr(stmt, "value", None), ast.Call)

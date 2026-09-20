@@ -2,6 +2,10 @@
 
 TraceForge 从真实回流 session 重建可验证任务与环境，并在 Harbor 上做 RED 校准。
 
+当前优先目标是跑通一条真实 terminal 任务：原始轨迹 → 筛选 → 恢复任务和初始环境 → 环境补全与充分性检查 → 隐藏验证器 → RED 校准 → 解题 rollout 与验收。先完成单条闭环，再扩展批量；当前尚无真实 terminal 样本完成这条全链路。
+
+代码中的 `READY` 表示重建产物通过 RED 校准；完整端到端还需单独检查真实解题 rollout 和质量门禁。离线测试通过、命令退出码为 0、审计脚本的 `pipeline_ok=true` 都不能单独证明端到端成功。
+
 ## 开始之前
 
 1. [AGENTS.md](AGENTS.md)：唯一开发规范
@@ -10,26 +14,28 @@ TraceForge 从真实回流 session 重建可验证任务与环境，并在 Harbo
 ## 当前主链
 
 ```text
-原始 JSONL + screening records
+terminal 原始 JSONL + screening records
 → reconstruct run
 → Intent → Completion → Sufficiency → Verifier
 → Harbor RED（--execute-red）
+→ Hermes 解题复验（--execute-rollout）
 ```
 
 入口是 `reconstruct run`，不是轨迹编译。筛选用 `screening run`。
 
 ```bash
 PYTHONPATH=src python -m traceforge reconstruct run \
-    --input return_data/four_batch/by-rubric/R01.jsonl \
+    --input return_data/four_batch/by-rubric/R04.jsonl \
     --records <records.jsonl> \
-    --line-number 22 \
-    --output artifacts/eligible-live/L22 \
+    --line-number <筛选记录对应的原始行号> \
+    --output artifacts/terminal-live/<run-id> \
     --config config.yaml \
     --channel claude \
     --model-name claude-opus-4-6 \
     --hermes-home "$HERMES_HOME" \
     --sandbox \
-    --execute-red
+    --execute-red \
+    --execute-rollout
 ```
 
 ## 测试

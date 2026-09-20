@@ -508,6 +508,75 @@ _COMMAND_HEAD = re.compile(
 )
 _NODE_INVOCATION = re.compile(r"(?i)\bnode(?:\.exe)?\s+(\S+)")
 _GIT_SUBCOMMAND = re.compile(r"(?i)\bgit\s+([A-Za-z][A-Za-z0-9-]+)")
+_EXPORT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+_EXPORT_VALUE = re.compile(r"^(?:[A-Za-z0-9_./:+,@%=-]*|'[^'$]*'|\"[^\"$]*\")$")
+_SHELL_SUBSTITUTION_MARKERS = ("$(", chr(96), "<(")
+
+
+def _split_shell_separator(command: str) -> tuple[str, str] | None:
+    """Split the first unquoted shell separator, retaining the right side."""
+
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(command):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        if char in {";", "&", "|", "\n"}:
+            right = command[index + 1 :]
+            if char in {"&", "|"} and right.startswith(char):
+                right = right[1:]
+            return command[:index], right
+    return None
+
+
+def _strip_safe_export_prefixes(command: str) -> str | None:
+    """Remove only literal export NAME=value prefixes."""
+
+    text = (command or "").strip()
+    while text.lower().startswith("export") and (
+        len(text) == 6 or text[6].isspace()
+    ):
+        rest = text[6:].lstrip()
+        split = _split_shell_separator(rest)
+        if split is None:
+            try:
+                assignments = shlex.split(rest, posix=True)
+            except ValueError:
+                return None
+            if not assignments or any(
+                not _EXPORT_NAME.match(token)
+                or any(marker in token for marker in _SHELL_SUBSTITUTION_MARKERS)
+                or not _EXPORT_VALUE.fullmatch(token.split("=", 1)[1])
+                for token in assignments
+            ):
+                return None
+            return ""
+        assignment_blob, remainder = split
+        try:
+            assignments = shlex.split(assignment_blob.strip(), posix=True)
+        except ValueError:
+            return None
+        if not assignments or any(
+            not _EXPORT_NAME.match(token)
+            or any(marker in token for marker in _SHELL_SUBSTITUTION_MARKERS)
+            or not _EXPORT_VALUE.fullmatch(token.split("=", 1)[1])
+            for token in assignments
+        ):
+            return None
+        text = remainder.lstrip()
+    return text
+
 
 
 def _has_write_signal(command: str) -> bool:
@@ -542,8 +611,15 @@ def _unknown_looks_like_mutation(command: str) -> bool:
     """只有可识别的只读命令免于屏障；任意脚本不能靠缺少写关键词获信任。"""
 
     text = command or ""
-    if not text.strip():
+    normalized = _strip_safe_export_prefixes(text)
+    if normalized is None:
+        return True
+    if not normalized:
         return False
+    # Keep substitutions inside quotes untrusted; they can still execute.
+    if any(marker in text for marker in _SHELL_SUBSTITUTION_MARKERS):
+        return True
+    text = normalized
     if _has_write_signal(text):
         return True
     if _is_msvc_syntax_check(text):
@@ -633,6 +709,12 @@ def _classify_command(
     result_text: Any,
     workdir: str | None,
 ) -> list[dict[str, Any]]:
+    normalized = _strip_safe_export_prefixes(command)
+    if normalized is None:
+        return _unknown_exec_op(event_id, [command], workdir)
+    if not normalized:
+        return []
+    command = normalized
     redirect = _redirect_target(command, workdir)
     if redirect:
         return [

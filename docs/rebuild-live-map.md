@@ -6,10 +6,20 @@ READY 仍表示：Harbor 对**初始 workspace** 做出 RED（nop FAIL / oracle 
 
 `reconstruct source` 只抽源、不调模型。`screening run` 产出 records，供 `reconstruct run --records` 使用。
 
+## 当前目标与完成标准
+
+优先从真实 terminal 的文件任务跑通单条闭环，再扩大候选数量。第一条样本应有明确文件或命令行为验收、可恢复的初始上下文和可安装依赖；不围绕只读报告样本先扩展聊天输出协议。
+
+- 环境重建通过：恢复用户目标 `q`，得到足以解题但尚未解题的环境 `E`。
+- 重建认证通过：隐藏验证器实际运行；初始环境缺失能力测试失败、保护性测试通过，Harbor NOP / oracle / mutation 校准通过，manifest 为 `READY`。
+- 完整端到端通过：真实 Hermes 在该环境解题，至少两次 rollout 满足已有验证和质量门禁，保留轨迹、verdict、reward 与 cleanup 证据。仅 `READY` 不证明解题复验成功。
+
+论文 §3.1 对应 replay / completion / sufficiency。论文附录 D 的验证器要求包括初始环境 RED；项目额外加入 Harbor oracle / mutation 校准及两次解题复验。论文原始 Intent Recovery 实验未采用 agentic verifier 过滤，不能把项目这些额外要求全部说成论文原文要求。
+
 ## 主链
 
 ```text
-R01.jsonl + screening records.jsonl
+terminal JSONL + screening records.jsonl
   → session_source（reconstruction_source）
   → env_replay（Stage1，无模型，按路径回放 bE0）
   → Intent（q + environment_bindings）
@@ -28,7 +38,7 @@ SFT 只从真实 rollout 的 `quality_gate`、trial、cleanup、轨迹和内容�
 
 ```mermaid
 flowchart LR
-  jsonl[R01.jsonl]
+  jsonl[terminal JSONL]
   records[screening records]
   source[session_source]
   replay[env_replay]
@@ -85,8 +95,22 @@ flowchart LR
 4. 全 NON_FILE 时 allow_file_verifier=false，管线可完成 Completion/Sufficiency，但在文件 Verifier 前以 NO_FILE_ACCEPTANCE 保持 REVIEW；这属于输出型验收尚未接入独立回执协议。
 5. terminal selector 只产出 CANDIDATE_ONLY。当前本地 R04/R05 是截断采样（R04 297/6535、R05 336/1694 物理行，sha 不匹配），不能宣称覆盖上游全量；模型证据超过预算时 fail-closed，不删除中间事件。
 6. 活跑可用 `TRACEFORGE_MODEL_TIMEOUT_SECONDS` 限制单次模型窗口，`TRACEFORGE_AGENT_MAX_ITERATIONS` 限制单个 Hermes 角色的总轮数；默认不改变角色预算，异常复跑建议显式设置，避免外部模型无响应拖到总进程超时。
-7. NON_FILE 的聊天输出验收使用 Harbor control-plane 的 `traceforge.response-receipt.v1`：receipt 绑定完整 `trajectory.full.json`、最终 assistant 消息索引/哈希和末尾 `acceptance-report` JSON；报告不能镜像到 public workspace。
+7. `traceforge.response-receipt.v1` 当前只是独立解析与哈希校验模块，有单元测试；尚未被 `harbor_ags/results.py`、rollout 或主编排调用。它只覆盖特定 acceptance-report 输出格式，不是通用 NON_FILE 验收器，也不证明报告内容正确。它不构成当前 terminal FILE 主链的完成条件。
 8. 不要发明源码、不要写解题、不要写目标测试。Intent 只引用用户原文。web_search 只给 Completion，且不得把检索到的源码写进用户路径。
+
+## 当前验证证据（2026-09-20，terminal 真实活跑与当前提交）
+
+| 证据 | 已确认 | 不能据此确认 |
+| --- | --- | --- |
+| 离线回归 | 510 passed、5 skipped、5 warnings | 真实模型或 Harbor 全链路成功 |
+| 真实 R04 L3 v10（GPT） | source/replay 恢复 15 个文件；Completion READY | Sufficiency 为 REVIEW/INSUFFICIENT（大量源码仍是 partial），未进入 Verifier/RED/rollout |
+| 真实 R04 L4959（GPT） | source/replay 恢复 2 个文件；Intent READY；sandbox 初始化成功 | Completion 为 REVIEW（依赖上下文不足，停止在 completion），未进入 Sufficiency/Verifier/RED/rollout |
+| 真实 R04 L41 历史活跑 | Intent / Completion / Sufficiency READY | Verifier 为 REVIEW，RED 未闭合 |
+| terminal 合成 fixture | 主编排可到 verifier bundle / PENDING_EXECUTION | 使用模型替身和本地执行器，非真实 terminal 交付 |
+
+项目内 R04/R05 副本仍被截断；distribution.json 指向的完整上游文件可读且哈希一致。可直接对完整上游做只读筛选，不必先覆盖本地副本。全量候选索引为 7,586 条（R04 6,069、R05 1,517），这里只证明存在 terminal 工具调用，仍需模型筛选。
+
+`scripts/check_reconstruct_e2e.py` 是已有产物的外部审计脚本，不是执行入口；当前版本会严格检查 source、Intent、Completion、Sufficiency、Verifier、RED、secret hygiene 和 Harbor rollout schema。两条本轮真实 terminal 产物的审计结果均为 `pipeline_ok=false`，这是证据不足时的安全失败。主编排是 `eligible_reconstruction.py`，独立的 `control_plane.py` 未接入。
 
 ## 对照产物（只读）
 

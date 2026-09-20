@@ -1258,6 +1258,7 @@ def test_l22_replay_plants_observed_bodies_not_listing_names() -> None:
     assert hole_kinds.get("RobloxDLL.cpp") in {None, "STUB"}
 
 
+
 @pytest.mark.parametrize("command", [
     "cp template.py answer.py",
     "mv template.py answer.py",
@@ -1271,4 +1272,4 @@ def test_mutation_then_read_never_becomes_initial_file(command):
         {"call_id": "read", "name": "exec", "arguments": {"cmd": "cat answer.py"}, "result_text": "SOLUTION"},
     ])
     assert replay.files == ()
-    assert any(item.get("reason") in {"read_after_unparsed_mutation", "read_after_first_mutation"} for item in replay.partial_evidence)
+    assert any(item.get("reason") in {"unparsed_mutation_scope", "read_after_unparsed_mutation", "read_after_first_mutation"} for item in replay.partial_evidence)

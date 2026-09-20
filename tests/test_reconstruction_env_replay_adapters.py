@@ -97,3 +97,54 @@ def test_numbered_power_shell_reset_cannot_be_cleaned_into_trusted_file() -> Non
         }, "result_text": "1: a\n2: b\n3: c\n1: x\n2: y\n3: z\n"},
     ])
     assert replay.files == ()
+
+
+def test_literal_export_prefix_keeps_readonly_git_status_trusted() -> None:
+    replay = replay_from_timeline([
+        {
+            "call_id": "status",
+            "name": "bash",
+            "arguments": {
+                "command": (
+                    "export CI=true DEBIAN_FRONTEND=noninteractive "
+                    "GIT_TERMINAL_PROMPT=0 VISUAL=''; git status --short"
+                )
+            },
+            "result_text": "",
+        },
+        {
+            "call_id": "read",
+            "name": "read_file",
+            "arguments": {"filePath": "main.py"},
+            "result_text": "print(1)\n",
+        },
+    ])
+    assert [item.path for item in replay.files] == ["main.py"]
+    assert not any(
+        item.get("reason") in {"read_after_unparsed_mutation", "read_after_first_mutation"}
+        for item in replay.partial_evidence
+    )
+
+
+def test_quoted_export_command_substitution_remains_a_mutation_barrier() -> None:
+    replay = replay_from_timeline([
+        {
+            "call_id": "status",
+            "name": "bash",
+            "arguments": {
+                "command": "export CI='$(touch generated.py)'; git status --short"
+            },
+            "result_text": "",
+        },
+        {
+            "call_id": "read",
+            "name": "read_file",
+            "arguments": {"filePath": "main.py"},
+            "result_text": "print(1)\n",
+        },
+    ])
+    assert replay.files == ()
+    assert any(
+        item.get("reason") in {"read_after_unparsed_mutation", "read_after_first_mutation"}
+        for item in replay.partial_evidence
+    )

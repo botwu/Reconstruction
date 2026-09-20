@@ -142,8 +142,10 @@ def _check_source(root: Path, task_id: str, task: dict[str, Any]) -> dict[str, A
         errors.append("WORKSPACE_MISSING")
     if support.get("route") != "TERMINAL_FILE":
         errors.append(f"ROUTE_{support.get('route') or 'MISSING'}")
-    if len(files) < 5:
-        errors.append(f"REPLAY_FILE_COUNT_{len(files)}")
+    # Terminal tasks may expose a single source file; requiring the old five-file
+    # fixture made valid terminal sessions fail before reconstruction was checked.
+    if not files:
+        errors.append("REPLAY_FILE_COUNT_0")
     return _stage(
         "source",
         ok=not errors,
@@ -190,6 +192,13 @@ def _check_intent(root: Path, task_id: str, manifest: dict[str, Any]) -> dict[st
     if not instruction.strip():
         problems.append("EMPTY_INSTRUCTION")
         kind = "logic" if kind == "ok" else kind
+    if intent.get("status") == "READY" or task_intent.get("status") == "READY":
+        if errors:
+            problems.append("INTENT_ERRORS_ON_READY")
+            kind = "logic"
+        if agent.get("completed") is not True:
+            problems.append("INTENT_AGENT_INCOMPLETE")
+            kind = "logic"
     if any(not USER_ID.match(ref) for ref in refs):
         problems.append("EVIDENCE_ID_NOT_USER")
         kind = "logic"
@@ -231,7 +240,15 @@ def _candidate_provenance(candidate: dict[str, Any]) -> list[str]:
 def _check_completion(root: Path, task_id: str, task: dict[str, Any]) -> dict[str, Any]:
     path = root / "tasks" / task_id / "completion" / "completion.json"
     completion = _load(path) or (task.get("completion") if isinstance(task.get("completion"), dict) else {})
-    errors = [str(x) for x in (completion.get("errors") or task.get("errors") or [])]
+    # Once a completion artifact exists, its errors are authoritative. Falling
+    # back to task-level errors here mixed an earlier intent failure into a later
+    # completion result and made the report claim a stage failed for the wrong
+    # reason.
+    if path.is_file() or isinstance(task.get("completion"), dict):
+        completion_errors = completion.get("errors")
+        errors = [str(x) for x in (completion_errors if isinstance(completion_errors, list) else [])]
+    else:
+        errors = [str(x) for x in (task.get("errors") or [])]
     agent = completion.get("agent") if isinstance(completion.get("agent"), dict) else {}
     problems: list[str] = []
     kind = "ok"
@@ -249,6 +266,16 @@ def _check_completion(root: Path, task_id: str, task: dict[str, Any]) -> dict[st
     if any(item == "CONTAINER_REQUIRED" for item in errors):
         problems.append("CONTAINER_REQUIRED")
         kind = "logic"
+    if completion.get("status") == "READY":
+        if errors:
+            problems.append("COMPLETION_ERRORS_ON_READY")
+            kind = "logic"
+        if agent.get("completed") is not True:
+            problems.append("COMPLETION_AGENT_INCOMPLETE")
+            kind = "logic"
+        if agent.get("skipped") is not False:
+            problems.append("COMPLETION_SKIPPED_ON_READY")
+            kind = "logic"
     if any(str(item).startswith("SANDBOX_INIT") for item in errors):
         problems.append("SANDBOX_INIT")
         kind = "infra"
@@ -260,7 +287,7 @@ def _check_completion(root: Path, task_id: str, task: dict[str, Any]) -> dict[st
     if bad_prov:
         problems.append("BAD_PROVENANCE")
         kind = "logic"
-    ran = path.is_file() and "SANDBOX_INIT" not in problems and "CONTAINER_REQUIRED" not in problems
+    ran = path.is_file() and completion.get("status") == "READY" and not errors and "SANDBOX_INIT" not in problems and "CONTAINER_REQUIRED" not in problems
     if completion.get("status") != "READY" and ran:
         if kind == "ok":
             kind = "content"
@@ -268,7 +295,7 @@ def _check_completion(root: Path, task_id: str, task: dict[str, Any]) -> dict[st
             problems.append("COMPLETION_NOT_READY")
     return _stage(
         "completion",
-        ok=ran and "SANDBOX_INIT" not in problems and "CONTAINER_REQUIRED" not in problems,
+        ok=ran and not errors and "SANDBOX_INIT" not in problems and "CONTAINER_REQUIRED" not in problems,
         kind=kind if problems else "ok",
         detail=";" .join(problems + [item for item in errors if item not in problems]) or "completion ran in sandbox",
         extra={
@@ -283,16 +310,29 @@ def _check_completion(root: Path, task_id: str, task: dict[str, Any]) -> dict[st
     )
 
 
-def _check_sufficiency(root: Path, task_id: str, task: dict[str, Any], completion_ok: bool, completion_ready: bool) -> dict[str, Any]:
+def _check_sufficiency(
+    root: Path,
+    task_id: str,
+    task: dict[str, Any],
+    completion_ok: bool,
+    completion_ready: bool,
+) -> dict[str, Any]:
     sufficiency_root = root / "tasks" / task_id / "sufficiency"
-    present = sufficiency_root.is_dir() and any(sufficiency_root.glob("*/sufficiency.json"))
+    selected_index = task.get("selected_index")
+    selected_path = (
+        sufficiency_root / f"{int(selected_index):03d}" / "sufficiency.json"
+        if isinstance(selected_index, int) and selected_index >= 0
+        else None
+    )
+    paths = [selected_path] if selected_path is not None and selected_path.is_file() else []
+    present = bool(paths)
     if not completion_ready:
         return _stage(
             "sufficiency",
             ok=True,
             kind="ok",
             detail="skipped; completion not READY",
-            extra={"present": present},
+            extra={"present": present, "status": "NOT_RUN"},
         )
     if not present:
         return _stage(
@@ -300,30 +340,51 @@ def _check_sufficiency(root: Path, task_id: str, task: dict[str, Any], completio
             ok=False,
             kind="logic" if completion_ok else "infra",
             detail="SUFFICIENCY_MISSING_AFTER_COMPLETION_READY",
+            extra={"status": "MISSING"},
         )
     judges = []
     for path in sorted(sufficiency_root.glob("*/sufficiency.json")):
         payload = _load(path)
+        judge_errors = payload.get("errors")
         judges.append(
             {
-                "label": payload.get("label") or payload.get("decision"),
-                "errors": payload.get("errors") or [],
+                "status": payload.get("status"),
+                "label": payload.get("label"),
+                "decision": payload.get("decision"),
+                "errors": judge_errors if isinstance(judge_errors, list) else [],
             }
         )
-        if any(str(item).startswith("SANDBOX_INIT") for item in (payload.get("errors") or [])):
+        if any(str(item).startswith("SANDBOX_INIT") for item in (judge_errors or [])):
             return _stage(
                 "sufficiency",
                 ok=False,
                 kind="infra",
                 detail="SANDBOX_INIT",
-                extra={"judges": judges},
+                extra={"judges": judges, "status": "REVIEW"},
+            )
+        if (
+            payload.get("status") != "READY"
+            or payload.get("label") != "SUFFICIENT"
+            or payload.get("decision") != "READY"
+            or judge_errors != []
+        ):
+            return _stage(
+                "sufficiency",
+                ok=False,
+                kind="logic",
+                detail="SUFFICIENCY_NOT_READY",
+                extra={"judges": judges, "status": payload.get("status")},
             )
     return _stage(
         "sufficiency",
         ok=True,
         kind="ok",
         detail="sufficiency ran",
-        extra={"judges": judges, "audit": (task.get("sufficiency_audit") or {}).get("status")},
+        extra={
+            "judges": judges,
+            "audit": (task.get("sufficiency_audit") or {}).get("status"),
+            "status": "READY",
+        },
     )
 
 
@@ -379,33 +440,109 @@ def _check_verifier(root: Path, task_id: str, task: dict[str, Any], intent_refs:
     )
 
 
+
+
+def _red_evidence(verification: dict[str, Any]) -> tuple[bool, str]:
+    """校验真实 RED calibration attempt，而不是相信单独的 status 字段。"""
+
+    calibration_runs = verification.get("calibration_runs")
+    if not isinstance(calibration_runs, list):
+        return False, "RED_EVIDENCE_MISSING"
+
+    def valid_run(
+        run: Any,
+        *,
+        expected_status: str,
+        expected_reward: float,
+        test_hash: str,
+    ) -> bool:
+        if not isinstance(run, dict) or run.get("verifier_test_sha256") != test_hash:
+            return False
+        results = run.get("results")
+        if not isinstance(results, dict):
+            return False
+        if results.get("schema_version") != "traceforge.harbor-ags-rollout-results.v1":
+            return False
+        quality = results.get("quality_gate")
+        if not isinstance(quality, dict) or quality.get("ok") is not True:
+            return False
+        trials = results.get("trials")
+        if not isinstance(trials, list) or not trials:
+            return False
+        return all(
+            isinstance(trial, dict)
+            and trial.get("status") == expected_status
+            and trial.get("reward") == expected_reward
+            for trial in trials
+        )
+
+    for attempt in calibration_runs:
+        if not isinstance(attempt, dict) or attempt.get("status") != "PASS":
+            continue
+        initial = attempt.get("initial_red")
+        if (
+            not isinstance(initial, dict)
+            or initial.get("passed") is not True
+            or initial.get("errors") != []
+            or not isinstance(initial.get("verdict_count"), int)
+            or initial.get("verdict_count") <= 0
+            or attempt.get("failed_cases") != []
+            or not isinstance(attempt.get("verifier_test_sha256"), str)
+            or not attempt.get("verifier_test_sha256")
+        ):
+            continue
+        test_hash = attempt["verifier_test_sha256"]
+        runs = attempt.get("runs")
+        if not isinstance(runs, dict):
+            continue
+        nop = [value for key, value in runs.items() if str(key).endswith("-nop")]
+        oracle = [value for key, value in runs.items() if "-oracle-" in str(key)]
+        mutation = [value for key, value in runs.items() if "-mutation-" in str(key)]
+        if (
+            len(nop) >= 1
+            and len(oracle) >= 1
+            and len(mutation) >= 1
+            and all(valid_run(value, expected_status="FAIL", expected_reward=0.0, test_hash=test_hash) for value in nop)
+            and all(valid_run(value, expected_status="PASS", expected_reward=1.0, test_hash=test_hash) for value in oracle)
+            and all(valid_run(value, expected_status="FAIL", expected_reward=0.0, test_hash=test_hash) for value in mutation)
+        ):
+            return True, "calibration_runs"
+    return False, "RED_EVIDENCE_MISSING"
+
+
 def _check_red(manifest: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
     verification = task.get("verification") if isinstance(task.get("verification"), dict) else {}
-    red = verification.get("red") or verification.get("calibration") or {}
-    executed = bool(red) or verification.get("status") == "READY"
+    executed, evidence_source = _red_evidence(verification)
     if manifest.get("status") == "READY":
         if not executed:
             return _stage(
                 "red",
                 ok=False,
                 kind="logic",
-                detail="READY_WITHOUT_RED",
+                detail="RED_EVIDENCE_MISSING",
+                extra={"status": verification.get("status"), "evidence_source": evidence_source},
             )
-        return _stage("red", ok=True, kind="ok", detail="READY after RED", extra={"status": "READY"})
+        return _stage(
+            "red",
+            ok=True,
+            kind="ok",
+            detail="READY after RED",
+            extra={"status": "READY", "evidence_source": evidence_source},
+        )
     if not executed:
         return _stage(
             "red",
             ok=True,
             kind="ok",
             detail="RED not executed; READY forbidden",
-            extra={"manifest_status": manifest.get("status")},
+            extra={"manifest_status": manifest.get("status"), "evidence_source": evidence_source},
         )
     return _stage(
         "red",
         ok=verification.get("status") == "READY",
         kind="content" if verification.get("status") != "READY" else "ok",
         detail=str(verification.get("status") or "RED_REVIEW"),
-        extra={"status": verification.get("status")},
+        extra={"status": verification.get("status"), "evidence_source": evidence_source},
     )
 
 
@@ -423,6 +560,84 @@ def _mixed_errors(task: dict[str, Any], intent_errors: list[str], completion_err
     )
 
 
+
+def _check_rollout(root: Path, task: dict[str, Any] | None = None) -> dict[str, Any]:
+    """校验 Harbor rollout 聚合结果，支持 task verification 内嵌或 root 文件。"""
+
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    if isinstance(task, dict):
+        verification = task.get("verification")
+        nested = verification.get("rollout") if isinstance(verification, dict) else None
+        payload = nested.get("results") if isinstance(nested, dict) else None
+        if isinstance(payload, dict):
+            candidates.append(("task_verification", payload))
+        elif isinstance(nested, dict) and isinstance(nested.get("trials"), list):
+            candidates.append(("task_verification", nested))
+    paths = [
+        root / "ags_trial" / "results.json",
+        root / "rollout" / "results.json",
+        root / "rollout-results.json",
+        root / "ags_trial" / "rollout-results.json",
+    ]
+    paths.extend(
+        path
+        for path in sorted(root.rglob("results.json"))
+        if path not in paths and "_control" not in path.parts
+    )
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and isinstance(payload.get("trials"), list):
+            candidates.append((str(path), payload))
+    for source, payload in candidates:
+        if payload.get("schema_version") != "traceforge.harbor-ags-rollout-results.v1":
+            continue
+        trials = payload.get("trials")
+        quality = payload.get("quality_gate")
+        if not isinstance(trials, list) or not isinstance(quality, dict):
+            continue
+        if quality.get("ok") is not True:
+            continue
+        trial_count = payload.get("trial_count")
+        if isinstance(trial_count, int) and trial_count != len(trials):
+            continue
+        cleanup = payload.get("cleanup")
+        if isinstance(cleanup, dict) and cleanup.get("ok") is not True:
+            continue
+        successes = [
+            item
+            for item in trials
+            if isinstance(item, dict)
+            and item.get("status") == "PASS"
+            and item.get("reward") == 1.0
+        ]
+        if len(successes) < 2:
+            continue
+        return _stage(
+            "rollout",
+            ok=True,
+            kind="ok",
+            detail="rollout quality evidence ok",
+            extra={
+                "source": source,
+                "trial_count": len(trials),
+                "success_count": len(successes),
+                "quality_gate": True,
+            },
+        )
+    return _stage(
+        "rollout",
+        ok=False,
+        kind="logic",
+        detail="ROLLOUT_RESULTS_MISSING_OR_INVALID",
+        extra={"success_count": 0, "quality_gate": False},
+    )
+
+
 def grade(root: Path, *, config: Path | None, channel: str, expected_task_id: str | None) -> dict[str, Any]:
     manifest = _load(root / "reconstruction_manifest.json")
     task = _task_row(manifest)
@@ -433,6 +648,7 @@ def grade(root: Path, *, config: Path | None, channel: str, expected_task_id: st
             "root": str(root),
             "pipeline_ok": False,
             "delivery_ready": False,
+            "end_to_end_ready": False,
             "stages": [_stage("manifest", ok=False, kind="logic", detail="MANIFEST_MISSING")],
         }
         return report
@@ -459,9 +675,22 @@ def grade(root: Path, *, config: Path | None, channel: str, expected_task_id: st
         detail="SECRET_LEAK" if secrets else "no secrets in artifacts",
         extra={"leaks": secrets},
     )
-    stages = [source, intent, completion, sufficiency, verifier, red, hygiene, secret_stage]
-    pipeline_ok = bool(intent["ok"] and completion["ok"])
-    delivery_ready = manifest.get("status") == "READY" and bool(red["ok"]) and "READY_WITHOUT_RED" not in str(red.get("detail"))
+    rollout = _check_rollout(root, task)
+    stages = [source, intent, completion, sufficiency, verifier, red, hygiene, secret_stage, rollout]
+    core_stages = [source, intent, completion, sufficiency, verifier, red, hygiene, secret_stage]
+    related_ready = (
+        intent.get("status") == "READY"
+        and completion.get("status") == "READY"
+        and sufficiency.get("status") == "READY"
+        and verifier.get("status") == "READY"
+    )
+    pipeline_ok = bool(
+        manifest.get("status") == "READY"
+        and related_ready
+        and all(stage["ok"] for stage in core_stages)
+    )
+    delivery_ready = bool(pipeline_ok and red["ok"])
+    end_to_end_ready = bool(delivery_ready and rollout["ok"])
     return {
         "root": str(root),
         "task_id": task_id,
@@ -469,6 +698,7 @@ def grade(root: Path, *, config: Path | None, channel: str, expected_task_id: st
         "stopped_at": task.get("stopped_at") or manifest.get("stopped_at"),
         "pipeline_ok": pipeline_ok,
         "delivery_ready": delivery_ready,
+        "end_to_end_ready": end_to_end_ready,
         "stages": stages,
     }
 
@@ -491,7 +721,7 @@ def main() -> int:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(dest)
-    print(json.dumps({k: report[k] for k in ("pipeline_ok", "delivery_ready", "manifest_status", "stopped_at")}, ensure_ascii=False))
+    print(json.dumps({k: report[k] for k in ("pipeline_ok", "delivery_ready", "end_to_end_ready", "manifest_status", "stopped_at")}, ensure_ascii=False))
     return 0 if report["pipeline_ok"] else 1
 
 

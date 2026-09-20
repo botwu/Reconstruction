@@ -951,3 +951,23 @@ def test_completion_hides_post_mutation_events_from_prompt_and_session(tmp_path:
     assert refs == {"safe-read"}
     assert "SOLUTION_AFTER_MUTATION" not in runtime.instruction
     assert "secret.py" not in runtime.instruction
+
+
+@pytest.mark.parametrize("body, rejected", [
+    ("assert True", True),
+    ("assert parse_frame(b'bad') == 'malformed'", False),
+])
+def test_skipped_constant_assert_is_not_a_real_test_body(body: str, rejected: bool) -> None:
+    content = (
+        "import pytest\n"
+        "@pytest.mark.skip(reason='pending implementation')\n"
+        "def test_bounds():\n"
+        f"    {body}\n"
+    )
+    error = listing_stub_error(
+        "test/test_flowprobe.py",
+        content,
+        listing_names=set(),
+        required_paths=["test/test_flowprobe.py"],
+    )
+    assert (error == "BINDING_PATH_TEST_SKELETON:test/test_flowprobe.py") is rejected
