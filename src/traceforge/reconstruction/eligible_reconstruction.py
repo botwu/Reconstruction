@@ -65,10 +65,11 @@ def _domain_route(task: dict[str, Any], source: dict[str, Any]) -> str:
             continue
         route = obj.get("domain_route")
         if isinstance(route, str) and route.strip():
-            return route.strip()
+            normalized = route.strip()
+            return "terminal" if normalized in {"code_file", "terminal"} else normalized
     record_route = str(source.get("route") or "")
     if record_route == "ELIGIBLE_CODE_FILE":
-        return "code_file"
+        return "terminal"
     if "RETRIEVAL" in record_route.upper():
         return "retrieval"
     return ""

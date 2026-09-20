@@ -19,6 +19,7 @@ from .contracts import (
     TRIAGE_RESPONSE_SCHEMA,
     DomainRoute,
 )
+from .observable import compact_observable_evidence
 from .rubric import admit_after_tasks, coerce_rubric, empty_rubric
 from .task_labels import normalize_task_labels
 
@@ -50,7 +51,7 @@ def _prompt(evidence: dict[str, Any]) -> str:
             '      "is_actionable": true,',
             '      "outcome": "SUCCESS|FAILURE|INCOMPLETE|UNCERTAIN",',
             '      "needs_reconstruction": true|false|null,',
-            '      "domain_route": "code_file|retrieval|other",',
+            '      "domain_route": "terminal|code_file|retrieval|other",',
             f'      "rubric": {{{keys}}},',
             '      "reason": "简短中文依据",',
             '      "evidence_refs": {"message_indices": [1], "span_ids": ["span_..."]}',
@@ -68,8 +69,11 @@ def _prompt(evidence: dict[str, Any]) -> str:
             "轨迹截断或不合理。有回复但对不准任务，也算完成不好，不要标 SUCCESS。",
             "R2=0 只给任务已经做好、过程正常结束。",
             "domain_route 是辅助标签，不决定能不能入选。对着真实工具和参数认：",
-            "有工作区工具（read/write/edit/glob/grep，或 exec/bash 在读改文件、跑本地命令）→ code_file；",
+            "有终端/工作区工具（read/write/edit/glob/grep，或 exec/bash 读改文件、跑本地命令）→",
+            "terminal；",
+            "code_file 仅兼容旧记录；",
             "主要是检索（web_search/url_fetch/chat_history_get）→ retrieval；",
+            "该域不属于本 terminal 重建管线；",
             "有效任务但没有本该有的工具 → 仍要重建，domain 按用户要的事标，",
             "不要因为没工具就标 other 并丢掉。wait 只是配对。",
             "闲聊、不是任务的寒暄才是 other。同一 capture 里按 task 分开标。",
@@ -181,15 +185,16 @@ def judge_reconstructability(
             "model": model_name,
         },
     )
-    request = ModelRequest(
-        request_id,
-        model_name,
-        "在整条轨迹中找出值得重建的失败任务。证据不足必须 UNCERTAIN。只返回 JSON。",
-        _prompt(evidence),
-        TRIAGE_RESPONSE_SCHEMA,
-        max_tokens=2048,
-    )
     try:
+        model_evidence = compact_observable_evidence(evidence)
+        request = ModelRequest(
+            request_id,
+            model_name,
+            "在整条轨迹中找出值得重建的失败任务。证据不足必须 UNCERTAIN。只返回 JSON。",
+            _prompt(model_evidence),
+            TRIAGE_RESPONSE_SCHEMA,
+            max_tokens=2048,
+        )
         response = model.complete(request)
         payload = parse_json_object(response.text)
         receipt = receipt_for_response(response)

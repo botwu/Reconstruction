@@ -36,6 +36,9 @@ _STUB_MARKERS = ("body unobserved", "observed name", "unobserved body")
 
 def normalize_binding_path(raw: str) -> str | None:
     text = str(raw or "").replace("\\", "/").strip()
+    # Models often copy a path from a prose list with a trailing semicolon or
+    # comma. Remove only punctuation outside the path; keep filename dots.
+    text = text.rstrip(";,")
     if not text:
         return None
     directory = text.endswith("/")

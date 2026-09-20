@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 DEFAULT_MAX_INPUT_CHARS = 120_000
+DEFAULT_MAX_MODEL_INPUT_CHARS = 48_000
 _PRIVATE_REASONING_FIELDS = frozenset(
     {"reasoning", "reasoning_content", "thinking", "thinking_content"}
 )
@@ -231,6 +232,154 @@ def _serialize_evidence(
         "features": _features_block(features),
     }
 
+
+
+def compact_observable_evidence(
+    evidence: dict[str, Any], *, max_chars: int = DEFAULT_MAX_MODEL_INPUT_CHARS
+) -> dict[str, Any]:
+    """为 triage 模型压缩超长轨迹，同时保留原始证据对象不变。
+
+    轨迹 artifact 仍保存完整可观察消息；模型输入只对 tool/assistant 大字段做
+    有界截断，并保留所有 user 消息与 span 元数据，避免长终端输出触发网关
+    HTTP 400 或挤掉任务锚点。
+    """
+
+    payload = json.loads(json.dumps(evidence, ensure_ascii=False, default=str))
+
+    def serialized_chars() -> int:
+        return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+
+    if serialized_chars() <= max_chars:
+        payload["serialization"] = {
+            **dict(payload.get("serialization") or {}),
+            "model_input_compacted": False,
+            "model_input_chars": serialized_chars(),
+        }
+        return payload
+
+    def compact_event(event: dict[str, Any]) -> None:
+        role = str(event.get("role") or "")
+        content_limit = 10_000 if role == "user" else 1_600 if role == "assistant" else 600
+        if "content" in event:
+            event["content"] = _bounded(event["content"], content_limit)
+        calls = event.get("tool_calls")
+        if isinstance(calls, list):
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                function = call.get("function")
+                if isinstance(function, dict) and "arguments" in function:
+                    function["arguments"] = _bounded(function["arguments"], 1_200)
+
+    shared = payload.get("shared_context")
+    if isinstance(shared, list):
+        for event in shared:
+            if isinstance(event, dict):
+                compact_event(event)
+    spans = payload.get("spans")
+    if isinstance(spans, list):
+        for span in spans:
+            if not isinstance(span, dict):
+                continue
+            messages = span.get("messages")
+            if isinstance(messages, list):
+                for event in messages:
+                    if isinstance(event, dict):
+                        compact_event(event)
+
+    if serialized_chars() > max_chars:
+        # Keep all user anchors and the first/last observable event of each span;
+        # detailed tool output remains available from the source artifact later.
+        for collection_name in ("shared_context",):
+            collection = payload.get(collection_name)
+            if isinstance(collection, list):
+                payload[collection_name] = [
+                    event
+                    for event in collection
+                    if isinstance(event, dict) and event.get("role") in {"user", "assistant"}
+                ]
+        spans = payload.get("spans")
+        if isinstance(spans, list):
+            for span in spans:
+                if not isinstance(span, dict) or not isinstance(span.get("messages"), list):
+                    continue
+                messages = span["messages"]
+                retained = [
+                    event
+                    for event in messages
+                    if isinstance(event, dict) and event.get("role") == "user"
+                ]
+                retained.extend(messages[:2])
+                retained.extend(messages[-3:])
+                seen: set[int] = set()
+                unique: list[dict[str, Any]] = []
+                for event in retained:
+                    marker = id(event)
+                    if marker in seen:
+                        continue
+                    seen.add(marker)
+                    unique.append(event)
+                span["messages"] = unique
+
+    # Progressive fallback keeps every user anchor while bounding model input.
+    if serialized_chars() > max_chars:
+        collection = payload.get("shared_context")
+        if isinstance(collection, list):
+            for event in collection:
+                if isinstance(event, dict):
+                    compact_event(event)
+                    if event.get("role") == "user" and "content" in event:
+                        event["content"] = _bounded(event["content"], 2_000)
+        spans = payload.get("spans")
+        if isinstance(spans, list):
+            for span in spans:
+                if not isinstance(span, dict) or not isinstance(span.get("messages"), list):
+                    continue
+                for event in span["messages"]:
+                    if isinstance(event, dict):
+                        compact_event(event)
+                        if event.get("role") == "user" and "content" in event:
+                            event["content"] = _bounded(event["content"], 2_000)
+
+    if serialized_chars() > max_chars:
+        collection = payload.get("shared_context")
+        if isinstance(collection, list):
+            payload["shared_context"] = [
+                event for event in collection
+                if isinstance(event, dict) and event.get("role") == "user"
+            ]
+        spans = payload.get("spans")
+        if isinstance(spans, list):
+            for span in spans:
+                if not isinstance(span, dict) or not isinstance(span.get("messages"), list):
+                    continue
+                span["messages"] = [
+                    event for event in span["messages"]
+                    if isinstance(event, dict) and event.get("role") == "user"
+                ]
+        if serialized_chars() > max_chars:
+            collection = payload.get("shared_context")
+            if isinstance(collection, list):
+                for event in collection:
+                    if isinstance(event, dict) and "content" in event:
+                        event["content"] = _bounded(event["content"], 800)
+            spans = payload.get("spans")
+            if isinstance(spans, list):
+                for span in spans:
+                    if not isinstance(span, dict) or not isinstance(span.get("messages"), list):
+                        continue
+                    for event in span["messages"]:
+                        if isinstance(event, dict) and "content" in event:
+                            event["content"] = _bounded(event["content"], 800)
+
+    serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    payload["serialization"] = {
+        **dict(payload.get("serialization") or {}),
+        "model_input_compacted": True,
+        "model_input_chars": len(serialized),
+        "model_input_limit": max_chars,
+    }
+    return payload
 
 def build_observable_evidence(
     raw_line: str,

@@ -247,7 +247,11 @@ class NewAPIClient:
                     {"role": "user", "content": request.prompt},
                 ],
                 "temperature": request.temperature,
-                "max_tokens": max(request.max_tokens, MIN_COMPLETION_TOKENS),
+                "max_tokens": (
+                    request.max_tokens
+                    if self.channel.lower() in {"claude", "anthropic"}
+                    else max(request.max_tokens, MIN_COMPLETION_TOKENS)
+                ),
             },
             ensure_ascii=False,
         ).encode("utf-8")

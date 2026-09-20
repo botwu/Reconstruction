@@ -37,6 +37,8 @@ class ScreeningRoute(StrEnum):
 
 
 class DomainRoute(StrEnum):
+    TERMINAL = "terminal"
+    # Backward-compatible alias emitted by frozen screening records.
     CODE_FILE = "code_file"
     RETRIEVAL = "retrieval"
     OTHER = "other"

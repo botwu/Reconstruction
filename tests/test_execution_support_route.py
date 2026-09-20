@@ -37,6 +37,15 @@ def test_code_file_with_replay_tree_is_terminal_file() -> None:
     assert result["allow_file_verifier"] is False
     assert result["terminal_batch_hint"] is True
 
+def test_terminal_domain_is_canonical_for_code_file_route() -> None:
+    result = execution_support_route(
+        task={"domain_route": "terminal"},
+        source={"selected_span_has_file_ops": True},
+        replay=_replay("app.py"),
+    )
+    assert result["route"] == "TERMINAL_FILE"
+    assert result["domain_route"] == "terminal"
+
 
 def test_retrieval_with_replayed_tree_still_plants() -> None:
     result = execution_support_route(

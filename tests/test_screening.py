@@ -428,7 +428,7 @@ def test_rubric_admits_valid_task_without_tools() -> None:
     assert admitted["route"] == ScreeningRoute.ELIGIBLE_TASK.value
 
 
-def test_rubric_admits_retrieval_when_task_not_done() -> None:
+def test_rubric_keeps_retrieval_out_of_terminal_pipeline() -> None:
     admitted = admit_after_model(
         rule={"decision": "REVIEW", "rule_pass": True, "blocking_reason_codes": ()},
         outcome="FAILURE",
@@ -437,8 +437,9 @@ def test_rubric_admits_retrieval_when_task_not_done() -> None:
         rubric=_ready_rubric(),
         parse_errors=(),
     )
-    assert admitted["decision"] == ScreeningDecision.ELIGIBLE.value
-    assert admitted["route"] == ScreeningRoute.ELIGIBLE_TASK.value
+    assert admitted["decision"] == ScreeningDecision.REVIEW.value
+    assert admitted["route"] == ScreeningRoute.RETRIEVAL_BACKEND_NOT_READY.value
+    assert admitted["blocking_reason_codes"] == ("SEARCH_DOMAIN_OUT_OF_SCOPE",)
 
 
 def test_admit_after_tasks_selects_incomplete_without_workspace_tools() -> None:

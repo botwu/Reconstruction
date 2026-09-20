@@ -91,11 +91,12 @@ def classify_hermes_failure(text: str | None) -> str | None:
     if not raw:
         return None
     lowered = raw.lower()
-    if "connection error" in lowered or "apiconnectionerror" in lowered:
+    first_line = lowered.splitlines()[0].strip()
+    if first_line.startswith(("connection error", "apiconnectionerror")):
         return "MODEL_CONNECTION_ERROR"
-    if "timed out" in lowered or "timeout" in lowered or "interrupted" in lowered:
+    if first_line.startswith(("timed out", "timeout", "interrupted")):
         return "MODEL_TIMEOUT"
-    if lowered.startswith("api call failed"):
+    if first_line.startswith("api call failed"):
         return "MODEL_API_FAILED"
     return None
 
@@ -193,11 +194,21 @@ class HermesNativeRuntime:
         final_text = None
         try:
             os.chdir(workdir)
-            with pin_anthropic_channel_env(self._api_key), pin_hermes_timeout_env():
+            auth_context = (
+                pin_anthropic_channel_env(self._api_key)
+                if self.provider == "anthropic"
+                else pin_openai_channel_env(self._api_key, self.base_url)
+            )
+            with auth_context, pin_hermes_timeout_env():
                 agent = self.factory(
                     base_url=self.base_url,
                     api_key=self._api_key,
                     provider=self.provider,
+                    api_mode=(
+                        "anthropic_messages"
+                        if self.provider == "anthropic"
+                        else "chat_completions"
+                    ),
                     model=self.model_name,
                     # Reconstruction proxy owns tools. Native file/terminal bypass checks.
                     enabled_toolsets=[],
@@ -207,9 +218,10 @@ class HermesNativeRuntime:
                     skip_context_files=True,
                     skip_memory=True,
                 )
-                apply_anthropic_messages_client(
-                    agent, base_url=self.base_url, api_key=self._api_key
-                )
+                if self.provider == "anthropic":
+                    apply_anthropic_messages_client(
+                        agent, base_url=self.base_url, api_key=self._api_key
+                    )
                 # Conversation loop prefers SSE even in quiet mode. Reconstruction
                 # must not depend on apply() seeing `_anthropic_client`.
                 agent._disable_streaming = True
@@ -378,6 +390,23 @@ def anthropic_sdk_base_url(url: str) -> str:
         if cleaned.endswith(suffix):
             cleaned = cleaned[: -len(suffix)].rstrip("/")
     return cleaned + "/"
+
+
+@contextmanager
+def pin_openai_channel_env(api_key: str, base_url: str) -> Iterator[None]:
+    """Pin OpenAI-compatible credentials for non-Anthropic Hermes providers."""
+    names = ("OPENAI_API_KEY", "OPENAI_BASE_URL")
+    saved = {name: os.environ.get(name) for name in names}
+    os.environ["OPENAI_API_KEY"] = api_key
+    os.environ["OPENAI_BASE_URL"] = base_url
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
 
 
 @contextmanager

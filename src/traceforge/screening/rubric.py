@@ -136,6 +136,13 @@ def admit_after_model(
             "rule_pass": True,
             "blocking_reason_codes": ("OUTCOME_INVALID",),
         }
+    if domain_route == DomainRoute.RETRIEVAL.value:
+        return {
+            "decision": ScreeningDecision.REVIEW.value,
+            "route": ScreeningRoute.RETRIEVAL_BACKEND_NOT_READY.value,
+            "rule_pass": True,
+            "blocking_reason_codes": ("SEARCH_DOMAIN_OUT_OF_SCOPE",),
+        }
     if needs_reconstruction is not True:
         reasons.append("NEEDS_RECONSTRUCTION_NOT_TRUE")
 
@@ -222,6 +229,12 @@ def _task_gate_result(
             "decision": ScreeningDecision.REVIEW.value,
             "route": ScreeningRoute.MODEL_TRIAGE_FAILED.value,
             "blocking_reason_codes": ("OUTCOME_INVALID",),
+        }
+    if domain_route == DomainRoute.RETRIEVAL.value:
+        return {
+            "decision": ScreeningDecision.REVIEW.value,
+            "route": ScreeningRoute.RETRIEVAL_BACKEND_NOT_READY.value,
+            "blocking_reason_codes": ("SEARCH_DOMAIN_OUT_OF_SCOPE",),
         }
     if needs_reconstruction is not True:
         reasons.append("NEEDS_RECONSTRUCTION_NOT_TRUE")

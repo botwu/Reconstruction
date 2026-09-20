@@ -119,7 +119,7 @@ def deepen_requires_file(
         return True
     if _READ_CODE.search(user_blob or ""):
         return True
-    return domain_route.strip() == "code_file"
+    return domain_route.strip() in {"code_file", "terminal"}
 
 
 def _file_obligation_ready(bindings: list[dict[str, Any]]) -> bool:

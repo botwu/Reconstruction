@@ -18,6 +18,7 @@ from traceforge.reconstruction.environment_bindings import (
     file_required_paths,
     missing_binding_paths,
     non_file_obligation_ids,
+    normalize_binding_path,
     normalize_environment_bindings,
     path_is_allowed,
     workspace_is_stub_ensemble,
@@ -668,3 +669,10 @@ def test_file_binding_accepts_task_specific_outcome():
     )
     assert errors == []
     assert bindings[0]["observable"] == "对负数输入返回零，保留正数输入行为"
+
+
+def test_normalize_binding_path_drops_prose_trailing_punctuation() -> None:
+    assert normalize_binding_path("twitter-api-client-main/twitter/util.py;") == (
+        "twitter-api-client-main/twitter/util.py"
+    )
+    assert normalize_binding_path("main.py,") == "main.py"

@@ -23,6 +23,7 @@ from traceforge.reconstruction.agents import (
 from traceforge.reconstruction.agents.runtime import (
     _load_hermes_factory,
     anthropic_sdk_base_url,
+    classify_hermes_failure,
     apply_anthropic_messages_client,
     merge_completion_files,
     pin_anthropic_channel_env,
@@ -553,3 +554,31 @@ def test_namespaced_rollout_model_preserves_upstream_id():
     provider, upstream = value.split("/", 1)
     assert provider == "bailian"
     assert upstream == "bailian/deepseek-v4-flash-0731"
+
+
+def test_classify_hermes_failure_ignores_timeout_in_valid_json() -> None:
+    assert classify_hermes_failure(
+        '{"success_criteria":["add timeout/retry guidance"]}'
+    ) is None
+    assert classify_hermes_failure("API call failed (attempt 1/3): timeout") == (
+        "MODEL_API_FAILED"
+    )
+
+
+def test_non_anthropic_runtime_forces_chat_completions(tmp_path: Path) -> None:
+    factory = FakeHermesFactory()
+    runtime = build_hermes_runtime(
+        model_name="gpt-5",
+        factory=factory,
+        base_url="https://tokenhub.example/v1",
+        api_key="sk-test",
+        provider="gpt",
+    )
+    result = runtime.run(
+        role=INTENT_ROLE,
+        instruction="return a JSON intent",
+        session=AgentSession(),
+        output_root=tmp_path / "out",
+    )
+    assert result.completed
+    assert factory.last_kwargs["api_mode"] == "chat_completions"
