@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import dataclass
@@ -200,6 +201,56 @@ def _needs_real_generated_body(
     return bool(listing) and (path in listing or name in listing)
 
 
+def _looks_like_placeholder_test(path: str, content: str) -> bool:
+    """拒绝把全是 skip/pass 的目标测试骨架当作可用环境正文。"""
+
+    if PurePosixPath(path).suffix.lower() != ".py":
+        return False
+    if "skip" not in content.lower():
+        return False
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return False
+    functions = [
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test")
+    ]
+    if not functions:
+        return False
+    def is_empty(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        body = list(node.body)
+        if body and isinstance(body[0], ast.Expr) and isinstance(
+            getattr(body[0], "value", None), ast.Constant
+        ) and isinstance(body[0].value.value, str):
+            body = body[1:]
+        return all(
+            isinstance(stmt, ast.Pass)
+            or (
+                isinstance(stmt, ast.Expr)
+                and isinstance(getattr(stmt, "value", None), ast.Call)
+                and isinstance(getattr(stmt.value, "func", None), ast.Attribute)
+                and stmt.value.func.attr == "skip"
+            )
+            or (
+                isinstance(stmt, ast.Raise)
+                and "skip" in ast.unparse(stmt).lower()
+            )
+            for stmt in body
+        )
+    if all(is_empty(node) for node in functions) and "skip" in content.lower():
+        return True
+    # Module-level pytestmark and simple function tests may not carry the
+    # decorator on each AST function node; keep this fallback conservative.
+    return (
+        len(functions) >= 2
+        and len(re.findall(r"(?m)^\\s*def\\s+test_\\w+", content)) >= 2
+        and len(re.findall(r"(?m)^\\s+pass\\s*(?:#.*)?$", content)) >= 2
+        and "skip" in content.lower()
+    )
+
+
 def listing_stub_error(
     path: str,
     content: str,
@@ -223,6 +274,8 @@ def listing_stub_error(
         return f"BINDING_PATH_STUB_ONLY:{path}"
     if looks_like_synthetic_stub(content) or not content.strip():
         return f"BINDING_PATH_STUB_ONLY:{path}"
+    if _looks_like_placeholder_test(path, content):
+        return f"BINDING_PATH_TEST_SKELETON:{path}"
     return None
 
 

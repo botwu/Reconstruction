@@ -683,6 +683,26 @@ def test_partial_excerpt_is_kept_and_may_grow() -> None:
     assert observed in grown["files"][0]["content"]
 
 
+def test_required_target_test_skeleton_cannot_ready() -> None:
+    content = (
+        "import pytest\n\n"
+        "@pytest.mark.skip(reason=\"Pending implementation\")\n"
+        "class TestFlowprobeFixes:\n"
+        "    def test_bounds(self):\n"
+        "        pass\n\n"
+        "    def test_cleanup(self):\n"
+        "        pass\n"
+    )
+    assert listing_stub_error(
+        "test/test_flowprobe.py",
+        content,
+        listing_names=set(),
+        body_paths=set(),
+        replay_paths=set(),
+        required_paths=["test/test_flowprobe.py"],
+    ) == "BINDING_PATH_TEST_SKELETON:test/test_flowprobe.py"
+
+
 def test_file_binding_stub_cannot_ready() -> None:
     replay = replay_from_timeline(_read_foo())
     task = _file_binding_task("Config.h")
@@ -836,3 +856,98 @@ def test_default_empty_without_process_logic_is_review(tmp_path: Path) -> None:
     assert result["status"] == "REVIEW"
     assert "TOOL_PROCESS_INSUFFICIENT" in result["errors"]
     assert result["agent"]["skip_reason"] == "TOOL_PROCESS_INSUFFICIENT"
+
+
+
+def test_placeholder_target_test_skeleton_cannot_satisfy_file_binding() -> None:
+    replay = replay_from_timeline(_read_foo())
+    candidate = {
+        "files": [
+            {
+                "path": "test/test_flowprobe.py",
+                "content": (
+                    "import pytest\n"
+                    "pytestmark = pytest.mark.skip(reason='body unavailable')\n\n"
+                    "def test_bounds():\n    pass\n\n"
+                    "def test_cleanup():\n    pytest.skip('body unavailable')\n"
+                ),
+                "provenance": "MODEL_COMPLETED",
+                "evidence_ref_ids": ["c1"],
+            }
+        ],
+        "decision": "READY",
+    }
+    ok, errors = validate_completion_candidate(
+        candidate,
+        replay,
+        {"c1"},
+        required_paths=["test/test_flowprobe.py"],
+    )
+    assert not ok
+    assert any(
+        item in errors
+        for item in (
+            "BINDING_PATH_TEST_SKELETON:test/test_flowprobe.py",
+            "BINDING_PATH_STUB_ONLY:test/test_flowprobe.py",
+        )
+    )
+
+
+def test_completion_hides_post_mutation_events_from_prompt_and_session(tmp_path: Path) -> None:
+    timeline = [
+        {
+            "call_id": "safe-read",
+            "name": "read_file",
+            "arguments": {"path": "README.md"},
+            "result_text": "safe context\n",
+        },
+        {
+            "call_id": "mutation",
+            "name": "exec",
+            "arguments": {
+                "command": (
+                    "python3 -c \"from pathlib import Path; "
+                    "Path('secret.py').write_text('solution')\""
+                )
+            },
+            "result_text": "",
+        },
+        {
+            "call_id": "post-read",
+            "name": "exec",
+            "arguments": {"command": "cat secret.py"},
+            "result_text": "SOLUTION_AFTER_MUTATION\n",
+        },
+    ]
+    replay = replay_from_timeline(timeline)
+    assert replay.files and replay.files[0].path == "README.md"
+    assert {
+        item["source_event_id"]
+        for item in replay.partial_evidence
+        if item.get("reason") in {"unparsed_mutation_scope", "read_after_unparsed_mutation"}
+    } == {"mutation", "post-read"}
+
+    class CaptureRuntime(RecordingRuntime):
+        def run(self, *, role, instruction, session, output_root):
+            self.instruction = instruction
+            self.session_evidence = list(session.evidence)
+            return super().run(
+                role=role,
+                instruction=instruction,
+                session=session,
+                output_root=output_root,
+            )
+
+    runtime = CaptureRuntime()
+    result = run_workspace_completion(
+        task={"core_objective": "读取项目上下文"},
+        replay=replay,
+        timeline=timeline,
+        agent=runtime,
+        output_root=tmp_path / "completion",
+    )
+    assert result["status"] == "READY"
+    refs = {item["evidence_ref_id"] for item in runtime.session_evidence}
+    assert refs == {"safe-read"}
+    assert "SOLUTION_AFTER_MUTATION" not in runtime.instruction
+    assert "secret.py" not in runtime.instruction

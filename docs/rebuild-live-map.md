@@ -80,8 +80,8 @@ flowchart LR
 **已知活跑卡点（改代码时对着看，本文不改逻辑）**
 
 1. Intent：当前 prompt 要求保留用户原始目标和意图类型，并为每条验收义务显式给出一个 binding。完整环境不足时不得把实现/修复/评审改写成计划；缺 binding 或 FILE 路径不充分会进入 REVIEW。纯只读评审、解释和报告可以保持 NON_FILE，不再被强制伪造 FILE。
-2. Replay：OpenCode filePath、<path>/<content> 包装、PowerShell 行号和只读 rg | sed 已纳入解析；未知写操作仍建立 barrier，后续内容只保留为私有证据。
-3. Completion：仍需观察模型是否把写入落在 workspace，而不是 hermes_workspace；看 workspace_relpath、cwd 和 completion.json 的 evidence refs。
+2. Replay：OpenCode filePath、<path>/<content> 包装、PowerShell 行号和只读 rg | sed 已纳入解析；未知写操作仍建立 barrier，后续内容只保留为私有证据，Completion 的证据索引、洞卡片和目录解析都会过滤这些事件。
+3. Completion：目标 FILE 路径必须是真实上下文；全是 skip/pass 的测试骨架会以 `BINDING_PATH_TEST_SKELETON` 进入 REVIEW。仍需观察模型是否把写入落在 workspace，而不是 hermes_workspace；看 workspace_relpath、cwd 和 completion.json 的 evidence refs。
 4. 全 NON_FILE 时 allow_file_verifier=false，管线可完成 Completion/Sufficiency，但在文件 Verifier 前以 NO_FILE_ACCEPTANCE 保持 REVIEW；这属于输出型验收尚未接入独立回执协议。
 5. terminal selector 只产出 CANDIDATE_ONLY。当前本地 R04/R05 是截断采样（R04 297/6535、R05 336/1694 物理行，sha 不匹配），不能宣称覆盖上游全量；模型证据超过预算时 fail-closed，不删除中间事件。
 6. 不要发明源码、不要写解题、不要写目标测试。Intent 只引用用户原文。web_search 只给 Completion，且不得把检索到的源码写进用户路径。

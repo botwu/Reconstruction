@@ -53,6 +53,30 @@ def _l49_timeline() -> list[dict]:
     ]
 
 
+def test_deepen_file_gate_distinguishes_explicit_read_only_review() -> None:
+    paths = ["src/parser.py"]
+    assert deepen_requires_file(
+        "只读代码评审 src/parser.py，不修改任何文件",
+        paths,
+        domain_route="terminal",
+    ) is False
+    assert deepen_requires_file(
+        "read-only code review; do not modify source/tests",
+        paths,
+        domain_route="terminal",
+    ) is False
+    assert deepen_requires_file(
+        "审查并修复 src/parser.py 的边界错误",
+        paths,
+        domain_route="terminal",
+    ) is True
+    assert deepen_requires_file(
+        "review the parser and add a regression test",
+        paths,
+        domain_route="terminal",
+    ) is True
+
+
 def test_deepen_requires_file_on_read_code_or_code_file_route() -> None:
     paths = ["Injector.cpp"]
     assert deepen_requires_file("完全读取并了解注入器代码", paths) is True

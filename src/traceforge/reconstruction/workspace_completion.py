@@ -421,8 +421,36 @@ def _run_completion(
 
     if not 1 <= max_candidates <= MAX_CANDIDATES:
         raise ValueError(f"max_candidates must be between 1 and {MAX_CANDIDATES}")
-    evidence = timeline_evidence(timeline)
     origin = ENV_DEFAULT_EMPTY if env_origin == ENV_DEFAULT_EMPTY else ENV_REPLAYED
+    evidence = timeline_evidence(timeline)
+    public_timeline = list(timeline)
+    if origin == ENV_REPLAYED:
+        # Replay barriers are private audit facts. A read after an unknown or
+        # known mutation must not re-enter Completion as trusted evidence,
+        # including through hole cards and listing extraction.
+        blocked_reasons = {
+            "unparsed_mutation_scope",
+            "unparsed_mutation_unscoped",
+            "read_after_unparsed_mutation",
+            "read_after_first_mutation",
+            "modified_after_observation",
+        }
+        blocked_refs = {
+            str(item.get("source_event_id"))
+            for item in (getattr(replay, "partial_evidence", ()) or ())
+            if isinstance(item, dict)
+            and item.get("reason") in blocked_reasons
+            and item.get("source_event_id")
+        }
+        evidence = [
+            item for item in evidence
+            if str(item.get("evidence_ref_id") or "") not in blocked_refs
+        ]
+        public_timeline = [
+            item for item in timeline
+            if not isinstance(item, dict)
+            or str(item.get("call_id") or "") not in blocked_refs
+        ]
     strategy = STRATEGY_DEFAULT_EMPTY if origin == ENV_DEFAULT_EMPTY else STRATEGY_REPLAYED
     role = (
         COMPLETION_DEFAULT_EMPTY_ROLE
@@ -445,7 +473,7 @@ def _run_completion(
             }
         )
     refs = {str(item["evidence_ref_id"]) for item in evidence}
-    hole_index = index_completion_holes(replay, timeline, task)
+    hole_index = index_completion_holes(replay, public_timeline, task)
     holes = hole_index.as_list()
     instruction = _instruction(
         task,
@@ -455,7 +483,7 @@ def _run_completion(
         max_candidates=max_candidates,
         source=source,
         topic_card=hole_index.topic_card,
-        timeline=timeline,
+        timeline=public_timeline,
         env_origin=origin,
         sketch=sketch,
     )

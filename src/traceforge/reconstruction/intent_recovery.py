@@ -23,12 +23,13 @@ INTENT_SCHEMA = "traceforge.intent-recovery.v3"
 INTENT_PROMPT_VERSION = "intent-recovery-agent-v10-anchor-deepen"
 _STUB_OBSERVABLE = "replayed excerpts still present"
 _REVIEW_ONLY = re.compile(
-    r"(?i)(只读代码评审|代码评审|代码审查|read[- ]only.*review|code review|审计|audit|"
-    r"解释.*代码|explain.*code|报告|report)"
+    r"(?i)(只读(?:代码)?(?:评审|审查)|只审查(?:并)?不修改|只查看.*不修改|"
+    r"read[- ]only\s+(?:code\s+)?review|review[- ]only|"
+    r"do not modify.*(?:review|audit))"
 )
 _IMPLEMENTATION_ACTION = re.compile(
-    r"(?i)(实现|修复|修改|新增|重构|编写|测试|补丁|implement|fix|change|add|"
-    r"refactor|write|test|patch)"
+    r"(?i)(实现|修复|修改|新增|重构|编写|测试|补丁|"
+    r"\b(?:implement|fix|change|add|refactor|write|test|patch)\b)"
 )
 _FRAMEWORK_HEADS = ("<environment_context>", "# AGENTS.md", "<INSTRUCTIONS>", "Sender (untrusted metadata)", "<system-reminder>")
 _CODEX_REQUEST = re.compile(r"##\s*My request(?:\s+for\s+Codex)?:\s*(.+)", re.S | re.I)
@@ -123,7 +124,15 @@ def deepen_requires_file(
 
     if not file_binding_paths:
         return False
-    if _REVIEW_ONLY.search(user_blob or "") and not _IMPLEMENTATION_ACTION.search(user_blob or ""):
+    review_text = user_blob or ""
+    # Negative constraints such as “不修改” and “do not modify” must not
+    # themselves count as an implementation request.
+    action_text = re.sub(
+        r"(?i)(?:不|不要|无需)修改|do not modify(?:ing)?|without modifying",
+        " ",
+        review_text,
+    )
+    if _REVIEW_ONLY.search(review_text) and not _IMPLEMENTATION_ACTION.search(action_text):
         return False
     if mentioned_allowed_paths(user_blob, file_binding_paths):
         return True
