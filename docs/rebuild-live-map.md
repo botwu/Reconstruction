@@ -102,7 +102,7 @@ flowchart LR
 
 | 证据 | 已确认 | 不能据此确认 |
 | --- | --- | --- |
-| 离线回归 | 510 passed、5 skipped、5 warnings | 真实模型或 Harbor 全链路成功 |
+| 离线回归 | 511 passed、5 skipped、5 warnings | 真实模型或 Harbor 全链路成功 |
 | 真实 R04 L3 v10（GPT） | source/replay 恢复 15 个文件；Completion READY | Sufficiency 为 REVIEW/INSUFFICIENT（大量源码仍是 partial），未进入 Verifier/RED/rollout |
 | 真实 R04 L4959（GPT） | source/replay 恢复 2 个文件；Intent READY；sandbox 初始化成功 | Completion 为 REVIEW（依赖上下文不足，停止在 completion），未进入 Sufficiency/Verifier/RED/rollout |
 | 真实 R04 L41 历史活跑 | Intent / Completion / Sufficiency READY | Verifier 为 REVIEW，RED 未闭合 |

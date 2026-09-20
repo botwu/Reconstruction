@@ -247,3 +247,21 @@ def test_end_to_end_requires_two_rollout_passes_and_quality(tmp_path: Path) -> N
     assert report["pipeline_ok"] is True
     assert report["delivery_ready"] is True
     assert report["end_to_end_ready"] is False
+
+
+def test_review_sufficiency_artifact_without_selected_index_is_reported(tmp_path: Path) -> None:
+    root = _make_root(tmp_path)
+    manifest = json.loads((root / "reconstruction_manifest.json").read_text())
+    task = manifest["tasks"][0]
+    task.pop("selected_index")
+    path = root / "tasks" / task["task_id"] / "sufficiency" / "000" / "sufficiency.json"
+    payload = json.loads(path.read_text())
+    payload.update(status="REVIEW", label="INSUFFICIENT", decision="REVIEW")
+    _write_json(path, payload)
+    _write_json(root / "reconstruction_manifest.json", manifest)
+
+    report = _CHECK.grade(root, config=None, channel="claude", expected_task_id=None)
+
+    sufficiency = next(stage for stage in report["stages"] if stage["stage"] == "sufficiency")
+    assert sufficiency["status"] == "REVIEW"
+    assert sufficiency["detail"] == "SUFFICIENCY_NOT_READY"

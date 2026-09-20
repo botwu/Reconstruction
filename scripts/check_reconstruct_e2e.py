@@ -324,7 +324,15 @@ def _check_sufficiency(
         if isinstance(selected_index, int) and selected_index >= 0
         else None
     )
-    paths = [selected_path] if selected_path is not None and selected_path.is_file() else []
+    all_paths = sorted(sufficiency_root.glob("*/sufficiency.json"))
+    # A REVIEW manifest may have judge artifacts but no selected candidate.
+    # Inspect those artifacts so the report says INSUFFICIENT/REVIEW instead
+    # of incorrectly claiming that Sufficiency was never produced.
+    paths = (
+        [selected_path]
+        if selected_path is not None and selected_path.is_file()
+        else all_paths
+    )
     present = bool(paths)
     if not completion_ready:
         return _stage(
