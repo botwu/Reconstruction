@@ -212,7 +212,7 @@ class HermesNativeRuntime:
                     model=self.model_name,
                     # Reconstruction proxy owns tools. Native file/terminal bypass checks.
                     enabled_toolsets=[],
-                    max_iterations=role.max_iterations,
+                    max_iterations=_traceforge_agent_max_iterations(role),
                     quiet_mode=True,
                     save_trajectories=False,
                     skip_context_files=True,
@@ -464,6 +464,19 @@ def _traceforge_model_timeout_seconds() -> float:
     except ValueError:
         timeout_seconds = 120.0
     return max(5.0, min(timeout_seconds, 600.0))
+
+
+def _traceforge_agent_max_iterations(role: AgentRole) -> int:
+    """可选的整角色迭代上限，防止模型无响应时按角色上限长时间空转。"""
+
+    raw = os.environ.get("TRACEFORGE_AGENT_MAX_ITERATIONS", "").strip()
+    if not raw:
+        return role.max_iterations
+    try:
+        limit = int(raw)
+    except ValueError:
+        return role.max_iterations
+    return max(1, min(role.max_iterations, limit))
 
 
 def apply_anthropic_messages_client(agent: Any, *, base_url: str, api_key: str) -> None:

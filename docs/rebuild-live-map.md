@@ -84,7 +84,8 @@ flowchart LR
 3. Completion：目标 FILE 路径必须是真实上下文；全是 skip/pass 的测试骨架会以 `BINDING_PATH_TEST_SKELETON` 进入 REVIEW。仍需观察模型是否把写入落在 workspace，而不是 hermes_workspace；看 workspace_relpath、cwd 和 completion.json 的 evidence refs。
 4. 全 NON_FILE 时 allow_file_verifier=false，管线可完成 Completion/Sufficiency，但在文件 Verifier 前以 NO_FILE_ACCEPTANCE 保持 REVIEW；这属于输出型验收尚未接入独立回执协议。
 5. terminal selector 只产出 CANDIDATE_ONLY。当前本地 R04/R05 是截断采样（R04 297/6535、R05 336/1694 物理行，sha 不匹配），不能宣称覆盖上游全量；模型证据超过预算时 fail-closed，不删除中间事件。
-6. 不要发明源码、不要写解题、不要写目标测试。Intent 只引用用户原文。web_search 只给 Completion，且不得把检索到的源码写进用户路径。
+6. 活跑可用 `TRACEFORGE_MODEL_TIMEOUT_SECONDS` 限制单次模型窗口，`TRACEFORGE_AGENT_MAX_ITERATIONS` 限制单个 Hermes 角色的总轮数；默认不改变角色预算，异常复跑建议显式设置，避免外部模型无响应拖到总进程超时。
+7. 不要发明源码、不要写解题、不要写目标测试。Intent 只引用用户原文。web_search 只给 Completion，且不得把检索到的源码写进用户路径。
 
 ## 对照产物（只读）
 
