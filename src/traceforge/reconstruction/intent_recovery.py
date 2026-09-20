@@ -22,6 +22,14 @@ from traceforge.screening.task_labels import apply_task_tags, is_selected_recons
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
 INTENT_PROMPT_VERSION = "intent-recovery-agent-v10-anchor-deepen"
 _STUB_OBSERVABLE = "replayed excerpts still present"
+_REVIEW_ONLY = re.compile(
+    r"(?i)(只读代码评审|代码评审|代码审查|read[- ]only.*review|code review|审计|audit|"
+    r"解释.*代码|explain.*code|报告|report)"
+)
+_IMPLEMENTATION_ACTION = re.compile(
+    r"(?i)(实现|修复|修改|新增|重构|编写|测试|补丁|implement|fix|change|add|"
+    r"refactor|write|test|patch)"
+)
 _FRAMEWORK_HEADS = ("<environment_context>", "# AGENTS.md", "<INSTRUCTIONS>", "Sender (untrusted metadata)", "<system-reminder>")
 _CODEX_REQUEST = re.compile(r"##\s*My request(?:\s+for\s+Codex)?:\s*(.+)", re.S | re.I)
 _IMAGE_BLOCK = re.compile(r"<image\b[^>]*>.*?</image>", re.S | re.I)
@@ -115,6 +123,8 @@ def deepen_requires_file(
 
     if not file_binding_paths:
         return False
+    if _REVIEW_ONLY.search(user_blob or "") and not _IMPLEMENTATION_ACTION.search(user_blob or ""):
+        return False
     if mentioned_allowed_paths(user_blob, file_binding_paths):
         return True
     if _READ_CODE.search(user_blob or ""):
@@ -163,16 +173,18 @@ def _prompt(
                 seen.add(neighbor)
     return "\n".join([
         "Recover a sandbox-solvable task q from the tagged user request.",
-        "The original user query is the anchor. task_instruction must include that request, then deepen the same goal.",
-        "Deepen or narrow q to the slice that can be finished on FILE_BINDING_PATHS (Stage1 observed bodies).",
+        "The original user query is the anchor. task_instruction and core_objective must preserve its main goal and intent type.",
+        "Use observed files to ground the same task, but never replace an implementation, repair, or review request with a plan or report unless the user explicitly asked for one.",
+        "If the observed environment is incomplete, retain the original acceptance obligations; Completion may enrich the workspace and later sufficiency/verifier gates may return REVIEW.",
+        "Research, forum lookup, production publish remain user obligations "
+        "when explicitly requested; do not discard them as context.",
         "Do not invent a different product goal or a nearby unrelated coding task. Keep the same task_id.",
         "Use only explicit user intent and evidence refs; never turn assistant/tool actions into requirements.",
         "Do not merge another tagged task. A clarification/correction belongs here only when its message is in this task tag.",
-        "Do not web-search. Do not invent workspace paths. Bind only paths listed in ALLOWED_OBSERVED_PATHS.",
-        "FILE required_paths may only come from FILE_BINDING_PATHS (observed bodies). Listing-only names are tree shape, not FILE evidence.",
-        "Research, forum lookup, production publish, and live account backfill are context, not acceptance obligations.",
-        "They must not block FILE deepening. When FILE_BINDING_PATHS is empty, do not invent a project.",
-        "FILE 表示该义务的完成状态可以从沙盒文件或本地程序行为中完整验证。observable 必须描述深化后的完成状态，不能仅检查初始文件仍然存在。",
+        "Do not web-search or invent workspace paths. Bind only paths listed in ALLOWED_OBSERVED_PATHS.",
+        "FILE required_paths may only come from FILE_BINDING_PATHS (observed bodies). Listing-only names are tree shape, not FILE evidence. When FILE_BINDING_PATHS is empty, do not invent a project.",
+        "Classify every acceptance obligation exactly once in environment_bindings. Do not omit an obligation or infer a missing binding from shared context; missing bindings are a REVIEW error.",
+        "FILE 表示该义务的完成状态可以从沙盒文件或本地程序行为中完整验证。observable 必须描述用户要求的最终状态，不能仅检查初始文件仍然存在。",
         "Return JSON only, with no Markdown or prose before/after it.",
         "{\"task_id\":\"same tag\",\"task_instruction\":\"...\",\"core_objective\":\"...\",\"acceptance_obligations\":[{\"id\":\"obl-001\",\"text\":\"...\",\"evidence_ref_ids\":[\"user:<message_index>\"]}],\"environment_bindings\":[{\"obligation_id\":\"obl-001\",\"required_paths\":[\"observed/path\"],\"observable\":\"任务完成后可观测、且足以证明本条义务达成的具体状态\",\"verifier_kind\":\"FILE|NON_FILE\"}],\"success_criteria\":[\"...\"],\"specified_output_format\":null,\"has_examples\":false,\"mandatory_constraints\":[],\"prohibitions\":[]}",
         "Cite evidence ids exactly as listed in TASK_USER_MESSAGES / list_user_texts. Obligation evidence ids must be user:<message_index>.",
@@ -225,6 +237,9 @@ def _gate(
         allowed_paths,
         user_blob=user_blob,
         file_binding_paths=file_binding_paths,
+        # 模型返回该字段时必须覆盖全部义务；旧 fixture 未返回字段时，
+        # 保留确定性的兼容推导。
+        require_complete="environment_bindings" in payload,
     )
     errors.extend(binding_errors)
     payload["acceptance_obligations"] = attach_bindings_to_obligations(normalized, bindings)

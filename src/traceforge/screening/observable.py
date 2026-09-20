@@ -1,4 +1,4 @@
-"""可观察轨迹序列化：按 user span 切分，发给模型全部 span，超长字段机械截断。
+"""可观察轨迹序列化：按 user span 切分，保留完整证据，超预算关门。
 
 移植自 datafilter_v2 turn_quality 的序列化约定，不引入 datafilter 依赖。
 筛选目标是整条 capture 里能重建的失败任务，因此不 omit 更早的 user-span。
@@ -12,7 +12,6 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 DEFAULT_MAX_INPUT_CHARS = 120_000
-DEFAULT_MAX_MODEL_INPUT_CHARS = 48_000
 _PRIVATE_REASONING_FIELDS = frozenset(
     {"reasoning", "reasoning_content", "thinking", "thinking_content"}
 )
@@ -234,152 +233,35 @@ def _serialize_evidence(
 
 
 
-def compact_observable_evidence(
-    evidence: dict[str, Any], *, max_chars: int = DEFAULT_MAX_MODEL_INPUT_CHARS
+class ObservableEvidenceError(ValueError):
+    """完整证据无法在当前模型输入预算内安全评估。"""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def prepare_model_evidence(
+    evidence: dict[str, Any], *, max_chars: int = DEFAULT_MAX_INPUT_CHARS
 ) -> dict[str, Any]:
-    """为 triage 模型压缩超长轨迹，同时保留原始证据对象不变。
+    """保留完整可观察证据；不以删中间事件来换取模型可调用性。
 
-    轨迹 artifact 仍保存完整可观察消息；模型输入只对 tool/assistant 大字段做
-    有界截断，并保留所有 user 消息与 span 元数据，避免长终端输出触发网关
-    HTTP 400 或挤掉任务锚点。
+    后续成功、纠错和工具结果都可能改变最终任务状态。超过预算的轨迹
+    必须 REVIEW，直到有保持跨 span 关系的分块方案或更大的输入预算。
     """
+    serialization = evidence.get("serialization") or {}
+    if serialization.get("truncated") or serialization.get("model_input_compacted"):
+        raise ObservableEvidenceError(
+            "模型筛选拒绝不完整可观察证据", code="INCOMPLETE_OBSERVABLE_EVIDENCE"
+        )
+    serialized = json.dumps(evidence, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized) > max_chars:
+        raise ObservableEvidenceError(
+            f"完整证据超过模型输入预算：{len(serialized)} > {max_chars}",
+            code="OBSERVABLE_EVIDENCE_TOO_LARGE",
+        )
+    return evidence
 
-    payload = json.loads(json.dumps(evidence, ensure_ascii=False, default=str))
-
-    def serialized_chars() -> int:
-        return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-
-    if serialized_chars() <= max_chars:
-        payload["serialization"] = {
-            **dict(payload.get("serialization") or {}),
-            "model_input_compacted": False,
-            "model_input_chars": serialized_chars(),
-        }
-        return payload
-
-    def compact_event(event: dict[str, Any]) -> None:
-        role = str(event.get("role") or "")
-        content_limit = 10_000 if role == "user" else 1_600 if role == "assistant" else 600
-        if "content" in event:
-            event["content"] = _bounded(event["content"], content_limit)
-        calls = event.get("tool_calls")
-        if isinstance(calls, list):
-            for call in calls:
-                if not isinstance(call, dict):
-                    continue
-                function = call.get("function")
-                if isinstance(function, dict) and "arguments" in function:
-                    function["arguments"] = _bounded(function["arguments"], 1_200)
-
-    shared = payload.get("shared_context")
-    if isinstance(shared, list):
-        for event in shared:
-            if isinstance(event, dict):
-                compact_event(event)
-    spans = payload.get("spans")
-    if isinstance(spans, list):
-        for span in spans:
-            if not isinstance(span, dict):
-                continue
-            messages = span.get("messages")
-            if isinstance(messages, list):
-                for event in messages:
-                    if isinstance(event, dict):
-                        compact_event(event)
-
-    if serialized_chars() > max_chars:
-        # Keep all user anchors and the first/last observable event of each span;
-        # detailed tool output remains available from the source artifact later.
-        for collection_name in ("shared_context",):
-            collection = payload.get(collection_name)
-            if isinstance(collection, list):
-                payload[collection_name] = [
-                    event
-                    for event in collection
-                    if isinstance(event, dict) and event.get("role") in {"user", "assistant"}
-                ]
-        spans = payload.get("spans")
-        if isinstance(spans, list):
-            for span in spans:
-                if not isinstance(span, dict) or not isinstance(span.get("messages"), list):
-                    continue
-                messages = span["messages"]
-                retained = [
-                    event
-                    for event in messages
-                    if isinstance(event, dict) and event.get("role") == "user"
-                ]
-                retained.extend(messages[:2])
-                retained.extend(messages[-3:])
-                seen: set[int] = set()
-                unique: list[dict[str, Any]] = []
-                for event in retained:
-                    marker = id(event)
-                    if marker in seen:
-                        continue
-                    seen.add(marker)
-                    unique.append(event)
-                span["messages"] = unique
-
-    # Progressive fallback keeps every user anchor while bounding model input.
-    if serialized_chars() > max_chars:
-        collection = payload.get("shared_context")
-        if isinstance(collection, list):
-            for event in collection:
-                if isinstance(event, dict):
-                    compact_event(event)
-                    if event.get("role") == "user" and "content" in event:
-                        event["content"] = _bounded(event["content"], 2_000)
-        spans = payload.get("spans")
-        if isinstance(spans, list):
-            for span in spans:
-                if not isinstance(span, dict) or not isinstance(span.get("messages"), list):
-                    continue
-                for event in span["messages"]:
-                    if isinstance(event, dict):
-                        compact_event(event)
-                        if event.get("role") == "user" and "content" in event:
-                            event["content"] = _bounded(event["content"], 2_000)
-
-    if serialized_chars() > max_chars:
-        collection = payload.get("shared_context")
-        if isinstance(collection, list):
-            payload["shared_context"] = [
-                event for event in collection
-                if isinstance(event, dict) and event.get("role") == "user"
-            ]
-        spans = payload.get("spans")
-        if isinstance(spans, list):
-            for span in spans:
-                if not isinstance(span, dict) or not isinstance(span.get("messages"), list):
-                    continue
-                span["messages"] = [
-                    event for event in span["messages"]
-                    if isinstance(event, dict) and event.get("role") == "user"
-                ]
-        if serialized_chars() > max_chars:
-            collection = payload.get("shared_context")
-            if isinstance(collection, list):
-                for event in collection:
-                    if isinstance(event, dict) and "content" in event:
-                        event["content"] = _bounded(event["content"], 800)
-            spans = payload.get("spans")
-            if isinstance(spans, list):
-                for span in spans:
-                    if not isinstance(span, dict) or not isinstance(span.get("messages"), list):
-                        continue
-                    for event in span["messages"]:
-                        if isinstance(event, dict) and "content" in event:
-                            event["content"] = _bounded(event["content"], 800)
-
-    serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    payload["serialization"] = {
-        **dict(payload.get("serialization") or {}),
-        "model_input_compacted": True,
-        "model_input_chars": len(serialized),
-        "model_input_limit": max_chars,
-    }
-    return payload
 
 def build_observable_evidence(
     raw_line: str,
@@ -390,7 +272,7 @@ def build_observable_evidence(
     """把 capture 序列化为模型可打分的可观察证据。
 
     发送 shared_context + 全部 user-span 的可观察消息。默认不 omit 任何任务。
-    超长时只对所有 span 同步机械截断 content/tool；user 句尽量保留。
+    超长只标记 oversized；任何用户锚点、工具结果和后续成功证据都不截断。
     """
 
     try:

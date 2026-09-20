@@ -20,6 +20,7 @@ from traceforge.reconstruction.container_verification import (
     ContainerRuntime,
     pytest_test_runner,
 )
+from traceforge.verifier.grading import PytestVendorError, prepare_pytest_site
 
 WORKSPACE_REMOTE = "/home/user/workspace"
 EVIDENCE_REMOTE = "/evidence"
@@ -291,6 +292,17 @@ async def prepare_role_sandbox(
         if getattr(protect, "return_code", 1) != 0:
             session.policy_errors.append("VERIFIER_INPUT_PROTECTION_FAILED")
         await runtime.exec("mkdir -p /tests", cwd="/", timeout_sec=10, user="root")
+        # AGS 模板不预装 pytest。使用仓库锁定的 wheel 在宿主机展开，
+        # 仅把 site-packages 上传到验证沙盒，保证离线且不依赖 Agent 环境。
+        vendor_root = staging_root / "pytest_vendor_runtime"
+        if vendor_root.exists():
+            shutil.rmtree(vendor_root)
+        try:
+            site = prepare_pytest_site(vendor_root)
+            await runtime.upload_dir(site.parent, "/tests")
+        except (PytestVendorError, OSError) as exc:
+            code = getattr(exc, "code", "PYTEST_VENDOR_ERROR")
+            session.policy_errors.append(str(code))
     session.sandbox = binding
     session.allow_tests = binding.allow_tests
     session.allow_exec = binding.allow_exec

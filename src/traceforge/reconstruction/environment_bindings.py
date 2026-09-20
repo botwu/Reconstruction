@@ -274,6 +274,7 @@ def normalize_environment_bindings(
     *,
     user_blob: str = "",
     file_binding_paths: list[str] | None = None,
+    require_complete: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     errors: list[str] = []
     known_ids = {str(item.get("id")) for item in obligations if isinstance(item, dict) and item.get("id")}
@@ -311,12 +312,17 @@ def normalize_environment_bindings(
         if oid in by_id:
             current = by_id[oid]
             if current.get("verifier_kind") == FILE and not current.get("required_paths"):
-                derived = derive_binding(obligation, bindable, user_blob)
-                if derived.get("required_paths"):
-                    result.append(derived)
-                    continue
+                if not require_complete:
+                    derived = derive_binding(obligation, bindable, user_blob)
+                    if derived.get("required_paths"):
+                        result.append(derived)
+                        continue
                 errors.append(f"BINDING_FILE_PATHS_REQUIRED:{oid}")
             result.append(current)
+        elif require_complete:
+            # 模型显式返回 binding 列表时，它就是完整协议声明；
+            # 不得从共享上下文推导遗漏的 FILE/NON_FILE 类型。
+            errors.append(f"BINDING_REQUIRED:{oid}")
         else:
             result.append(derive_binding(obligation, bindable, user_blob))
     return result, errors

@@ -382,12 +382,37 @@ def _workspace_digest_command(workspace: str) -> str:
     return f"python3 -c {shlex.quote(script)} {shlex.quote(workspace)}"
 
 
+_PYTEST_RUNNER = (
+    "import sys; "
+    "sys.path.insert(0, sys.argv[1]); "
+    "import pytest; "
+    "raise SystemExit(pytest.main(sys.argv[2:]))"
+)
+
+
+def _pytest_infrastructure_failure(stdout: str, stderr: str) -> bool:
+    text = (stdout + "\n" + stderr).lower()
+    return any(
+        marker in text
+        for marker in (
+            "error collecting",
+            "importerror while importing",
+            "importerror:",
+            "modulenotfounderror:",
+            "no module named",
+            "cannot import name",
+            "pytest: command not found",
+        )
+    )
+
+
 async def pytest_test_runner(
     runtime: ContainerRuntime,
     test_names: tuple[str, ...],
     *,
     test_file: str = "/tests/test_outputs.py",
     workspace: str = "/home/user/workspace",
+    pytest_site: str = "/tests/site-packages",
     timeout_sec: int = 120,
 ) -> tuple[ContainerTestRun, ...]:
     """在独立副本中运行每个测试；原始输入与副本都不得被测试改写。"""
@@ -406,10 +431,17 @@ async def pytest_test_runner(
             if getattr(before, "return_code", 1) != 0 or len(before_digest) != 64:
                 runs.append(ContainerTestRun(name, "INFRA_ERROR", error_code="VERIFIER_INPUT_HASH_FAILED"))
                 continue
+            # AGS 验证镜像不预装 pytest；验证角色把锁定的离线发行包放在
+            # /tests/site-packages。隔离 Python 通过参数注入该路径，不受
+            # PYTHONPATH 或插件自动加载影响。
             command = (
                 f"cp -a {shlex.quote(workspace)} {shlex.quote(disposable)} && "
-                f"TRACEFORGE_WORKSPACE={shlex.quote(disposable)} PYTHONDONTWRITEBYTECODE=1 "
-                f"python3 -m pytest -p no:cacheprovider -q {shlex.quote(test_file)}::{shlex.quote(name)}"
+                f"TRACEFORGE_WORKSPACE={shlex.quote(disposable)} "
+                f"PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 "
+                f"python3 -I -c {shlex.quote(_PYTEST_RUNNER)} "
+                f"{shlex.quote(pytest_site)} "
+                f"{shlex.quote(test_file)}::{shlex.quote(name)} "
+                "-p no:cacheprovider -q"
             )
             result = await runtime.exec(command, cwd="/", timeout_sec=timeout_sec, user="user")
             after = await runtime.exec(_workspace_digest_command(workspace), cwd="/", timeout_sec=30, user="user")
@@ -430,6 +462,8 @@ async def pytest_test_runner(
                 continue
             if code == 0:
                 status, error_code = "PASS", None
+            elif code == 1 and _pytest_infrastructure_failure(stdout, stderr):
+                status, error_code = "INFRA_ERROR", "PYTEST_IMPORT_ERROR"
             elif code == 1:
                 status, error_code = "FAIL", "PYTEST_EXIT_1"
             else:

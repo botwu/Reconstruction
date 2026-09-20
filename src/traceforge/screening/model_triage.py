@@ -19,7 +19,7 @@ from .contracts import (
     TRIAGE_RESPONSE_SCHEMA,
     DomainRoute,
 )
-from .observable import compact_observable_evidence
+from .observable import ObservableEvidenceError, prepare_model_evidence
 from .rubric import admit_after_tasks, coerce_rubric, empty_rubric
 from .task_labels import normalize_task_labels
 
@@ -186,7 +186,7 @@ def judge_reconstructability(
         },
     )
     try:
-        model_evidence = compact_observable_evidence(evidence)
+        model_evidence = prepare_model_evidence(evidence)
         request = ModelRequest(
             request_id,
             model_name,
@@ -198,7 +198,7 @@ def judge_reconstructability(
         response = model.complete(request)
         payload = parse_json_object(response.text)
         receipt = receipt_for_response(response)
-    except ModelGatewayError as exc:
+    except (ModelGatewayError, ObservableEvidenceError) as exc:
         admitted = admit_after_tasks(
             rule=rule,
             tasks=[],

@@ -168,7 +168,8 @@ def test_pytest_runner_maps_exit_codes(tmp_path):
                 return SimpleNamespace(return_code=0, stdout="a" * 64, stderr="")
             if "pytest" in command:
                 assert "test_ok" in command
-                assert "python3 -m pytest" in command
+                assert "python3 -I -c" in command
+                assert "PYTHONPATH=" not in command
                 assert not re.search(r"(?<![\w/])python -m pytest", command)
             return Result()
         runtime.exec = execute
@@ -220,3 +221,39 @@ def test_verifier_test_mutation_is_infra_and_original_is_preserved(tmp_path):
         finally:
             await runtime.stop()
     run_coro(case())
+
+
+def test_local_exec_runtime_stages_vendor_and_separates_import_infra(tmp_path):
+    from traceforge.reconstruction.agents.sandbox import LocalExecRuntime
+    from traceforge.verifier.grading import prepare_pytest_site
+
+    runtime = LocalExecRuntime(tmp_path / "runtime")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_outputs.py").write_text(
+        "def test_pass():\n"
+        "    assert True\n"
+        "def test_fail():\n"
+        "    assert False\n"
+        "def test_import_infra():\n"
+        "    import definitely_missing_traceforge_dependency\n",
+        encoding="utf-8",
+    )
+
+    async def case():
+        await runtime.start(read_only=True)
+        await runtime.upload_dir(workspace, "/home/user/workspace")
+        vendor_site = prepare_pytest_site(tmp_path / "vendor")
+        await runtime.upload_dir(vendor_site.parent, "/tests")
+        await runtime.upload_dir(tests, "/tests")
+        runs = await pytest_test_runner(
+            runtime,
+            ("test_pass", "test_fail", "test_import_infra"),
+        )
+        assert [run.status for run in runs] == ["PASS", "FAIL", "INFRA_ERROR"]
+        assert runs[2].error_code == "PYTEST_IMPORT_ERROR"
+        await runtime.stop()
+
+    asyncio.run(case())

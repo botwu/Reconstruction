@@ -371,3 +371,37 @@ def test_intent_role_and_prompt_name_the_anchor() -> None:
     assert "Research, forum lookup, production publish" in text
     assert "at least one FILE obligation is required" in text
     assert "do not invent a project" in text.lower() or "When FILE_BINDING_PATHS is empty" in text
+
+
+def test_explicit_bindings_missing_obligation_are_reviewed_not_inferred() -> None:
+    source = {"tool_timeline": _l22_timeline()}
+    allowed = collect_allowed_paths(source, [{"id": "user:1", "text": "修复 Injector.cpp"}])
+    payload = {
+        "task_id": "t-l22",
+        "task_instruction": "修复 Injector.cpp",
+        "core_objective": "修复代码",
+        "acceptance_obligations": [
+            {"id": "obl-001", "text": "提交验收报告", "evidence_ref_ids": ["user:1"]},
+            {"id": "obl-002", "text": "修复代码行为", "evidence_ref_ids": ["user:1"]},
+        ],
+        "environment_bindings": [
+            {
+                "obligation_id": "obl-002",
+                "required_paths": ["Injector.cpp"],
+                "observable": "修复后的行为通过测试",
+                "verifier_kind": "FILE",
+            }
+        ],
+    }
+    status, errors, gated = _gate(
+        payload,
+        {"task_id": "t-l22", "domain_route": "terminal"},
+        {"user:1"},
+        allowed_paths=allowed,
+        user_blob="修复 Injector.cpp",
+        file_binding_paths=collect_file_binding_paths(source),
+    )
+    assert status == "REVIEW"
+    assert "BINDING_REQUIRED:obl-001" in errors
+    assert [item["obligation_id"] for item in gated["environment_bindings"]] == ["obl-002"]
+    assert "obl-001" not in file_obligation_ids(gated)

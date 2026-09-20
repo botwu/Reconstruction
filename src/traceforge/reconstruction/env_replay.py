@@ -33,7 +33,7 @@ _JS_CALL = re.compile(r"tools\.(?:exec_command|shell_command)\s*\(\s*\{", re.I)
 _JS_CMD_KEY = re.compile(r"""(?:['\"]?(?:cmd|command)['\"]?)\s*:\s*(['\"])""")
 _GET_CONTENT = re.compile(r"(?i)\bGet-Content\b")
 _GET_CONTENT_PATH = re.compile(
-    r"(?i)Get-Content\b[^|;]*?-(?:LiteralPath|Path)\s+(?P<path>'[^']+'|\"[^\"]+\"|\S+)"
+    r"(?i)Get-Content\b[^|;]*?-(?:LiteralPath|Path)\s+(?P<path>'[^']+'|\"[^\"]+\"|[^\s|;]+)"
 )
 _GET_CONTENT_BARE = re.compile(
     r"(?i)\bGet-Content\s+(?P<path>'[^']+'|\"[^\"]+\"|[^\s|;]+)"
@@ -194,7 +194,7 @@ def _item_commands(item: dict[str, Any]) -> list[str]:
 def _path_from_args(arguments: Any, workdir: str | None = None) -> str | None:
     if not isinstance(arguments, dict):
         return None
-    for key in ("path", "file_path", "filename", "file"):
+    for key in ("path", "file_path", "filePath", "filename", "file"):
         value = arguments.get(key)
         if isinstance(value, str):
             return _safe_relpath(value, workdir)
@@ -250,6 +250,52 @@ def _unwrap_exec_result(text: str) -> str:
         previous = current
         current = _EXEC_WRAPPER.sub("", current, count=1)
     return current
+
+
+_READ_TOOL_CONTENT = re.compile(
+    r"\A<path>[^\r\n]+</path>\r?\n<type>file</type>\r?\n"
+    r"<content>\r?\n(?P<body>.*?)\r?\n</content>(?:\r?\n|$)",
+    re.S,
+)
+_READ_TOOL_FOOTER = re.compile(
+    r"\r?\n(?:\r?\n)?\((?:Showing lines [^\r\n]+|End of file[^\r\n]*)\)\s*$"
+)
+_NUMBERED_DISPLAY_LINE = re.compile(r"^[ \t]*\d+: ?")
+
+
+def _unwrap_read_tool_result(text: str) -> str | None:
+    """OpenCode 的包装和行号属于展示，不是源码；不完整包装不能成为环境事实。"""
+
+    text = _unwrap_exec_result(text)
+    if not text.startswith("<path>"):
+        return text
+    match = _READ_TOOL_CONTENT.match(text)
+    if match is None:
+        return None
+    body = _READ_TOOL_FOOTER.sub("", match.group("body"))
+    lines = body.splitlines(keepends=True)
+    numbered = [line for line in lines if line.strip()]
+    values = _numbered_line_values(body)
+    if not numbered or not all(_NUMBERED_DISPLAY_LINE.match(line) for line in numbered):
+        return None
+    if any(values[index + 1] <= values[index] for index in range(len(values) - 1)):
+        return None
+    content = "".join(_NUMBERED_DISPLAY_LINE.sub("", line, count=1) for line in lines)
+    return content + ("\n" if content and not content.endswith("\n") else "")
+
+
+def _normalize_numbered_display(text: str, command: str | None = None) -> str:
+    """只对明确的 PowerShell 行号格式还原展示前缀，保留源码缩进。"""
+
+    if not text or not isinstance(command, str):
+        return text
+    if not re.search(r"\{0(?:,\s*\d+)?\}: \{1\}.*?-f\b", command, re.I):
+        return text
+    lines = text.splitlines(keepends=True)
+    numbered = [line for line in lines if line.strip()]
+    if not numbered or not all(_NUMBERED_DISPLAY_LINE.match(line) for line in numbered):
+        return text
+    return "".join(_NUMBERED_DISPLAY_LINE.sub("", line, count=1) for line in lines)
 
 
 def _looks_like_numbered_excerpt(text: str) -> bool:
@@ -513,17 +559,30 @@ def _unknown_looks_like_mutation(command: str) -> bool:
         return True
     # sed 只接受显式的区间打印。w/e/in-place 等脚本即使输出像文件也有副作用。
     if "sed" in heads:
+        # 在引号外分段，避免把 rg 的模式或 sed 的脚本当成独立 shell 命令。
+        lexer = shlex.shlex(text, posix=True, punctuation_chars="|;&")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
         try:
-            tokens = shlex.split(text, posix=True)
+            tokens = list(lexer)
         except ValueError:
             return True
-        if not (
-            len(tokens) == 4
-            and tokens[0] == "sed"
-            and tokens[1] == "-n"
-            and re.fullmatch(r"[0-9]+(?:,[0-9]+)?p", tokens[2])
-        ):
-            return True
+        segments: list[list[str]] = [[]]
+        for token in tokens:
+            if token in {"|", "||", ";", "&&", "&"}:
+                segments.append([])
+            else:
+                segments[-1].append(token)
+        for segment in segments:
+            if not segment or Path(segment[0]).name != "sed":
+                continue
+            if not (
+                len(segment) in {3, 4}
+                and segment[1] == "-n"
+                and re.fullmatch(r"[0-9]+(?:,[0-9]+)?p", segment[2])
+                and (len(segment) == 3 or not segment[3].startswith("-"))
+            ):
+                return True
     return False
 
 
@@ -795,17 +854,18 @@ def normalize_file_ops(timeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 continue
             args = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
             partial = any(key in args for key in ("offset", "limit", "line_start", "line_end"))
+            raw_content = (
+                _unwrap_read_tool_result(item["result_text"])
+                if isinstance(item.get("result_text"), str)
+                else item.get("result_text")
+            )
             ops.append(
                 {
                     "kind": "read",
                     "path": path,
                     "event_id": event_id,
                     "partial": partial,
-                    "content": (
-                        _unwrap_exec_result(item["result_text"])
-                        if isinstance(item.get("result_text"), str)
-                        else item.get("result_text")
-                    ),
+                    "content": raw_content,
                 }
             )
             continue
@@ -1110,6 +1170,7 @@ def replay_from_timeline(
                 {"path": path, "reason": "read_result_missing", "source_event_id": event_id}
             )
             continue
+        text = _normalize_numbered_display(text, str(op.get("command") or ""))
         text = _unwrap_exec_result(text)
         completeness = "PARTIAL" if op.get("partial") else "COMPLETE"
         if completeness == "PARTIAL":
