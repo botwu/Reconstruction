@@ -68,6 +68,7 @@ class HarborRolloutConfig:
     trials: int = 1
     concurrency: int = 1
     timeout_seconds: int = 900
+    agent_max_iterations: int = 30
     expected_hermes_commit: str | None = None
 
     def validate(self) -> None:
@@ -77,6 +78,8 @@ class HarborRolloutConfig:
             raise HarborRolloutError("trials/concurrency 必须满足 1 <= concurrency <= trials")
         if self.timeout_seconds < 1:
             raise HarborRolloutError("timeout_seconds 必须大于 0")
+        if self.agent_max_iterations < 1:
+            raise HarborRolloutError("agent_max_iterations 必须大于 0")
         if not self.model.strip():
             raise HarborRolloutError("model 不能为空")
         if self.agent_mode == "hermes":
@@ -118,9 +121,14 @@ def _safe_name(value: str) -> str:
     return "".join(char if char.isalnum() or char in "-_" else "_" for char in value).strip()
 
 
+def redact_harbor_output(value: str) -> str:
+    """对有限长度 Harbor 输出做凭据脱敏；调用方负责限制总长度。"""
+    return _SECRET_OUTPUT_RE.sub("[REDACTED]", value)
+
+
 def _redact_output(value: str) -> str:
     """Bounded Harbor logs may contain credentials; never persist them."""
-    return _SECRET_OUTPUT_RE.sub("[REDACTED]", value)
+    return redact_harbor_output(value)
 
 
 def _materialize_dataset(
@@ -352,6 +360,74 @@ def _rewrite_extra_instruction_paths(rendered: str, harbor_root: Path) -> str:
     return rewritten if count == 1 else rendered
 
 
+def _bind_environment_timeouts(rendered: str, timeout_seconds: int) -> str:
+    """让 AGS 长命令与声明的 rollout 预算一致，避免默认 120 秒提前中断。"""
+    pattern = r"(?ms)^environment:[ \t]*\n.*?(?=^\S|\Z)"
+    blocks = list(re.finditer(pattern, rendered))
+    if len(blocks) != 1:
+        raise HarborRolloutError("Harbor 配置必须包含唯一 environment 块")
+    block = blocks[0]
+    body = block.group(0)
+    anchor = re.search(r"(?m)^([ \t]+)sandbox_timeout_sec:.*$", body)
+    if anchor is None:
+        raise HarborRolloutError("Harbor environment 缺少 sandbox_timeout_sec")
+    indent = anchor.group(1)
+    body = re.sub(
+        rf"(?m)^{indent}(?:request_timeout_sec|transfer_timeout_sec):[^\n]*\n?",
+        "",
+        body,
+    )
+    lines = "\n".join(
+        f"{indent}{key}: {timeout_seconds}"
+        for key in ("sandbox_timeout_sec", "request_timeout_sec", "transfer_timeout_sec")
+    )
+    body, count = re.subn(rf"(?m)^{indent}sandbox_timeout_sec:.*$", lines, body)
+    if count != 1:
+        raise HarborRolloutError("Harbor environment 的 sandbox_timeout_sec 必须唯一")
+    return rendered[:block.start()] + body + rendered[block.end():]
+
+
+def _bind_agent_budgets(rendered: str, iterations: int, timeout_seconds: int) -> str:
+    """把时间和轮次限制写入唯一 agent，避免误改 environment 的同名字段。"""
+    blocks = list(re.finditer(r"(?ms)^agents:[ \t]*\n.*?(?=^\S|\Z)", rendered))
+    if len(blocks) != 1:
+        raise HarborRolloutError("Harbor 配置必须包含唯一 agents 块")
+    block = blocks[0]
+    body = block.group(0)
+    agents = list(re.finditer(r"(?m)^([ \t]+)-[ \t]+(?:import_path|name):", body))
+    if len(agents) != 1:
+        raise HarborRolloutError("Harbor 配置必须包含唯一 agent")
+    indent = agents[0].group(1) + "  "
+    timeout_pattern = rf"(?m)^{indent}override_timeout_sec:[^\n]*$"
+    if re.search(timeout_pattern, body):
+        body = re.sub(timeout_pattern, f"{indent}override_timeout_sec: {timeout_seconds}", body)
+    else:
+        body = body.rstrip() + f"\n{indent}override_timeout_sec: {timeout_seconds}\n"
+    kwargs_pattern = rf"(?m)^{indent}kwargs:[ \t]*$"
+    kwargs = re.search(kwargs_pattern, body)
+    if kwargs is None:
+        body = body.rstrip() + f"\n{indent}kwargs:\n{indent}  max_iterations: {iterations}\n"
+    else:
+        # 仅在当前 kwargs 的直属字段中改写，不能匹配 env 映射里的内容。
+        tail = body[kwargs.end():]
+        boundary = re.search(rf"(?m)^{indent}\S", tail)
+        finish = kwargs.end() + boundary.start() if boundary else len(body)
+        contents = body[kwargs.end():finish]
+        pattern = rf"(?m)^{indent}  max_iterations:[^\n]*$"
+        if re.search(pattern, contents):
+            contents = re.sub(pattern, f"{indent}  max_iterations: {iterations}", contents)
+        else:
+            contents = f"\n{indent}  max_iterations: {iterations}" + contents
+        body = body[:kwargs.end()] + contents + body[finish:]
+    return rendered[:block.start()] + body + rendered[block.end():]
+
+
+def _job_timeout_seconds(trials: int, concurrency: int, agent_timeout_seconds: int) -> int:
+    """为串/并行 trials 预留每个 agent 外的建环境与清理时间。"""
+    batches = (trials + concurrency - 1) // concurrency
+    return batches * (agent_timeout_seconds + 900) + 60
+
+
 def _render_harbor_config(
     *,
     source: Path,
@@ -362,6 +438,7 @@ def _render_harbor_config(
     model: str,
     concurrency: int,
     timeout_seconds: int,
+    agent_max_iterations: int,
     expected_hermes_commit: str | None,
 ) -> str:
     """从已验收配置派生本次冻结配置，并覆盖显式运行参数。"""
@@ -380,7 +457,6 @@ def _render_harbor_config(
     replacements = {
         r"(?m)^jobs_dir:.*$": f"jobs_dir: {json.dumps(str(jobs_root))}",
         r"(?m)^n_concurrent_trials:.*$": f"n_concurrent_trials: {concurrency}",
-        r"(?m)^(\s+sandbox_timeout_sec:).*$": rf"\g<1> {timeout_seconds}",
     }
     if agent_mode == "hermes":
         replacements[r"(?m)^(\s+model_name:).*$"] = rf"\g<1> {json.dumps(model)}"
@@ -405,6 +481,9 @@ def _render_harbor_config(
             rendered,
             count=1,
         )
+    if agent_mode == "hermes":
+        rendered = _bind_agent_budgets(rendered, agent_max_iterations, timeout_seconds)
+    rendered = _bind_environment_timeouts(rendered, timeout_seconds)
     return _rewrite_extra_instruction_paths(rendered, harbor_root)
 
 
@@ -436,6 +515,8 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
             "model": config.model,
             "trials": config.trials,
             "concurrency": config.concurrency,
+            "timeout_seconds": config.timeout_seconds,
+            "agent_max_iterations": config.agent_max_iterations,
             "expected_hermes_commit": config.expected_hermes_commit,
         },
     )
@@ -457,6 +538,7 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
             model=config.model,
             concurrency=config.concurrency,
             timeout_seconds=config.timeout_seconds,
+            agent_max_iterations=config.agent_max_iterations,
             expected_hermes_commit=config.expected_hermes_commit,
         )
         (workspace.staging_path / "harbor-config.yaml").write_text(
@@ -489,7 +571,14 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
                 "trials": config.trials,
                 "concurrency": config.concurrency,
                 "timeout_seconds": config.timeout_seconds,
+                "max_iterations": config.agent_max_iterations,
                 "expected_hermes_commit": config.expected_hermes_commit,
+            },
+            "timeouts": {
+                "agent_timeout_seconds": config.timeout_seconds,
+                "job_timeout_seconds": _job_timeout_seconds(
+                    config.trials, config.concurrency, config.timeout_seconds
+                ),
             },
             "verifier": {
                 "environment_mode": "separate",
@@ -622,7 +711,7 @@ def _assert_plan_integrity(plan_dir: Path, plan: dict[str, Any]) -> None:
 def execute_rollout_plan(
     plan_dir: Path,
     *,
-    timeout_seconds: int = 900,
+    timeout_seconds: int | None = None,
     config_path: Path | None = None,
     channel: str | None = None,
 ) -> dict[str, Any]:
@@ -637,6 +726,15 @@ def execute_rollout_plan(
         raise HarborRolloutError("rollout plan schema 不匹配")
     _assert_plan_integrity(plan_dir, plan)
     command = plan["command"]
+    if timeout_seconds is None:
+        timeouts = plan.get("timeouts")
+        timeout_seconds = (
+            int(timeouts["job_timeout_seconds"])
+            if isinstance(timeouts, dict) and isinstance(timeouts.get("job_timeout_seconds"), int)
+            else int((plan.get("agent") or {}).get("timeout_seconds", 900))
+        )
+    if timeout_seconds < 1:
+        raise HarborRolloutError("执行 timeout_seconds 必须大于 0")
     agent = plan.get("agent")
     mode = agent.get("mode") if isinstance(agent, dict) else "hermes"
     env = _prepare_execution_env(str(mode), config_path=config_path, channel=channel)

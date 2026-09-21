@@ -90,6 +90,7 @@ def test_prepare_rollout_materializes_dataset_without_executing(
     assert "n_concurrent_trials: 2" in config_text
     assert "n_concurrent: 2" in config_text
     assert "n_concurrent: 8" not in config_text
+    assert "max_iterations: 30" in config_text
     assert f"job_name: {json.dumps(plan['job_name'])}" in config_text
     assert plan["job_name"] == plan["run_id"]
     assert 'model_name: "anthropic/claude-opus-4-8"' in config_text
@@ -303,3 +304,39 @@ def test_execute_rollout_loads_ags_and_channel_from_config(
     plan_text = (output / "rollout_plan.json").read_text()
     assert "e2b_unit_test_sandbox_key" not in plan_text
     assert "unit-tokenhub-key" not in plan_text
+
+
+@pytest.mark.parametrize("existing", ["", "    request_timeout_sec: 120\n    transfer_timeout_sec: 120\n"])
+def test_rollout_binds_ags_command_and_request_timeouts(tmp_path: Path, existing: str) -> None:
+    harbor = _harbor_root(tmp_path / "harbor")
+    source = harbor / "configs/hermes-batch.yaml"
+    source.write_text(source.read_text() + existing + "verifier:\n  timeout_sec: 30\n")
+    output = build_rollout_plan(
+        HarborRolloutConfig(
+            task_dir=_bundle(tmp_path / "task"),
+            harbor_root=harbor,
+            output_root=tmp_path / "plans",
+            jobs_root=tmp_path / "jobs",
+            timeout_seconds=720,
+        )
+    )
+    rendered = (output / "harbor-config.yaml").read_text()
+    for field in ("sandbox_timeout_sec", "request_timeout_sec", "transfer_timeout_sec"):
+        assert rendered.count(f"{field}: 720") == 1
+    assert "timeout_sec: 120" not in rendered
+    assert "verifier:\n  timeout_sec: 30" in rendered
+
+
+def test_rollout_rejects_timeout_outside_environment(tmp_path: Path) -> None:
+    harbor = _harbor_root(tmp_path / "harbor")
+    source = harbor / "configs/hermes-batch.yaml"
+    source.write_text(source.read_text().replace("environment:", "unrelated:"))
+    with pytest.raises(HarborRolloutError, match="environment"):
+        build_rollout_plan(
+            HarborRolloutConfig(
+                task_dir=_bundle(tmp_path / "task"),
+                harbor_root=harbor,
+                output_root=tmp_path / "plans",
+                jobs_root=tmp_path / "jobs",
+            )
+        )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,36 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise HarborResultError(f"JSON 根节点必须是对象：{path}")
     return value
+
+
+_SECRET_RE = re.compile(r"(?i)(?:authorization\s*:\s*bearer\s+|(?:api[_-]?key|token|secret|password)\s*[=:]\s*)([^\s,;]+)|\bsk-[A-Za-z0-9_-]{12,}\b")
+
+
+def _redact_detail(value: str) -> str:
+    return _SECRET_RE.sub("[REDACTED]", value[-1200:])
+
+
+def _trial_diagnostic(trial_dir: Path, result: dict[str, Any]) -> dict[str, str]:
+    """保留短的失败原因，避免只暴露 TrajectoryCaptureError 包装层。"""
+    diagnostic: dict[str, str] = {}
+    exception = result.get("exception_info")
+    if isinstance(exception, dict):
+        kind = exception.get("exception_type")
+        message = exception.get("exception_message")
+        if isinstance(kind, str) and kind:
+            diagnostic["error_code"] = kind
+        if isinstance(message, str) and message:
+            diagnostic["error_detail"] = _redact_detail(message)
+    try:
+        payload = json.loads((trial_dir / "agent/hermes-result.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        payload = None
+    meta = payload.get("meta") if isinstance(payload, dict) else None
+    if isinstance(meta, dict) and meta.get("failed") is True:
+        final_response = meta.get("final_response")
+        if isinstance(final_response, str) and final_response:
+            diagnostic["agent_error"] = _redact_detail(final_response)
+    return diagnostic
 
 
 def _duration_seconds(value: dict[str, Any]) -> float | None:
@@ -241,6 +272,7 @@ def read_rollout_results(
             "output": agent_result.get("n_output_tokens"),
         }
         content_valid, content_errors = _validate_hermes_artifacts(trial_dir) if hermes_artifacts else (True, [])
+        diagnostic = _trial_diagnostic(trial_dir, result)
         trials.append(
             {
                 "trial_name": trial_dir.name,
@@ -256,6 +288,7 @@ def read_rollout_results(
                 "duration_seconds": _duration_seconds(result),
                 "result_path": str(result_path),
                 "verdict_path": str(verdict_path) if verdict_path.is_file() else None,
+                **diagnostic,
             }
         )
     trial_count_mismatch = False

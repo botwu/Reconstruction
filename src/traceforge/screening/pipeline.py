@@ -25,10 +25,10 @@ from .contracts import (
     ScreeningDecision,
 )
 from .model_triage import judge_reconstructability
-from .task_labels import build_session_tags
-from .observable import build_observable_evidence
+from .observable import DEFAULT_MAX_INPUT_CHARS, build_observable_evidence
 from .rules import decide_rule
 from .scan import scan_source_record
+from .task_labels import build_session_tags
 
 
 class ScreeningInputError(ValueError):
@@ -44,8 +44,14 @@ def run_reconstruction_screening(
     model: ChatModel | None = None,
     model_name: str = "claude-opus-4-8",
     concurrency: int = 8,
+    max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
+    max_messages_for_triage: int = 200,
+    max_source_requests_for_triage: int = 20,
 ) -> Path:
-    """扫描原始 session JSONL。未注入模型时只做规则分流，不编译轨迹。"""
+    """扫描原始 session JSONL。未注入模型时只做规则分流，不编译轨迹。
+
+    消息数 / 来源请求数只记入清单，不再把超长对话挡在模型细筛之外。
+    """
 
     source = Path(input_path)
     if not source.is_file():
@@ -56,6 +62,10 @@ def run_reconstruction_screening(
         raise ScreeningInputError("limit 必须大于 0")
     if concurrency < 1:
         raise ScreeningInputError("concurrency 必须大于 0")
+    if max_input_chars < 1:
+        raise ScreeningInputError("max_input_chars 必须大于 0")
+    if max_messages_for_triage < 1 or max_source_requests_for_triage < 1:
+        raise ScreeningInputError("screening triage limits must be positive")
 
     jobs: list[dict[str, Any]] = []
     kept = 0
@@ -87,11 +97,15 @@ def run_reconstruction_screening(
         workers = min(concurrency, len(needs_model))
         if workers == 1:
             for index in needs_model:
-                jobs[index]["triage"] = _triage_job(jobs[index], model, model_name)
+                jobs[index]["triage"] = _triage_job(
+                    jobs[index], model, model_name, max_input_chars
+                )
         else:
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
-                    pool.submit(_triage_job, jobs[index], model, model_name): index
+                    pool.submit(
+                        _triage_job, jobs[index], model, model_name, max_input_chars
+                    ): index
                     for index in needs_model
                 }
                 for future, index in futures.items():
@@ -119,6 +133,9 @@ def run_reconstruction_screening(
             "model": model_name if model is not None else None,
             "prompt_version": TRIAGE_PROMPT_VERSION if model is not None else None,
             "concurrency": concurrency if model is not None else 1,
+            "max_input_chars": max_input_chars,
+            "max_messages_for_triage": max_messages_for_triage,
+            "max_source_requests_for_triage": max_source_requests_for_triage,
         },
     )
     workspace = ArtifactWorkspace(Path(output_root), run_id)
@@ -149,8 +166,12 @@ def run_reconstruction_screening(
                     "model_name": model_name if model is not None else None,
                     "prompt_version": TRIAGE_PROMPT_VERSION if model is not None else None,
                     "concurrency": concurrency if model is not None else 1,
+                    "max_input_chars": max_input_chars,
+                    "max_messages_for_triage": max_messages_for_triage,
+                    "max_source_requests_for_triage": max_source_requests_for_triage,
                     "downstream": "ELIGIBLE_ONLY",
-                "eligible_requires": {
+                    "cost_defer_long_sessions": False,
+                    "eligible_requires": {
                         "any_task_passes": True,
                         "task_labels": "v10 stable task_id/is_actionable/evidence_refs/relations",
                         "primary": "valid_task_and_not_done_well",
@@ -181,6 +202,9 @@ def run_reconstruction_screening(
                 ),
                 "model_call_count": len(needs_model),
                 "concurrency": concurrency if model is not None else 1,
+                "max_input_chars": max_input_chars,
+                "max_messages_for_triage": max_messages_for_triage,
+                "max_source_requests_for_triage": max_source_requests_for_triage,
             },
         ),
     ]
@@ -195,12 +219,17 @@ def run_reconstruction_screening(
     return workspace.publish()
 
 
-def _triage_job(job: dict[str, Any], model: ChatModel, model_name: str) -> dict[str, Any]:
+def _triage_job(
+    job: dict[str, Any], model: ChatModel, model_name: str, max_input_chars: int
+) -> dict[str, Any]:
     return judge_reconstructability(
-        evidence=build_observable_evidence(job["raw_line"], job["features"]),
+        evidence=build_observable_evidence(
+            job["raw_line"], job["features"], max_input_chars=max_input_chars
+        ),
         rule=job["rule"],
         model=model,
         model_name=model_name,
+        max_input_chars=max_input_chars,
     )
 
 

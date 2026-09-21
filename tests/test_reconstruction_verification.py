@@ -8,9 +8,11 @@ from traceforge.reconstruction.model_gateway import ModelRequest, ModelResponse
 import pytest
 
 from traceforge.reconstruction.verification import (
+    HarborCalibrationExecutor,
     VerificationConfig,
     run_reconstruction_verification,
     verifier_task,
+    write_execution_manifest,
 )
 from traceforge.reconstruction.verifier_recovery import run_verifier_recovery
 
@@ -83,6 +85,37 @@ class FakeVerifierModel:
         return ModelResponse(request.request_id, request.model, "fake", json.dumps(payload), 1, 0.01)
 
 
+def test_calibration_feedback_contains_failed_test_diagnostics(tmp_path: Path) -> None:
+    verdict = tmp_path / "verdict.json"
+    verdict.write_text(
+        json.dumps(
+            {
+                "exit_code": 1,
+                "tests": [
+                    {"name": "test_missing", "status": "PASS"},
+                    {"name": "test_protective", "status": "FAIL"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    diagnostics = HarborCalibrationExecutor._failure_diagnostics(
+        {
+            "results": {
+                "quality_gate": {"ok": False, "errors": ["TASK_FAIL"]},
+                "trials": [
+                    {"status": "FAIL", "reward": 0.0, "verdict_path": str(verdict)}
+                ],
+            }
+        }
+    )
+    assert diagnostics["trials"][0]["tests"] == [
+        {"name": "test_missing", "status": "PASS"},
+        {"name": "test_protective", "status": "FAIL"},
+    ]
+    assert diagnostics["quality_gate"] == {"ok": False, "errors": ["TASK_FAIL"]}
+
+
 def test_plan_only_verification_never_marks_ready(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -113,6 +146,11 @@ def test_plan_only_verification_never_marks_ready(tmp_path: Path) -> None:
     assert manifest["compile_status_immutable"] is True
     assert manifest["red_status"] == "NOT_RUN"
     assert manifest["certification_closed"] is False
+    assert "same_model_across_reconstruction_roles" not in manifest
+    assert manifest["roles"] == {
+        "verifier": "claude-opus-4-8",
+        "rollout": "anthropic/claude-opus-4-8",
+    }
 
 
 def test_verification_config_requires_two_replay_trials(tmp_path: Path) -> None:
@@ -230,3 +268,39 @@ def test_host_verifier_ast_stays_pending_execution(tmp_path: Path) -> None:
     )
     assert result["status"] == "PENDING_EXECUTION"
     assert result["calibration"] == "NOT_RUN"
+
+
+
+def test_manifest_requires_rollout_and_complete_obligations(tmp_path: Path) -> None:
+    config = VerificationConfig(
+        harbor_root=tmp_path / "harbor",
+        model_name="claude-opus-4-8",
+        rollout_model="anthropic/claude-opus-4-8",
+        rollout_trials=2,
+    )
+    base = {
+        "status": "READY",
+        "calibration": "PASS",
+        "errors": [],
+        "unverified_obligations": ["obl-001"],
+        "rollout": {
+            "results": {
+                "quality_gate": {"ok": True},
+                "trials": [
+                    {"status": "PASS", "reward": 1.0},
+                    {"status": "PASS", "reward": 1.0},
+                ],
+            }
+        },
+        "sft_eligible": False,
+    }
+    write_execution_manifest(tmp_path, base, config)
+    manifest = json.loads((tmp_path / "execution_manifest.json").read_text())
+    assert manifest["certification_closed"] is False
+    assert manifest["sft_eligible"] is False
+    base["unverified_obligations"] = []
+    base["sft_eligible"] = True
+    write_execution_manifest(tmp_path, base, config)
+    manifest = json.loads((tmp_path / "execution_manifest.json").read_text())
+    assert manifest["certification_closed"] is False
+    assert manifest["sft_eligible"] is True

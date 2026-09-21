@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import ast
 import hashlib
 import json
-import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -17,116 +15,19 @@ from traceforge.trajectory.artifacts import (
     write_json_artifact,
 )
 
-from .synthesis import VerifierCandidate
+from .synthesis import VerifierCandidate, is_python_solution, validate_solution_scripts
 
-_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v2-python-entrypoint"
-_PYTHON_SHEBANG = re.compile(
-    r"^#!\s*(?:/usr/bin/env(?:\s+-S)?\s+)?(?:\S*/)?"
-    r"(?:python(?:\d+(?:\.\d+)*)?|pypy(?:\d+(?:\.\d+)*)?)\b",
-    re.IGNORECASE,
-)
-_SHELL_COMMANDS = frozenset(
-    {
-        "[",
-        "awk",
-        "bash",
-        "cat",
-        "cd",
-        "command",
-        "cp",
-        "echo",
-        "env",
-        "exec",
-        "exit",
-        "false",
-        "fi",
-        "for",
-        "function",
-        "git",
-        "grep",
-        "if",
-        "install",
-        "make",
-        "mkdir",
-        "mv",
-        "node",
-        "perl",
-        "printf",
-        "python",
-        "python3",
-        "rm",
-        "sed",
-        "set",
-        "sh",
-        "source",
-        "tee",
-        "test",
-        "then",
-        "touch",
-        "true",
-        "trap",
-        "unset",
-        "until",
-        "while",
-        "zsh",
-    }
-)
+_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v3-workspace-contract"
+def _make_workspace_solver_writable(workspace: Path) -> None:
+    """让 AGS 中以普通 user 运行的 oracle/Hermes 能修改公开 workspace。"""
 
-
-def _first_code_line(script: str) -> str:
-    for line in script.splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#"):
-            return stripped
-    return ""
-
-
-def _is_python_solution(script: str) -> bool:
-    """Classify a direct Python file without mistaking shell heredocs for Python."""
-
-    stripped = script.lstrip()
-    if not stripped:
-        return False
-    first_line = stripped.splitlines()[0].strip()
-    if _PYTHON_SHEBANG.match(first_line):
-        return True
-    first_code = _first_code_line(script)
-    if not first_code:
-        return False
-    first_word = first_code.split(None, 1)[0].lower()
-    if first_word in _SHELL_COMMANDS or first_code.startswith(("$", "#!")):
-        return False
-    try:
-        tree = ast.parse(script)
-    except SyntaxError:
-        return False
-    # A bare shell builtin (for example echo) is valid Python syntax as a
-    # name expression. Python solutions generally contain an executable AST
-    # node; accepting those nodes also covers print(...) and Path(...).
-    return any(
-        isinstance(
-            node,
-            (
-                ast.Call,
-                ast.Import,
-                ast.ImportFrom,
-                ast.Assign,
-                ast.AnnAssign,
-                ast.AugAssign,
-                ast.FunctionDef,
-                ast.AsyncFunctionDef,
-                ast.ClassDef,
-                ast.With,
-                ast.AsyncWith,
-                ast.For,
-                ast.AsyncFor,
-                ast.While,
-                ast.Try,
-                ast.If,
-            ),
-        )
-        for node in ast.walk(tree)
-    )
+    paths = [workspace, *workspace.rglob("*")]
+    for path in sorted(paths, key=lambda item: (not item.is_dir(), item.as_posix())):
+        try:
+            mode = path.stat().st_mode
+            path.chmod(mode | (0o777 if path.is_dir() else 0o666))
+        except OSError as exc:
+            raise ValueError(f"无法设置 workspace 写权限: {path}") from exc
 
 
 def compile_bundle(
@@ -194,6 +95,7 @@ def compile_bundle(
     if index < 0 or index >= len(variants):
         raise ValueError("参考解索引超出范围")
     variant = variants[index]
+    validate_solution_scripts(verifier.oracle_solutions, verifier.mutation_solutions)
     digest = hashlib.sha256(
         json.dumps(
             {
@@ -222,6 +124,7 @@ def compile_bundle(
     try:
         root = artifact.staging_path / "task"
         shutil.copytree(workspace_root, root / "workspace")
+        _make_workspace_solver_writable(root / "workspace")
         for name in ("environment", "solution", "tests/control"):
             (root / name).mkdir(parents=True, exist_ok=True)
         if hidden_source is not None:
@@ -248,18 +151,18 @@ def compile_bundle(
             "pytest 由 tests/vendor 离线提供，verifier 无网。\n",
             encoding="utf-8",
         )
-        if _is_python_solution(variant.script):
+        if is_python_solution(variant.script):
             (root / "solution/solve.py").write_text(
                 variant.script.rstrip() + "\n",
                 encoding="utf-8",
             )
             (root / "solution/solve.py").chmod(0o755)
             solve_script = (
-                "#!/bin/sh\nset -eu\ncd /home/user/workspace\n"
+                "#!/bin/sh\nset -eu\ncd /home/user/workspace\nexport TRACEFORGE_WORKSPACE=/home/user/workspace\n"
                 "exec python3 /solution/solve.py\n"
             )
         else:
-            solve_script = "#!/bin/sh\nset -eu\ncd /home/user/workspace\n" + variant.script + "\n"
+            solve_script = "#!/bin/sh\nset -eu\ncd /home/user/workspace\nexport TRACEFORGE_WORKSPACE=/home/user/workspace\n" + variant.script + "\n"
         (root / "solution/solve.sh").write_text(solve_script, encoding="utf-8")
         (root / "solution/solve.sh").chmod(0o755)
         (root / "tests/test_outputs.py").write_text(verifier.test_outputs_py, encoding="utf-8")

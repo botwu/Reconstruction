@@ -131,6 +131,12 @@ def _iter_config_items(path: str | os.PathLike[str]) -> list[tuple[str, Any]]:
     return items
 
 
+def iter_config_items(path: str | os.PathLike[str]) -> list[tuple[str, Any]]:
+    """Return parsed top-level config entries without exposing credentials in logs."""
+
+    return _iter_config_items(path)
+
+
 def _config_channels(path: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
     """读取 ``newapi_channel_conn`` 配置而不将密钥写入日志或 artifact。
 
@@ -586,6 +592,7 @@ __all__ = [
     "Transport",
     "build_chat_model",
     "CHANNEL_MODEL_DEFAULTS",
+    "iter_config_items",
     "load_channel_connection",
     "load_channel_model",
     "load_e2b_api_key",

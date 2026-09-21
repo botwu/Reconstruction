@@ -148,3 +148,147 @@ def test_quoted_export_command_substitution_remains_a_mutation_barrier() -> None
         item.get("reason") in {"read_after_unparsed_mutation", "read_after_first_mutation"}
         for item in replay.partial_evidence
     )
+
+
+def test_native_read_tool_error_does_not_shadow_later_source_read() -> None:
+    replay = replay_from_timeline([
+        {
+            "call_id": "bad",
+            "name": "Read",
+            "arguments": {
+                "file_path": "/work/main.py",
+                "offset": 1,
+                "limit": 20,
+                "pages": "",
+                "workdir": "/work",
+            },
+            "result_text": (
+                '<tool_use_error>Invalid pages parameter: "". '
+                "Use formats like 1-5.</tool_use_error>"
+            ),
+        },
+        {
+            "call_id": "cleared",
+            "name": "Read",
+            "status": "cleared",
+            "arguments": {
+                "file_path": "/work/main.py",
+                "offset": 1,
+                "limit": 20,
+                "workdir": "/work",
+            },
+            "result_text": "[tool result content cleared]",
+        },
+        {
+            "call_id": "good",
+            "name": "Read",
+            "arguments": {
+                "file_path": "/work/main.py",
+                "offset": 1,
+                "limit": 20,
+                "pages": "1",
+                "workdir": "/work",
+            },
+            "result_text": "1\tdef main():\n2\t    return 1\n3\t",
+        },
+    ])
+    assert [item.path for item in replay.files] == ["main.py"]
+    assert replay.files[0].content == "def main():\n    return 1\n"
+    assert replay.files[0].completeness == "PARTIAL"
+    assert not any(item.get("path") == "main.py" and item.get("reason") == "read_result_missing"
+                   for item in replay.partial_evidence)
+
+
+def test_native_read_numbering_preserves_source_tabs_and_indent() -> None:
+    replay = replay_from_timeline([{
+        "call_id": "read",
+        "name": "Read",
+        "arguments": {
+            "file_path": "/work/main.py", "offset": 1, "limit": 3, "workdir": "/work"
+        },
+        "result_text": "1\tif ready:\n2\t    return\tvalue\n3\t",
+    }])
+    assert replay.files[0].content == "if ready:\n    return\tvalue\n"
+
+
+def test_quoted_grep_pattern_is_not_a_redirect_target() -> None:
+    replay = replay_from_timeline([{
+        "call_id": "grep",
+        "name": "exec",
+        "arguments": {
+            "command": (
+                'rg -n "#include <fstream>|#include <sstream>" '
+                "mc_core/task.cpp"
+            )
+        },
+        "result_text": "mc_core/task.cpp:3:#include <fstream>\n",
+    }])
+    assert replay.withheld_changes == ()
+    assert not any(item.get("path") == "|#include" for item in replay.partial_evidence)
+    assert list(replay.unknown_mutation_barriers) == ["grep"]
+
+
+def _wrapped_read(start: int, end: int, total: int, lines: str, *, call_id: str) -> dict[str, object]:
+    footer = (
+        f"(End of file - total {total} lines)"
+        if end == total
+        else f"(Showing lines {start}-{end} of {total}. Use offset={end + 1} to continue.)"
+    )
+    return {
+        "call_id": call_id,
+        "name": "Read",
+        "arguments": {
+            "file_path": "/work/segmented.py",
+            "offset": start,
+            "limit": end - start + 1,
+            "workdir": "/work",
+        },
+        "result_text": (
+            "<path>/work/segmented.py</path>\n<type>file</type>\n<content>\n"
+            + lines
+            + f"\n{footer}\n</content>"
+        ),
+    }
+
+
+def test_native_read_segments_merge_only_on_complete_consistent_coverage() -> None:
+    first = "".join(f"{line}: line-{line}\n" for line in range(1, 4))
+    second = "".join(f"{line}: line-{line}\n" for line in range(3, 6))
+    replay = replay_from_timeline([
+        _wrapped_read(1, 3, 5, first, call_id="first"),
+        _wrapped_read(3, 5, 5, second, call_id="second"),
+    ])
+    assert replay.files[0].completeness == "COMPLETE"
+    assert replay.files[0].content == "".join(f"line-{line}\n" for line in range(1, 6))
+
+
+def test_native_read_segments_with_gap_remain_partial_and_auditable() -> None:
+    first = "".join(f"{line}: line-{line}\n" for line in range(1, 3))
+    last = "".join(f"{line}: line-{line}\n" for line in range(4, 6))
+    replay = replay_from_timeline([
+        _wrapped_read(1, 2, 5, first, call_id="first"),
+        _wrapped_read(4, 5, 5, last, call_id="last"),
+    ])
+    assert len(replay.files) == 1
+    assert replay.files[0].completeness == "PARTIAL"
+    segment_ids = {
+        item["source_event_id"]
+        for item in replay.partial_evidence
+        if item.get("reason") == "read_segment"
+    }
+    assert segment_ids == {"first", "last"}
+
+
+def test_native_read_segments_conflict_stays_partial() -> None:
+    first = "1: alpha\n2: beta\n"
+    second = "2: changed\n3: gamma\n"
+    replay = replay_from_timeline([
+        _wrapped_read(1, 2, 3, first, call_id="first"),
+        _wrapped_read(2, 3, 3, second, call_id="second"),
+    ])
+    assert len(replay.files) == 1
+    assert replay.files[0].completeness == "PARTIAL"
+    assert any(
+        item.get("reason") == "read_segment_conflict"
+        for item in replay.partial_evidence
+    )

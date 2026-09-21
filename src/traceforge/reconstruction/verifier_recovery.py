@@ -102,6 +102,14 @@ def run_verifier_recovery(
             "Iterate tests from actual tool feedback until at least one missing-capability test FAILs and every protective test PASSes on the current completed workspace (bE).",
             "Do not write existence-only missing tests; asserting that a binding file exists is not a missing capability.",
             "Reference scripts must implement only the task obligations and preserve user prohibitions.",
+            "Each oracle is an independent COMPLETE solution of ALL FILE obligations, not a component of a combined solution. The name is a label, not a destination filename.",
+            "Return executable workspace-editing installers, not source files meant to be installed. Prefer Python standard-library Path.write_text with repr-escaped content. Do not import ROS/simulation dependencies or start target services merely to install code.",
+            "The runner exports TRACEFORGE_WORKSPACE=/home/user/workspace. Both oracles and mutations must finish with exit code 0. A crash, ImportError, missing environment variable, permission or syntax error is not a valid semantic mutation.",
+            "Test requested behavior, using isolated dependency stubs if necessary to exercise real workspace code. Comments, keyword presence and copied expected implementations cannot prove behavior. Never weaken assertions merely to make a reference pass.",
+            "For retries, repair the previous candidate from the concrete process/test feedback; keep valid tests and correct implementations unless evidence requires a change. Read every failure message, run the complete test list after edits, and do not repeat an unchanged script. Generated YAML/configuration must remain syntactically valid with correct indentation; write a quoted `$placeholder` without a backslash.",
+            "Every Python reference or mutation script must be standalone syntactically valid; "
+            "compile it mentally with ast.parse or python -m py_compile, and do not put raw newlines "
+            "inside quoted string literals.",
             "INFRA_ERROR, TIMEOUT, invalid selectors and collection/usage errors are not RED evidence.",
             "Do not modify the workspace or apply a solution. Reference and mutation scripts are private output only.",
             "NON_FILE obligations must not appear in obligation_coverage. Do not invent a new output file or pytest for them.",
@@ -198,6 +206,7 @@ def run_verifier_recovery(
         "prompt_version": VERIFIER_PROMPT_VERSION,
         "status": status,
         "errors": errors,
+        "feedback": {"generation_errors": list(errors), "previous_candidate": payload} if errors else {},
         "unverified_obligations": list(unverified),
         "warnings": audit_warnings,
         "pytest_runs": list(session.pytest_runs),

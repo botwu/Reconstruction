@@ -37,6 +37,12 @@ from traceforge.reconstruction.model_gateway import (
     build_chat_model,
     resolve_model_name,
 )
+from traceforge.reconstruction.run_config import (
+    load_role_settings,
+    load_screening_limits,
+    load_rollout_limits,
+    resolve_role_matrix,
+)
 from traceforge.reconstruction.session_source import (
     ReconstructionSourceError,
     build_reconstruction_source,
@@ -150,7 +156,7 @@ def _parser() -> argparse.ArgumentParser:
         "execute-rollout", help="显式执行已审核的 rollout plan"
     )
     execute_rollout.add_argument("--plan-dir", type=Path, required=True)
-    execute_rollout.add_argument("--timeout-seconds", type=int, default=900)
+    execute_rollout.add_argument("--timeout-seconds", type=int, default=None)
     execute_rollout.add_argument(
         "--config",
         type=Path,
@@ -194,11 +200,21 @@ def _parser() -> argparse.ArgumentParser:
         "--line-number", type=int, required=True, help="要重建的原始 JSONL 行号"
     )
     reconstruct_run.add_argument("--output", type=Path, required=True, help="重建输出目录")
-    reconstruct_run.add_argument("--model-name", default="claude-opus-4-8")
     reconstruct_run.add_argument(
-        "--config", type=Path, required=True, help="给 Hermes Agent 配模型的 config.yaml"
+        "--model-name",
+        default=None,
+        help="兼容覆盖 reconstruction role 的模型；默认从 config.yaml roles 读取",
     )
-    reconstruct_run.add_argument("--channel", default="claude", help="配置中的 channel 名")
+    reconstruct_run.add_argument(
+        "--config", type=Path, required=True, help="给各角色配模型的 config.yaml"
+    )
+    reconstruct_run.add_argument(
+        "--channel",
+        default=None,
+        help="兼容覆盖 reconstruction role 的 channel；默认从 config.yaml roles 读取",
+    )
+    reconstruct_run.add_argument("--verifier-model", default=None)
+    reconstruct_run.add_argument("--verifier-channel", default=None)
     reconstruct_run.add_argument(
         "--hermes-home",
         type=Path,
@@ -229,9 +245,12 @@ def _parser() -> argparse.ArgumentParser:
     reconstruct_run.add_argument(
         "--rollout-model",
         default=None,
-        help="Harbor 的 provider/model；默认由 --channel/--model-name 推导，不伪造 anthropic",
+        help="兼容覆盖 rollout role 的 provider/model；默认从 config.yaml roles 读取",
     )
+    reconstruct_run.add_argument("--rollout-channel", default=None)
     reconstruct_run.add_argument("--rollout-trials", type=int, default=2)
+    reconstruct_run.add_argument("--rollout-timeout-seconds", type=int, default=None)
+    reconstruct_run.add_argument("--rollout-max-iterations", type=int, default=None)
     reconstruct_run.add_argument("--verifier-rounds", type=int, default=2)
 
     screening = commands.add_parser(
@@ -248,14 +267,28 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="只跑规则粗筛，不调用模型；无法产生 ELIGIBLE",
     )
-    screening_run.add_argument("--model-name", default="claude-opus-4-8")
+    screening_run.add_argument(
+        "--model-name",
+        default=None,
+        help="兼容覆盖 screening role 的模型；默认从 config.yaml roles 读取",
+    )
     screening_run.add_argument("--config", type=Path, default=None, help="NewAPI 配置文件（可选）")
-    screening_run.add_argument("--channel", default="deepseek", help="配置中的 channel 名")
+    screening_run.add_argument(
+        "--channel",
+        default=None,
+        help="兼容覆盖 screening role 的 channel；默认从 config.yaml roles 读取",
+    )
     screening_run.add_argument(
         "--concurrency",
         type=int,
         default=8,
         help="模型细筛并发数，默认 8",
+    )
+    screening_run.add_argument(
+        "--max-input-chars",
+        type=int,
+        default=None,
+        help="完整可观察证据上限；默认读取 config.yaml screening.max_input_chars",
     )
 
     requery = commands.add_parser("requery", help="Terminal-Universe C.2/C.3/C.4 任务扩展")
@@ -472,39 +505,70 @@ def main(argv: Sequence[str] | None = None) -> int:
                 line_number=arguments.line_number,
                 line_sha256=str(record.get("line_sha256") or "") or None,
             )
-            resolved_model = resolve_model_name(
-                arguments.model_name,
-                config_path=arguments.config,
-                channel=arguments.channel,
+            matrix = resolve_role_matrix(
+                arguments.config,
+                overrides={
+                    "reconstruction": (arguments.channel, arguments.model_name),
+                    "verifier": (arguments.verifier_channel, arguments.verifier_model),
+                    "rollout": (arguments.rollout_channel, arguments.rollout_model),
+                },
             )
+            reconstruction_role = matrix["reconstruction"]
+            verifier_role = matrix["verifier"]
+            rollout_role = matrix["rollout"]
             resolved_rollout = resolve_rollout_model(
-                arguments.rollout_model,
-                channel=arguments.channel,
-                model_name=resolved_model,
+                rollout_role.model,
+                channel=rollout_role.channel,
+                model_name=rollout_role.model,
+            )
+            arguments.output.mkdir(parents=True, exist_ok=True)
+            (arguments.output / "model_roles.json").write_text(
+                json.dumps(
+                    {name: role.public() for name, role in matrix.items()},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            reconstruction_agent = build_hermes_runtime(
+                config_path=arguments.config,
+                channel=reconstruction_role.channel,
+                model_name=reconstruction_role.model,
+                hermes_home=arguments.hermes_home,
+            )
+            verifier_agent = build_hermes_runtime(
+                config_path=arguments.config,
+                channel=verifier_role.channel,
+                model_name=verifier_role.model,
+                hermes_home=arguments.hermes_home,
             )
             verification_model = build_chat_model(
-                config_path=arguments.config, channel=arguments.channel
+                config_path=arguments.config, channel=verifier_role.channel
+            )
+            rollout_timeout_seconds, rollout_max_iterations = load_rollout_limits(
+                arguments.config,
+                timeout_seconds=arguments.rollout_timeout_seconds,
+                max_iterations=arguments.rollout_max_iterations,
             )
             output_path = run_eligible_reconstruction(
                 raw_line=raw_line,
                 record=record,
-                agent=build_hermes_runtime(
-                    config_path=arguments.config,
-                    channel=arguments.channel,
-                    model_name=resolved_model,
-                    hermes_home=arguments.hermes_home,
-                ),
+                agent=reconstruction_agent,
+                verifier_agent=verifier_agent,
                 verification_model=verification_model,
                 verification_config=VerificationConfig(
                     harbor_root=arguments.harbor_root,
-                    model_name=resolved_model,
+                    model_name=verifier_role.model,
                     rollout_model=resolved_rollout,
                     execute_red=arguments.execute_red,
                     execute_rollout=arguments.execute_rollout,
                     rollout_trials=arguments.rollout_trials,
                     max_rounds=arguments.verifier_rounds,
                     config_path=arguments.config,
-                    channel=arguments.channel,
+                    channel=rollout_role.channel,
+                    timeout_seconds=rollout_timeout_seconds,
+                    rollout_max_iterations=rollout_max_iterations,
                 ),
                 output_root=arguments.output,
                 container_runtime_factory=container_runtime_factory,
@@ -524,13 +588,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.command == "screening" and arguments.screening_command == "run":
         try:
             model = None
-            model_name = arguments.model_name
+            screening_role = load_role_settings(
+                arguments.config,
+                "screening",
+                channel_override=arguments.channel,
+                model_override=arguments.model_name,
+            )
+            model_name = screening_role.model
             if not arguments.rules_only:
-                model = build_chat_model(config_path=arguments.config, channel=arguments.channel)
-                model_name = resolve_model_name(
-                    arguments.model_name,
-                    config_path=arguments.config,
-                    channel=arguments.channel,
+                model = build_chat_model(
+                    config_path=arguments.config, channel=screening_role.channel
                 )
             output_path = run_reconstruction_screening(
                 input_path=arguments.input,
@@ -540,6 +607,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 model=model,
                 model_name=model_name,
                 concurrency=1 if arguments.rules_only else arguments.concurrency,
+                max_input_chars=(
+                    arguments.max_input_chars
+                    if arguments.max_input_chars is not None
+                    else load_screening_limits(arguments.config)[0]
+                ),
+                max_messages_for_triage=load_screening_limits(arguments.config)[1],
+                max_source_requests_for_triage=load_screening_limits(arguments.config)[2],
             )
         except (
             ScreeningInputError,

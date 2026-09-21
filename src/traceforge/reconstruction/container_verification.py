@@ -104,6 +104,12 @@ def build_ags_runtime_factory(
             template=template,
             domain=domain,
             api_key=api_key,
+            # Hermes rollout is one long-running command. The Harbor adapter
+            # defaults to a 120s transfer timeout, which kills a valid model
+            # call before hermes-result.json is written and surfaces as a
+            # misleading TrajectoryCaptureError.
+            transfer_timeout_sec=900,
+            request_timeout_sec=900,
         )
         return AGSRuntimeAdapter(environment)
 

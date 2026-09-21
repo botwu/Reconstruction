@@ -174,6 +174,7 @@ def judge_reconstructability(
     rule: dict[str, Any],
     model: ChatModel,
     model_name: str,
+    max_input_chars: int = 120_000,
 ) -> dict[str, Any]:
     """调用模型并按任务列表关门。"""
 
@@ -186,7 +187,7 @@ def judge_reconstructability(
         },
     )
     try:
-        model_evidence = prepare_model_evidence(evidence)
+        model_evidence = prepare_model_evidence(evidence, max_chars=max_input_chars)
         request = ModelRequest(
             request_id,
             model_name,

@@ -229,3 +229,28 @@ def test_failed_validator_is_persisted_and_blocks_gate(tmp_path, monkeypatch):
     report = read_rollout_results(job)
     assert report["quality_gate"]["ok"] is False
     assert "HERMES_CERTIFICATION_FAILED" in report["trials"][0]["content_errors"]
+
+
+
+def test_results_include_bounded_hermes_failure_detail(tmp_path: Path) -> None:
+    job = tmp_path / "job"
+    trial = job / "task--trial-001"
+    _write(
+        trial / "result.json",
+        {
+            "exception_info": {
+                "exception_type": "TrajectoryCaptureError",
+                "exception_message": "轨迹失败：secret=sk-abcdefghijklmnopqrs",
+            },
+            "agent_result": {},
+        },
+    )
+    _write(
+        trial / "agent/hermes-result.json",
+        {"meta": {"failed": True, "final_response": "HTTP 503: no channel"}},
+    )
+    report = read_rollout_results(job)
+    row = report["trials"][0]
+    assert row["error_code"] == "TrajectoryCaptureError"
+    assert "sk-abcdefghijklmnopqrs" not in row["error_detail"]
+    assert row["agent_error"] == "HTTP 503: no channel"

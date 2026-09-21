@@ -320,6 +320,7 @@ def _task_result(
     agent: AgentRuntime,
     verification_model: ChatModel | None,
     verification_config: VerificationConfig | None,
+    verifier_agent: AgentRuntime | None = None,
     replay: Any | None = None,
     support: dict[str, Any] | None = None,
     task_source: dict[str, Any] | None = None,
@@ -405,6 +406,7 @@ def _task_result(
             continue
         judge = run_workspace_sufficiency(
             task=task,
+            observed_paths=[item.path for item in replay.files],
             workspace_root=candidate["workspace"],
             agent=agent,
             output_root=task_root / "sufficiency" / f"{int(candidate.get('index', len(rows))):03d}",
@@ -457,7 +459,7 @@ def _task_result(
         task=task,
         workspace_root=chosen["workspace"],
         model=verification_model,
-        agent=agent,
+        agent=verifier_agent or agent,
         output_root=task_root / "verification",
         config=verification_config,
         source=task_source,
@@ -484,6 +486,7 @@ def run_eligible_reconstruction(
     agent: AgentRuntime,
     output_root: str | Path,
     verification_model: ChatModel | None = None,
+    verifier_agent: AgentRuntime | None = None,
     verification_config: VerificationConfig | None = None,
     container_runtime_factory: Callable[[], Any] | None = None,
 ) -> Path:
@@ -491,6 +494,8 @@ def run_eligible_reconstruction(
     root.mkdir(parents=True, exist_ok=True)
     if container_runtime_factory is not None:
         agent = SandboxedAgentRuntime(agent, container_runtime_factory)
+        if verifier_agent is not None:
+            verifier_agent = SandboxedAgentRuntime(verifier_agent, container_runtime_factory)
     # #region agent log
     _debug_agent_log(
         "H6",
@@ -595,6 +600,7 @@ def run_eligible_reconstruction(
                 agent=agent,
                 verification_model=verification_model,
                 verification_config=verification_config,
+                verifier_agent=verifier_agent,
                 replay=replay,
                 support=support,
                 task_source=task_source,

@@ -34,7 +34,7 @@ from traceforge.reconstruction.terminal_universe_environment import (
 from traceforge.reconstruction.tool_process_sketch import build_tool_process_sketch
 
 COMPLETION_SCHEMA = "traceforge.workspace-completion.v1"
-COMPLETION_PROMPT_VERSION = "workspace-completion-agent-v5-pre-task-context"
+COMPLETION_PROMPT_VERSION = "workspace-completion-agent-v6-pre-task-state"
 TASK_Q_EVIDENCE_ID = "task:q"
 ENV_REPLAYED = "REPLAYED"
 ENV_DEFAULT_EMPTY = "DEFAULT_EMPTY"
@@ -153,6 +153,9 @@ def _shared_footer(
         "NON_FILE bindings are context; do not invent verifier files for them.",
         "Optional web_search is for typical layout names only. Do not write web source",
         "into user paths. Do not implement the task, write target tests, or overwrite COMPLETE.",
+        "This is a pre-task snapshot: never add the requested feature, patch a requested file, or create its output.",
+        "If TASK asks to add/change a node, API, config, test, or behavior, leave that change absent; Verifier must test it later.",
+        "Do not treat a task acceptance path as permission to implement it. Existing PARTIAL content is pre-task context only.",
         "补全的是任务开始前的环境，不是用户要求新增的实现或测试。",
         "已有测试文件属于上下文：保留观察到的原始测试；不得生成针对目标修复的新测试。",
         "不得用全量 skip/pass/assert True 的测试骨架满足文件存在要求；无法恢复真实上下文时返回 REVIEW。",
@@ -204,14 +207,15 @@ def _replayed_instruction(
     protected = [item["path"] for item in public if item["completeness"] in {"COMPLETE", "UNKNOWN"}]
     return "\n".join(
         [
-            "Complete a Docker workspace so the given task is solvable, but NOT solved.",
+            "Reconstruct the task-start Docker workspace so the given task is solvable, but NOT solved.",
+            "The task request describes a future change. Do not perform any part of that change.",
             "Strategy: from_replayed. The replayed tree is the initial environment.",
             "Leftover files and noise stay. REPLAYED bodies stay. COMPLETE is read-only.",
             "PARTIAL files must keep every observed excerpt; you may enrich and complete them.",
-            "Add neighborhood files required by the task, grounded in the planted tree.",
+            "Add only pre-existing neighborhood context required to understand the task, grounded in the planted tree.",
             "If the replayed tree is empty, decision=REVIEW. Do not create a project.",
-            "Listing-only and FILE binding holes are generation targets: write real,",
-            "scene-consistent file bodies grounded in q, the planted tree, and evidence.",
+            "Listing-only holes are not implementation generation targets; restore them only as pre-existing tree context. FILE bindings do not authorize implementing the task.",
+            "Write real pre-task file bodies grounded in q, the planted tree, and evidence.",
             "SUPPORT files may be inferred from the observed project and TOPIC_CARDS.",
             "If a path has no neighborhood symbols and no evidence, omit it and return REVIEW.",
             "HOLES already lists path, kind, event_id, observed_prefix, excerpt_event_ids.",
@@ -242,7 +246,8 @@ def _default_empty_instruction(
 ) -> str:
     return "\n".join(
         [
-            "Complete a Docker workspace so the given task is solvable, but NOT solved.",
+            "Reconstruct the task-start Docker workspace so the given task is solvable, but NOT solved.",
+            "The task request describes a future change. Do not perform any part of that change.",
             "Strategy: from_default_empty. The initial environment is an empty seed,",
             "not a replayed tree. Generated files are MODEL_COMPLETED, never REPLAYED.",
             "Generate real, scene-consistent file bodies from q and TOOL_PROCESS_SKETCH.",

@@ -202,11 +202,35 @@ def _path_from_args(arguments: Any, workdir: str | None = None) -> str | None:
 
 
 def _redirect_target(command: str, workdir: str | None = None) -> str | None:
-    for match in re.finditer(r"(?<![0-9&])>>?\s*(\S+)", command):
-        target = match.group(1).strip("\"'")
-        if target.lower() in {"/dev/null", "nul", "null"}:
+    """仅识别引号外的重定向，搜索模式里的尖括号不是写操作。"""
+
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(command):
+        if escaped:
+            escaped = False
             continue
-        return _safe_relpath(target, workdir)
+        if char == "\\" and quote != "'":
+            escaped = True
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            continue
+        if char != ">" or (index and command[index - 1] == ">"):
+            continue
+        remainder = command[index + 1:].lstrip(">").lstrip()
+        if not remainder or remainder.startswith("&"):
+            continue
+        try:
+            target = shlex.split(remainder, posix=True)[0]
+        except (ValueError, IndexError):
+            continue
+        if target.lower() not in {"/dev/null", "nul", "null"}:
+            return _safe_relpath(target, workdir)
     return None
 
 
@@ -263,25 +287,97 @@ _READ_TOOL_FOOTER = re.compile(
 _NUMBERED_DISPLAY_LINE = re.compile(r"^[ \t]*\d+: ?")
 
 
-def _unwrap_read_tool_result(text: str) -> str | None:
-    """OpenCode 的包装和行号属于展示，不是源码；不完整包装不能成为环境事实。"""
+_NATIVE_NUMBERED_LINE = re.compile(r"^[ \t]*(\d+)\t")
+_READ_TOTAL = re.compile(r"(?:Showing lines (\d+)-(\d+) of (\d+)|End of file - total (\d+) lines)")
+
+
+def _read_tool_observation(text: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """展示行号优先于请求 offset；只有明确总行数才能证明分段已覆盖整文件。"""
 
     text = _unwrap_exec_result(text)
-    if not text.startswith("<path>"):
-        return text
-    match = _READ_TOOL_CONTENT.match(text)
-    if match is None:
-        return None
-    body = _READ_TOOL_FOOTER.sub("", match.group("body"))
+    partial = any(key in arguments for key in ("offset", "limit", "line_start", "line_end"))
+    result: dict[str, Any] = {"content": text, "partial": partial}
+    wrapped = text.startswith("<path>")
+    total: int | None = None
+    range_valid = True
+    if wrapped:
+        match = _READ_TOOL_CONTENT.match(text)
+        if match is None:
+            return {"content": None, "partial": True}
+        body = match.group("body")
+        footer = _READ_TOOL_FOOTER.search(body)
+        declared = _READ_TOTAL.search(footer.group(0)) if footer else None
+        if declared:
+            total = int(declared.group(3) or declared.group(4))
+        body = _READ_TOOL_FOOTER.sub("", body)
+        prefix = re.compile(r"^[ \t]*(\d+): ?")
+    else:
+        body = text
+        declared = None
+        prefix = _NATIVE_NUMBERED_LINE
     lines = body.splitlines(keepends=True)
-    numbered = [line for line in lines if line.strip()]
-    values = _numbered_line_values(body)
-    if not numbered or not all(_NUMBERED_DISPLAY_LINE.match(line) for line in numbered):
-        return None
-    if any(values[index + 1] <= values[index] for index in range(len(values) - 1)):
-        return None
-    content = "".join(_NUMBERED_DISPLAY_LINE.sub("", line, count=1) for line in lines)
-    return content + ("\n" if content and not content.endswith("\n") else "")
+    matches = [prefix.match(line) for line in lines]
+    if not lines or not all(matches):
+        return {"content": None, "partial": True} if wrapped else result
+    numbers = [int(match.group(1)) for match in matches if match is not None]
+    if any(number < 1 for number in numbers) or any(
+        right <= left for left, right in zip(numbers, numbers[1:])
+    ):
+        return {"content": None, "partial": True}
+    contents = [line[match.end():] for line, match in zip(lines, matches) if match is not None]
+    content = "".join(contents)
+    if wrapped and content and not content.endswith("\n"):
+        content += "\n"
+    if total is not None:
+        range_valid = numbers[-1] <= total
+        if declared and declared.group(1):
+            range_valid = range_valid and (
+                numbers[0] == int(declared.group(1)) and numbers[-1] == int(declared.group(2))
+            )
+        elif declared:
+            range_valid = range_valid and numbers[-1] == total
+    complete = (
+        range_valid and total is not None
+        and numbers == list(range(1, total + 1))
+    )
+    result.update({
+        "content": content,
+        "partial": not complete,
+        "line_numbers": numbers,
+        "line_contents": [line.rstrip("\r\n") for line in contents],
+        "total_lines": total,
+        "range_valid": range_valid,
+    })
+    return result
+
+
+def _merge_read_segments(
+    segments: list[dict[str, Any]],
+) -> tuple[str | None, str | None]:
+    """只合并连续、重叠一致且总行数一致的改动前观察；缺口绝不补造。"""
+
+    observed: dict[int, str] = {}
+    totals: set[int] = set()
+    for segment in segments:
+        if not segment.get("range_valid", True):
+            return None, "read_segment_range_mismatch"
+        total = segment.get("total_lines")
+        if isinstance(total, int):
+            totals.add(total)
+        for number, content in zip(segment["line_numbers"], segment["line_contents"]):
+            if number in observed and observed[number] != content:
+                return None, "read_segment_conflict"
+            observed[number] = content
+    if len(totals) > 1:
+        return None, "read_segment_total_conflict"
+    if not totals:
+        return None, None
+    total = next(iter(totals))
+    if any(number > total for number in observed):
+        return None, "read_segment_range_mismatch"
+    if sorted(observed) != list(range(1, total + 1)):
+        return None, None
+    return "".join(observed[number] + "\n" for number in range(1, total + 1)), None
 
 
 def _normalize_numbered_display(text: str, command: str | None = None) -> str:
@@ -894,13 +990,13 @@ def _session_workdir(timeline: list[dict[str, Any]]) -> str | None:
 
 def _usable_tool_result(item: dict[str, Any]) -> bool:
     """只把已返回且非错误的工具结果作为环境事实。"""
-    if item.get("pending") is True:
+    if item.get("pending") is True or item.get("is_error") is True or item.get("cleared") is True:
         return False
     status = str(item.get("status") or item.get("result_status") or "").lower()
-    if status in {"error", "failed", "failure", "cancelled", "timeout"}:
+    if status in {"error", "failed", "failure", "cancelled", "timeout", "cleared"}:
         return False
     result = item.get("result_text")
-    if isinstance(result, str) and result.lstrip().lower().startswith(("error:", "command failed", "traceback")):
+    if isinstance(result, str) and result.lstrip().lower().startswith(("error:", "command failed", "traceback", "<tool_use_error>", "[tool result content cleared]")):
         return False
     return True
 
@@ -935,19 +1031,17 @@ def normalize_file_ops(timeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if path is None:
                 continue
             args = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
-            partial = any(key in args for key in ("offset", "limit", "line_start", "line_end"))
-            raw_content = (
-                _unwrap_read_tool_result(item["result_text"])
+            observation = (
+                _read_tool_observation(item["result_text"], args)
                 if isinstance(item.get("result_text"), str)
-                else item.get("result_text")
+                else {"content": None, "partial": True}
             )
             ops.append(
                 {
                     "kind": "read",
                     "path": path,
                     "event_id": event_id,
-                    "partial": partial,
-                    "content": raw_content,
+                    **observation,
                 }
             )
             continue
@@ -1141,9 +1235,10 @@ def replay_from_timeline(
     prior_untrusted_paths: set[str] | None = None,
     prior_files: tuple[ReplayedFile, ...] | list[ReplayedFile] | None = None,
 ) -> ReplayResult:
-    """按论文 B.1 做确定性回放：每条路径只保留改之前的最早观察。"""
+    """按论文 B.1 回放最早观察；仅用屏障前一致的分段补齐同一路径。"""
 
     observed: dict[str, ReplayedFile] = {}
+    segments_by_path: dict[str, list[dict[str, Any]]] = {}
     for item in prior_files or ():
         if isinstance(item, ReplayedFile) and item.path:
             observed[item.path] = item
@@ -1232,7 +1327,7 @@ def replay_from_timeline(
                 }
             )
             continue
-        if path in untrusted or (unresolved_mutation and path not in observed):
+        if path in untrusted or unresolved_mutation:
             evidence: dict[str, Any] = {
                 "path": path,
                 "reason": "read_after_unparsed_mutation",
@@ -1244,6 +1339,38 @@ def replay_from_timeline(
                 evidence["content"] = text
             partial.append(evidence)
             continue
+        if isinstance(op.get("content"), str) and isinstance(op.get("line_numbers"), list):
+            segment = {
+                "path": path,
+                "reason": "read_segment",
+                "source_event_id": event_id,
+                "content": op["content"],
+                "line_numbers": op["line_numbers"],
+                "line_contents": op["line_contents"],
+                "total_lines": op.get("total_lines"),
+                "range_valid": op.get("range_valid", True),
+            }
+            partial.append(segment)
+            segments = segments_by_path.setdefault(path, [])
+            segments.append(segment)
+            merged, issue = _merge_read_segments(segments)
+            prior = observed.get(path)
+            if issue:
+                partial.append({
+                    "path": path, "reason": issue, "source_event_id": event_id,
+                    "source_event_ids": [item["source_event_id"] for item in segments],
+                })
+                if prior is not None:
+                    observed[path] = ReplayedFile(
+                        path, prior.content, prior.first_observation_event_id, "PARTIAL",
+                        prior.provenance,
+                    )
+            elif merged is not None and (
+                prior is None or prior.first_observation_event_id == segments[0]["source_event_id"]
+            ):
+                observed[path] = ReplayedFile(
+                    path, merged, segments[0]["source_event_id"], "COMPLETE",
+                )
         if path in observed:
             continue
         text = op.get("content")

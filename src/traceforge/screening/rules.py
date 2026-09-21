@@ -6,12 +6,13 @@ from typing import Any
 
 from .contracts import ScreeningDecision, ScreeningRoute
 
-MAX_MESSAGES_FOR_AUTOMATIC_TRIAGE = 200
-MAX_SOURCE_REQUESTS_FOR_AUTOMATIC_TRIAGE = 20
-
 
 def decide_rule(features: dict[str, Any]) -> dict[str, Any]:
-    """根据扫描特征给出 REJECT / DEFER / REVIEW。"""
+    """第一层只挡垃圾，不因轨迹长短暂缓。
+
+    扔掉：坏 JSON、没有用户任务、助手没动手。
+    其余一律交给模型细筛，从中挑没做好、没做完的事。
+    """
 
     reasons: list[str] = []
     if not features.get("parse_ok"):
@@ -23,15 +24,6 @@ def decide_rule(features: dict[str, Any]) -> dict[str, Any]:
     if not features.get("has_agent_attempt"):
         reasons.append("NO_AGENT_ATTEMPT")
         return _result(ScreeningDecision.REJECT, ScreeningRoute.RULE_HARD_REJECT, reasons, False)
-
-    message_count = int(features.get("message_count") or 0)
-    request_count = int(features.get("source_request_count") or 0)
-    if (
-        message_count > MAX_MESSAGES_FOR_AUTOMATIC_TRIAGE
-        or request_count > MAX_SOURCE_REQUESTS_FOR_AUTOMATIC_TRIAGE
-    ):
-        reasons.append("ESTIMATED_COST_HIGH")
-        return _result(ScreeningDecision.DEFER, ScreeningRoute.COST_DEFERRED, reasons, True)
 
     reasons.append("NEEDS_MODEL_TRIAGE")
     if features.get("has_failure_or_unfinished_signal"):

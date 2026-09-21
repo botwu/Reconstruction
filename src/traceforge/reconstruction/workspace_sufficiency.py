@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +17,13 @@ from traceforge.reconstruction.environment_bindings import (
     workspace_is_stub_ensemble,
 )
 
+from traceforge.reconstruction.workspace_integrity import (
+    classify_integrity_issues,
+    inspect_workspace_integrity,
+)
+
 SUFFICIENCY_SCHEMA = "traceforge.workspace-sufficiency.v1"
-SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v4-task-sufficiency"
+SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v7-observed-source-integrity"
 # Partial or stub excerpts can be valid evidence for some analytical tasks, but
 # the model's explicit INSUFFICIENT decision is authoritative. Never promote
 # it to SUFFICIENT based on keyword matching: missing domain context cannot be
@@ -38,6 +44,7 @@ def run_workspace_sufficiency(
     workspace_root: str | Path,
     agent: AgentRuntime,
     output_root: str | Path,
+    observed_paths: Iterable[str] = (),
 ) -> dict[str, Any]:
     workspace = Path(workspace_root).resolve()
     # The role runtime deletes its sandbox before returning. Inventory is a
@@ -53,20 +60,34 @@ def run_workspace_sufficiency(
         preflight_errors.append("TASK_NOT_EXECUTABLE")
     missing_paths = missing_binding_paths(workspace, task) if workspace.is_dir() else []
     stub_only = workspace.is_dir() and workspace_is_stub_ensemble(workspace)
+    integrity = inspect_workspace_integrity(workspace, task, observed_paths=observed_paths)
     instruction = "\n".join(
         [
             "Inspect the workspace with tools. Do not modify it. Do not solve the task.",
+            "This is the task-start environment: the requested feature is expected to be missing.",
+            "Do not require acceptance obligations to pass already; that would erase the RED baseline. Judge whether a solver can implement them from the available context.",
             "FILE environment_bindings required_paths must exist and must not be an all-stub tree.",
-            "Judge sufficiency against the task obligations. Partial excerpts may suffice for analyzing those excerpts; they do not prove a complete codebase or missing domain rules.",
-            "Return INSUFFICIENT when required source, execution context, or business facts are unavailable; never infer them merely from an existing file or stub.",
+            "Partial excerpts may suffice when they expose the interfaces and structures needed to implement the task.",
+            "Return INSUFFICIENT only when required source, execution context, or domain facts are unavailable enough that implementation cannot start; missing target behavior alone is not a blocker.",
+            "STATIC_INTEGRITY_REPORT is a read-only syntax/token diagnostic under the stated host Python version, not a completeness proof.",
+            "Inspect every issue and classify it with issue_id, exact path, classification, and a concrete task-grounded reason.",
+            "BASELINE_TASK_DEFECT: the requested task itself requires fixing this observed defect; preserve it as the unsolved baseline.",
+            "RECONSTRUCTION_GAP: required pre-task source/context is missing or damaged independently of the requested change.",
+            "IRRELEVANT: the issue is outside the task's necessary execution/analysis path, or arises solely from a supported target Python version mismatch; justify with evidence.",
+            "Do not infer these categories from keywords. Explain their relationship to the actual task and inspected source.",
+            "Every issue requires one classification. RECONSTRUCTION_GAP or unclassified issues forbid READY.",
             "Finish with JSON:",
             '{"label":"SUFFICIENT|INSUFFICIENT|UNKNOWN","reason":"...","missing_context":[],'
-            '"confidence":0.0,"decision":"READY|REVIEW"}',
+            '"confidence":0.0,"decision":"READY|REVIEW",'
+            '"integrity_classifications":[{"issue_id":"integrity-001","path":"...",'
+            '"classification":"BASELINE_TASK_DEFECT|RECONSTRUCTION_GAP|IRRELEVANT","reason":"..."}]}',
             "TASK:",
             json.dumps(task, ensure_ascii=False),
             "ENVIRONMENT_BINDINGS:",
             json.dumps(environment_bindings(task), ensure_ascii=False),
             f"WORKSPACE_ROOT: {workspace.as_posix()}",
+            "STATIC_INTEGRITY_REPORT:",
+            json.dumps(integrity, ensure_ascii=False),
         ]
     )
     root = Path(output_root)
@@ -99,6 +120,10 @@ def run_workspace_sufficiency(
     payload = ran.payload if isinstance(ran.payload, dict) else {}
     label = str(payload.get("label", "UNKNOWN"))
     decision = str(payload.get("decision", "REVIEW"))
+    integrity, integrity_errors, reconstruction_gap = classify_integrity_issues(
+        integrity, payload.get("integrity_classifications")
+    )
+    errors.extend(integrity_errors)
     if label not in {"SUFFICIENT", "INSUFFICIENT", "UNKNOWN"}:
         errors.append("INVALID_LABEL")
         label = "UNKNOWN"
@@ -123,6 +148,8 @@ def run_workspace_sufficiency(
         errors.append("MISSING_BINDING_PATH")
         label = "INSUFFICIENT"
         missing = list(dict.fromkeys([*missing_paths, *[str(item) for item in missing]]))
+    if reconstruction_gap:
+        label = "INSUFFICIENT"
     if stub_only:
         errors.append("MISSING_PROJECT_SPECIFIC_CONTENT")
         label = "INSUFFICIENT"
@@ -143,6 +170,7 @@ def run_workspace_sufficiency(
         "reason": str(payload.get("reason", "")),
         "missing_context": [str(item) for item in missing],
         "missing_binding_paths": list(missing_paths),
+        "integrity_report": integrity,
         "confidence": confidence,
         "errors": errors,
         "file_count": file_count,

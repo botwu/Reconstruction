@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +15,7 @@ from traceforge.screening.observable import (
     build_observable_evidence,
     prepare_model_evidence,
 )
+from traceforge.screening.pipeline import run_reconstruction_screening
 from traceforge.screening.rules import decide_rule
 from traceforge.screening.scan import scan_source_record
 
@@ -111,3 +113,40 @@ def test_previously_shortened_evidence_cannot_be_admitted(incomplete_flag: str) 
     assert result["decision"] == "REVIEW"
     assert "INCOMPLETE_OBSERVABLE_EVIDENCE" in result["errors"]
     assert model.requests == []
+
+
+def test_pipeline_custom_budget_is_applied_before_model_call(tmp_path: Path) -> None:
+    source = tmp_path / "sessions.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "修复 parser.py"},
+                    {
+                        "role": "assistant",
+                        "content": "尝试",
+                        "tool_calls": [{"id": "c1", "function": {"name": "exec"}}],
+                    },
+                    {"role": "tool", "tool_call_id": "c1", "content": "x" * 2000},
+                ],
+                "meta": {},
+                "tools": [],
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    model = RecordingModel()
+    published = run_reconstruction_screening(
+        input_path=source,
+        output_root=tmp_path / "out",
+        model=model,
+        model_name="fixture",
+        concurrency=1,
+        max_input_chars=100,
+    )
+    assert model.requests == []
+    metrics = json.loads((published / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["max_input_chars"] == 100
+    assert metrics["model_call_count"] == 1

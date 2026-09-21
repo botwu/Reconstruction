@@ -74,6 +74,8 @@ def test_bundle_keeps_solution_and_verifier_outside_workspace(tmp_path):
     assert (output / "task/tests/vendor_lock.json").is_file()
     assert list((output / "task/tests/vendor").glob("pytest-*.whl"))
     assert (output / "artifact_manifest.json").is_file()
+    assert (output / "task/workspace/input.txt").stat().st_mode & 0o002
+    assert (output / "task/workspace").stat().st_mode & 0o002
 
 
 def test_bundle_rejects_symlink(tmp_path):
@@ -100,9 +102,11 @@ def test_missing_workspace_is_infrastructure_error(tmp_path):
 def test_junit_keeps_collection_errors_distinct(tmp_path):
     path = tmp_path / "junit.xml"
     path.write_text(
-        '<testsuites><testsuite><testcase name="test_a"><failure/></testcase><testcase name="test_b"><error/></testcase></testsuite></testsuites>'  # noqa: E501
+        '<testsuites><testsuite><testcase name="test_a"><failure message="bad">assert x</failure></testcase><testcase name="test_b"><error/></testcase></testsuite></testsuites>'  # noqa: E501
     )
-    assert [x["status"] for x in collect_test_results(path)] == ["FAIL", "ERROR"]
+    rows = collect_test_results(path)
+    assert [x["status"] for x in rows] == ["FAIL", "ERROR"]
+    assert rows[0]["message"] == "assert x"
 
 
 def test_bundle_wraps_direct_python_solution(tmp_path):
@@ -192,10 +196,40 @@ def test_bundle_digest_includes_compiler_contract(tmp_path):
     manifest = __import__("json").loads(
         (output / "compile_manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v2-python-entrypoint"
+    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v3-workspace-contract"
     assert manifest["entrypoint_contract"] == {
         "workspace_mount": "/home/user/workspace",
         "solution_mount": "/solution",
         "shell_entrypoint": "solve.sh",
         "python_entrypoint": "solve.py",
     }
+
+
+def test_solution_receives_workspace_environment(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    script = (
+        "import os\nfrom pathlib import Path\n"
+        "(Path(os.environ['TRACEFORGE_WORKSPACE']) / 'done.txt').write_text('ok')"
+    )
+    output = compile_bundle(
+        task={"core_objective": "fixture"}, workspace_root=workspace,
+        verifier=_verifier_with_script(script), output_root=tmp_path / "out",
+    )
+    _run_solution(output, workspace, tmp_path)
+    assert (workspace / "done.txt").read_text() == "ok"
+
+
+def test_bundle_permissions_preserve_source_and_executable(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(mode=0o750)
+    source = workspace / "run.sh"
+    source.write_text("#!/bin/sh\necho ok\n")
+    source.chmod(0o750)
+    output = compile_bundle(
+        task={"core_objective": "fixture"}, workspace_root=workspace,
+        verifier=_verifier(), output_root=tmp_path / "out",
+    )
+    assert source.stat().st_mode & 0o777 == 0o750
+    assert workspace.stat().st_mode & 0o777 == 0o750
+    assert (output / "task/workspace/run.sh").stat().st_mode & 0o777 == 0o776

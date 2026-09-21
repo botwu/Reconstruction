@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .synthesis import VerifierCandidate, synthesize_verifier
+from .synthesis import VerifierCandidate, VerifierSynthesisError, synthesize_verifier
 
 
 class VerifierExecutor(Protocol):
@@ -36,9 +36,16 @@ def synthesize_verifier_iterative(
     candidate = None
     questions: list[str] = []
     for index in range(max_rounds):
-        candidate, audit = synthesize_verifier(
-            task=working, workspace_files=workspace_files, model=model, model_name=model_name
-        )
+        try:
+            candidate, audit = synthesize_verifier(
+                task=working, workspace_files=workspace_files, model=model, model_name=model_name
+            )
+        except VerifierSynthesisError as exc:
+            error = str(exc)
+            attempts.append({"round": index + 1, "status": "REVIEW", "feedback": [error]})
+            questions.append(error)
+            working["_verifier_feedback"] = error
+            continue
         if candidate is None:
             attempts.append(
                 {
@@ -57,10 +64,13 @@ def synthesize_verifier_iterative(
             {"round": index + 1, "status": outcome, "feedback": execution.get("feedback", "")}
         )
         if outcome == "PASS":
-            return VerifierIterationResult(candidate, "READY", tuple(attempts), tuple(questions))
+            return VerifierIterationResult(candidate, "READY", tuple(attempts), ())
         if outcome not in {"FAIL", "INFRA_ERROR"}:
             raise ValueError("executor status 必须为 PASS/FAIL/INFRA_ERROR")
-        working["_verifier_feedback"] = str(execution.get("feedback", "未提供执行反馈"))
+        working["_verifier_feedback"] = {
+            "calibration_feedback": execution.get("feedback", "未提供执行反馈"),
+            "previous_candidate": candidate.to_dict(),
+        }
     return VerifierIterationResult(
         candidate,
         "REVIEW",

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from traceforge.harbor_ags.rollout import redact_harbor_output
 from traceforge.harbor_ags.results import (
     HarborResultError,
     certify_hermes_job,
@@ -31,6 +32,7 @@ from traceforge.verifier.synthesis import (
     VerifierCandidate,
     VerifierSynthesisError,
     synthesize_verifier,
+    validate_solution_scripts,
 )
 
 VERIFICATION_SCHEMA = "traceforge.reconstruction-verification.v1"
@@ -49,6 +51,7 @@ class VerificationConfig:
     config_path: Path | None = None
     channel: str = "claude"
     timeout_seconds: int = 900
+    rollout_max_iterations: int = 60
 
     def validate(self) -> None:
         if self.execute_rollout and self.rollout_trials < 2:
@@ -59,6 +62,8 @@ class VerificationConfig:
             raise ValueError("必须明确 verifier model 和 provider/model rollout 模型")
         if self.timeout_seconds < 1:
             raise ValueError("timeout_seconds 必须大于 0")
+        if self.rollout_max_iterations < 1:
+            raise ValueError("rollout_max_iterations 必须大于 0")
 
     def should_run_red(self) -> bool:
         return bool(self.execute or self.execute_red)
@@ -120,6 +125,55 @@ def _write(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _rollout_passed(result: dict[str, Any], expected_trials: int) -> bool:
+    """只把完整且通过质量门的多次 Hermes 复验视为成功。"""
+    rollout = result.get("rollout")
+    if not isinstance(rollout, dict):
+        return False
+    execution = rollout.get("execution")
+    if not isinstance(execution, dict) or execution.get("status") != "COMPLETED":
+        return False
+    results = rollout.get("results")
+    gate = results.get("quality_gate") if isinstance(results, dict) else None
+    if not isinstance(gate, dict) or gate.get("ok") is not True:
+        return False
+    trials = results.get("trials")
+    return (
+        isinstance(trials, list)
+        and len(trials) == expected_trials
+        and all(
+            isinstance(trial, dict)
+            and trial.get("status") == "PASS"
+            and trial.get("reward") == 1.0
+            for trial in trials
+        )
+    )
+
+
+def _set_rollout_eligibility(result: dict[str, Any], expected_trials: int) -> bool:
+    """集中维护 rollout、NON_FILE 义务和 SFT 资格的关系。"""
+    passed = _rollout_passed(result, expected_trials)
+    unresolved = result.get("unverified_obligations") or []
+    eligible = passed and not unresolved
+    result["sft_eligible"] = eligible
+    if passed and unresolved:
+        result["errors"] = list(
+            dict.fromkeys([*(result.get("errors") or []), "SFT_UNVERIFIED_OBLIGATIONS"])
+        )
+    return passed
+
+
+def _certification_complete(result: dict[str, Any], expected_trials: int) -> bool:
+    """全部 RED、复验和义务覆盖完成后才关闭认证。"""
+    return (
+        result.get("status") == "READY"
+        and result.get("calibration") == "PASS"
+        and _rollout_passed(result, expected_trials)
+        and not (result.get("unverified_obligations") or [])
+        and not (result.get("errors") or [])
+    )
+
+
 def write_execution_manifest(
     root: Path, result: dict[str, Any], config: VerificationConfig
 ) -> None:
@@ -141,10 +195,7 @@ def write_execution_manifest(
                 "verifier": config.model_name,
                 "rollout": config.rollout_model,
             },
-            "same_model_across_reconstruction_roles": True,
-            "certification_closed": (
-                result.get("status") == "READY" and calibration == "PASS"
-            ),
+            "certification_closed": _certification_complete(result, config.rollout_trials),
         },
     )
 
@@ -211,11 +262,11 @@ class HarborCalibrationExecutor:
                     model=self.config.rollout_model,
                     trials=trials,
                     timeout_seconds=self.config.timeout_seconds,
+                    agent_max_iterations=self.config.rollout_max_iterations,
                 )
             )
             execution = execute_rollout_plan(
                 plan,
-                timeout_seconds=self.config.timeout_seconds,
                 config_path=self.config.config_path,
                 channel=self.config.channel,
             )
@@ -223,8 +274,9 @@ class HarborCalibrationExecutor:
             record["error"] = f"{type(exc).__name__}:{exc}"
             return record
         record.update(plan=str(plan), execution=execution)
-        if execution.get("status") != "COMPLETED":
-            return record
+        completed = execution.get("status") == "COMPLETED"
+        if not completed:
+            record["error"] = f"HARBOR_EXECUTION_{execution.get('status', 'UNKNOWN')}"
         try:
             plan_payload = json.loads((plan / "rollout_plan.json").read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
@@ -238,7 +290,7 @@ class HarborCalibrationExecutor:
         if not job_dir.is_dir():
             record["error"] = "HARBOR_JOB_DIR_NOT_FOUND"
             return record
-        if mode == "hermes":
+        if mode == "hermes" and completed:
             certify_hermes_job(job_dir, harbor_root=self.config.harbor_root)
         try:
             record["results"] = read_rollout_results(
@@ -246,19 +298,111 @@ class HarborCalibrationExecutor:
             )
         except HarborResultError as exc:
             record["error"] = str(exc)
+        if not completed and isinstance(record["results"], dict):
+            gate = record["results"].setdefault("quality_gate", {})
+            gate["ok"] = False
+            gate["reasons"] = [
+                *(gate.get("reasons") or []),
+                f"HARBOR_EXECUTION_{execution.get('status', 'UNKNOWN')}",
+            ]
         return record
 
     @staticmethod
-    def _case(label: str, kind: str, run: dict[str, Any], expected: str) -> RedCheckCase:
+    def _trial_process_diagnostic(trial: dict[str, Any]) -> dict[str, Any]:
+        """读取 Oracle 的退出证据；绝不把完整 stdout/stderr 写入反馈。"""
+        result_path = trial.get("result_path")
+        if not isinstance(result_path, str) or not result_path:
+            return {"exit_code": None, "process_error": "TRIAL_RESULT_PATH_MISSING"}
+        trial_dir = Path(result_path).parent
+        exit_path = trial_dir / "agent" / "exit-code.txt"
+        if not exit_path.is_file():
+            # Harbor Oracle only writes this marker for non-zero exits.
+            return {"exit_code": 0}
+        try:
+            raw_code = exit_path.read_text(encoding="utf-8").strip()
+            code = int(raw_code)
+        except (OSError, UnicodeError, ValueError):
+            return {"exit_code": None, "process_error": "ORACLE_EXIT_CODE_INVALID"}
+        diagnostic: dict[str, Any] = {"exit_code": code}
+        log_path = trial_dir / "agent" / "oracle.txt"
+        if log_path.is_file():
+            try:
+                text = log_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            if text:
+                diagnostic["oracle_log_tail"] = redact_harbor_output(text[-2000:])
+        return diagnostic
+
+    @classmethod
+    def _failure_diagnostics(cls, run: dict[str, Any]) -> dict[str, Any]:
+        """为下一轮 Verifier 提供最小的失败证据，而不是只给 job 标签。"""
+
+        diagnostics: dict[str, Any] = {}
+        if run.get("error"):
+            diagnostics["error"] = str(run["error"])
+        results = run.get("results") or {}
+        trials = results.get("trials") or []
+        rows: list[dict[str, Any]] = []
+        for trial in trials:
+            row: dict[str, Any] = {
+                "status": trial.get("status"),
+                "reward": trial.get("reward"),
+                "process": cls._trial_process_diagnostic(trial),
+            }
+            verdict_path = trial.get("verdict_path")
+            if isinstance(verdict_path, str) and Path(verdict_path).is_file():
+                try:
+                    verdict = json.loads(Path(verdict_path).read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    verdict = {}
+                tests = verdict.get("tests") if isinstance(verdict, dict) else None
+                if isinstance(tests, list):
+                    row["tests"] = []
+                    for item in tests:
+                        if not isinstance(item, dict):
+                            continue
+                        test_row = {"name": item.get("name"), "status": item.get("status")}
+                        if isinstance(item.get("message"), str) and item["message"]:
+                            test_row["message"] = item["message"][:2000]
+                        row["tests"].append(test_row)
+                row["exit_code"] = verdict.get("exit_code") if isinstance(verdict, dict) else None
+            rows.append(row)
+        if rows:
+            diagnostics["trials"] = rows
+        quality = results.get("quality_gate")
+        if isinstance(quality, dict):
+            diagnostics["quality_gate"] = {
+                "ok": quality.get("ok"),
+                "errors": quality.get("errors", quality.get("reasons", [])),
+            }
+        return diagnostics
+
+
+    @classmethod
+    def _case(cls, label: str, kind: str, run: dict[str, Any], expected: str) -> RedCheckCase:
         results = run.get("results") or {}
         trials = results.get("trials") or []
         quality = results.get("quality_gate") or {}
         reward = 1.0 if expected == "PASS" else 0.0
         valid = bool(trials) and quality.get("ok") is True
-        passed = valid and all(
+        process_ok = True
+        if kind in {"oracle_pass", "mutation_fail"}:
+            for trial in trials:
+                process = cls._trial_process_diagnostic(trial)
+                if process.get("process_error") or process.get("exit_code") != 0:
+                    process_ok = False
+        passed = valid and process_ok and all(
             row.get("status") == expected and row.get("reward") == reward for row in trials
         )
-        status = expected if passed else ("INFRA_ERROR" if not valid else "MISMATCH")
+        if not valid:
+            status = "INFRA_ERROR"
+        elif not process_ok or not passed:
+            # A crashing oracle/mutation is a candidate defect, never semantic
+            # evidence and never a reason to mark calibration successful.
+            status = "MISMATCH"
+        else:
+            status = expected
         return RedCheckCase(label, kind, status, reward if passed else None, expected, reward)
 
     def run(self, candidate: VerifierCandidate) -> dict[str, Any]:
@@ -266,6 +410,22 @@ class HarborCalibrationExecutor:
         prefix = f"round-{number:02d}"
         runs: dict[str, Any] = {}
         cases: list[RedCheckCase] = []
+        try:
+            validate_solution_scripts(candidate.oracle_solutions, candidate.mutation_solutions)
+        except VerifierSynthesisError as exc:
+            feedback = json.dumps(
+                {"generation_errors": [str(exc)]}, ensure_ascii=False
+            )
+            record = {
+                "round": number,
+                "candidate_id": candidate.candidate_id,
+                "status": "FAIL",
+                "feedback": feedback,
+                "preflight": True,
+            }
+            self.attempts.append(record)
+            _write(self.root / f"{prefix}.json", record)
+            return {"status": "FAIL", "feedback": feedback}
         # Compile one oracle bundle once.  The first execution is deliberately
         # NOP: this is the paper's initial RED calibration and prevents a
         # verifier that passes on the empty environment from being accepted.
@@ -344,12 +504,19 @@ class HarborCalibrationExecutor:
         }
         self.attempts.append(record)
         _write(self.root / f"{prefix}.json", record)
+        failed_case_ids = list(report.failed_case_ids)
+        feedback_payload = {
+            "initial_red": initial,
+            "failed_cases": failed_case_ids,
+            "case_diagnostics": {
+                label: self._failure_diagnostics(runs[label])
+                for label in failed_case_ids
+                if label in runs
+            },
+        }
         return {
             "status": status,
-            "feedback": json.dumps(
-                {"initial_red": initial, "failed_cases": list(report.failed_case_ids)},
-                ensure_ascii=False,
-            ),
+            "feedback": json.dumps(feedback_payload, ensure_ascii=False),
         }
 
 
@@ -458,7 +625,9 @@ def run_reconstruction_verification(
                 if generated is None:
                     errors = list(recovered.get("errors") or ["VERIFIER_REVIEW"])
                     iterations.append({"round": round_number, "status": "REVIEW", "errors": errors})
-                    feedback = {"generation_errors": errors}
+                    prior_feedback = recovered.get("feedback")
+                    feedback = dict(prior_feedback) if isinstance(prior_feedback, dict) else {}
+                    feedback["generation_errors"] = errors
                     continue
                 outcome = executor.run(generated)
                 iterations.append(
@@ -499,6 +668,7 @@ def run_reconstruction_verification(
                                 feedback = json.loads(str(retry.get("feedback", "{}")))
                             except json.JSONDecodeError:
                                 feedback = {"calibration_feedback": str(retry.get("feedback", ""))}
+                            feedback["previous_candidate"] = generated.to_dict()
                             continue
                     result["errors"] = ["VERIFIER_CALIBRATION_INFRA_ERROR"]
                     break
@@ -506,6 +676,7 @@ def run_reconstruction_verification(
                     feedback = json.loads(str(outcome.get("feedback", "{}")))
                 except json.JSONDecodeError:
                     feedback = {"calibration_feedback": str(outcome.get("feedback", ""))}
+                feedback["previous_candidate"] = generated.to_dict()
             result["iterations"] = iterations
             result["calibration_runs"] = executor.attempts
             if candidate is not None and executor.bundle is not None:
@@ -531,7 +702,7 @@ def run_reconstruction_verification(
                         and all(t.get("status") == "PASS" and t.get("reward") == 1.0 for t in trials)
                     )
                     result["rollout"] = rollout
-                    result["sft_eligible"] = passed
+                    _set_rollout_eligibility(result, config.rollout_trials)
                     if not passed:
                         result["errors"] = ["HERMES_REPRODUCIBILITY_FAILED"]
             elif not result.get("errors"):
@@ -599,7 +770,7 @@ def run_reconstruction_verification(
                         and all(t.get("status") == "PASS" and t.get("reward") == 1.0 for t in trials)
                     )
                     result["rollout"] = rollout
-                    result["sft_eligible"] = passed
+                    _set_rollout_eligibility(result, config.rollout_trials)
                     if not passed:
                         result["errors"] = ["HERMES_REPRODUCIBILITY_FAILED"]
             _write(root / "model_exchange.json", {"iterations": result.get("iterations")})
@@ -650,7 +821,7 @@ def run_reconstruction_verification(
                             )
                         )
                         result["rollout"] = rollout
-                        result["sft_eligible"] = passed
+                        _set_rollout_eligibility(result, config.rollout_trials)
                         if not passed:
                             result["errors"] = ["HERMES_REPRODUCIBILITY_FAILED"]
                 else:

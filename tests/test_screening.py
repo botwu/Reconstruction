@@ -97,8 +97,9 @@ def test_rule_defers_high_cost_session() -> None:
         line_number=3,
     )
     decision = decide_rule(features)
-    assert decision["decision"] == "DEFER"
-    assert "ESTIMATED_COST_HIGH" in decision["blocking_reason_codes"]
+    assert decision["decision"] == "REVIEW"
+    assert decision["route"] == "NEEDS_MODEL_TRIAGE"
+    assert "NEEDS_MODEL_TRIAGE" in decision["blocking_reason_codes"]
 
 
 def test_pipeline_writes_manifest_without_eligible(tmp_path: Path) -> None:

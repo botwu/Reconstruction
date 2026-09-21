@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import zipfile
@@ -45,9 +46,15 @@ def collect_test_results(path: Path) -> list[dict[str, str]]:
             status = "FAIL"
         elif case.find("skipped") is not None:
             status = "SKIPPED"
-        output.append(
-            {"name": case.get("name", ""), "classname": case.get("classname", ""), "status": status}
-        )
+        row = {"name": case.get("name", ""), "classname": case.get("classname", ""), "status": status}
+        detail_node = case.find("failure") if status == "FAIL" else case.find("error")
+        if detail_node is not None:
+            detail = (detail_node.text or detail_node.get("message") or "").strip()
+            detail = re.sub(r"(?i)\bauthorization\s*[:=]\s*bearer\s+\S+", "Authorization: Bearer [REDACTED]", detail)
+            detail = re.sub(r"(?i)\bsk-[A-Za-z0-9_-]{8,}", "[REDACTED]", detail)
+            if detail:
+                row["message"] = detail[-2000:]
+        output.append(row)
     return output
 
 

@@ -16,17 +16,24 @@ from traceforge.reconstruction.model_gateway import (
     parse_json_object,
 )
 
-VERIFIER_PROMPT_VERSION = "terminal-universe-verifier-adaptation-v1"
+VERIFIER_PROMPT_VERSION = "terminal-universe-verifier-adaptation-v3"
 VERIFIER_SYSTEM = """你是独立的 code/file 任务验证器构建者。参照 Terminal-Universe 附录 D：
 只测试用户明确规定的接口和功能。期望值必须在测试中独立计算；不得运行待测实现
 来产生 gold。至少一个 missing-capability 测试必须在当前完成态 workspace（bE）上失败；
 禁止只断言文件/目录存在的 missing 测试。保护性测试必须通过。
-oracle 只写评审类完成物，不得写注入器实现。不得把历史失败轨迹的实现当成正确参考解。
+oracle 可写用户明确要求的任务文件；不得写入受保护的注入器实现文件（如 injector.cpp、loader.cpp、robloxdll.cpp）。不得把历史失败轨迹的实现当成正确参考解。
 生成自足 pytest 文件，测试中的 workspace 根路径必须通过环境变量
 TRACEFORGE_WORKSPACE 获取。测试文件只在独立 verifier 中可见。
-同时给出至少两个可独立执行的合法参考解 shell 脚本和一个错误实现脚本，供验证器校准。
+同时给出至少两个独立完整的合法参考解程序和一个语义错误实现程序，供验证器校准。
+每个参考解都必须独立完成全部 FILE 义务，不能把两个组件分作两个参考解。
+返回的是修改工作区的安装程序，不是目标文件的源码。推荐标准库 Path.write_text 配合
+repr 字符串写入文件；安装时不要导入目标程序的 ROS/仿真依赖或启动服务。
+错误实现程序也必须正常执行并退出 0；语法、导入、权限、环境变量错误不是语义错误。
+测试必须观察用户所要求的行为；禁止仅靠注释、关键词存在判定实现正确，或为了参考解通过而放宽断言。
+每个 Python 参考解或错误实现都必须是独立文件可解析的合法 Python；返回前应按
+`python -m py_compile` 检查，不能在引号内嵌入原始换行。
 脚本在 /home/user/workspace 中执行且不得访问 /tests 或其他隐藏文件。
-每个参考解应从初始 workspace 出发完成任务；错误实现要是有意义的错误实现，不能只删文件。
+每个参考解应从初始 workspace 出发完成任务；它必须是会修改 workspace 的可执行 solver，不能只返回目标文件源码或只打印说明；错误实现要是有意义的错误实现，不能只删文件。
 输出严格 JSON，字段：status(READY/REVIEW)、test_outputs_py、oracle_solutions
 ([{name,script,justification}])、mutation_solutions(同结构)、missing_capability_tests
 ([pytest函数名])、protective_tests([pytest函数名])、obligation_coverage
@@ -135,6 +142,100 @@ class SolutionVariant:
     name: str
     script: str
     justification: str
+
+
+_PYTHON_SHEBANG = re.compile(
+    r"^#!\s*(?:/usr/bin/env(?:\s+-S)?\s+)?(?:\S*/)?"
+    r"(?:python(?:\d+(?:\.\d+)*)?|pypy(?:\d+(?:\.\d+)*)?)\b",
+    re.IGNORECASE,
+)
+_SHELL_FIRST_WORDS = frozenset(
+    {
+        "[", "awk", "bash", "cat", "cd", "echo", "env", "exec", "false",
+        "grep", "if", "mkdir", "mv", "perl", "printf", "python", "python3",
+        "rm", "sed", "sh", "set", "source", "tee", "test", "then", "true",
+        "command", "cp", "exit", "fi", "for", "function", "git", "install",
+        "make", "node", "touch", "trap", "unset", "until", "while", "zsh",
+    }
+)
+_PYTHON_FIRST_WORDS = frozenset(
+    {"class", "def", "from", "import", "if", "for", "while", "try", "with",
+     "async", "assert", "raise", "return"}
+)
+
+
+def _first_code_line(script: str) -> str:
+    for line in script.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped
+    return ""
+
+
+def is_python_solution(script: str) -> bool:
+    """识别直接 Python 脚本，供语法校验与 bundle 入口共同使用。"""
+
+    stripped = script.lstrip()
+    if not stripped:
+        return False
+    first_line = stripped.splitlines()[0].strip()
+    if _PYTHON_SHEBANG.match(first_line):
+        return True
+    if first_line.startswith("#!"):
+        return False
+    first_code = _first_code_line(script)
+    if not first_code or first_code.startswith(("$", "#!")):
+        return False
+    first_word = first_code.split(None, 1)[0].rstrip(":=()").lower()
+    if first_word in {"if", "for", "while"} and first_code.endswith(":"):
+        return True
+    if first_word in _SHELL_FIRST_WORDS or first_code.startswith("python3 - <<"):
+        return False
+    if first_word in _PYTHON_FIRST_WORDS:
+        return True
+    if first_code.startswith(("@", "Path(", "asyncio.", "subprocess.")):
+        return True
+    if re.search(r"(?m)^\s*(?:from|import|def|class)\b", script):
+        return True
+    if re.search(r"\b(?:Path|write_text|write_bytes)\s*\(", script):
+        return True
+    try:
+        tree = ast.parse(script)
+    except SyntaxError:
+        return False
+    return any(
+        isinstance(node, (ast.Import, ast.ImportFrom, ast.Assign, ast.AnnAssign, ast.FunctionDef,
+                          ast.AsyncFunctionDef, ast.ClassDef, ast.With, ast.For, ast.While,
+                          ast.Try, ast.If, ast.Call))
+        for node in ast.walk(tree)
+    )
+
+
+def python_script_syntax_error(script: str) -> str | None:
+    """返回 Python 参考解的稳定语法错误码；shell/heredoc 不会被误判。"""
+
+    if not is_python_solution(script):
+        return None
+    try:
+        ast.parse(script)
+    except SyntaxError as exc:
+        return f"line={exc.lineno or 0};offset={exc.offset or 0}"
+    return None
+
+
+def validate_solution_scripts(
+    oracle_solutions: tuple[SolutionVariant, ...],
+    mutation_solutions: tuple[SolutionVariant, ...],
+) -> None:
+    """在任何 Harbor job 前校验模型脚本，避免把语法错误当执行环境故障。"""
+
+    for kind, variants in (("ORACLE", oracle_solutions), ("MUTATION", mutation_solutions)):
+        for variant in variants:
+            error = python_script_syntax_error(variant.script)
+            if error is not None:
+                raise VerifierSynthesisError(
+                    f"{kind}_SCRIPT_SYNTAX_ERROR:{variant.name}:{error}"
+                )
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,6 +395,7 @@ def candidate_from_payload(
         raise VerifierSynthesisError("必须说明期望值独立计算方法")
     oracles = _variants(payload.get("oracle_solutions"), "oracle_solutions", 2)
     mutations = _variants(payload.get("mutation_solutions"), "mutation_solutions", 1)
+    validate_solution_scripts(oracles, mutations)
     shape = red_shape_errors(
         test_outputs_py=code,
         missing_capability_tests=missing,
@@ -329,5 +431,8 @@ __all__ = [
     "VerifierCandidate",
     "VerifierSynthesisError",
     "candidate_from_payload",
+    "python_script_syntax_error",
+    "is_python_solution",
+    "validate_solution_scripts",
     "synthesize_verifier",
 ]
