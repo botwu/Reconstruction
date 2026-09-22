@@ -50,8 +50,10 @@ def test_reset_uses_independent_scratch_and_compares_files(tmp_path: Path) -> No
         session,
         python_code=(
             "from pathlib import Path\n"
-            "assert not Path('state.txt').exists()\n"
-            "Path('state.txt').write_text('reset')\n"
+            "import os\n"
+            "state = Path(os.environ['TRACEFORGE_PROBE_SCRATCH']) / 'state.txt'\n"
+            "assert not state.exists()\n"
+            "state.write_text('reset')\n"
             "print('ready')\n"
         ),
         purpose="reset",
@@ -64,13 +66,13 @@ def test_reset_uses_independent_scratch_and_compares_files(tmp_path: Path) -> No
     assert not (runtime.remote / "state.txt").exists()
 
 
-def test_reset_different_outputs_fail_without_declaring_unreconstructable(tmp_path: Path) -> None:
+def test_reset_same_workspace_is_reproducible_without_declaring_unreconstructable(tmp_path: Path) -> None:
     session, _ = _session(tmp_path)
     result = run_environment_probe(
         session, python_code="import os; print(os.getcwd())", purpose="reset"
     )
-    assert result["status"] == "FAIL"
-    assert result["reset_reproducible"] is False
+    assert result["status"] == "PASS"
+    assert result["reset_reproducible"] is True
     assert result["environment_unchanged"] is True
 
 

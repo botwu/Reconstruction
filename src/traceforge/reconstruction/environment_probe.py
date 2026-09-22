@@ -56,7 +56,7 @@ for index in range(repetitions):
             "{'__name__': '__main__'})\n"
         )
         process = subprocess.Popen(
-            [sys.executable, "-B", "-c", child], cwd=scratch, env=env,
+            [sys.executable, "-B", "-c", child], cwd=workspace, env=env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
         )
         timed_out = False
@@ -119,6 +119,8 @@ def run_environment_probe(
         "reset_scope": "independent_scratch_and_workspace_snapshot"
         if purpose == "reset" else None,
         "limitations": [
+            "PASS 仅表示探针进程成功且快照未变；检查条件必须用 assert 或非零退出表达失败。",
+            "探针从任务工作区执行；临时写操作必须使用 TRACEFORGE_PROBE_SCRATCH。",
             "仅验证探针实际执行的能力，不证明任务数学可解。",
             "reset 仅比较独立临时目录的输出和文件快照，不重置外部服务。",
         ],

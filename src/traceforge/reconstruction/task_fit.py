@@ -67,8 +67,7 @@ def build_environment_contract(
     checks = sufficiency.get("environment_checks")
     checks = checks if isinstance(checks, list) else []
     checked: set[str] = set()
-    # A statically confirmed missing asset is skipped before executable probes;
-    # do not turn that honest boundary into noisy probe-evidence errors.
+    # 静态证据已确认不可重建时，无需再要求执行探针。
     checks_required = status not in {ENVIRONMENT_UNRECONSTRUCTABLE, "INFRA_ERROR"}
     for check in checks if checks_required else []:
         if not isinstance(check, dict):
@@ -92,6 +91,23 @@ def build_environment_contract(
                 or (kind == "reset" and probe.get("reproducible") is not True)
             ):
                 errors.append(f"ENVIRONMENT_PROBE_NOT_PASS:{kind}")
+                continue
+            executions = probe.get("executions")
+            if (
+                probe.get("workspace_before") != inventory
+                or probe.get("workspace_after") != inventory
+                or not isinstance(executions, list)
+                or len(executions) != (2 if kind == "reset" else 1)
+                or any(
+                    not isinstance(item, dict)
+                    or type(item.get("exit_code")) is not int
+                    or item["exit_code"] != 0
+                    or item.get("timed_out") is not False
+                    or item.get("workspace_after") != inventory
+                    for item in executions
+                )
+            ):
+                errors.append(f"ENVIRONMENT_PROBE_RECEIPT_INVALID:{kind}")
     if checks_required and checked != {"load", "reset", "dependency"}:
         errors.append("ENVIRONMENT_PROBES_REQUIRED")
     if not workspace.is_dir():
@@ -102,15 +118,8 @@ def build_environment_contract(
         errors.append("ENVIRONMENT_CHANGED_AFTER_SUFFICIENCY")
         status = "PIPELINE_ERROR"
     probe_errors = sorted(set(errors))
-    # Static reconstruction and executable readiness are separate contracts.
-    # Existing verifier/RED remains the final execution gate for an original
-    # task; task variants additionally require successful probes.
-    if status == "READY" and any(
-        error not in {"ENVIRONMENT_PROBES_REQUIRED"}
-        and not error.startswith("ENVIRONMENT_CHECK_")
-        and not error.startswith("ENVIRONMENT_PROBE")
-        for error in errors
-    ):
+    # 缺少或失败的探针不能被静态文件完整性覆盖，也不等于不可重建。
+    if status == "READY" and errors:
         status = "REVIEW"
     return {
         "schema_version": ENVIRONMENT_CONTRACT_SCHEMA,

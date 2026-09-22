@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from traceforge.reconstruction.agents.session import workspace_tree_hash
 from traceforge.reconstruction.task_fit import (
     ENVIRONMENT_UNRECONSTRUCTABLE,
     build_environment_contract,
@@ -29,6 +30,36 @@ def _task(*, required: str = "src") -> dict:
         ],
         "success_criteria": ["入口可运行"],
     }
+
+
+def _probed_environment(workspace: Path) -> dict:
+    inventory = workspace_tree_hash(workspace)
+    probes = []
+    checks = []
+    for kind in ("load", "reset", "dependency"):
+        probe_id = f"probe-{kind}"
+        count = 2 if kind == "reset" else 1
+        executions = [
+            {"exit_code": 0, "timed_out": False, "workspace_after": inventory}
+            for _ in range(count)
+        ]
+        probes.append({
+            "probe_id": probe_id, "purpose": kind, "status": "PASS",
+            "environment_unchanged": True, "reproducible": True,
+            "workspace_before": inventory, "workspace_after": inventory,
+            "executions": executions,
+        })
+        checks.append({"kind": kind, "probe_ids": [probe_id], "reason": "固定回归探针"})
+    return build_environment_contract(
+        workspace_root=workspace,
+        sufficiency={
+            "status": "READY", "errors": [],
+            "integrity_report": {"issues": []},
+            "workspace_hashes": inventory,
+            "environment_probes": probes,
+            "environment_checks": checks,
+        },
+    )
 
 
 def test_missing_referenced_asset_is_unreconstructable_and_cannot_variant(tmp_path: Path) -> None:
@@ -80,11 +111,7 @@ def test_directory_binding_and_variant_are_environment_grounded(tmp_path: Path) 
     workspace = tmp_path / "workspace"
     (workspace / "src").mkdir(parents=True)
     (workspace / "src/main.py").write_text("print(1)\n", encoding="utf-8")
-    environment = build_environment_contract(
-        workspace_root=workspace,
-        sufficiency={"status": "READY", "errors": [], "integrity_report": {"issues": []}},
-    )
-    environment["execution_readiness"] = "PROBED"
+    environment = _probed_environment(workspace)
     task = build_task_contract(task=_task())
     fit = fit_task_environment(environment=environment, task=task)
     assert fit["decision"] == "READY_ORIGINAL"
@@ -127,11 +154,7 @@ def test_variant_rejects_unknown_path_or_core_intent_change(tmp_path: Path) -> N
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "main.py").write_text("print(1)\n", encoding="utf-8")
-    environment = build_environment_contract(
-        workspace_root=workspace,
-        sufficiency={"status": "READY", "errors": [], "integrity_report": {"issues": []}},
-    )
-    environment["execution_readiness"] = "PROBED"
+    environment = _probed_environment(workspace)
     task = build_task_contract(task=_task(required="main.py"))
     fit = fit_task_environment(environment=environment, task=task) | {
         "decision": "INCOMPATIBLE",
@@ -158,3 +181,37 @@ def test_variant_rejects_unknown_path_or_core_intent_change(tmp_path: Path) -> N
     }
     with pytest.raises(Exception):
         build_task_variant(parent_task=task, environment=environment, fit=fit, proposal=proposal)
+
+
+def test_probe_pass_without_workspace_execution_receipt_cannot_make_environment_ready(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.py").write_text("print(1)\n", encoding="utf-8")
+    inventory = workspace_tree_hash(workspace)
+    environment = build_environment_contract(
+        workspace_root=workspace,
+        sufficiency={
+            "status": "READY",
+            "errors": [],
+            "integrity_report": {"issues": []},
+            "workspace_hashes": inventory,
+            "environment_probes": [
+                {
+                    "probe_id": "fake-load",
+                    "purpose": "load",
+                    "status": "PASS",
+                    "environment_unchanged": True,
+                    "workspace_before": {},
+                    "workspace_after": {},
+                    "executions": [],
+                }
+            ],
+            "environment_checks": [
+                {"kind": "load", "probe_ids": ["fake-load"], "reason": "伪造收据"},
+                {"kind": "reset", "probe_ids": ["fake-load"], "reason": "伪造收据"},
+                {"kind": "dependency", "probe_ids": ["fake-load"], "reason": "伪造收据"},
+            ],
+        },
+    )
+    assert environment["status"] == "REVIEW"
+    assert any(error.startswith("ENVIRONMENT_PROBE_NOT_PASS") for error in environment["errors"])
