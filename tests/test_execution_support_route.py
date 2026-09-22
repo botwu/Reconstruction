@@ -195,6 +195,9 @@ def test_task_rechecks_intent_then_completes_non_file_tree(tmp_path, monkeypatch
 
     def fake_completion(**kwargs):
         assert kwargs.get("replay") is not None
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        (workspace / "foo.py").write_text("print(1)\n", encoding="utf-8")
         return {
             "status": "READY",
             "errors": [],
@@ -214,6 +217,7 @@ def test_task_rechecks_intent_then_completes_non_file_tree(tmp_path, monkeypatch
             "decision": "READY",
             "confidence": 0.8,
             "errors": [],
+            "integrity_report": {"issues": []},
         }
 
     monkeypatch.setattr(module, "complete_from_replayed", fake_completion)
