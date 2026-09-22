@@ -10,33 +10,6 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 MAX_TOOL_RESULT_CHARS = 8000
-_DEBUG_LOG_PATH = Path("/mnt/afs_toolcall/wujian1/Projects/workspace/.cursor/debug-c4c36a.log")
-
-
-def _debug_agent_log(
-    hypothesis_id: str,
-    location: str,
-    message: str,
-    data: dict[str, Any],
-) -> None:
-    # #region agent log
-    try:
-        import time as _time
-
-        payload = {
-            "sessionId": "c4c36a",
-            "runId": "post-fix",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(_time.time() * 1000),
-        }
-        with _DEBUG_LOG_PATH.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    # #endregion
 
 
 @dataclass
@@ -287,26 +260,6 @@ def tool_catalog(names: tuple[str, ...]) -> str:
 
 def execute_tool(name: str, arguments: Any, session: AgentSession) -> str:
     args = arguments if isinstance(arguments, dict) else {}
-    if name in {"list_dir", "read_file", "write_file", "run_pytest", "list_user_texts"}:
-        seen = getattr(session, "_debug_plane_tools", None)
-        if seen is None:
-            seen = set()
-            session._debug_plane_tools = seen
-        if name not in seen:
-            seen.add(name)
-            # #region agent log
-            _debug_agent_log(
-                "H6",
-                "session.py:execute_tool",
-                "tool_execution_plane",
-                {
-                    "tool": name,
-                    "plane": "ags_files" if session.sandbox is not None else "host",
-                    "sandbox_bound": session.sandbox is not None,
-                    "remote_root": getattr(session.sandbox, "remote_root", None),
-                },
-            )
-            # #endregion
     if name == "list_user_texts":
         return _dump(
             [
@@ -490,22 +443,6 @@ def _write_file(session: AgentSession, args: dict[str, Any]) -> str:
         return f"error: {stub_error}"
     observed = session.partial_files.get(path)
     if observed is not None and observed not in content:
-        # #region agent log
-        _debug_agent_log(
-            "H3",
-            "session.py:_write_file",
-            "partial_write_rejected",
-            {
-                "path": path,
-                "observed_len": len(observed),
-                "content_len": len(content),
-                "observed_in_content": False,
-                "observed_prefix": observed[:48],
-                "content_prefix": content[:48],
-                "has_script_wrapper": observed.lstrip().startswith("Script completed"),
-            },
-        )
-        # #endregion
         return f"error: PARTIAL_OBSERVED_CONTENT_LOST:{path}"
     previous = next((item for item in reversed(session.writes) if item.get("path") == path), None)
     if previous is not None:

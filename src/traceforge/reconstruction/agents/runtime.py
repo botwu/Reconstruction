@@ -29,7 +29,6 @@ from traceforge.reconstruction.agents.session import (
     execute_tool,
     tool_schemas,
     workspace_tree_hash,
-    _debug_agent_log,
 )
 from traceforge.reconstruction.model_gateway import (
     ModelGatewayError,
@@ -254,23 +253,6 @@ class HermesNativeRuntime:
         if session.policy_errors:
             errors.extend(session.policy_errors)
             payload = {}
-        # #region agent log
-        _debug_agent_log(
-            "H1",
-            "runtime.py:HermesNativeRuntime.run",
-            "after_policy_gate",
-            {
-                "role": role.name,
-                "backend": self.backend,
-                "policy_errors": list(session.policy_errors),
-                "error_codes": list(errors),
-                "payload_keys": sorted(payload) if isinstance(payload, dict) else [],
-                "payload_wiped": not bool(payload),
-                "raw_completed": bool((raw or {}).get("completed")) if isinstance(raw, dict) else False,
-                "final_text_prefix": (final_text or "")[:80],
-            },
-        )
-        # #endregion
         turns = [
             {
                 "messages": len(raw.get("messages") or []),
@@ -781,20 +763,6 @@ def _bind_agent_tools(agent: Any, *, role: AgentRole, session: AgentSession) -> 
             fatal = is_fatal_tool_result(function_name, result)
             if fatal:
                 session.policy_errors.append(result.removeprefix("error:").strip())
-            # #region agent log
-            if result.startswith("error:"):
-                _debug_agent_log(
-                    "H1",
-                    "runtime.py:invoke",
-                    "tool_error_fatal_decision",
-                    {
-                        "function_name": function_name,
-                        "fatal": fatal,
-                        "recorded": bool(result.startswith("error:") and fatal),
-                        "result_code": result.removeprefix("error:").strip()[:120],
-                    },
-                )
-            # #endregion
             return result
 
     agent._invoke_tool = MethodType(invoke, agent)
@@ -904,20 +872,6 @@ class SandboxedAgentRuntime:
         output_root: Path,
     ) -> AgentResult:
         if role.name in {"intent", "session_tasks"}:
-            # #region agent log
-            _debug_agent_log(
-                "H6",
-                "runtime.py:SandboxedAgentRuntime.run",
-                "role_execution_plane",
-                {
-                    "role": role.name,
-                    "plane": "host_reason_only",
-                    "ags_started": False,
-                    "sandbox_bound": False,
-                    "inner_backend": getattr(self.inner, "backend", None),
-                },
-            )
-            # #endregion
             return self.inner.run(
                 role=role,
                 instruction=instruction,
@@ -958,23 +912,6 @@ class SandboxedAgentRuntime:
                     completed=False,
                 )
             started = True
-            # #region agent log
-            _debug_agent_log(
-                "H6",
-                "runtime.py:SandboxedAgentRuntime.run",
-                "role_execution_plane",
-                {
-                    "role": role.name,
-                    "plane": "host_reason_plus_ags_files",
-                    "ags_started": True,
-                    "sandbox_bound": session.sandbox is not None,
-                    "remote_root": getattr(session.sandbox, "remote_root", None),
-                    "allow_exec": getattr(session.sandbox, "allow_exec", None),
-                    "allow_tests": getattr(session.sandbox, "allow_tests", None),
-                    "inner_backend": getattr(self.inner, "backend", None),
-                },
-            )
-            # #endregion
             try:
                 result = self.inner.run(
                     role=role,
@@ -983,20 +920,6 @@ class SandboxedAgentRuntime:
                     output_root=output_root,
                 )
                 result.backend = self.backend
-                # #region agent log
-                _debug_agent_log(
-                    "H2",
-                    "runtime.py:SandboxedAgentRuntime.run",
-                    "backend_stamped",
-                    {
-                        "role": role.name,
-                        "inner_backend": getattr(self.inner, "backend", None),
-                        "stamped_backend": result.backend,
-                        "completed": result.completed,
-                        "error_count": len(result.errors),
-                    },
-                )
-                # #endregion
             except BaseException as exc:
                 result = AgentResult(
                     role=role.name,

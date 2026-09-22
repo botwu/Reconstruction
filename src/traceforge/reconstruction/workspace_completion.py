@@ -19,7 +19,6 @@ from traceforge.reconstruction.agents import (
     AgentSession,
 )
 from traceforge.reconstruction.agents.runtime import AgentResult, merge_completion_files
-from traceforge.reconstruction.agents.session import _debug_agent_log
 from traceforge.reconstruction.completion_holes import CompletionIndex, index_completion_holes
 from traceforge.reconstruction.environment_bindings import (
     environment_bindings,
@@ -651,26 +650,6 @@ def _run_completion(
                 if isinstance(item, dict)
             ],
         }
-        # #region agent log
-        _debug_agent_log(
-            "H8",
-            "workspace_completion.py:materialize_gate",
-            "materialize_decision",
-            {
-                "index": index,
-                "ok": ok,
-                "ran_completed": ran.completed,
-                "global_errors": list(errors),
-                "candidate_decision": candidate.get("decision"),
-                "will_materialize": bool(
-                    ok
-                    and not errors
-                    and ran.completed
-                    and candidate.get("decision") == "READY"
-                ),
-            },
-        )
-        # #endregion
         if (
             ok
             and not errors
@@ -741,31 +720,6 @@ def _run_completion(
     if not ready:
         errors.extend(candidate_gate_errors)
     errors = list(dict.fromkeys(str(item) for item in errors if str(item)))
-    # #region agent log
-    _debug_agent_log(
-        "H4",
-        "workspace_completion.py:run_workspace_completion",
-        "completion_status_assembled",
-        {
-            "agent_backend": getattr(agent, "backend", ""),
-            "ran_backend": ran.backend,
-            "ran_completed": ran.completed,
-            "skip_reason": skip_reason,
-            "status": status,
-            "errors": list(errors),
-            "holes": holes,
-            "payload_keys": (
-                sorted(str(key) for key in payload)
-                if isinstance(payload, dict)
-                else []
-            ),
-            "candidate_count": len(records),
-            "ready_count": len(ready),
-            "container_required": skip_reason is None
-            and getattr(agent, "backend", "") != "hermes-sandbox",
-        },
-    )
-    # #endregion
     result = {
         "schema_version": COMPLETION_SCHEMA,
         "prompt_version": COMPLETION_PROMPT_VERSION,

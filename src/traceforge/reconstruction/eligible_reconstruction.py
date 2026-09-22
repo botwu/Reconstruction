@@ -10,7 +10,6 @@ from typing import Any
 
 from traceforge.curation.sft import write_reconstruction_sft_curation
 from traceforge.reconstruction.agents import AgentRuntime, SandboxedAgentRuntime
-from traceforge.reconstruction.agents.session import _debug_agent_log
 from traceforge.reconstruction.env_replay import (
     replay_from_timeline,
     write_replay_artifacts,
@@ -410,21 +409,6 @@ def _task_result(
         result["stopped_at"] = "completion"
         result["errors"] = list(completion.get("errors") or ["COMPLETION_REVIEW"])
         result["env_origin"] = origin
-        # #region agent log
-        _debug_agent_log(
-            "H5",
-            "eligible_reconstruction.py:_task_result",
-            "stopped_at_completion",
-            {
-                "task_id": task_id,
-                "completion_status": completion.get("status"),
-                "completion_backend": (completion.get("agent") or {}).get("backend"),
-                "stopped_at": result.get("stopped_at"),
-                "errors": list(result.get("errors") or []),
-                "holes": completion.get("holes"),
-            },
-        )
-        # #endregion
         return result
     judges: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
@@ -654,18 +638,6 @@ def run_eligible_reconstruction(
         agent = SandboxedAgentRuntime(agent, container_runtime_factory)
         if verifier_agent is not None:
             verifier_agent = SandboxedAgentRuntime(verifier_agent, container_runtime_factory)
-    # #region agent log
-    _debug_agent_log(
-        "H6",
-        "eligible_reconstruction.py:run_eligible_reconstruction",
-        "orchestration_start",
-        {
-            "agent_backend": getattr(agent, "backend", None),
-            "sandbox_factory": container_runtime_factory is not None,
-            "wrapped": isinstance(agent, SandboxedAgentRuntime),
-        },
-    )
-    # #endregion
     if source_override is not None:
         source = copy.deepcopy(source_override)
     else:
