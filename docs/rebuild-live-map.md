@@ -25,7 +25,7 @@ terminal JSONL + screening records.jsonl
   → Intent（q + environment_bindings）
   → execution_support_route（Intent 后重算）
   → Completion（有回放则 from_replayed，否则 from_default_empty）
-  → Sufficiency（workspace_sufficiency，不是 sufficiency.py）
+  → Sufficiency（workspace_sufficiency）
   → Environment Contract / Task Fit（环境事实与拟合任务分开）
   → Verifier（仅当 allow_file_verifier）
   → Harbor RED（--execute-red）
@@ -104,8 +104,7 @@ flowchart LR
 4. 全 NON_FILE 时 allow_file_verifier=false，管线可完成 Completion/Sufficiency，但在文件 Verifier 前以 NO_FILE_ACCEPTANCE 保持 REVIEW；这属于输出型验收尚未接入独立回执协议。
 5. terminal selector 只产出 CANDIDATE_ONLY。当前本地 R04/R05 是截断采样（R04 297/6535、R05 336/1694 物理行，sha 不匹配），不能宣称覆盖上游全量；模型证据超过预算时 fail-closed，不删除中间事件。
 6. 活跑可用 `TRACEFORGE_MODEL_TIMEOUT_SECONDS` 限制单次模型窗口，`TRACEFORGE_AGENT_MAX_ITERATIONS` 限制单个 Hermes 角色的总轮数；默认不改变角色预算，异常复跑建议显式设置，避免外部模型无响应拖到总进程超时。
-7. `traceforge.response-receipt.v1` 当前只是独立解析与哈希校验模块，有单元测试；尚未被 `harbor_ags/results.py`、rollout 或主编排调用。它只覆盖特定 acceptance-report 输出格式，不是通用 NON_FILE 验收器，也不证明报告内容正确。它不构成当前 terminal FILE 主链的完成条件。
-8. 不要发明源码、不要写解题、不要写目标测试。Intent 只引用用户原文。web_search 只给 Completion，且不得把检索到的源码写进用户路径。
+7. 不要发明源码、不要写解题、不要写目标测试。Intent 只引用用户原文。web_search 只给 Completion，且不得把检索到的源码写进用户路径。
 
 ## 当前验证证据（2026-09-20，terminal 真实活跑与当前提交）
 
@@ -119,7 +118,7 @@ flowchart LR
 
 项目内 R04/R05 副本仍被截断；distribution.json 指向的完整上游文件可读且哈希一致。可直接对完整上游做只读筛选，不必先覆盖本地副本。全量候选索引为 7,586 条（R04 6,069、R05 1,517），这里只证明存在 terminal 工具调用，仍需模型筛选。
 
-`scripts/check_reconstruct_e2e.py` 是已有产物的外部审计脚本，不是执行入口；当前版本会严格检查 source、Intent、Completion、Sufficiency、Verifier、RED、secret hygiene 和 Harbor rollout schema。两条本轮真实 terminal 产物的审计结果均为 `pipeline_ok=false`，这是证据不足时的安全失败。主编排是 `eligible_reconstruction.py`，独立的 `control_plane.py` 未接入。
+`scripts/check_reconstruct_e2e.py` 是已有产物的外部审计脚本，不是执行入口；当前版本会严格检查 source、Intent、Completion、Sufficiency、Verifier、RED、secret hygiene 和 Harbor rollout schema。两条本轮真实 terminal 产物的审计结果均为 `pipeline_ok=false`，这是证据不足时的安全失败。主编排是 `eligible_reconstruction.py`。
 
 ## 对照产物（只读）
 
@@ -186,6 +185,3 @@ PYTHONPATH=src python -m traceforge reconstruct run \
 
 - `trajectory/` 里剩下的 `json_codec` / `privacy` / `artifacts`：筛选、Harbor、重建源仍在用。
 - `failure_analysis/`、`requery/`、`screening/`：有 CLI。
-- [`reconstruction/sufficiency.py`](../src/traceforge/reconstruction/sufficiency.py) + [`tests/test_reconstruction_sufficiency.py`](../tests/test_reconstruction_sufficiency.py)：旧契约，活跑走 `workspace_sufficiency.py`，测试还在用。
-- [`control_plane.py`](../src/traceforge/reconstruction/control_plane.py)：未接到 `reconstruct run`，有单测；不要当无用直接拆。
-- 源码里的 `#region agent log`：调试探针，不是业务。
