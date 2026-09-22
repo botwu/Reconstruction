@@ -448,6 +448,7 @@ def _task_result(
             workspace_root=candidate["workspace"],
             env_root=candidate.get("env_root"),
             sufficiency=judge,
+            replay=replay,
         )
         environment_contracts[index] = environment
         _write_stage_json(
@@ -455,11 +456,21 @@ def _task_result(
             "environment_contract.json",
             environment,
         )
-        if environment.get("status") == ENVIRONMENT_UNRECONSTRUCTABLE:
+        environment_status = environment.get("status")
+        if environment_status == ENVIRONMENT_UNRECONSTRUCTABLE:
             rows.append(
                 {
                     "decision": ENVIRONMENT_UNRECONSTRUCTABLE,
                     "reason_codes": [item.get("code") for item in environment.get("blockers", [])],
+                }
+            )
+        elif environment_status != "READY":
+            rows.append(
+                {
+                    "decision": "ENVIRONMENT_NOT_READY",
+                    "environment_status": environment_status,
+                    "reason_codes": list(environment.get("errors") or [])
+                    or ["ENVIRONMENT_CONTRACT_NOT_READY"],
                 }
             )
         else:
@@ -517,10 +528,14 @@ def _task_result(
     result["task_fit"] = fit
     task_for_verification = task
     variant = None
-    if fit.get("decision") == ENVIRONMENT_UNRECONSTRUCTABLE:
-        result["status"] = ENVIRONMENT_UNRECONSTRUCTABLE
+    if fit.get("decision") in {
+        ENVIRONMENT_UNRECONSTRUCTABLE,
+        "INFRA_ERROR",
+        "PIPELINE_ERROR",
+    }:
+        result["status"] = fit["decision"]
         result["stopped_at"] = "task_fit"
-        result["errors"] = ["ENVIRONMENT_UNRECONSTRUCTABLE"]
+        result["errors"] = list(fit.get("errors") or [fit["decision"]])
         return result
     if fit.get("decision") == "REVIEW_TASK_FIT":
         result["status"] = "REVIEW"

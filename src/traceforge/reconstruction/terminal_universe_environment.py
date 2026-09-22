@@ -479,6 +479,16 @@ def select_sufficient_candidate(
                 }
             )
             continue
+        if decision == "ENVIRONMENT_NOT_READY":
+            rejected.append(
+                {
+                    "index": index,
+                    "reason": "ENVIRONMENT_CONTRACT_NOT_READY",
+                    "environment_status": candidate.get("environment_status"),
+                    "reason_codes": list(candidate.get("reason_codes") or []),
+                }
+            )
+            continue
         if decision != "READY":
             rejected.append({"index": index, "reason": "COMPLETION_NOT_READY"})
             continue

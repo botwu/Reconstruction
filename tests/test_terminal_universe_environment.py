@@ -99,6 +99,18 @@ def test_stage3_skips_unreconstructable_and_selects_later_candidate():
     assert audit["rejected"][0]["reason_codes"] == ["REFERENCED_ASSET_MISSING"]
 
 
+def test_stage3_rejects_non_ready_environment_contract():
+    from traceforge.reconstruction.terminal_universe_environment import select_sufficient_candidate
+
+    selected, audit = select_sufficient_candidate(
+        [{"decision": "ENVIRONMENT_NOT_READY", "environment_status": "PIPELINE_ERROR", "reason_codes": ["X"]}],
+        [{"label": "SUFFICIENT", "decision": "READY"}],
+    )
+    assert selected is None
+    assert audit["rejected"][0]["reason"] == "ENVIRONMENT_CONTRACT_NOT_READY"
+    assert audit["rejected"][0]["environment_status"] == "PIPELINE_ERROR"
+
+
 def test_stage3_returns_no_candidate_when_label_unknown():
     from traceforge.reconstruction.terminal_universe_environment import select_sufficient_candidate
 

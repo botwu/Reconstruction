@@ -113,10 +113,13 @@ def build_task_environment_pair(
             "sufficiency_label": sufficiency.get("label"),
             "verification_status": verification_status,
             "sft_eligible": verification.get("sft_eligible") is True,
+            "environment_contract_ref": _artifact_ref(
+                task_root / "environment_contract.json", root
+            ),
             "contract_status": (result.get("environment_contract") or {}).get("status"),
-            "execution_readiness": (
-                (result.get("environment_contract") or {}).get("evidence") or {}
-            ).get("execution_readiness"),
+            "execution_readiness": (result.get("environment_contract") or {}).get(
+                "execution_readiness"
+            ),
         },
         "provenance": {
             "source_schema_version": source.get("schema_version"),

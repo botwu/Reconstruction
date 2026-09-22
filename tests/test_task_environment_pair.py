@@ -107,6 +107,17 @@ def test_pair_records_q_environment_and_relative_provenance(tmp_path: Path) -> N
     assert pair["environment"]["withheld_change_count"] == 1
     assert pair["environment"]["completed_workspace_ref"].startswith("tasks/task-1/")
     assert not pair["environment"]["completed_workspace_ref"].startswith("/")
+    result["environment_contract"] = {"status": "READY", "execution_readiness": "PROBED"}
+    pair = build_task_environment_pair(
+        source_task=source_task,
+        intent=intent,
+        source=source,
+        replay=replay,
+        result=result,
+        root=tmp_path,
+    )
+    assert pair["environment"]["execution_readiness"] == "PROBED"
+    assert pair["environment"]["environment_contract_ref"] == "tasks/task-1/environment_contract.json"
     validate_task_environment_pair(pair)
     output = write_task_environment_pair(tmp_path / "tasks/task-1", pair)
     assert json.loads(output.read_text(encoding="utf-8"))["task_id"] == "task-1"
