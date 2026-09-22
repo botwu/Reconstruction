@@ -527,7 +527,7 @@ def test_production_runtime_blocks_protected_write_and_sufficiency_is_read_only(
 
         def run_conversation(self, instruction, system_message=None, task_id=None):
             names = {item["function"]["name"] for item in self.tools}
-            assert names == {"list_dir", "read_file"}
+            assert names == {"list_dir", "read_file", "run_environment_probe"}
             assert self._invoke_tool("write_file", {"path": "x", "content": "bad", "evidence_ref_ids": ["e1"]}, task_id).startswith("error:")
             return {"final_response": "{\"label\":\"SUFFICIENT\",\"decision\":\"READY\",\"confidence\":0.8}", "completed": True, "messages": []}
 

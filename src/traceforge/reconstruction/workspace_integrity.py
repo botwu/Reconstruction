@@ -20,6 +20,38 @@ _CLASSIFICATIONS = frozenset(
 )
 _REDACTION_NAME = re.compile(r"PII_[A-Za-z0-9_]+\Z")
 
+_INCLUDE_RE = re.compile(r'<include\b[^>]*\bfile\s*=\s*["\']([^"\']+)["\']', re.I)
+
+
+def _referenced_asset_issues(workspace: Path) -> list[dict[str, Any]]:
+    """检查已观测环境中的 MJCF/XML include 是否有本地资产。"""
+    issues: list[dict[str, Any]] = []
+    for source in sorted(workspace.rglob("*.xml")):
+        if not _inside_file(source, workspace):
+            continue
+        try:
+            text = source.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        for match in _INCLUDE_RE.finditer(text):
+            reference = match.group(1).strip()
+            if not reference or reference.startswith(("/", "$")):
+                continue
+            target = (source.parent / reference).resolve()
+            if target.is_file() and target.is_relative_to(workspace):
+                continue
+            line = text.count("\n", 0, match.start()) + 1
+            issues.append({
+                "code": "REFERENCED_ASSET_MISSING",
+                "path": source.relative_to(workspace).as_posix(),
+                "line": line,
+                "column": match.start() - text.rfind("\n", 0, match.start()),
+                "reason": f"XML include 引用了缺失的本地资产：{reference}",
+                "reference": reference,
+            })
+    return issues
+
+
 
 def _inside_file(path: Path, workspace: Path) -> bool:
     return path.is_file() and path.resolve().is_relative_to(workspace)
@@ -121,7 +153,7 @@ def inspect_workspace_integrity(
     workspace = workspace.resolve()
     pending = _bound_python_paths(workspace, task)
     visited: set[Path] = set()
-    issues: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = _referenced_asset_issues(workspace)
     observed: set[str] = set()
     for relative in observed_paths:
         path = workspace / relative

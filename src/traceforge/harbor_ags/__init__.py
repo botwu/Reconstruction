@@ -22,6 +22,7 @@ from .rollout import (
     HarborRolloutConfig,
     HarborRolloutError,
     build_rollout_plan,
+    publish_rollout_bundle,
     execute_rollout_plan,
 )
 
@@ -43,6 +44,7 @@ __all__ = [
     "HarborRolloutError",
     "build_boundary_plan",
     "build_rollout_plan",
+    "publish_rollout_bundle",
     "execute_rollout_plan",
     "read_rollout_results",
     "validate_bundle_layout",

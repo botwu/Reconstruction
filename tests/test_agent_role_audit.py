@@ -358,7 +358,7 @@ def test_sufficiency_host_cannot_ready_even_if_model_says_sufficient(tmp_path: P
     assert "REAL_PROBE_REQUIRED" in result["errors"]
     assert "READ_ONLY_PROBE_NOT_CONFIRMED" in result["errors"]
     assert SUFFICIENCY_ROLE.allow_write is False
-    assert SUFFICIENCY_ROLE.tools == ("list_dir", "read_file")
+    assert SUFFICIENCY_ROLE.tools == ("list_dir", "read_file", "run_environment_probe")
 
 
 def test_sufficiency_sandbox_ready_and_forbids_write(tmp_path: Path) -> None:
@@ -599,6 +599,6 @@ def test_role_tool_surfaces_are_disjoint() -> None:
     assert {"read_session_message", "read_session_context"}.issubset(INTENT_ROLE.tools)
     assert "write_file" in COMPLETION_ROLE.tools
     assert "write_test" not in COMPLETION_ROLE.tools
-    assert set(SUFFICIENCY_ROLE.tools) == {"list_dir", "read_file"}
+    assert set(SUFFICIENCY_ROLE.tools) == {"list_dir", "read_file", "run_environment_probe"}
     assert "write_test" in VERIFIER_ROLE.tools
     assert "write_file" not in VERIFIER_ROLE.tools

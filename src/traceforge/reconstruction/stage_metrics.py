@@ -18,7 +18,8 @@ def reconstruction_stage_metrics(
         for item in intent.get("tasks") or []
     }
     stages: dict[str, Counter[str]] = {
-        name: Counter() for name in ("intent", "completion", "sufficiency", "verification")
+        name: Counter()
+        for name in ("intent", "completion", "sufficiency", "task_fit", "verification")
     }
     routes: Counter[str] = Counter()
     stops: Counter[str] = Counter()
@@ -34,6 +35,8 @@ def reconstruction_stage_metrics(
         if sufficiency_status is None and "sufficiency_audit" in result:
             sufficiency_status = "REVIEW"
         stages["sufficiency"][sufficiency_status or "NOT_RUN"] += 1
+        fit = result.get("task_fit") or {}
+        stages["task_fit"][fit.get("decision") or "NOT_RUN"] += 1
         verification_status = (result.get("verification") or {}).get("status")
         if verification_status is None and result.get("status") == "PENDING_EXECUTION":
             verification_status = "PENDING_EXECUTION"
@@ -57,6 +60,7 @@ def reconstruction_stage_metrics(
     }
     for name, counts in stages.items():
         metrics[f"{name}_status_counts"] = dict(sorted(counts.items()))
-        metrics[f"{name}_ready_count"] = counts["READY"]
+        metrics[f"{name}_ready_count"] = counts["READY"] + counts["READY_VARIANT"]
+        metrics[f"{name}_ready_variant_count"] = counts["READY_VARIANT"]
         metrics[f"{name}_review_count"] = counts["REVIEW"]
     return metrics

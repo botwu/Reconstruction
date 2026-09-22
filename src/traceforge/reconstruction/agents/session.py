@@ -58,11 +58,13 @@ class AgentSession:
     allow_write: bool = False
     allow_tests: bool = False
     allow_exec: bool = False
+    allow_environment_probe: bool = False
     sandbox: Any = None
     path_aliases: list[Path] = field(default_factory=list)
     writes: list[dict[str, Any]] = field(default_factory=list)
     test_outputs_py: str | None = None
     pytest_runs: list[dict[str, Any]] = field(default_factory=list)
+    environment_probes: list[dict[str, Any]] = field(default_factory=list)
     tool_events: list[dict[str, Any]] = field(default_factory=list)
     policy_errors: list[str] = field(default_factory=list)
     sandbox_started: bool = False
@@ -241,6 +243,19 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
             {"names": {"type": "array", "items": text, "minItems": 1}},
             ["names"],
         ),
+        "run_environment_probe": (
+            "在只读工作区的沙盒中运行环境探针；reset 和 task_conflict 在独立临时目录重复运行。"
+            "只验证指定能力，不证明任务可解，也不得修复或求解任务。",
+            {
+                "python_code": text,
+                "purpose": {
+                    "type": "string",
+                    "enum": ["load", "reset", "dependency", "task_conflict"],
+                },
+                "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
+            },
+            ["python_code", "purpose", "timeout_seconds"],
+        ),
     }
     unknown = set(names) - specs.keys()
     if unknown:
@@ -352,6 +367,19 @@ def execute_tool(name: str, arguments: Any, session: AgentSession) -> str:
         return _write_test(session, args)
     if name == "run_pytest":
         return _run_pytest(session, args)
+    if name == "run_environment_probe":
+        from traceforge.reconstruction.environment_probe import (
+            environment_probe_summary,
+            run_environment_probe,
+        )
+
+        result = run_environment_probe(
+            session,
+            python_code=args.get("python_code"),
+            purpose=args.get("purpose"),
+            timeout_seconds=args.get("timeout_seconds", 30),
+        )
+        return environment_probe_summary(result, max_chars=MAX_TOOL_RESULT_CHARS)
     return f"error: unknown tool {name}"
 
 

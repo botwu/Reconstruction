@@ -26,6 +26,7 @@ terminal JSONL + screening records.jsonl
   → execution_support_route（Intent 后重算）
   → Completion（有回放则 from_replayed，否则 from_default_empty）
   → Sufficiency（workspace_sufficiency，不是 sufficiency.py）
+  → Environment Contract / Task Fit（环境事实与拟合任务分开）
   → Verifier（仅当 allow_file_verifier）
   → Harbor RED（--execute-red）
   → Hermes rollout（--execute-rollout，只写 SFT，不改 READY）
@@ -33,6 +34,13 @@ terminal JSONL + screening records.jsonl
 
 每次重建还会在 `tasks/<task_id>/task_environment_pair.json` 保存论文中的
 `q/E` 对：`q` 只投影已通过 Intent 的用户目标、验收义务和环境绑定，`E` 记录回放证据、部分文件、 withheld 变更、候选和验证状态。Intent 未恢复时只写 `unrecovered` 审计记录，不生成执行指令。根目录的 `stage_metrics.json` 汇总 Intent、Completion、Sufficiency、Verification、路由和停止原因，便于区分“未运行”“审计态”和“真正通过”。
+
+环境拟合是 Sufficiency 之后的门禁，不把“补全出了文件”当成“任务一定可完成”。
+`environment_contract.json` 记录静态缺口、workspace hash 和只读沙盒探针；`task_contract.json`
+保留从 terminal 轨迹恢复的原始用户目标；`task_fit.json` 逐条记录验收义务与环境能力的映射。
+缺失的 XML include、必要 FILE 绑定或未知初始状态会产生 `SKIPPED_UNRECONSTRUCTABLE`，当前候选停止并继续后续候选；模型超时、沙盒故障和契约错误分别保留为 `INFRA_ERROR` 或 `PIPELINE_ERROR`，不伪装成不可重建。
+
+只有环境静态检查通过且 load/reset/dependency 探针有真实收据时，拟合 agent 才能把明确的任务冲突标为 `INCOMPATIBLE`。变体必须从补全环境、原始任务契约和可复现的 `task_conflict` 证据共同生成，仅修改已冲突义务，产物状态先为 `PROPOSED`；它会重新经过 Sufficiency、Verifier、Harbor RED 和真实 Rollout，通过后才可能成为 `READY_VARIANT`。缺失环境资产时不生成变体，原任务和变体的 provenance 始终分开。
 
 SFT 只从真实 rollout 的 `quality_gate`、trial、cleanup、轨迹和内容证据生成；缺少泄漏、可复现或奖励证据会进入 `REVIEW`，不会因为旧的 `sft_eligible` 标志而放行。
 
@@ -56,7 +64,8 @@ flowchart LR
   intent --> route
   route --> completion
   completion --> suff
-  suff --> ver
+  suff --> fit[Environment Contract / Task Fit]
+  fit --> ver
   ver --> harbor
 ```
 

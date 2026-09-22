@@ -221,6 +221,9 @@ def test_task_rechecks_intent_then_completes_non_file_tree(tmp_path, monkeypatch
     result = module._task_result(
         task={
             "task_id": "business",
+            "task_instruction": "解释业务日志",
+            "core_objective": "解释业务日志",
+            "acceptance_obligations": [{"id": "obl-1", "text": "给出解释"}],
             "environment_bindings": [_non_file_binding()],
         },
         root=tmp_path,

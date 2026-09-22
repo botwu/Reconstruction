@@ -216,6 +216,7 @@ async def prepare_role_sandbox(
     staging_root: Path,
 ) -> SandboxBinding:
     binding = bind_role_sandbox(role, runtime)
+    session.allow_environment_probe = role.name == "sufficiency"
     read_only = role.name in {"intent", "sufficiency", "verifier"}
     await runtime.start(read_only=read_only)
     session.sandbox_started = True

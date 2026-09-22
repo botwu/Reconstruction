@@ -280,3 +280,27 @@ def test_observed_paths_cannot_read_outside_workspace(tmp_path: Path) -> None:
     assert report["scope_paths"] == ["billing.py"]
     assert report["observed_paths"] == []
     assert report["issues"] == []
+
+
+def test_mjcf_include_requires_local_asset(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    _write(workspace, "billing.py", "def bill(value): return value\n")
+    _write(workspace, "asset/scene.xml", '<mujoco><include file="robot.xml"/></mujoco>\n')
+    runtime = _JudgmentRuntime(
+        lambda report: _classify(report, "RECONSTRUCTION_GAP", "任务运行依赖的 MJCF include 文件缺失。")
+    )
+    result = _judge(tmp_path, runtime=runtime)
+    assert result["status"] == "REVIEW"
+    issue = result["integrity_report"]["issues"][0]
+    assert issue["code"] == "REFERENCED_ASSET_MISSING"
+    assert issue["reference"] == "robot.xml"
+
+
+def test_mjcf_include_with_local_asset_is_not_reported(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    _write(workspace, "billing.py", "def bill(value): return value\n")
+    _write(workspace, "asset/scene.xml", '<mujoco><include file="robot.xml"/></mujoco>\n')
+    _write(workspace, "asset/robot.xml", "<body/>\n")
+    result = _judge(tmp_path)
+    assert result["status"] == "READY"
+    assert result["integrity_report"]["issues"] == []

@@ -86,6 +86,9 @@ def build_task_environment_pair(
             "success_criteria": list(task.get("success_criteria") or []),
             "mandatory_constraints": list(task.get("mandatory_constraints") or []),
             "prohibitions": list(task.get("prohibitions") or []),
+            "task_contract_ref": _artifact_ref(task_root / "task_contract.json", root),
+            "task_fit_ref": _artifact_ref(task_root / "task_fit.json", root),
+            "variant_proposal_ref": _artifact_ref(task_root / "variant_proposal.json", root),
         },
         "environment": {
             "origin": origin,
@@ -110,6 +113,10 @@ def build_task_environment_pair(
             "sufficiency_label": sufficiency.get("label"),
             "verification_status": verification_status,
             "sft_eligible": verification.get("sft_eligible") is True,
+            "contract_status": (result.get("environment_contract") or {}).get("status"),
+            "execution_readiness": (
+                (result.get("environment_contract") or {}).get("evidence") or {}
+            ).get("execution_readiness"),
         },
         "provenance": {
             "source_schema_version": source.get("schema_version"),

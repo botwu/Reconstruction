@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from traceforge.harbor_ags.rollout import redact_harbor_output
 from traceforge.harbor_ags.results import (
     HarborResultError,
     certify_hermes_job,
@@ -22,6 +21,8 @@ from traceforge.harbor_ags.rollout import (
     HarborRolloutError,
     build_rollout_plan,
     execute_rollout_plan,
+    publish_rollout_bundle,
+    redact_harbor_output,
 )
 from traceforge.reconstruction.model_gateway import ChatModel, ModelGatewayError
 from traceforge.reconstruction.environment_bindings import non_file_obligation_ids
@@ -265,6 +266,12 @@ class HarborCalibrationExecutor:
                     agent_max_iterations=self.config.rollout_max_iterations,
                 )
             )
+            if mode == "hermes":
+                published = publish_rollout_bundle(
+                    plan, self.root / "deliverables" / label / "harbor_bundle"
+                )
+                record["harbor_bundle"] = str(published.resolve())
+                record["harbor_bundle_status"] = "PUBLISHED"
             execution = execute_rollout_plan(
                 plan,
                 config_path=self.config.config_path,

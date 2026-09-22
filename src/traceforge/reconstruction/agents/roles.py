@@ -172,10 +172,13 @@ SUFFICIENCY_ROLE = AgentRole(
         "structures needed to implement the task; require a missing file only "
         "when no grounded source or structure exists to implement it. Inspect "
         "files with tools. Do not modify or solve the workspace. Dependencies "
-        "and generated outputs that can be recreated are not required."
+        "and generated outputs that can be recreated are not required. When the "
+        "workspace is sufficient, use the read-only environment probe for load, "
+        "repeatable reset, and dependency checks. A task conflict requires a "
+        "repeatable task_conflict probe and is distinct from timeout or API failure."
     ),
     toolsets=("traceforge_proxy",),
-    tools=("list_dir", "read_file"),
+    tools=("list_dir", "read_file", "run_environment_probe"),
     max_iterations=16,
     result_schema="traceforge.workspace-sufficiency.v1",
     temperature=0.0,

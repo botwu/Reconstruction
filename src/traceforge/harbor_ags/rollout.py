@@ -487,6 +487,86 @@ def _render_harbor_config(
     return _rewrite_extra_instruction_paths(rendered, harbor_root)
 
 
+def _bundle_files(root: Path) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        relative = path.relative_to(root).as_posix()
+        raw = path.read_bytes()
+        files.append({
+            "path": relative,
+            "size_bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        })
+    return files
+
+
+def publish_rollout_bundle(plan_dir: Path | str, destination: Path | str) -> Path:
+    """原子发布计划实际使用的任务输入；只保存输入，不宣称执行通过。
+
+    保留任务的 workspace 快照 hook，并核对已冻结的计划与内容哈希。
+    目标目录存在时拒绝覆盖，防止将旧输入误认成当前执行的输入。
+    """
+    plan_root = Path(plan_dir).resolve()
+    destination_path = Path(destination)
+    if not plan_root.is_dir():
+        raise HarborRolloutError(f"rollout plan 不存在: {plan_root}")
+    try:
+        plan = json.loads((plan_root / "rollout_plan.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise HarborRolloutError("rollout_plan.json 无法读取") from exc
+    if not isinstance(plan, dict) or plan.get("schema_version") != ROLLOUT_BRIDGE_SCHEMA:
+        raise HarborRolloutError("rollout plan schema 不匹配")
+    _assert_plan_integrity(plan_root, plan)
+    dataset = plan.get("dataset")
+    paths = dataset.get("task_relative_paths") if isinstance(dataset, dict) else None
+    if not isinstance(paths, list) or not paths or not all(isinstance(x, str) for x in paths):
+        raise HarborRolloutError("rollout plan 缺少 dataset task_relative_paths")
+    dataset_root = Path(dataset["dataset_root"]).resolve()
+    source = (dataset_root / paths[0]).resolve()
+    if len(set(dataset["task_hashes"].values())) != 1:
+        raise HarborRolloutError("单任务 Harbor bundle 不能导出内容不同的多 trial 输入")
+    try:
+        source.relative_to(dataset_root)
+    except ValueError as exc:
+        raise HarborRolloutError("dataset task path 越界") from exc
+    validate_bundle_layout(source)
+    if destination_path.exists():
+        raise HarborRolloutError(f"Harbor bundle 目标已存在，拒绝覆盖: {destination_path}")
+    workspace = ArtifactWorkspace(destination_path.parent, destination_path.name)
+    try:
+        task_target = workspace.staging_path / "task"
+        shutil.copytree(source, task_target, symlinks=False)
+        validate_bundle_layout(task_target)
+        shutil.copy2(dataset_root / "dataset.toml", workspace.staging_path / "dataset.toml")
+        if _sha256_tree(task_target) != dataset["task_hashes"][paths[0]]:
+            raise HarborRolloutError("Harbor bundle 复制后的 task hash 不匹配")
+        files = _bundle_files(workspace.staging_path)
+        manifest = {
+            "schema_version": "traceforge.harbor-bundle-manifest.v1",
+            "kind": "ROLLOUT_INPUT",
+            "source_plan": str(plan_root),
+            "source_plan_sha256": _sha256_file(plan_root / "rollout_plan.json"),
+            "source_run_id": plan.get("run_id"),
+            "task_name": plan.get("task_name"),
+            "task_path": "task",
+            "dataset_trial_count": (
+                dataset.get("trial_count") if isinstance(dataset, dict) else None
+            ),
+            "files": files,
+            "content_sha256": hashlib.sha256(
+                json.dumps(files, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            ).hexdigest(),
+            "execution_status": "NOT_ASSERTED",
+        }
+        (workspace.staging_path / "artifact_manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return workspace.publish()
+    except BaseException:
+        workspace.abort()
+        raise
+
 def build_rollout_plan(config: HarborRolloutConfig) -> Path:
     """校验 Bundle 并发布可执行计划；不启动模型。"""
 
@@ -687,6 +767,12 @@ def _assert_plan_integrity(plan_dir: Path, plan: dict[str, Any]) -> None:
             raise HarborRolloutError("dataset task path 越界") from exc
         if not target.is_dir() or task_hashes.get(relative) != _sha256_tree(target):
             raise HarborRolloutError(f"dataset task hash 不匹配：{relative}")
+    dataset_toml = dataset / "dataset.toml"
+    if (
+        not dataset_toml.is_file()
+        or dataset_meta.get("dataset_toml_sha256") != _sha256_file(dataset_toml)
+    ):
+        raise HarborRolloutError("dataset.toml hash 与 plan 不一致")
     materialized = plan.get("harbor_config")
     published = (
         Path(materialized["materialized"]).resolve()
@@ -773,4 +859,5 @@ __all__ = [
     "HarborRolloutError",
     "build_rollout_plan",
     "execute_rollout_plan",
+    "publish_rollout_bundle",
 ]

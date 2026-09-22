@@ -82,6 +82,23 @@ def test_stage3_selection_requires_independent_sufficiency():
     assert audit["eligible_count"] == 1
 
 
+def test_stage3_skips_unreconstructable_and_selects_later_candidate():
+    from traceforge.reconstruction.terminal_universe_environment import select_sufficient_candidate
+
+    candidates = [
+        {"decision": "SKIPPED_UNRECONSTRUCTABLE", "reason_codes": ["REFERENCED_ASSET_MISSING"]},
+        {"decision": "READY", "confidence": 0.7, "uncertainties": []},
+    ]
+    judges = [
+        {"label": "REVIEW", "decision": "REVIEW"},
+        {"label": "SUFFICIENT", "decision": "READY"},
+    ]
+    selected, audit = select_sufficient_candidate(candidates, judges)
+    assert selected == 1
+    assert audit["rejected"][0]["reason"] == "SKIPPED_UNRECONSTRUCTABLE"
+    assert audit["rejected"][0]["reason_codes"] == ["REFERENCED_ASSET_MISSING"]
+
+
 def test_stage3_returns_no_candidate_when_label_unknown():
     from traceforge.reconstruction.terminal_universe_environment import select_sufficient_candidate
 

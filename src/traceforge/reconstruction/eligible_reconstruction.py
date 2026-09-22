@@ -38,6 +38,14 @@ from traceforge.reconstruction.task_environment import (
     build_task_environment_pair,
     write_task_environment_pair,
 )
+from traceforge.reconstruction.task_fit import (
+    ENVIRONMENT_UNRECONSTRUCTABLE,
+    build_environment_contract,
+    build_task_contract,
+    build_task_variant,
+    fit_task_environment,
+    generate_task_variant,
+)
 from traceforge.reconstruction.terminal_universe_environment import select_sufficient_candidate
 from traceforge.reconstruction.verification import (
     VerificationConfig,
@@ -196,8 +204,11 @@ def _write_eligible_manifest(
         json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     statuses = [x.get("status") for x in results]
-    if statuses and all(x == "READY" for x in statuses):
-        status = "READY"
+    ready_statuses = {"READY", "READY_VARIANT"}
+    if statuses and all(x in ready_statuses for x in statuses):
+        status = "READY_VARIANT" if any(x == "READY_VARIANT" for x in statuses) else "READY"
+    elif statuses and all(x == ENVIRONMENT_UNRECONSTRUCTABLE for x in statuses):
+        status = ENVIRONMENT_UNRECONSTRUCTABLE
     elif any(x == "PENDING_EXECUTION" for x in statuses) and not any(
         x == "REVIEW" for x in statuses
     ):
@@ -207,7 +218,10 @@ def _write_eligible_manifest(
     manifest: dict[str, Any] = {
         "schema_version": ELIGIBLE_RECONSTRUCTION_SCHEMA,
         "status": status,
-        "stopped_at": None if status == "READY" else "tasks",
+        "stopped_at": (
+            None if status in ready_statuses
+            else ("sufficiency" if status == ENVIRONMENT_UNRECONSTRUCTABLE else "tasks")
+        ),
         "source": {
             "label_status": source.get("label_status"),
             "selected_task_ids": source.get("selected_task_ids"),
@@ -216,7 +230,7 @@ def _write_eligible_manifest(
         "intent": intent,
         "tasks": results,
         "task_count": len(results),
-        "ready_count": sum(x == "READY" for x in statuses),
+        "ready_count": sum(x in ready_statuses for x in statuses),
         "review_count": sum(x == "REVIEW" for x in statuses),
         "stage_metrics": metrics,
     }
@@ -224,7 +238,10 @@ def _write_eligible_manifest(
         manifest.update(
             {
                 k: results[0].get(k)
-                for k in ("workspace", "env_root", "verification", "sufficiency_audit")
+                for k in (
+                    "workspace", "env_root", "verification", "sufficiency_audit",
+                    "environment_contract", "task_contract", "task_fit", "variant",
+                )
                 if k in results[0]
             }
         )
@@ -275,6 +292,13 @@ def _sandbox_init_errors(errors: Any) -> list[str]:
         for item in (errors or [])
         if str(item).startswith("SANDBOX_INIT")
     ]
+
+
+def _write_stage_json(root: Path, name: str, payload: dict[str, Any]) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / name).write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def _replay_and_route(
@@ -395,6 +419,7 @@ def _task_result(
         return result
     judges: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
+    environment_contracts: dict[int, dict[str, Any]] = {}
     for candidate in completion.get("candidates") or []:
         if (
             not isinstance(candidate, dict)
@@ -418,12 +443,44 @@ def _task_result(
             result["errors"] = sandbox_errors
             return result
         judges.append(judge)
-        rows.append({"decision": "READY", "confidence": judge.get("confidence", 0.0)})
+        index = len(rows)
+        environment = build_environment_contract(
+            workspace_root=candidate["workspace"],
+            env_root=candidate.get("env_root"),
+            sufficiency=judge,
+        )
+        environment_contracts[index] = environment
+        _write_stage_json(
+            task_root / "environment" / f"{index:03d}",
+            "environment_contract.json",
+            environment,
+        )
+        if environment.get("status") == ENVIRONMENT_UNRECONSTRUCTABLE:
+            rows.append(
+                {
+                    "decision": ENVIRONMENT_UNRECONSTRUCTABLE,
+                    "reason_codes": [item.get("code") for item in environment.get("blockers", [])],
+                }
+            )
+        else:
+            rows.append({"decision": "READY", "confidence": judge.get("confidence", 0.0)})
     selected, audit = select_sufficient_candidate(rows, judges)
     result["sufficiency_audit"] = audit
     if selected is None:
         result["stopped_at"] = "sufficiency"
-        result["errors"] = ["NO_SUFFICIENT_CANDIDATE"]
+        skipped = [row for row in rows if row.get("decision") == ENVIRONMENT_UNRECONSTRUCTABLE]
+        if rows and skipped and len(skipped) == len(rows):
+            result["status"] = ENVIRONMENT_UNRECONSTRUCTABLE
+            result["errors"] = sorted(
+                {
+                    str(code)
+                    for row in skipped
+                    for code in row.get("reason_codes") or []
+                    if code
+                }
+            ) or [ENVIRONMENT_UNRECONSTRUCTABLE]
+        else:
+            result["errors"] = ["NO_SUFFICIENT_CANDIDATE"]
         return result
     chosen = (completion.get("candidates") or [])[selected]
     result.update(
@@ -434,6 +491,80 @@ def _task_result(
             "sufficiency": judges[selected],
         }
     )
+    environment = environment_contracts.get(selected)
+    if environment is None:
+        result["status"] = "REVIEW"
+        result["stopped_at"] = "task_fit"
+        result["errors"] = ["ENVIRONMENT_CONTRACT_MISSING"]
+        return result
+    _write_stage_json(task_root, "environment_contract.json", environment)
+    try:
+        task_contract = build_task_contract(task=task)
+        _write_stage_json(task_root, "task_contract.json", task_contract)
+        fit = fit_task_environment(
+            environment=environment,
+            task=task_contract,
+            agent_fit=(judges[selected].get("task_fit") if isinstance(judges[selected], dict) else None),
+        )
+    except Exception as exc:
+        result["status"] = "REVIEW"
+        result["stopped_at"] = "task_fit"
+        result["errors"] = ["TASK_FIT_CONTRACT_ERROR", str(exc)]
+        return result
+    _write_stage_json(task_root, "task_fit.json", fit)
+    result["environment_contract"] = environment
+    result["task_contract"] = task_contract
+    result["task_fit"] = fit
+    task_for_verification = task
+    variant = None
+    if fit.get("decision") == ENVIRONMENT_UNRECONSTRUCTABLE:
+        result["status"] = ENVIRONMENT_UNRECONSTRUCTABLE
+        result["stopped_at"] = "task_fit"
+        result["errors"] = ["ENVIRONMENT_UNRECONSTRUCTABLE"]
+        return result
+    if fit.get("decision") == "REVIEW_TASK_FIT":
+        result["status"] = "REVIEW"
+        result["stopped_at"] = "task_fit"
+        result["errors"] = ["TASK_FIT_REVIEW"]
+        return result
+    if fit.get("decision") == "INCOMPATIBLE":
+        proposal = judges[selected].get("variant_proposal") if isinstance(judges[selected], dict) else None
+        if proposal is not None:
+            try:
+                variant = build_task_variant(
+                    parent_task=task_contract,
+                    environment=environment,
+                    fit=fit,
+                    proposal=proposal,
+                )
+            except Exception as exc:
+                result["status"] = "PIPELINE_ERROR"
+                result["stopped_at"] = "task_fit"
+                result["errors"] = ["VARIANT_CONTRACT_INVALID", str(exc)]
+                return result
+        elif fit.get("variant_eligible") is True:
+            variant = generate_task_variant(
+                task=task_contract,
+                environment=environment,
+                fit=fit,
+                workspace_root=Path(chosen["workspace"]),
+                agent=agent,
+                output_root=task_root / "variant",
+            )
+        if variant is None:
+            result["status"] = "SKIPPED_TASK_INCOMPATIBLE"
+            result["stopped_at"] = "task_fit"
+            result["errors"] = ["TASK_ENVIRONMENT_INCOMPATIBLE"]
+            return result
+        _write_stage_json(task_root, "variant_proposal.json", variant)
+        result["variant"] = variant
+        if not isinstance(variant.get("task"), dict):
+            result["status"] = "PIPELINE_ERROR"
+            result["stopped_at"] = "task_fit"
+            result["errors"] = ["VARIANT_TASK_MISSING"]
+            return result
+        task_for_verification = variant["task"]
+    result["executed_task"] = task_for_verification
     if not support.get("allow_file_verifier"):
         result["verification"] = {
             "schema_version": "traceforge.reconstruction-verification.v1",
@@ -456,7 +587,7 @@ def _task_result(
         )
         return result
     verification = run_reconstruction_verification(
-        task=task,
+        task=task_for_verification,
         workspace_root=chosen["workspace"],
         model=verification_model,
         agent=verifier_agent or agent,
@@ -473,7 +604,9 @@ def _task_result(
         result["errors"] = sandbox_errors
         return result
     result["status"] = verification.get("status", "REVIEW")
-    result["stopped_at"] = None if result["status"] == "READY" else "verification"
+    if result["status"] == "READY" and variant is not None:
+        result["status"] = "READY_VARIANT"
+    result["stopped_at"] = None if result["status"] in {"READY", "READY_VARIANT"} else "verification"
     if result["status"] == "REVIEW":
         result["errors"] = list(verification.get("errors") or ["VERIFICATION_REVIEW"])
     return result

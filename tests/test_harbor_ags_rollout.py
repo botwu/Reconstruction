@@ -13,6 +13,7 @@ from traceforge.harbor_ags.rollout import (
     HarborRolloutError,
     build_rollout_plan,
     execute_rollout_plan,
+    publish_rollout_bundle,
 )
 
 
@@ -107,6 +108,39 @@ def test_prepare_rollout_materializes_dataset_without_executing(
     assert "ags-secret-value" not in plan_text
     assert "tokenhub-secret-value" not in plan_text
 
+
+
+def test_publish_rollout_bundle_is_harbor_visible_and_immutable(tmp_path: Path) -> None:
+    plan = build_rollout_plan(
+        HarborRolloutConfig(
+            task_dir=_bundle(tmp_path / "task"),
+            harbor_root=_harbor_root(tmp_path / "harbor"),
+            output_root=tmp_path / "plans",
+            jobs_root=tmp_path / "jobs",
+            trials=2,
+        )
+    )
+    published = publish_rollout_bundle(plan, tmp_path / "harbor_bundle")
+    assert published == tmp_path / "harbor_bundle"
+    for relative in (
+        "task/task.toml",
+        "task/instruction.md",
+        "task/workspace/input.txt",
+        "task/environment/README",
+        "task/solution/solve.sh",
+        "task/tests/control/truth.txt",
+        "task/tests/grader.py",
+        "dataset.toml",
+        "artifact_manifest.json",
+    ):
+        assert (published / relative).is_file(), relative
+    assert "TraceForge workspace snapshot hook" in (published / "task/task.toml").read_text()
+    manifest = json.loads((published / "artifact_manifest.json").read_text())
+    assert manifest["kind"] == "ROLLOUT_INPUT"
+    assert manifest["execution_status"] == "NOT_ASSERTED"
+    assert manifest["dataset_trial_count"] == 2
+    with pytest.raises(HarborRolloutError, match="已存在"):
+        publish_rollout_bundle(plan, tmp_path / "harbor_bundle")
 
 def test_execute_rollout_requires_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -340,3 +374,27 @@ def test_rollout_rejects_timeout_outside_environment(tmp_path: Path) -> None:
                 jobs_root=tmp_path / "jobs",
             )
         )
+
+
+@pytest.mark.parametrize("tampered", ["task", "dataset", "plan"])
+def test_publish_bundle_rejects_modified_plan_input(tmp_path: Path, tampered: str) -> None:
+    plan = build_rollout_plan(
+        HarborRolloutConfig(
+            task_dir=_bundle(tmp_path / "task"),
+            harbor_root=_harbor_root(tmp_path / "harbor"),
+            output_root=tmp_path / "plans",
+            jobs_root=tmp_path / "jobs",
+        )
+    )
+    payload = json.loads((plan / "rollout_plan.json").read_text())
+    targets = {
+        "plan": plan / "rollout_plan.json",
+        "dataset": plan / "dataset/dataset.toml",
+        "task": plan / "dataset" / payload["dataset"]["task_relative_paths"][0] / "instruction.md",
+    }
+    with targets[tampered].open("a") as handle:
+        handle.write("\n ")
+    destination = tmp_path / "harbor_bundle"
+    with pytest.raises(HarborRolloutError, match="hash"):
+        publish_rollout_bundle(plan, destination)
+    assert not destination.exists()

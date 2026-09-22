@@ -470,6 +470,15 @@ def select_sufficient_candidate(
         judge = judges[index] if index < len(judges) and isinstance(judges[index], dict) else {}
         label = str(judge.get("label", "UNKNOWN"))
         judge_decision = str(judge.get("decision", "REVIEW"))
+        if decision == "SKIPPED_UNRECONSTRUCTABLE":
+            rejected.append(
+                {
+                    "index": index,
+                    "reason": "SKIPPED_UNRECONSTRUCTABLE",
+                    "reason_codes": list(candidate.get("reason_codes") or []),
+                }
+            )
+            continue
         if decision != "READY":
             rejected.append({"index": index, "reason": "COMPLETION_NOT_READY"})
             continue

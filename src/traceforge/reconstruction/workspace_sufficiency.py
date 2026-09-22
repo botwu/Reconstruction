@@ -76,11 +76,28 @@ def run_workspace_sufficiency(
             "IRRELEVANT: the issue is outside the task's necessary execution/analysis path, or arises solely from a supported target Python version mismatch; justify with evidence.",
             "Do not infer these categories from keywords. Explain their relationship to the actual task and inspected source.",
             "Every issue requires one classification. RECONSTRUCTION_GAP or unclassified issues forbid READY.",
+            "After judging sufficiency, compare the recovered task with the verified workspace. "
+            "When the workspace is sufficient, use run_environment_probe in the same read-only "
+            "sandbox for one load, one repeatable reset, and one dependency check. Use "
+            "task_conflict only when a concrete fitted task requirement is impossible; a solver "
+            "timeout is not task conflict. Include every returned probe_id in environment_checks.",
+            "Each task_fit requirement must include obligation_id, SATISFIED|UNSATISFIED|UNKNOWN, "
+            "a reason, and evidence_paths or probe_ids. An UNSATISFIED requirement additionally "
+            "needs a supported conflict_kind, repairable_within_task=false, and reproducible "
+            "task_conflict evidence.",
+            "If the workspace is sufficient, return optional task_fit with decision "
+            "READY_ORIGINAL|INCOMPATIBLE|REVIEW_TASK_FIT. Do not call an execution failure "
+            "a task mismatch. Only return variant_proposal when the environment is sufficient "
+            "and the original fitted task is intrinsically incompatible; the proposal must "
+            "preserve the core intent and reference only observed paths.",
             "Finish with JSON:",
             '{"label":"SUFFICIENT|INSUFFICIENT|UNKNOWN","reason":"...","missing_context":[],'
             '"confidence":0.0,"decision":"READY|REVIEW",'
             '"integrity_classifications":[{"issue_id":"integrity-001","path":"...",'
-            '"classification":"BASELINE_TASK_DEFECT|RECONSTRUCTION_GAP|IRRELEVANT","reason":"..."}]}',
+            '"classification":"BASELINE_TASK_DEFECT|RECONSTRUCTION_GAP|IRRELEVANT","reason":"..."}],'
+            '"task_fit":{"decision":"READY_ORIGINAL|INCOMPATIBLE|REVIEW_TASK_FIT",'
+            '"reason":"...","requirements":[]},"variant_proposal":null,',
+            '"environment_checks":[{"kind":"load|reset|dependency","probe_ids":[],"reason":"..."}]}',
             "TASK:",
             json.dumps(task, ensure_ascii=False),
             "ENVIRONMENT_BINDINGS:",
@@ -184,6 +201,14 @@ def run_workspace_sufficiency(
             "completed": ran.completed,
         },
     }
+    if isinstance(payload.get("task_fit"), dict):
+        result["task_fit"] = payload["task_fit"]
+    if isinstance(payload.get("variant_proposal"), dict):
+        result["variant_proposal"] = payload["variant_proposal"]
+    if isinstance(payload.get("environment_checks"), list):
+        result["environment_checks"] = payload["environment_checks"]
+    if session.environment_probes:
+        result["environment_probes"] = session.environment_probes
     (root / "sufficiency.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
