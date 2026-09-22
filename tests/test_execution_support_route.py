@@ -212,12 +212,43 @@ def test_task_rechecks_intent_then_completes_non_file_tree(tmp_path, monkeypatch
         }
 
     def fake_sufficiency(**kwargs):
+        from pathlib import Path
+
+        from traceforge.reconstruction.agents.session import workspace_tree_hash
+
+        inventory = workspace_tree_hash(Path(kwargs["workspace_root"]))
+        probes = []
+        checks = []
+        for kind in ("load", "reset", "dependency"):
+            probe_id = "probe-" + kind
+            executions = [
+                {"exit_code": 0, "timed_out": False, "workspace_after": inventory}
+                for _ in range(2 if kind == "reset" else 1)
+            ]
+            probes.append(
+                {
+                    "probe_id": probe_id,
+                    "purpose": kind,
+                    "status": "PASS",
+                    "environment_unchanged": True,
+                    "reproducible": True,
+                    "workspace_before": inventory,
+                    "workspace_after": inventory,
+                    "executions": executions,
+                }
+            )
+            checks.append(
+                {"kind": kind, "probe_ids": [probe_id], "reason": "regression probe"}
+            )
         return {
             "label": "SUFFICIENT",
             "decision": "READY",
             "confidence": 0.8,
             "errors": [],
             "integrity_report": {"issues": []},
+            "workspace_hashes": inventory,
+            "environment_probes": probes,
+            "environment_checks": checks,
         }
 
     monkeypatch.setattr(module, "complete_from_replayed", fake_completion)

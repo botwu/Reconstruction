@@ -89,6 +89,10 @@ def _task_user_records(source: dict[str, Any], task: dict[str, Any]) -> list[dic
 def selected_task_views(source: dict[str, Any]) -> list[dict[str, Any]]:
     """只返回 screening 标出的可重建任务，保留每个 task 的原始证据。"""
     tasks = [x for x in source.get("tasks") or [] if isinstance(x, dict)]
+    if source.get("entry_mode") == "RAW_SESSION":
+        # RAW_SESSION 的任务由边界 agent 明确标出；不写入 screening
+        # 的 reconstruction_eligible/eligibility 字段，避免把 intake 伪装成筛选结论。
+        return [task for task in tasks if task.get("intake_selected") is True]
     for task in tasks:
         apply_task_tags(task)
     eligible = [x for x in tasks if is_selected_reconstruction_task(x)]

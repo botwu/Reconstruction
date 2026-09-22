@@ -58,6 +58,7 @@ from traceforge.reconstruction.workspace_completion import (
 from traceforge.reconstruction.workspace_sufficiency import run_workspace_sufficiency
 
 ELIGIBLE_RECONSTRUCTION_SCHEMA = "traceforge.eligible-reconstruction.v2"
+RAW_SESSION_RECONSTRUCTION_SCHEMA = "traceforge.raw-session-reconstruction.v1"
 ENV_REPLAYED = "REPLAYED"
 ENV_DEFAULT_EMPTY = "DEFAULT_EMPTY"
 ENV_NONE = "NONE"
@@ -216,13 +217,21 @@ def _write_eligible_manifest(
     else:
         status = "REVIEW"
     manifest: dict[str, Any] = {
-        "schema_version": ELIGIBLE_RECONSTRUCTION_SCHEMA,
+        "schema_version": (
+            RAW_SESSION_RECONSTRUCTION_SCHEMA
+            if source.get("entry_mode") == "RAW_SESSION"
+            else ELIGIBLE_RECONSTRUCTION_SCHEMA
+        ),
         "status": status,
         "stopped_at": (
             None if status in ready_statuses
             else ("sufficiency" if status == ENVIRONMENT_UNRECONSTRUCTABLE else "tasks")
         ),
         "source": {
+            "entry_mode": source.get("entry_mode", "SCREENED_ELIGIBLE"),
+            "source_ref": source.get("source_ref"),
+            "line_number": source.get("line_number"),
+            "line_sha256": source.get("line_sha256"),
             "label_status": source.get("label_status"),
             "selected_task_ids": source.get("selected_task_ids"),
             "raw_session_preserved": True,
@@ -630,13 +639,14 @@ def _task_result(
 def run_eligible_reconstruction(
     *,
     raw_line: str,
-    record: dict[str, Any],
+    record: dict[str, Any] | None,
     agent: AgentRuntime,
     output_root: str | Path,
     verification_model: ChatModel | None = None,
     verifier_agent: AgentRuntime | None = None,
     verification_config: VerificationConfig | None = None,
     container_runtime_factory: Callable[[], Any] | None = None,
+    source_override: dict[str, Any] | None = None,
 ) -> Path:
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
@@ -656,10 +666,15 @@ def run_eligible_reconstruction(
         },
     )
     # #endregion
-    try:
-        source = build_reconstruction_source(raw_line=raw_line, record=record)
-    except ReconstructionSourceError as exc:
-        raise EligibleReconstructionError(str(exc)) from exc
+    if source_override is not None:
+        source = copy.deepcopy(source_override)
+    else:
+        if record is None:
+            raise EligibleReconstructionError("screened reconstruction requires a screening record")
+        try:
+            source = build_reconstruction_source(raw_line=raw_line, record=record)
+        except ReconstructionSourceError as exc:
+            raise EligibleReconstructionError(str(exc)) from exc
     write_reconstruction_source(source, root)
     screening_tasks = selected_task_views(source)
     if not screening_tasks:
@@ -757,3 +772,42 @@ def run_eligible_reconstruction(
     manifest = _write_eligible_manifest(root, source, intent, results, prepared)
     write_reconstruction_sft_curation(root, results)
     return manifest
+
+
+def run_raw_session_reconstruction(
+    *,
+    raw_line: str,
+    line_number: int,
+    source_ref: str,
+    agent: AgentRuntime,
+    output_root: str | Path,
+    verification_model: ChatModel | None = None,
+    verifier_agent: AgentRuntime | None = None,
+    verification_config: VerificationConfig | None = None,
+    container_runtime_factory: Callable[[], Any] | None = None,
+) -> Path:
+    """对一条完整原始 session 直入重建管线，不读取 screening records。"""
+    from traceforge.reconstruction.raw_session import RawSessionSourceError, build_raw_session_source
+
+    root = Path(output_root)
+    try:
+        source = build_raw_session_source(
+            raw_line=raw_line,
+            line_number=line_number,
+            source_ref=source_ref,
+            agent=agent,
+            output_root=root / "session_segmentation",
+        )
+    except RawSessionSourceError as exc:
+        raise EligibleReconstructionError(str(exc)) from exc
+    return run_eligible_reconstruction(
+        raw_line=raw_line,
+        record=None,
+        source_override=source,
+        agent=agent,
+        verifier_agent=verifier_agent,
+        verification_model=verification_model,
+        verification_config=verification_config,
+        output_root=root,
+        container_runtime_factory=container_runtime_factory,
+    )

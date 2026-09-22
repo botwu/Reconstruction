@@ -331,3 +331,17 @@ def write_reconstruction_source(source: dict[str, Any], output_dir: str | Path) 
             privacy["private_thinking_reasoning"] = "omitted"
     path.write_text(json.dumps(persisted, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+# Public read-only wrappers used by raw-session intake. The underlying helpers stay
+# private so the legacy screened source keeps its existing implementation.
+def message_text(message: dict[str, Any]) -> str:
+    return _message_text(message)
+
+
+def tool_timeline(messages: list[dict[str, Any]], spans: list[Any]) -> list[dict[str, Any]]:
+    return _tool_timeline(messages, spans)
+
+
+def span_records(spans: list[Any], messages: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return _span_records(spans, messages)

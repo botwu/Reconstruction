@@ -199,7 +199,7 @@ def staging_user_texts(records: list[Any], root: Path) -> Path:
 
 
 def bind_role_sandbox(role: AgentRole, runtime: ContainerRuntime) -> SandboxBinding:
-    if role.name == "intent":
+    if role.name in {"intent", "session_tasks"}:
         return SandboxBinding(runtime, EVIDENCE_REMOTE, allow_exec=False, allow_tests=False)
     if role.name == "verifier":
         return SandboxBinding(runtime, WORKSPACE_REMOTE, allow_exec=False, allow_tests=True)
@@ -217,10 +217,10 @@ async def prepare_role_sandbox(
 ) -> SandboxBinding:
     binding = bind_role_sandbox(role, runtime)
     session.allow_environment_probe = role.name == "sufficiency"
-    read_only = role.name in {"intent", "sufficiency", "verifier"}
+    read_only = role.name in {"intent", "session_tasks", "sufficiency", "verifier"}
     await runtime.start(read_only=read_only)
     session.sandbox_started = True
-    if role.name == "intent":
+    if role.name in {"intent", "session_tasks"}:
         await runtime.upload_dir(
             staging_user_texts(session.user_records or session.user_texts, staging_root),
             EVIDENCE_REMOTE,

@@ -30,6 +30,7 @@ from traceforge.reconstruction.container_verification import (
 from traceforge.reconstruction.eligible_reconstruction import (
     EligibleReconstructionError,
     run_eligible_reconstruction,
+    run_raw_session_reconstruction,
 )
 from traceforge.reconstruction.env_replay import replay_from_timeline, write_replay_artifacts
 from traceforge.reconstruction.model_gateway import (
@@ -252,6 +253,36 @@ def _parser() -> argparse.ArgumentParser:
     reconstruct_run.add_argument("--rollout-timeout-seconds", type=int, default=None)
     reconstruct_run.add_argument("--rollout-max-iterations", type=int, default=None)
     reconstruct_run.add_argument("--verifier-rounds", type=int, default=2)
+
+    raw_run = reconstruct_commands.add_parser(
+        "raw-run",
+        help="不读取 screening records，按物理原始 session 逐条进入重建",
+    )
+    raw_run.add_argument("--input", type=Path, required=True, help="冻结的原始 session JSONL")
+    raw_run.add_argument("--line-number", type=int, required=True)
+    raw_run.add_argument("--line-sha256", default=None, help="冻结清单中的行 SHA256")
+    raw_run.add_argument("--source-ref", default=None, help="冻结清单 source_ref")
+    raw_run.add_argument("--output", type=Path, required=True)
+    raw_run.add_argument("--model-name", default=None)
+    raw_run.add_argument("--config", type=Path, required=True)
+    raw_run.add_argument("--channel", default=None)
+    raw_run.add_argument("--verifier-model", default=None)
+    raw_run.add_argument("--verifier-channel", default=None)
+    raw_run.add_argument("--hermes-home", type=Path, default=None)
+    raw_run.add_argument(
+        "--harbor-root",
+        type=Path,
+        default=Path("/mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags"),
+    )
+    raw_run.add_argument("--sandbox", action="store_true")
+    raw_run.add_argument("--execute-red", action="store_true")
+    raw_run.add_argument("--execute-rollout", action="store_true")
+    raw_run.add_argument("--rollout-model", default=None)
+    raw_run.add_argument("--rollout-channel", default=None)
+    raw_run.add_argument("--rollout-trials", type=int, default=2)
+    raw_run.add_argument("--rollout-timeout-seconds", type=int, default=None)
+    raw_run.add_argument("--rollout-max-iterations", type=int, default=None)
+    raw_run.add_argument("--verifier-rounds", type=int, default=2)
 
     screening = commands.add_parser(
         "screening", help="重建筛选：对原始 session 做规则分流，不编译轨迹"
@@ -582,6 +613,103 @@ def main(argv: Sequence[str] | None = None) -> int:
             ValueError,
         ) as exc:
             print(f"重建失败：{exc}", file=sys.stderr)
+            return 2
+        print(output_path)
+        return 0
+    if arguments.command == "reconstruct" and arguments.reconstruct_command == "raw-run":
+        try:
+            container_runtime_factory = None
+            if arguments.sandbox:
+                container_runtime_factory = build_ags_runtime_factory(
+                    harbor_root=arguments.harbor_root,
+                    output_root=arguments.output,
+                    config_path=arguments.config,
+                )
+            raw_line = load_raw_line(
+                arguments.input,
+                line_number=arguments.line_number,
+                line_sha256=arguments.line_sha256,
+            )
+            matrix = resolve_role_matrix(
+                arguments.config,
+                overrides={
+                    "reconstruction": (arguments.channel, arguments.model_name),
+                    "verifier": (arguments.verifier_channel, arguments.verifier_model),
+                    "rollout": (arguments.rollout_channel, arguments.rollout_model),
+                },
+            )
+            reconstruction_role = matrix["reconstruction"]
+            verifier_role = matrix["verifier"]
+            rollout_role = matrix["rollout"]
+            resolved_rollout = resolve_rollout_model(
+                rollout_role.model,
+                channel=rollout_role.channel,
+                model_name=rollout_role.model,
+            )
+            arguments.output.mkdir(parents=True, exist_ok=True)
+            (arguments.output / "model_roles.json").write_text(
+                json.dumps(
+                    {name: role.public() for name, role in matrix.items()},
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
+            reconstruction_agent = build_hermes_runtime(
+                config_path=arguments.config,
+                channel=reconstruction_role.channel,
+                model_name=reconstruction_role.model,
+                hermes_home=arguments.hermes_home,
+            )
+            verifier_agent = build_hermes_runtime(
+                config_path=arguments.config,
+                channel=verifier_role.channel,
+                model_name=verifier_role.model,
+                hermes_home=arguments.hermes_home,
+            )
+            verification_model = build_chat_model(
+                config_path=arguments.config, channel=verifier_role.channel
+            )
+            rollout_timeout_seconds, rollout_max_iterations = load_rollout_limits(
+                arguments.config,
+                timeout_seconds=arguments.rollout_timeout_seconds,
+                max_iterations=arguments.rollout_max_iterations,
+            )
+            output_path = run_raw_session_reconstruction(
+                raw_line=raw_line,
+                line_number=arguments.line_number,
+                source_ref=(
+                    arguments.source_ref
+                    or f"{arguments.input}:{arguments.line_number}"
+                ),
+                agent=reconstruction_agent,
+                verifier_agent=verifier_agent,
+                verification_model=verification_model,
+                verification_config=VerificationConfig(
+                    harbor_root=arguments.harbor_root,
+                    model_name=verifier_role.model,
+                    rollout_model=resolved_rollout,
+                    execute_red=arguments.execute_red,
+                    execute_rollout=arguments.execute_rollout,
+                    rollout_trials=arguments.rollout_trials,
+                    max_rounds=arguments.verifier_rounds,
+                    config_path=arguments.config,
+                    channel=rollout_role.channel,
+                    timeout_seconds=rollout_timeout_seconds,
+                    rollout_max_iterations=rollout_max_iterations,
+                ),
+                output_root=arguments.output,
+                container_runtime_factory=container_runtime_factory,
+            )
+        except (
+            EligibleReconstructionError,
+            ReconstructionSourceError,
+            ModelGatewayError,
+            HermesUnavailableError,
+            SandboxUnavailableError,
+            ValueError,
+        ) as exc:
+            print(f"原始 session 重建失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
         return 0

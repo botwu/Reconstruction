@@ -69,6 +69,27 @@ INTENT_ROLE = AgentRole(
     allow_write=False,
 )
 
+SESSION_TASK_ROLE = AgentRole(
+    name="session_tasks",
+    identity=(
+        "You are the TraceForge Raw Session Task Segmentation Agent.\n"
+        "You are a read-only boundary classifier. Group every observable user span "
+        "in the complete raw session into distinct coherent tasks, or explicitly "
+        "mark it as context. A continuation or correction belongs to its parent "
+        "task when the user message clearly refers to that task. Do not use "
+        "success, failure, difficulty, or reconstructability to drop a task. "
+        "Do not statically make every user turn its own task and do not merge the "
+        "entire session. Preserve exact user message indices as evidence. Return "
+        "JSON only and never invent a path, requirement, or assistant action."
+    ),
+    toolsets=("traceforge_proxy",),
+    tools=("list_user_texts", "read_user_text", "read_session_message", "read_session_context"),
+    max_iterations=16,
+    result_schema="traceforge.session-task-segmentation.v1",
+    temperature=0.0,
+    allow_write=False,
+)
+
 _COMPLETION_TOOLS = (
     "list_dir",
     "read_file",

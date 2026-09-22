@@ -70,7 +70,8 @@ def run_workspace_sufficiency(
             "Partial excerpts may suffice when they expose the interfaces and structures needed to implement the task.",
             "Return INSUFFICIENT only when required source, execution context, or domain facts are unavailable enough that implementation cannot start; missing target behavior alone is not a blocker.",
             "STATIC_INTEGRITY_REPORT is a read-only syntax/token diagnostic under the stated host Python version, not a completeness proof.",
-            "Inspect every issue and classify it with issue_id, exact path, classification, and a concrete task-grounded reason.",
+            "Inspect every issue and classify it with issue_id, exact path, classification, and a concrete task-grounded reason. "
+            "Use only issue_id and path values present in STATIC_INTEGRITY_REPORT; never invent additional issue IDs.",
             "BASELINE_TASK_DEFECT: the requested task itself requires fixing this observed defect; preserve it as the unsolved baseline.",
             "RECONSTRUCTION_GAP: required pre-task source/context is missing or damaged independently of the requested change.",
             "IRRELEVANT: the issue is outside the task's necessary execution/analysis path, or arises solely from a supported target Python version mismatch; justify with evidence.",
@@ -82,9 +83,14 @@ def run_workspace_sufficiency(
             "task_conflict only when a concrete fitted task requirement is impossible; a solver "
             "timeout is not task conflict. Include every returned probe_id in environment_checks.",
             "Each task_fit requirement must include obligation_id, SATISFIED|UNSATISFIED|UNKNOWN, "
-            "a reason, and evidence_paths or probe_ids. An UNSATISFIED requirement additionally "
-            "needs a supported conflict_kind, repairable_within_task=false, and reproducible "
-            "task_conflict evidence.",
+            "a reason, and evidence_paths or probe_ids. TaskFit measures whether the recovered "
+            "environment can support implementing and checking the obligation, not whether the "
+            "requested change is already present: an absent target behavior is expected pre-task "
+            "and should be SATISFIED when its source, interfaces, dependencies, and verifier "
+            "surface are available. Use UNSATISFIED only for a concrete intrinsic environment "
+            "conflict; use UNKNOWN only when the evidence is genuinely missing. An UNSATISFIED "
+            "requirement additionally needs a supported conflict_kind, repairable_within_task=false, "
+            "and reproducible task_conflict evidence.",
             "If the workspace is sufficient, return optional task_fit with decision "
             "READY_ORIGINAL|INCOMPATIBLE|REVIEW_TASK_FIT. Do not call an execution failure "
             "a task mismatch. Only return variant_proposal when the environment is sufficient "

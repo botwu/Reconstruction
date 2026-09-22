@@ -903,7 +903,7 @@ class SandboxedAgentRuntime:
         session: AgentSession,
         output_root: Path,
     ) -> AgentResult:
-        if role.name == "intent":
+        if role.name in {"intent", "session_tasks"}:
             # #region agent log
             _debug_agent_log(
                 "H6",

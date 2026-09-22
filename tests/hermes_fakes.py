@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import Any
 
@@ -51,7 +52,9 @@ def tagged_record(raw_line: str, *, selected: list[int] | None = None) -> dict[s
             "tasks": tasks,
             "relations": [],
             "session_tags": session_tags,
-            "selected_task_ids": [task["task_id"] for task in tasks if task["reconstruction_eligible"]],
+            "selected_task_ids": [
+                task["task_id"] for task in tasks if task["reconstruction_eligible"]
+            ],
             "selected_span_ids": [spans[index].span_id for index in sorted(selected_indices)],
         },
     }
@@ -139,7 +142,33 @@ class FakeHermesAgent:
                 "open_questions": [],
             }
         else:
+            probe_ids = []
             if task_id == "sufficiency" and hasattr(self, "_invoke_tool"):
+                probe_specs = (
+                    (
+                        "load",
+                        "from pathlib import Path; assert Path('foo.py').is_file()",
+                    ),
+                    (
+                        "reset",
+                        "import os; from pathlib import Path; "
+                        "p=Path(os.environ['TRACEFORGE_PROBE_SCRATCH'])/'state'; "
+                        "assert not p.exists(); p.write_text('ok')",
+                    ),
+                    (
+                        "dependency",
+                        "import ast; from pathlib import Path; "
+                        "ast.parse(Path('foo.py').read_text())",
+                    ),
+                )
+                for purpose, python_code in probe_specs:
+                    summary = self._invoke_tool(
+                        "run_environment_probe",
+                        {"python_code": python_code, "purpose": purpose, "timeout_seconds": 30},
+                        task_id,
+                    )
+                    with contextlib.suppress(TypeError, KeyError, json.JSONDecodeError):
+                        probe_ids.append(json.loads(summary)["probe_id"])
                 self._invoke_tool("list_dir", {"path": "."}, task_id)
                 files = self._invoke_tool("list_dir", {"path": "."}, task_id)
                 if isinstance(files, str) and files.startswith("error:"):
@@ -156,6 +185,12 @@ class FakeHermesAgent:
                 "confidence": 0.8,
                 "decision": "READY",
             }
+            if task_id == "sufficiency" and probe_ids:
+                payload = dict(payload)
+                payload["environment_checks"] = [
+                    {"kind": purpose, "probe_ids": [probe_id], "reason": "regression probe"}
+                    for (purpose, _), probe_id in zip(probe_specs, probe_ids, strict=False)
+                ]
         return {
             "final_response": json.dumps(payload, ensure_ascii=False),
             "completed": True,

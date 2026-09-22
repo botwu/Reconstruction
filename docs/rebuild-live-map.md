@@ -1,6 +1,6 @@
 # reconstruct run 阅读地图与清理清单
 
-以源码为准。活跑入口只有 `reconstruct run`。轨迹编译 / lineage / query-turns / source-projection 已删除。
+以源码为准。筛选记录兼容入口是 reconstruct run；R04/R05 当前逐条入口是 reconstruct raw-run。详细 raw 主链见 raw-session-pipeline.md。轨迹编译 / lineage / query-turns / source-projection 已删除。
 
 READY 仍表示：Harbor 对**初始 workspace** 做出 RED（nop FAIL / oracle PASS / mutation FAIL）。没有 RED 不能把交付标成 READY。
 
