@@ -130,12 +130,3 @@ def test_cli_cross_workspace_and_multi_round(tmp_path: Path) -> None:
     assert payload["schema_version"] == "traceforge.requery-multi-round.v1"
     assert payload["retain_verified_session"] is True
 
-
-def test_sft_export_only_hard_pass(tmp_path: Path):
-    out=tmp_path/'sft.jsonl'
-    rows=[{'eligibility':'REVIEW','candidate_id':'x'}, {'eligibility':'ELIGIBLE','candidate_id':'c','task':{'q':'x'},'trajectory':[{'role':'assistant'}],'solution_leakage':False,'reproducible':True,'bundle_id':'b','rollout_id':'r','trial_id':'t'}]
-    m=export_sft_jsonl(rows,out); assert m['exported_count']==1
-    assert json.loads(out.read_text())['id']=='c'
-
-def test_sft_export_rejects_unsafe_eligible(tmp_path: Path):
-    with pytest.raises(SFTExportError): export_sft_jsonl([{'eligibility':'ELIGIBLE','candidate_id':'c','task':{},'trajectory':[],'solution_leakage':True,'reproducible':True}],tmp_path/'x')

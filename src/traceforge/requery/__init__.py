@@ -12,7 +12,6 @@ from .multi_round import (
     build_followup_prompt,
     retain_verified_session,
 )
-from .sft_export import SFTExportError, export_sft_jsonl
 from .single_workspace import (
     SINGLE_WS_PROMPT_VERSION,
     SINGLE_WS_SCHEMA,
@@ -27,7 +26,6 @@ __all__ = [
     "Requirement",
     "RequirementTracker",
     "RoundResult",
-    "SFTExportError",
     "SINGLE_WS_PROMPT_VERSION",
     "SINGLE_WS_SCHEMA",
     "SingleWorkspaceSynthesisError",
@@ -36,7 +34,6 @@ __all__ = [
     "build_cross_workspace_prompt",
     "build_followup_prompt",
     "build_single_workspace_prompt",
-    "export_sft_jsonl",
     "profile_workspace",
     "retain_verified_session",
     "retrieve_directional_pairs",
