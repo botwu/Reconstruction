@@ -89,11 +89,11 @@ def test_empty_tree_all_non_file_is_none() -> None:
         source={"selected_span_has_file_ops": False, "route": "ELIGIBLE_CODE_FILE"},
         replay=_replay(),
     )
-    assert result["route"] == "NO_FILE_WORKSPACE"
-    assert result["env_origin"] == "NONE"
-    assert result["allow_completion"] is False
+    assert result["route"] == "DEFAULT_EMPTY"
+    assert result["env_origin"] == "DEFAULT_EMPTY"
+    assert result["allow_completion"] is True
     assert result["allow_file_verifier"] is False
-    assert result["reason_codes"] == ["NO_OBSERVABLE_FILES", "NO_FILE_ACCEPTANCE"]
+    assert result["reason_codes"] == []
     assert result["unverified_obligations"] == ["publish"]
 
 

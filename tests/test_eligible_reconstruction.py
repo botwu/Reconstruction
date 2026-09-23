@@ -361,19 +361,17 @@ def test_eligible_non_file_task_stops_at_completion(tmp_path: Path) -> None:
     assert payload["status"] == "REVIEW"
     assert payload["intent"]["status"] == "READY"
     task_result = payload["tasks"][0]
-    assert task_result["stopped_at"] == "support_route"
-    assert "NO_OBSERVABLE_FILES" in task_result["errors"]
-    assert "NO_FILE_ACCEPTANCE" in task_result["errors"]
-    assert task_result["execution_support_route"]["route"] == "NO_FILE_WORKSPACE"
-    assert task_result["execution_support_route"]["env_origin"] == "NONE"
-    assert task_result["env_origin"] == "NONE"
+    assert task_result["stopped_at"] == "completion"
+    assert task_result["execution_support_route"]["route"] == "DEFAULT_EMPTY"
+    assert task_result["execution_support_route"]["env_origin"] == "DEFAULT_EMPTY"
+    assert task_result["env_origin"] == "DEFAULT_EMPTY"
     assert (tmp_path / "run/intent/intent.json").is_file()
     pair_paths = list((tmp_path / "run/tasks").glob("*/task_environment_pair.json"))
     assert pair_paths
     pair = json.loads(pair_paths[0].read_text(encoding="utf-8"))
-    assert pair["environment"]["origin"] == "NONE"
-    assert pair["environment"]["initial_workspace_ref"] is None
-    assert not list((tmp_path / "run/tasks").glob("*/completion/completion.json"))
+    assert pair["environment"]["origin"] == "DEFAULT_EMPTY"
+    assert pair["environment"]["initial_workspace_ref"] is not None
+    assert list((tmp_path / "run/tasks").glob("*/completion/completion.json"))
 
 
 def test_thin_tree_runs_intent_and_completion(tmp_path: Path) -> None:

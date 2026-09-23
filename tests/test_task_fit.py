@@ -218,7 +218,7 @@ def test_probe_pass_without_workspace_execution_receipt_cannot_make_environment_
     assert any(error.startswith("ENVIRONMENT_PROBE_NOT_PASS") for error in environment["execution_errors"])
 
 
-def test_ready_original_normalizes_unknown_with_bound_evidence(tmp_path: Path) -> None:
+def test_unknown_with_bound_evidence_stays_review(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     (workspace / "src").mkdir(parents=True)
     (workspace / "src/main.py").write_text("print(1)\n", encoding="utf-8")
@@ -232,15 +232,15 @@ def test_ready_original_normalizes_unknown_with_bound_evidence(tmp_path: Path) -
             "requirements": [{
                 "obligation_id": "obl-1",
                 "status": "unknown",
-                "reason": "目标行为是待实现能力，入口证据存在。",
+                "reason": "target behavior has not been proven",
                 "evidence_paths": ["src"],
                 "probe_ids": [],
             }],
         },
     )
-    assert fit["decision"] == "READY_ORIGINAL"
-    assert fit["requirements"][0]["status"] == "SATISFIED"
-    assert fit["requirements"][0]["status_before_normalization"] == "UNKNOWN"
+    assert fit["decision"] == "REVIEW_TASK_FIT"
+    assert "TASK_FIT_UNKNOWN:obl-1" in fit["errors"]
+    assert fit["requirements"][0]["status"] == "UNKNOWN"
 
 
 def test_non_file_obligation_does_not_require_fake_evidence(tmp_path: Path) -> None:
@@ -268,6 +268,6 @@ def test_non_file_obligation_does_not_require_fake_evidence(tmp_path: Path) -> N
         },
     )
     assert fit["decision"] == "REVIEW_TASK_FIT"
-    assert "TASK_FIT_UNKNOWN:obl-1" not in fit["errors"]
+    assert "TASK_FIT_UNKNOWN:obl-1" in fit["errors"]
     assert "TASK_FIT_UNKNOWN:obl-2" in fit["errors"]
-    assert {item["status"] for item in fit["requirements"]} == {"SATISFIED", "UNKNOWN"}
+    assert {item["status"] for item in fit["requirements"]} == {"UNKNOWN"}

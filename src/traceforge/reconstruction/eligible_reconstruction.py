@@ -11,6 +11,7 @@ from typing import Any
 from traceforge.curation.sft import write_reconstruction_sft_curation
 from traceforge.reconstruction.agents import AgentRuntime, SandboxedAgentRuntime
 from traceforge.reconstruction.env_replay import (
+    normalize_file_ops,
     replay_from_timeline,
     write_replay_artifacts,
 )
@@ -108,7 +109,6 @@ def execution_support_route(
     ]
     has_ops = bool(source.get("selected_span_has_file_ops")) or bool(files)
     explicit_file = _explicit_file_obligation_ids(task)
-    has_bindings = bool(environment_bindings(task))
     unverified = non_file_obligation_ids(task)
     payload = {
         "domain_route": domain or None,
@@ -138,18 +138,6 @@ def execution_support_route(
             **payload,
             "route": "RETRIEVAL_UNSUPPORTED",
             "reason_codes": ["RETRIEVAL_UNSUPPORTED"],
-            "env_origin": ENV_NONE,
-            "allow_completion": False,
-            "allow_file_verifier": False,
-        }
-    if has_bindings and not explicit_file:
-        # A file-bound task without replayed file bodies cannot be completed
-        # from an empty workspace. Stop before completion and keep the gap
-        # explicit in the manifest.
-        return {
-            **payload,
-            "route": "NO_FILE_WORKSPACE",
-            "reason_codes": ["NO_OBSERVABLE_FILES", "NO_FILE_ACCEPTANCE"],
             "env_origin": ENV_NONE,
             "allow_completion": False,
             "allow_file_verifier": False,
@@ -448,9 +436,15 @@ def _task_result(
             judges.append({"label": "UNKNOWN", "decision": "REVIEW"})
             rows.append({"decision": "REVIEW"})
             continue
+        timeline_observed = {
+            str(op.get("path"))
+            for op in normalize_file_ops(task_source.get("tool_timeline") or [])
+            if op.get("kind") == "read" and isinstance(op.get("path"), str) and op.get("path")
+        }
+        replay_observed = {str(item.path) for item in replay.files if getattr(item, "path", None)}
         judge = run_workspace_sufficiency(
             task=task,
-            observed_paths=[item.path for item in replay.files],
+            observed_paths=sorted(replay_observed | timeline_observed),
             workspace_root=candidate["workspace"],
             agent=agent,
             output_root=task_root / "sufficiency" / f"{int(candidate.get('index', len(rows))):03d}",
@@ -566,10 +560,11 @@ def _task_result(
         result["errors"] = list(fit.get("errors") or [fit["decision"]])
         return result
     if fit.get("decision") == "REVIEW_TASK_FIT":
-        result["status"] = "REVIEW"
-        result["stopped_at"] = "task_fit"
-        result["errors"] = list(fit.get("errors") or ["TASK_FIT_REVIEW"])
-        return result
+        # TaskFit is an audit receipt. A review remains visible in the
+        # manifest, but it is not an execution gate; the behavior verifier
+        # decides whether the task actually passes.
+        fit["execution_policy"] = "PROCEED_ORIGINAL"
+        _write_stage_json(task_root, "task_fit.json", fit)
     if fit.get("decision") == "INCOMPATIBLE":
         # Only confirmed reproducible conflicts may create a variant. An
         # unresolved/static incompatibility remains an audit warning.

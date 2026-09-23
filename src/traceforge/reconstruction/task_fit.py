@@ -318,27 +318,15 @@ def fit_task_environment(
     raw_decision = agent_fit.get("decision")
     decision = raw_decision.strip().upper() if isinstance(raw_decision, str) else raw_decision
     if "UNKNOWN" in statuses:
-        # A pre-task target may be absent while its source and verifier surface
-        # are grounded. Preserve the original state for audit, but allow that
-        # narrow READY_ORIGINAL case to proceed. Unknowns without evidence stay
-        # REVIEW; they cannot be turned into a rollout claim.
-        unresolved: list[str] = []
-        if decision == "READY_ORIGINAL":
-            for item in requirements:
-                if item["status"] != "UNKNOWN":
-                    continue
-                if item.get("evidence_paths") or item.get("probe_ids"):
-                    item["status_before_normalization"] = "UNKNOWN"
-                    item["status"] = "SATISFIED"
-                else:
-                    unresolved.append(item["obligation_id"])
-        else:
-            unresolved = [item["obligation_id"] for item in requirements if item["status"] == "UNKNOWN"]
+        # Evidence that a path was observed proves only observability. It does
+        # not prove that the obligation is satisfied, so keep UNKNOWN as an
+        # explicit audit result and let downstream verification decide.
+        result["errors"] = [
+            *(result.get("errors") or []),
+            *[f"TASK_FIT_UNKNOWN:{item['obligation_id']}" for item in requirements if item["status"] == "UNKNOWN"],
+        ]
         result["requirements"] = copy.deepcopy(requirements)
-        if unresolved:
-            result["errors"] = [*(result.get("errors") or []), *[f"TASK_FIT_UNKNOWN:{oid}" for oid in unresolved]]
-            return result
-        statuses = {item["status"] for item in requirements}
+        return result
     if statuses == {"SATISFIED"} and decision == "READY_ORIGINAL":
         result["decision"] = "READY_ORIGINAL"
     elif "UNSATISFIED" in statuses and decision == "INCOMPATIBLE":
