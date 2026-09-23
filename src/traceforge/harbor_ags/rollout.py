@@ -104,6 +104,15 @@ def _sha256_tree(root: Path) -> str:
     return digest.hexdigest()
 
 
+def _harbor_runtime_metadata(harbor_root: Path) -> dict[str, Any]:
+    """Record the external Harbor evidence runtime used for this plan."""
+    files: dict[str, str] = {}
+    evidence = harbor_root / "src" / "harbor_ags" / "evidence.py"
+    if evidence.is_file():
+        files["src/harbor_ags/evidence.py"] = _sha256_file(evidence)
+    return {"files": files}
+
+
 def _task_name(task_dir: Path) -> str:
     try:
         payload = tomllib.loads((task_dir / "task.toml").read_text(encoding="utf-8"))
@@ -703,6 +712,7 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
             "dataset": dataset_meta,
             "command": command,
             "harbor_root": str(harbor_root),
+            "harbor_runtime": _harbor_runtime_metadata(harbor_root),
             "jobs_root": str(jobs_root),
             "agent": {
                 "mode": config.agent_mode,
@@ -871,6 +881,19 @@ def execute_rollout_plan(
     if not isinstance(plan, dict) or plan.get("schema_version") != ROLLOUT_BRIDGE_SCHEMA:
         raise HarborRolloutError("rollout plan schema 不匹配")
     _assert_plan_integrity(plan_dir, plan)
+    runtime = plan.get("harbor_runtime")
+    if isinstance(runtime, dict):
+        runtime_files = runtime.get("files")
+        if isinstance(runtime_files, dict):
+            harbor_root = Path(str(plan.get("harbor_root"))).resolve()
+            for relative, expected_hash in runtime_files.items():
+                if not isinstance(relative, str) or not isinstance(expected_hash, str):
+                    continue
+                runtime_path = harbor_root / relative
+                if runtime_path.is_file() and _sha256_file(runtime_path) != expected_hash:
+                    raise HarborRolloutError(
+                        f"Harbor runtime changed after plan creation: {relative}"
+                    )
     command = plan["command"]
     if timeout_seconds is None:
         timeouts = plan.get("timeouts")
