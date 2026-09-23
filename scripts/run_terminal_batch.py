@@ -27,6 +27,7 @@ from typing import Any
 from traceforge.reconstruction.batch_process import run_batch_process
 
 SCHEMA = "traceforge.terminal-batch.v1"
+ROLLOUT_SESSION_GRACE_SECONDS = 900
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -158,7 +159,7 @@ def main() -> int:
     parser.add_argument("--rollout-trials", type=int, default=2)
     parser.add_argument("--rollout-timeout-seconds", type=int, default=14400)
     parser.add_argument("--rollout-max-iterations", type=int, default=500)
-    parser.add_argument("--session-timeout-seconds", type=int, default=7200,
+    parser.add_argument("--session-timeout-seconds", type=int, default=18000,
                         help="整条 session 的总时限（秒），包含重建、RED 和 rollout")
     parser.add_argument("--sandbox", action="store_true")
     parser.add_argument("--execute-red", action="store_true")
@@ -166,6 +167,15 @@ def main() -> int:
     args = parser.parse_args()
     if args.session_timeout_seconds <= 0:
         parser.error("--session-timeout-seconds 必须大于 0")
+    if args.execute_rollout:
+        minimum_session_timeout = args.rollout_timeout_seconds + ROLLOUT_SESSION_GRACE_SECONDS
+        if args.session_timeout_seconds < minimum_session_timeout:
+            parser.error(
+                "--session-timeout-seconds must be at least " +
+                f"{minimum_session_timeout} when --execute-rollout is enabled " +
+                f"(rollout timeout {args.rollout_timeout_seconds} + " +
+                f"{ROLLOUT_SESSION_GRACE_SECONDS}s setup/cleanup grace)"
+            )
     if args.workers < 1:
         parser.error("--workers must be >= 1")
     candidates = _read_manifest(args.manifest)
