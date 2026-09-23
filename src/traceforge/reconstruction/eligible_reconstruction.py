@@ -11,13 +11,13 @@ from typing import Any
 from traceforge.curation.sft import write_reconstruction_sft_curation
 from traceforge.reconstruction.agents import AgentRuntime, SandboxedAgentRuntime
 from traceforge.reconstruction.env_replay import (
-    normalize_file_ops,
     replay_from_timeline,
     write_replay_artifacts,
 )
 from traceforge.reconstruction.environment_bindings import (
     environment_bindings,
     non_file_obligation_ids,
+    observed_body_paths,
 )
 from traceforge.reconstruction.intent_recovery import (
     INTENT_SCHEMA,
@@ -436,15 +436,11 @@ def _task_result(
             judges.append({"label": "UNKNOWN", "decision": "REVIEW"})
             rows.append({"decision": "REVIEW"})
             continue
-        timeline_observed = {
-            str(op.get("path"))
-            for op in normalize_file_ops(task_source.get("tool_timeline") or [])
-            if op.get("kind") == "read" and isinstance(op.get("path"), str) and op.get("path")
-        }
         replay_observed = {str(item.path) for item in replay.files if getattr(item, "path", None)}
+        body_observed = set(observed_body_paths(task_source))
         judge = run_workspace_sufficiency(
             task=task,
-            observed_paths=sorted(replay_observed | timeline_observed),
+            observed_paths=sorted(replay_observed | body_observed),
             workspace_root=candidate["workspace"],
             agent=agent,
             output_root=task_root / "sufficiency" / f"{int(candidate.get('index', len(rows))):03d}",
