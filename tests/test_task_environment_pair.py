@@ -155,3 +155,28 @@ def test_pair_rejects_absolute_artifact_reference(tmp_path: Path) -> None:
             result=result,
             root=tmp_path,
         )
+
+
+def test_variant_pair_uses_executed_task_for_delivery_q(tmp_path: Path) -> None:
+    source_task, intent, source, replay, result = _inputs(tmp_path)
+    variant = json.loads(json.dumps(intent["task"]))
+    variant["task_id"] = "variant_abc123"
+    variant["task_instruction"] = "请修改入口并通过变体验收"
+    variant["core_objective"] = "在补全环境中修改入口"
+    variant["acceptance_obligations"][0]["text"] = "入口内容应为 changed"
+    variant["success_criteria"] = ["入口内容应为 changed"]
+    result["status"] = "READY_VARIANT"
+    result["executed_task"] = variant
+    pair = build_task_environment_pair(
+        source_task=source_task,
+        intent=intent,
+        source=source,
+        replay=replay,
+        result=result,
+        root=tmp_path,
+    )
+    assert pair["q"]["source_task_id"] == "task-1"
+    assert pair["q"]["executed_task_id"] == "variant_abc123"
+    assert pair["q"]["projection_mode"] == "environment_grounded_variant"
+    assert pair["q"]["execution_instruction"] == "请修改入口并通过变体验收"
+    assert pair["q"]["acceptance_obligations"][0]["text"] == "入口内容应为 changed"

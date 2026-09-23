@@ -21,7 +21,6 @@ from traceforge.reconstruction.model_gateway import (
     ModelGatewayError,
     ModelRequest,
     NewAPIClient,
-    resolve_model_name,
 )
 from traceforge.reconstruction.tls import pin_process_tls
 
@@ -161,22 +160,14 @@ def main() -> int:
     pin_process_tls()
     arguments.output.mkdir(parents=True, exist_ok=True)
     tokenhub_attempts: list[dict[str, Any]] = []
-    primary = _tokenhub_claude(arguments.config, model_name=arguments.model_name)
+    if arguments.channel == "claude":
+        primary = _tokenhub_claude(arguments.config, model_name=arguments.model_name)
+    else:
+        primary = _tokenhub_newapi(
+            arguments.config, channel=arguments.channel, model_name=arguments.model_name
+        )
     tokenhub_attempts.append(primary)
     chosen = dict(primary)
-    if not primary["ok"]:
-        fallback_model = resolve_model_name(
-            None, config_path=arguments.config, channel="deepseek"
-        )
-        fallback = _tokenhub_newapi(
-            arguments.config, channel="deepseek", model_name=fallback_model
-        )
-        tokenhub_attempts.append(fallback)
-        if fallback["ok"]:
-            chosen = {
-                **fallback,
-                "fallback_from": "claude",
-            }
     ags = _ags(arguments.config, arguments.harbor_root, arguments.output)
     report = {
         "tokenhub": chosen,

@@ -40,16 +40,23 @@ def build_task_environment_pair(
     task_id = source_task["task_id"]
     task_root = root / "tasks" / task_id
     intent_status = intent.get("status", "NOT_RUN")
-    task = intent.get("task") if intent_status == "READY" else None
-    if intent_status == "READY" and not isinstance(task, dict):
+    intent_task = intent.get("task") if intent_status == "READY" else None
+    if intent_status == "READY" and not isinstance(intent_task, dict):
         raise TaskEnvironmentPairError(f"任务 {task_id} 的 READY Intent 缺少 task")
-    task = task or {}
-    if task and task.get("task_id") != task_id:
+    intent_task = intent_task or {}
+    if intent_task and intent_task.get("task_id") != task_id:
         raise TaskEnvironmentPairError("Intent 与筛选任务 ID 不一致")
+    # 变体由 task_fit 明确生成并由编排层放入 executed_task；交付 q 必须描述
+    # 实际交给 verifier/agent 的任务，同时保留 source_* 作为原始任务证据。
+    executed_task = result.get("executed_task")
+    if executed_task is None:
+        executed_task = intent_task
+    if not isinstance(executed_task, dict):
+        raise TaskEnvironmentPairError("executed_task 必须为 object")
     source_texts = copy.deepcopy(source_task.get("user_texts") or [])
-    instruction = task.get("task_instruction")
-    obligations = copy.deepcopy(task.get("acceptance_obligations") or [])
-    bindings = copy.deepcopy(environment_bindings(task))
+    instruction = executed_task.get("task_instruction")
+    obligations = copy.deepcopy(executed_task.get("acceptance_obligations") or [])
+    bindings = copy.deepcopy(environment_bindings(executed_task))
     support = result.get("execution_support_route") or {}
     origin = support.get("env_origin", "NONE")
     completion = result.get("completion") or {}
@@ -75,17 +82,22 @@ def build_task_environment_pair(
             "source_instruction": "\n\n".join(source_texts),
             "source_message_indices": list(source_task.get("message_indices") or []),
             "intent_status": intent_status,
+            "executed_task_id": executed_task.get("task_id") if executed_task else None,
             "execution_instruction": instruction,
-            "core_objective": task.get("core_objective"),
-            "projection_mode": "intent_recovery_same_goal" if task else "unrecovered",
+            "core_objective": executed_task.get("core_objective"),
+            "projection_mode": (
+                "environment_grounded_variant"
+                if executed_task.get("task_id") != task_id
+                else ("intent_recovery_same_goal" if executed_task else "unrecovered")
+            ),
             "user_evidence_ref_ids": sorted({
                 ref for item in obligations for ref in item.get("evidence_ref_ids", [])
             }),
             "acceptance_obligations": obligations,
             "environment_bindings": bindings,
-            "success_criteria": list(task.get("success_criteria") or []),
-            "mandatory_constraints": list(task.get("mandatory_constraints") or []),
-            "prohibitions": list(task.get("prohibitions") or []),
+            "success_criteria": list(executed_task.get("success_criteria") or []),
+            "mandatory_constraints": list(executed_task.get("mandatory_constraints") or []),
+            "prohibitions": list(executed_task.get("prohibitions") or []),
             "task_contract_ref": _artifact_ref(task_root / "task_contract.json", root),
             "task_fit_ref": _artifact_ref(task_root / "task_fit.json", root),
             "variant_proposal_ref": _artifact_ref(task_root / "variant_proposal.json", root),

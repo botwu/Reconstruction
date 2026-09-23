@@ -236,6 +236,30 @@ class HarborCalibrationExecutor:
         self.attempts: list[dict[str, Any]] = []
         self.bundle: Path | None = None
 
+    def _build_harbor_plan(self, bundle: Path, *, label: str, mode: str, trials: int) -> Path:
+        """为同一份校准 bundle 建立不可变 Harbor 计划。"""
+        return build_rollout_plan(
+            HarborRolloutConfig(
+                task_dir=bundle,
+                harbor_root=self.config.harbor_root,
+                output_root=self.root / "plans" / label,
+                jobs_root=self.root / "jobs" / label,
+                agent_mode=mode,
+                model=self.config.rollout_model,
+                trials=trials,
+                timeout_seconds=self.config.timeout_seconds,
+                agent_max_iterations=self.config.rollout_max_iterations,
+            )
+        )
+
+    def _publish_harbor_bundle(self, bundle: Path, *, label: str, trials: int) -> dict[str, str]:
+        """发布 task/environment/verifier 输入；发布本身不宣称 rollout 成功。"""
+        plan = self._build_harbor_plan(bundle, label=label, mode="hermes", trials=trials)
+        published = publish_rollout_bundle(
+            plan, self.root / "deliverables" / label / "harbor_bundle"
+        )
+        return {"plan": str(plan), "harbor_bundle": str(published.resolve())}
+
     def _run_bundle(
         self, bundle: Path, *, label: str, mode: str, trials: int = 1,
         expected_test_sha256: str | None = None,
@@ -253,19 +277,7 @@ class HarborCalibrationExecutor:
             record["error"] = "VERIFIER_TEST_BYTES_MISMATCH"
             return record
         try:
-            plan = build_rollout_plan(
-                HarborRolloutConfig(
-                    task_dir=bundle,
-                    harbor_root=self.config.harbor_root,
-                    output_root=self.root / "plans" / label,
-                    jobs_root=jobs,
-                    agent_mode=mode,
-                    model=self.config.rollout_model,
-                    trials=trials,
-                    timeout_seconds=self.config.timeout_seconds,
-                    agent_max_iterations=self.config.rollout_max_iterations,
-                )
-            )
+            plan = self._build_harbor_plan(bundle, label=label, mode=mode, trials=trials)
             if mode == "hermes":
                 published = publish_rollout_bundle(
                     plan, self.root / "deliverables" / label / "harbor_bundle"
@@ -371,7 +383,7 @@ class HarborCalibrationExecutor:
                             continue
                         test_row = {"name": item.get("name"), "status": item.get("status")}
                         if isinstance(item.get("message"), str) and item["message"]:
-                            test_row["message"] = item["message"][:2000]
+                            test_row["message"] = redact_harbor_output(item["message"][:2000])
                         row["tests"].append(test_row)
                 row["exit_code"] = verdict.get("exit_code") if isinstance(verdict, dict) else None
             rows.append(row)
@@ -411,6 +423,12 @@ class HarborCalibrationExecutor:
         else:
             status = expected
         return RedCheckCase(label, kind, status, reward if passed else None, expected, reward)
+
+    def publish_calibrated_bundle(self, *, label: str, trials: int) -> dict[str, str]:
+        """发布已通过 RED 校准的交付输入，不执行 Hermes。"""
+        if self.bundle is None:
+            raise HarborRolloutError("校准 bundle 不存在")
+        return self._publish_harbor_bundle(self.bundle, label=label, trials=trials)
 
     def run(self, candidate: VerifierCandidate) -> dict[str, Any]:
         number = len(self.attempts) + 1
@@ -709,9 +727,25 @@ def run_reconstruction_verification(
                         and all(t.get("status") == "PASS" and t.get("reward") == 1.0 for t in trials)
                     )
                     result["rollout"] = rollout
+                    if rollout.get("harbor_bundle"):
+                        result["harbor_bundle"] = rollout["harbor_bundle"]
+                        result["rollout_plan"] = rollout.get("plan")
                     _set_rollout_eligibility(result, config.rollout_trials)
                     if not passed:
                         result["errors"] = ["HERMES_REPRODUCIBILITY_FAILED"]
+                else:
+                    try:
+                        result.update(
+                            executor.publish_calibrated_bundle(
+                                label="hermes-replay", trials=config.rollout_trials
+                            )
+                        )
+                    except (HarborRolloutError, OSError, ValueError) as exc:
+                        result["status"] = "REVIEW"
+                        result["errors"] = [
+                            "HARBOR_BUNDLE_PUBLICATION_FAILED",
+                            f"{type(exc).__name__}:{exc}",
+                        ]
             elif not result.get("errors"):
                 result["errors"] = ["VERIFIER_CALIBRATION_FAILED"]
             _write(root / "model_exchange.json", {"iterations": result.get("iterations")})
@@ -777,9 +811,25 @@ def run_reconstruction_verification(
                         and all(t.get("status") == "PASS" and t.get("reward") == 1.0 for t in trials)
                     )
                     result["rollout"] = rollout
+                    if rollout.get("harbor_bundle"):
+                        result["harbor_bundle"] = rollout["harbor_bundle"]
+                        result["rollout_plan"] = rollout.get("plan")
                     _set_rollout_eligibility(result, config.rollout_trials)
                     if not passed:
                         result["errors"] = ["HERMES_REPRODUCIBILITY_FAILED"]
+                else:
+                    try:
+                        result.update(
+                            executor.publish_calibrated_bundle(
+                                label="hermes-replay", trials=config.rollout_trials
+                            )
+                        )
+                    except (HarborRolloutError, OSError, ValueError) as exc:
+                        result["status"] = "REVIEW"
+                        result["errors"] = [
+                            "HARBOR_BUNDLE_PUBLICATION_FAILED",
+                            f"{type(exc).__name__}:{exc}",
+                        ]
             _write(root / "model_exchange.json", {"iterations": result.get("iterations")})
             _write_verification(root, result, config)
             return result
@@ -831,6 +881,19 @@ def run_reconstruction_verification(
                         _set_rollout_eligibility(result, config.rollout_trials)
                         if not passed:
                             result["errors"] = ["HERMES_REPRODUCIBILITY_FAILED"]
+                    else:
+                        try:
+                            result.update(
+                                executor.publish_calibrated_bundle(
+                                    label="hermes-replay", trials=config.rollout_trials
+                                )
+                            )
+                        except (HarborRolloutError, OSError, ValueError) as exc:
+                            result["status"] = "REVIEW"
+                            result["errors"] = [
+                                "HARBOR_BUNDLE_PUBLICATION_FAILED",
+                                f"{type(exc).__name__}:{exc}",
+                            ]
                 else:
                     result["errors"] = ["VERIFIER_CALIBRATION_FAILED"]
                     result["status"] = "REVIEW"
