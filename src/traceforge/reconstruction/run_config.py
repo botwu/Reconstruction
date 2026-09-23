@@ -143,7 +143,19 @@ def load_rollout_limits(
         ("timeout_seconds", timeout_seconds, 900),
         ("max_iterations", max_iterations, 60),
     ):
-        value = override if override is not None else entry.get(key, default)
+        configured = entry.get(key, default)
+        if isinstance(configured, bool) or not isinstance(configured, int) or configured < 1:
+            raise ModelGatewayError(
+                f"rollout.{key} 必须是正整数", code="ROLE_CONFIG_INVALID"
+            )
+        # Explicit overrides may increase the reviewed budget, but cannot
+        # silently shorten it and end a real rollout early.
+        if override is not None and override < configured:
+            raise ModelGatewayError(
+                f"rollout.{key} lower than reviewed config budget {configured}",
+                code="ROLLOUT_BUDGET_DOWNGRADE",
+            )
+        value = override if override is not None else configured
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ModelGatewayError(
                 f"rollout.{key} 必须是正整数", code="ROLE_CONFIG_INVALID"

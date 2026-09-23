@@ -199,6 +199,30 @@ def test_execute_rollout_requires_credentials(
         execute_rollout_plan(output)
 
 
+def test_execute_rollout_rejects_plan_below_reviewed_config_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = build_rollout_plan(
+        HarborRolloutConfig(
+            task_dir=_bundle(tmp_path / "task"),
+            harbor_root=_harbor_root(tmp_path / "harbor"),
+            output_root=tmp_path / "plans",
+            jobs_root=tmp_path / "jobs",
+            timeout_seconds=900,
+            agent_max_iterations=30,
+        )
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        'roles:\n  {"rollout":{"timeout_seconds":14400,"max_iterations":500}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AGS_API_KEY", "ags-secret")
+    monkeypatch.setenv("TOKENHUB_KEY", "llm-secret")
+    with pytest.raises(HarborRolloutError, match="below the reviewed config budget"):
+        execute_rollout_plan(output, config_path=config, channel="claude")
+
+
 def test_execute_rollout_is_explicit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

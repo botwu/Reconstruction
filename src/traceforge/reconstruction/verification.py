@@ -25,6 +25,7 @@ from traceforge.harbor_ags.rollout import (
     redact_harbor_output,
 )
 from traceforge.reconstruction.model_gateway import ChatModel, ModelGatewayError
+from traceforge.reconstruction.run_config import load_rollout_limits
 from traceforge.reconstruction.environment_bindings import non_file_obligation_ids
 from traceforge.verifier.bundle import compile_bundle
 from traceforge.verifier.iterative import synthesize_verifier_iterative
@@ -67,6 +68,19 @@ class VerificationConfig:
             raise ValueError("timeout_seconds 必须大于 0")
         if self.rollout_max_iterations < 1:
             raise ValueError("rollout_max_iterations 必须大于 0")
+
+        if self.execute_rollout and self.config_path is not None:
+            configured_timeout, configured_iterations = load_rollout_limits(self.config_path)
+            if self.timeout_seconds < configured_timeout:
+                raise ValueError(
+                    "rollout timeout_seconds cannot be lower than reviewed config budget "
+                    f"{configured_timeout}"
+                )
+            if self.rollout_max_iterations < configured_iterations:
+                raise ValueError(
+                    "rollout_max_iterations cannot be lower than reviewed config budget "
+                    f"{configured_iterations}"
+                )
 
     def should_run_red(self) -> bool:
         return bool(self.execute or self.execute_red)

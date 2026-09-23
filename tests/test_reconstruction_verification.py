@@ -16,6 +16,37 @@ from traceforge.reconstruction.verification import (
 )
 from traceforge.reconstruction.verifier_recovery import run_verifier_recovery
 
+def test_verification_rollout_budget_cannot_be_lower_than_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        'roles:\n  {"rollout":{"timeout_seconds":14400,"max_iterations":500}}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="cannot be lower"):
+        VerificationConfig(
+            harbor_root=tmp_path,
+            model_name="gpt-5",
+            rollout_model="anthropic/claude-opus-4-8",
+            execute_rollout=True,
+            execute_red=True,
+            rollout_trials=2,
+            config_path=config_path,
+            timeout_seconds=300,
+            rollout_max_iterations=3,
+        ).validate()
+    VerificationConfig(
+        harbor_root=tmp_path,
+        model_name="gpt-5",
+        rollout_model="anthropic/claude-opus-4-8",
+        execute_rollout=True,
+        execute_red=True,
+        rollout_trials=2,
+        config_path=config_path,
+        timeout_seconds=14400,
+        rollout_max_iterations=500,
+    ).validate()
+
+
 _VERIFIER_PAYLOAD = {
     "status": "READY",
     "test_outputs_py": (

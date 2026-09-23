@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 
 from traceforge.reconstruction.model_gateway import (
     ModelGatewayError,
+    iter_config_items,
     load_channel_connection,
     load_e2b_api_key,
 )
@@ -322,6 +323,24 @@ def _prepare_execution_env(
             if not current or _is_loopback_url(current):
                 env[name] = public_url
     return env
+
+
+def _reviewed_rollout_budget(path: Path | None) -> tuple[int | None, int | None]:
+    # Read only explicitly reviewed rollout limits from config.yaml.
+    if path is None:
+        return None, None
+    for name, value in iter_config_items(path):
+        if name != "roles" or not isinstance(value, dict):
+            continue
+        entry = value.get("rollout")
+        if not isinstance(entry, dict):
+            return None, None
+        limits = []
+        for key in ("timeout_seconds", "max_iterations"):
+            configured = entry.get(key)
+            limits.append(configured if type(configured) is int and configured > 0 else None)
+        return limits[0], limits[1]
+    return None, None
 
 
 def _missing_execution_credentials(env: dict[str, str], agent_mode: str) -> list[str]:
@@ -864,6 +883,28 @@ def execute_rollout_plan(
         raise HarborRolloutError("执行 timeout_seconds 必须大于 0")
     agent = plan.get("agent")
     mode = agent.get("mode") if isinstance(agent, dict) else "hermes"
+    reviewed_timeout, reviewed_iterations = _reviewed_rollout_budget(config_path)
+    if isinstance(agent, dict):
+        planned_timeout = agent.get("timeout_seconds")
+        planned_iterations = agent.get("max_iterations")
+        if (
+            reviewed_timeout is not None
+            and type(planned_timeout) is int
+            and planned_timeout < reviewed_timeout
+        ):
+            raise HarborRolloutError(
+                "rollout plan timeout_seconds is below the reviewed config budget "
+                f"{reviewed_timeout}"
+            )
+        if (
+            reviewed_iterations is not None
+            and type(planned_iterations) is int
+            and planned_iterations < reviewed_iterations
+        ):
+            raise HarborRolloutError(
+                "rollout plan max_iterations is below the reviewed config budget "
+                f"{reviewed_iterations}"
+            )
     env = _prepare_execution_env(str(mode), config_path=config_path, channel=channel)
     missing = _missing_execution_credentials(env, str(mode))
     if missing:

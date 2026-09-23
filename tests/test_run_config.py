@@ -110,6 +110,22 @@ def test_rollout_limits_load_config_and_explicit_overrides(tmp_path: Path) -> No
     assert load_rollout_limits(None) == (900, 60)
 
 
+def test_rollout_limit_override_cannot_downgrade_reviewed_budget(tmp_path: Path) -> None:
+    from traceforge.reconstruction.model_gateway import ModelGatewayError
+    from traceforge.reconstruction.run_config import load_rollout_limits
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        'roles:\n  {"rollout":{"timeout_seconds":14400,"max_iterations":500}}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ModelGatewayError, match=r"ROLLOUT_BUDGET_DOWNGRADE|lower than reviewed"):
+        load_rollout_limits(path, timeout_seconds=300)
+    with pytest.raises(ModelGatewayError, match=r"ROLLOUT_BUDGET_DOWNGRADE|lower than reviewed"):
+        load_rollout_limits(path, max_iterations=3)
+    assert load_rollout_limits(path, timeout_seconds=14400, max_iterations=500) == (14400, 500)
+    assert load_rollout_limits(path, timeout_seconds=15000, max_iterations=600) == (15000, 600)
+
+
 @pytest.mark.parametrize("bad", [0, -1, True, 1.5, "900"])
 def test_rollout_limits_reject_invalid_budget(tmp_path: Path, bad: object) -> None:
     from traceforge.reconstruction.model_gateway import ModelGatewayError
