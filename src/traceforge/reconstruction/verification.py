@@ -11,6 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from traceforge.harbor_ags.response_receipt import (
+    ResponseReceiptError,
+    build_response_receipt_from_path,
+)
 from traceforge.harbor_ags.results import (
     HarborResultError,
     certify_hermes_job,
@@ -238,6 +242,122 @@ def _workspace_files(root: Path) -> dict[str, str]:
             text = f"[binary size={len(raw)} sha256={hashlib.sha256(raw).hexdigest()}]"
         output[path.relative_to(root).as_posix()] = text
     return output
+
+
+
+def _acceptance_report_obligation_ids(task: dict[str, Any]) -> list[str]:
+    """Return only NON_FILE obligations explicitly requiring acceptance-report."""
+
+    non_file = set(non_file_obligation_ids(task))
+    ids: list[str] = []
+    for obligation in task.get("acceptance_obligations") or []:
+        if not isinstance(obligation, dict):
+            continue
+        obligation_id = obligation.get("id")
+        if not isinstance(obligation_id, str) or obligation_id not in non_file:
+            continue
+        text = " ".join(
+            str(obligation.get(key) or "")
+            for key in ("text", "observable", "specified_output_format")
+        ).lower()
+        if "acceptance-report" in text or "acceptance report" in text:
+            ids.append(obligation_id)
+    return ids
+
+
+def _attach_response_receipts(
+    rollout: dict[str, Any], expected_trials: int
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Validate terminal acceptance reports and store hash receipts only."""
+
+    results = rollout.get("results")
+    trials = results.get("trials") if isinstance(results, dict) else None
+    if not isinstance(trials, list):
+        return ["RESPONSE_RECEIPT_TRIALS_MISSING"], []
+    if expected_trials < 1 or len(trials) != expected_trials:
+        return [
+            f"RESPONSE_RECEIPT_TRIAL_COUNT_MISMATCH:{len(trials)}:{expected_trials}"
+        ], []
+    errors: list[str] = []
+    receipts: list[dict[str, Any]] = []
+    for index, trial in enumerate(trials):
+        # Receipts are evidence for successful completed responses. Failed,
+        # timed out, or infrastructure-error trials retain their own diagnosis.
+        if not isinstance(trial, dict):
+            continue
+        trial_status = trial.get("status")
+        if trial_status != "PASS":
+            trial["response_receipt_status"] = "SKIPPED"
+            trial["response_receipt_skip_reason"] = (
+                f"TRIAL_STATUS_{trial_status or 'UNKNOWN'}"
+            )
+            continue
+        path = trial.get("trajectory_path")
+        if not isinstance(path, str) or not path:
+            errors.append(f"RESPONSE_RECEIPT_TRAJECTORY_MISSING:{index}")
+            continue
+        try:
+            receipt = build_response_receipt_from_path(path)
+        except (ResponseReceiptError, OSError) as exc:
+            errors.append(f"RESPONSE_RECEIPT_INVALID:{index}:{exc}")
+            continue
+        summary = {
+            key: receipt[key]
+            for key in (
+                "schema_version",
+                "trajectory_sha256",
+                "assistant_message_index",
+                "response_sha256",
+                "acceptance_report_sha256",
+            )
+        }
+        trial["response_receipt"] = summary
+        trial["response_receipt_status"] = "VERIFIED"
+        receipts.append(summary)
+    return errors, receipts
+
+
+def _apply_response_receipts(
+    result: dict[str, Any], rollout: dict[str, Any], task: dict[str, Any], expected_trials: int
+) -> None:
+    """Apply receipts without clearing unrelated NON_FILE obligations."""
+
+    obligation_ids = _acceptance_report_obligation_ids(task)
+    if not obligation_ids:
+        return
+    errors, receipts = _attach_response_receipts(rollout, expected_trials)
+    result["response_receipts"] = receipts
+    trials = (rollout.get("results") or {}).get("trials")
+    skipped = [
+        {
+            "index": index,
+            "status": trial.get("status"),
+            "reason": trial.get("response_receipt_skip_reason"),
+        }
+        for index, trial in enumerate(trials or [])
+        if isinstance(trial, dict) and trial.get("response_receipt_status") == "SKIPPED"
+    ]
+    if skipped:
+        result["response_receipt_skipped"] = skipped
+    if errors:
+        result["status"] = "REVIEW"
+        result["sft_eligible"] = False
+        result["errors"] = list(
+            dict.fromkeys(
+                [*(result.get("errors") or []), *errors, "NON_FILE_RESPONSE_UNVERIFIED"]
+            )
+        )
+        return
+    # Do not clear the obligation until every trial has a successful receipt.
+    if skipped:
+        result["status"] = "REVIEW"
+        result["sft_eligible"] = False
+        return
+    result["unverified_obligations"] = [
+        item
+        for item in result.get("unverified_obligations") or []
+        if item not in set(obligation_ids)
+    ]
 
 
 class HarborCalibrationExecutor:
@@ -743,12 +863,17 @@ def run_reconstruction_verification(
                         and all(t.get("status") == "PASS" and t.get("reward") == 1.0 for t in trials)
                     )
                     result["rollout"] = rollout
+                    _apply_response_receipts(result, rollout, task, config.rollout_trials)
                     if rollout.get("harbor_bundle"):
                         result["harbor_bundle"] = rollout["harbor_bundle"]
                         result["rollout_plan"] = rollout.get("plan")
                     _set_rollout_eligibility(result, config.rollout_trials)
                     if not passed:
-                        result["errors"] = ["HERMES_REPRODUCIBILITY_FAILED"]
+                        result["errors"] = list(
+                            dict.fromkeys(
+                                [*(result.get("errors") or []), "HERMES_REPRODUCIBILITY_FAILED"]
+                            )
+                        )
                 else:
                     try:
                         result.update(
@@ -827,12 +952,17 @@ def run_reconstruction_verification(
                         and all(t.get("status") == "PASS" and t.get("reward") == 1.0 for t in trials)
                     )
                     result["rollout"] = rollout
+                    _apply_response_receipts(result, rollout, task, config.rollout_trials)
                     if rollout.get("harbor_bundle"):
                         result["harbor_bundle"] = rollout["harbor_bundle"]
                         result["rollout_plan"] = rollout.get("plan")
                     _set_rollout_eligibility(result, config.rollout_trials)
                     if not passed:
-                        result["errors"] = ["HERMES_REPRODUCIBILITY_FAILED"]
+                        result["errors"] = list(
+                            dict.fromkeys(
+                                [*(result.get("errors") or []), "HERMES_REPRODUCIBILITY_FAILED"]
+                            )
+                        )
                 else:
                     try:
                         result.update(
@@ -894,9 +1024,14 @@ def run_reconstruction_verification(
                             )
                         )
                         result["rollout"] = rollout
+                        _apply_response_receipts(result, rollout, task, config.rollout_trials)
                         _set_rollout_eligibility(result, config.rollout_trials)
                         if not passed:
-                            result["errors"] = ["HERMES_REPRODUCIBILITY_FAILED"]
+                            result["errors"] = list(
+                                dict.fromkeys(
+                                    [*(result.get("errors") or []), "HERMES_REPRODUCIBILITY_FAILED"]
+                                )
+                            )
                     else:
                         try:
                             result.update(

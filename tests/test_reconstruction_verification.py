@@ -13,6 +13,8 @@ from traceforge.reconstruction.verification import (
     run_reconstruction_verification,
     verifier_task,
     write_execution_manifest,
+    _acceptance_report_obligation_ids,
+    _apply_response_receipts,
 )
 from traceforge.reconstruction.verifier_recovery import run_verifier_recovery
 
@@ -346,3 +348,86 @@ def test_manifest_requires_rollout_and_complete_obligations(tmp_path: Path) -> N
     manifest = json.loads((tmp_path / "execution_manifest.json").read_text())
     assert manifest["certification_closed"] is False
     assert manifest["sft_eligible"] is True
+
+
+def test_response_receipts_clear_only_explicit_acceptance_contract(tmp_path: Path) -> None:
+    task = {
+        "acceptance_obligations": [
+            {"id": "obl-002", "text": "finish with acceptance-report JSON", "verifier_kind": "NON_FILE"},
+            {"id": "obl-003", "text": "manual review", "verifier_kind": "NON_FILE"},
+        ],
+        "environment_bindings": [
+            {"obligation_id": "obl-002", "verifier_kind": "NON_FILE"},
+            {"obligation_id": "obl-003", "verifier_kind": "NON_FILE"},
+        ],
+    }
+    assert _acceptance_report_obligation_ids(task) == ["obl-002"]
+    result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002", "obl-003"]}
+    rollout = {"results": {"trials": []}}
+    _apply_response_receipts(result, rollout, task, expected_trials=2)
+    assert result["status"] == "REVIEW"
+    assert result["sft_eligible"] is False
+    assert result["unverified_obligations"] == ["obl-002", "obl-003"]
+    assert any("TRIAL_COUNT_MISMATCH" in item for item in result["errors"])
+
+
+
+def test_response_receipt_skips_failed_trials_without_masking_rollout_cause() -> None:
+    task = {
+        "acceptance_obligations": [
+            {"id": "obl-002", "text": "finish with acceptance-report JSON", "verifier_kind": "NON_FILE"},
+        ],
+        "environment_bindings": [
+            {"obligation_id": "obl-002", "verifier_kind": "NON_FILE"},
+        ],
+    }
+    result = {
+        "status": "REVIEW",
+        "errors": ["HERMES_REPRODUCIBILITY_FAILED"],
+        "unverified_obligations": ["obl-002"],
+    }
+    rollout = {
+        "results": {
+            "trials": [
+                {"status": "INFRA_ERROR", "reward": None, "error_code": "TrajectoryCaptureError"},
+                {"status": "FAIL", "reward": 0.0, "error_code": "TASK_FAILED"},
+            ]
+        }
+    }
+    _apply_response_receipts(result, rollout, task, expected_trials=2)
+    assert result["errors"] == ["HERMES_REPRODUCIBILITY_FAILED"]
+    assert "RESPONSE_RECEIPT_INVALID:0" not in result["errors"]
+    assert "RESPONSE_RECEIPT_INVALID:1" not in result["errors"]
+    assert result["unverified_obligations"] == ["obl-002"]
+    assert rollout["results"]["trials"][0]["response_receipt_status"] == "SKIPPED"
+    assert rollout["results"]["trials"][1]["response_receipt_status"] == "SKIPPED"
+    assert rollout["results"]["trials"][0]["response_receipt_skip_reason"] == "TRIAL_STATUS_INFRA_ERROR"
+    assert rollout["results"]["trials"][1]["response_receipt_skip_reason"] == "TRIAL_STATUS_FAIL"
+
+
+def test_response_receipt_still_rejects_invalid_successful_trial(tmp_path: Path) -> None:
+    trajectory_path = tmp_path / "trajectory.full.json"
+    trajectory_path.write_text(
+        json.dumps({"messages": [{"role": "assistant", "content": "done"}]}),
+        encoding="utf-8",
+    )
+    task = {
+        "acceptance_obligations": [
+            {"id": "obl-002", "text": "finish with acceptance-report JSON", "verifier_kind": "NON_FILE"},
+        ],
+        "environment_bindings": [
+            {"obligation_id": "obl-002", "verifier_kind": "NON_FILE"},
+        ],
+    }
+    result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
+    rollout = {
+        "results": {
+            "trials": [
+                {"status": "PASS", "reward": 1.0, "trajectory_path": str(trajectory_path)},
+            ]
+        }
+    }
+    _apply_response_receipts(result, rollout, task, expected_trials=1)
+    assert any(item.startswith("RESPONSE_RECEIPT_INVALID:0:") for item in result["errors"])
+    assert "NON_FILE_RESPONSE_UNVERIFIED" in result["errors"]
+    assert result["unverified_obligations"] == ["obl-002"]
