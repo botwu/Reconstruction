@@ -63,10 +63,12 @@ def _record(raw_line: str) -> dict[str, object]:
     return tagged_record(raw_line)
 
 
-def _agent(*, intent_ok: bool = True, completion: dict | None = None):
+def _agent(*, intent_ok: bool = True, completion: dict | None = None, sufficiency: dict | None = None):
     return build_hermes_runtime(
         model_name="claude-opus-4-6",
-        factory=FakeHermesFactory(intent_ok=intent_ok, completion=completion),
+        factory=FakeHermesFactory(
+            intent_ok=intent_ok, completion=completion, sufficiency=sufficiency
+        ),
         base_url="https://tokenhub.example/v1",
         api_key="sk-test",
     )
@@ -132,6 +134,41 @@ def test_eligible_run_reaches_sufficient_workspace(tmp_path: Path) -> None:
     assert sft["schema_version"] == "traceforge.sft-curation.v1"
     assert sft["status"] in {"PENDING", "REVIEW"}
     assert sft["tasks"][0]["eligibility"] == "PENDING"
+
+
+def test_task_fit_review_reaches_verification_stage(tmp_path: Path) -> None:
+    raw_line = json.dumps(_session(), ensure_ascii=False)
+    manifest = run_eligible_reconstruction(
+        raw_line=raw_line,
+        record=_record(raw_line),
+        agent=_sandboxed_agent(
+            tmp_path,
+            sufficiency={
+                "label": "SUFFICIENT",
+                "reason": "source is observable",
+                "missing_context": [],
+                "confidence": 0.8,
+                "decision": "READY",
+                "task_fit": {
+                    "decision": "READY_ORIGINAL",
+                    "requirements": [{
+                        "obligation_id": "obl-001",
+                        "status": "UNKNOWN",
+                        "reason": "behavior is not proven by reconstruction evidence",
+                        "evidence_paths": ["foo.py"],
+                        "probe_ids": [],
+                    }],
+                },
+            },
+        ),
+        output_root=tmp_path / "run",
+    )
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    task_result = payload["tasks"][0]
+    assert task_result["task_fit"]["decision"] == "REVIEW_TASK_FIT"
+    assert task_result["task_fit"]["execution_policy"] == "PROCEED_ORIGINAL"
+    assert task_result["stopped_at"] == "verification"
+    assert task_result["errors"] == ["VERIFICATION_NOT_CONFIGURED"]
 
 
 def test_eligible_run_stops_when_intent_is_review(tmp_path: Path) -> None:
