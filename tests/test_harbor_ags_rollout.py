@@ -66,6 +66,39 @@ environment:
     return root
 
 
+def test_reconstruction_review_cannot_start_rollout(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    task_id = "task_review"
+    task_root = run_root / "tasks" / task_id
+    bundle = _bundle(task_root / "verification" / "deliverables" / "hermes-replay" / "harbor_bundle" / "task")
+    (run_root / "reconstruction_manifest.json").write_text(
+        json.dumps({"status": "READY", "tasks": [{"task_id": task_id}]}),
+        encoding="utf-8",
+    )
+    (task_root / "task_fit.json").write_text(
+        json.dumps({
+            "schema_version": "traceforge.task-fit.v1",
+            "decision": "REVIEW_TASK_FIT",
+            "requirements": [],
+            "errors": ["TASK_FIT_STATUS_INVALID:obl-001"],
+            "execution_policy": "PROCEED_ORIGINAL",
+        }),
+        encoding="utf-8",
+    )
+    plan = build_rollout_plan(
+        HarborRolloutConfig(
+            task_dir=bundle,
+            harbor_root=_harbor_root(tmp_path / "harbor"),
+            output_root=tmp_path / "plans",
+            jobs_root=tmp_path / "jobs",
+            trials=2,
+        )
+    )
+    payload = json.loads((plan / "rollout_plan.json").read_text())
+    assert payload["reconstruction_gate"]["status"] == "PASS_WITH_REVIEW"
+    assert payload["reconstruction_gate"]["task_fit_decision"] == "REVIEW_TASK_FIT"
+
+
 def test_prepare_rollout_materializes_dataset_without_executing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
