@@ -567,12 +567,52 @@ def publish_rollout_bundle(plan_dir: Path | str, destination: Path | str) -> Pat
         workspace.abort()
         raise
 
+def _reconstruction_rollout_gate(task_dir: Path) -> dict[str, Any]:
+    """若 bundle 来自重建产物，执行前强制通过 TaskFit。"""
+
+    resolved = task_dir.resolve()
+    for ancestor in (resolved, *resolved.parents):
+        if ancestor.name != "tasks" or not (ancestor.parent / "reconstruction_manifest.json").is_file():
+            continue
+        relative = resolved.relative_to(ancestor)
+        if not relative.parts:
+            break
+        task_id = relative.parts[0]
+        task_root = ancestor / task_id
+        fit_path = task_root / "task_fit.json"
+        try:
+            fit = json.loads(fit_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise HarborRolloutError("rollout gate 缺少有效 task_fit.json") from exc
+        if not isinstance(fit, dict):
+            raise HarborRolloutError("rollout gate 的 task_fit 必须是对象")
+        decision = fit.get("decision")
+        if isinstance(decision, str):
+            decision = decision.strip().upper()
+        errors = [str(item) for item in (fit.get("errors") or [])]
+        review_allowed = decision == "REVIEW_TASK_FIT" and fit.get("execution_policy") == "PROCEED_ORIGINAL"
+        if not review_allowed and (errors or decision not in {"READY_ORIGINAL", "INCOMPATIBLE"}):
+            raise HarborRolloutError(
+                f"rollout gate 未通过 TaskFit: decision={decision or 'MISSING'}; errors={errors}"
+            )
+        if decision == "INCOMPATIBLE" and fit.get("variant_eligible") is not True:
+            raise HarborRolloutError("rollout gate 的 INCOMPATIBLE TaskFit 未获得变体资格")
+        return {
+            "status": "PASS_WITH_REVIEW" if review_allowed else "PASS",
+            "source_root": str(ancestor.parent),
+            "task_id": task_id,
+            "task_fit_decision": decision,
+        }
+    return {"status": "NOT_APPLICABLE"}
+
+
 def build_rollout_plan(config: HarborRolloutConfig) -> Path:
     """校验 Bundle 并发布可执行计划；不启动模型。"""
 
     config.validate()
     task_dir = config.task_dir.resolve()
     harbor_root = config.harbor_root.resolve()
+    reconstruction_gate = _reconstruction_rollout_gate(task_dir)
     layout = validate_bundle_layout(task_dir)
     config_name = {
         "hermes": "hermes-batch.yaml",
@@ -660,6 +700,7 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
                     config.trials, config.concurrency, config.timeout_seconds
                 ),
             },
+            "reconstruction_gate": reconstruction_gate,
             "verifier": {
                 "environment_mode": "separate",
                 "network_mode": "no-network",
