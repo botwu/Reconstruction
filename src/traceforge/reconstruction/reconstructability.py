@@ -145,7 +145,13 @@ def assess_reconstructability(
     即使高优先级错误存在，缺失资产证据仍保留在 blockers，便于修复后复核。
     """
 
-    raw_errors = sufficiency.get("errors") or []
+    # Execution preflight receipts are intentionally kept out of the
+    # reconstruction decision. If a sufficiency result exposes the separated
+    # semantic channel, consume that; otherwise retain compatibility with old
+    # artifacts.
+    raw_errors = sufficiency.get("semantic_errors")
+    if raw_errors is None:
+        raw_errors = sufficiency.get("errors") or []
     malformed = not isinstance(raw_errors, list) or any(
         not isinstance(error, str) for error in raw_errors
     )

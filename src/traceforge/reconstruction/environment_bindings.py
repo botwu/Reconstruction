@@ -31,6 +31,12 @@ _READ_CODE = re.compile(
 _SOURCE_SUFFIXES = frozenset(
     {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".c", ".cc", ".cpp", ".h", ".hpp"}
 )
+_OUTPUT_ACTION = re.compile(
+    r"(?i)(\u65b0\u589e|\u65b0\u5efa|\u521b\u5efa|\u751f\u6210|\u5199\u5165|\u5199\u51fa|\u4fdd\u5b58|\u8f93\u51fa|\u4ea7\u51fa|\badd\b|\bcreate\b|\bgenerate\b|\bwrite\b|\bsave\b|\boutput\b|\bproduce\b)"
+)
+_INPUT_ACTION = re.compile(
+    r"(?i)(\u4fee\u6539|\u66f4\u65b0|\u4fee\u590d|\u7f16\u8f91|\u53d8\u66f4|\bmodify\b|\bupdate\b|\bfix\b|\bedit\b|\bchange\b)"
+)
 _STUB_MARKERS = ("body unobserved", "observed name", "unobserved body")
 
 
@@ -138,11 +144,17 @@ def collect_file_binding_paths(
     """FILE required_paths: observed bodies and their parent directories."""
 
     del records
-    bodies = set(observed_body_paths(source))
-    for path in replay_files or []:
-        normalized = normalize_binding_path(path)
-        if normalized:
-            bodies.add(normalized)
+    # Once Replay has run, its COMPLETE first-observation files are the sole
+    # initial-body authority. Falling back to the raw timeline here would let a
+    # post-write read masquerade as task-start evidence.
+    if replay_files is None:
+        bodies = set(observed_body_paths(source))
+    else:
+        bodies = set()
+        for path in replay_files:
+            normalized = normalize_binding_path(path)
+            if normalized:
+                bodies.add(normalized)
     bodies.update(_directory_prefixes(bodies))
     return sorted(bodies)
 
@@ -178,29 +190,74 @@ def _source_allowed(allowed: list[str]) -> list[str]:
     ]
 
 
+def _explicit_output_paths(text: str, allowed_paths: list[str]) -> set[str]:
+    """Return paths explicitly described as new/final outputs.
+
+    Unknown or merely mentioned paths remain initial inputs by default. This
+    conservative rule prevents a missing source file from being silently
+    reclassified as a generated output.
+    """
+    outputs: set[str] = set()
+    # Classify within a sentence/clause. A large character window causes a
+    # source input in "modify src/a.py and add tests/test_a.py" to inherit the
+    # action for the later output. Output status is a semantic property of the
+    # user request, not of a nearby filename anywhere in the paragraph.
+    clauses = re.split(r"[\n\u3002\uFF1B;,\uFF0C]", text or "")
+    for clause in clauses:
+        paths = mentioned_allowed_paths(clause, allowed_paths)
+        actions = sorted(
+            [*[(m.start(), m.end(), True) for m in _OUTPUT_ACTION.finditer(clause)],
+             *[(m.start(), m.end(), False) for m in _INPUT_ACTION.finditer(clause)]],
+            key=lambda item: item[0],
+        )
+        if not paths or not actions:
+            continue
+        for path in paths:
+            match = re.search(re.escape(path), clause)
+            if match is None:
+                continue
+            prior = [item for item in actions if item[1] <= match.start()]
+            # An output action must govern the path immediately before it.
+            # This keeps "update src/a.py and generate report.md" split into
+            # an initial input and a post-task output.
+            if prior and prior[-1][2] and match.start() - prior[-1][1] <= 48:
+                outputs.add(path)
+    return outputs
+
+
 def derive_binding(
     obligation: dict[str, Any],
     allowed_paths: list[str],
     user_blob: str = "",
+    *,
+    file_binding_paths: list[str] | None = None,
 ) -> dict[str, Any]:
+    """Derive initial inputs and explicit final outputs from user evidence."""
     oid = str(obligation.get("id") or "")
-    text = f"{obligation.get('text') or ''} {user_blob}"
+    text = user_blob or ""
     mentioned = mentioned_allowed_paths(text, allowed_paths)
     if not mentioned and _READ_CODE.search(text):
-        mentioned = _source_allowed(allowed_paths)[:12]
-        mentioned.extend(path for path in allowed_paths if path.endswith("/") and path not in mentioned)
-    if mentioned:
-        return {
-            "obligation_id": oid,
-            "required_paths": mentioned,
-            "observable": str(obligation.get("text") or ""),
-            "verifier_kind": FILE,
-        }
+        # A generic code-review request needs observed source context. When
+        # replay is available, listing-only names are excluded here.
+        candidates = _source_allowed(allowed_paths)
+        if file_binding_paths is not None:
+            candidates = [path for path in candidates if path_is_allowed(path, file_binding_paths)]
+        mentioned = candidates[:12]
+        mentioned.extend(
+            path for path in allowed_paths
+            if path.endswith("/") and (file_binding_paths is None or path_is_allowed(path, file_binding_paths))
+            and path not in mentioned
+        )
+    explicit_outputs = _explicit_output_paths(text, allowed_paths)
+    initial = [path for path in mentioned if path not in explicit_outputs]
+    outputs = [path for path in mentioned if path in explicit_outputs]
     return {
         "obligation_id": oid,
-        "required_paths": [],
-        "observable": "",
-        "verifier_kind": NON_FILE,
+        "required_paths": [*initial, *outputs],
+        "initial_required_paths": initial,
+        "output_paths": outputs,
+        "observable": str(obligation.get("text") or ""),
+        "verifier_kind": FILE if mentioned else NON_FILE,
     }
 
 
@@ -210,6 +267,7 @@ def _normalize_one_binding(
     known_ids: set[str],
     allowed_paths: list[str],
     file_binding_paths: list[str] | None = None,
+    context_text: str = "",
 ) -> tuple[dict[str, Any] | None, list[str]]:
     errors: list[str] = []
     oid = item.get("obligation_id") or item.get("id")
@@ -220,13 +278,20 @@ def _normalize_one_binding(
     kind = str(item.get("verifier_kind") or "").strip().upper()
     if kind not in VERIFIER_KINDS:
         return None, [f"BINDING_VERIFIER_KIND_INVALID:{oid}"]
-    raw_paths = item.get("required_paths")
-    if raw_paths is None:
-        raw_paths = []
-    if not isinstance(raw_paths, list) or any(not isinstance(path, str) for path in raw_paths):
+    raw_paths = item.get("required_paths") or []
+    raw_outputs = item.get("output_paths") or []
+    if (
+        not isinstance(raw_paths, list)
+        or any(not isinstance(path, str) for path in raw_paths)
+        or not isinstance(raw_outputs, list)
+        or any(not isinstance(path, str) for path in raw_outputs)
+    ):
         return None, [f"BINDING_PATHS_INVALID:{oid}"]
-    paths: list[str] = []
-    for raw in raw_paths:
+    declared_outputs: set[str] = set()
+    all_paths: list[str] = []
+    hinted_outputs = _explicit_output_paths(context_text, allowed_paths)
+    bindable = set(file_binding_paths) if file_binding_paths is not None else None
+    for raw in [*raw_paths, *raw_outputs]:
         path = normalize_binding_path(raw)
         if path is None:
             errors.append(f"BINDING_PATH_UNSAFE:{oid}:{raw}")
@@ -234,13 +299,16 @@ def _normalize_one_binding(
         if not path_is_allowed(path, allowed_paths):
             errors.append(f"BINDING_PATH_NOT_ALLOWED:{oid}:{path}")
             continue
-        bindable = allowed_paths if file_binding_paths is None else file_binding_paths
-        if kind == FILE and not path_is_allowed(path, bindable):
-            # Listing-only names are tree shape, not FILE evidence. Drop them
-            # so q stays solvable on observed excerpts.
+        # A listing-only path is context, not FILE evidence. Keep it only when
+        # the user explicitly named it as a requested output.
+        if kind == FILE and bindable is not None and path not in bindable and path not in hinted_outputs:
             continue
-        if path not in paths:
-            paths.append(path)
+        if path not in all_paths:
+            all_paths.append(path)
+        if raw in raw_outputs and path in hinted_outputs:
+            declared_outputs.add(path)
+    outputs = [path for path in all_paths if path in declared_outputs or path in hinted_outputs]
+    initial = [path for path in all_paths if path not in set(outputs)]
     observable = item.get("observable")
     if observable is None:
         observable = ""
@@ -249,17 +317,17 @@ def _normalize_one_binding(
         observable = ""
     if kind == FILE and (not observable.strip() or observable.strip().lower() == "replayed excerpts still present"):
         errors.append(f"BINDING_TASK_OUTCOME_REQUIRED:{oid}")
-    if kind == FILE and not paths and file_binding_paths is None:
+    if kind == FILE and not all_paths and file_binding_paths is None:
         errors.append(f"BINDING_FILE_PATHS_REQUIRED:{oid}")
-    if kind == NON_FILE and paths:
-        # Model sometimes attaches review-context files to a chat/research
-        # obligation. Drop them so NON_FILE stays pathless; the repaired
-        # binding is valid and must not abort the four-role pipeline.
-        paths = []
+    if kind == NON_FILE and all_paths:
+        # NON_FILE obligations are intentionally pathless.
+        all_paths, initial, outputs = [], [], []
     return (
         {
             "obligation_id": oid,
-            "required_paths": paths,
+            "required_paths": all_paths,
+            "initial_required_paths": initial,
+            "output_paths": outputs,
             "observable": observable,
             "verifier_kind": kind,
         },
@@ -294,6 +362,7 @@ def normalize_environment_bindings(
             known_ids=known_ids,
             allowed_paths=allowed_paths,
             file_binding_paths=file_binding_paths,
+            context_text=user_blob,
         )
         errors.extend(item_errors)
         if normalized is None:
@@ -312,11 +381,17 @@ def normalize_environment_bindings(
         if oid in by_id:
             current = by_id[oid]
             if current.get("verifier_kind") == FILE and not current.get("required_paths"):
-                if not require_complete:
-                    derived = derive_binding(obligation, bindable, user_blob)
-                    if derived.get("required_paths"):
-                        result.append(derived)
-                        continue
+                # The model has already declared this obligation as FILE. It may
+                # omit a path when the deliverable is a new output file; derive
+                # only the path from explicit user/evidence text. This does not
+                # infer a missing obligation (the require_complete gate below
+                # still rejects an absent binding entry).
+                derived = derive_binding(
+                    obligation, allowed_paths, user_blob, file_binding_paths=file_binding_paths
+                )
+                if derived.get("required_paths"):
+                    result.append(derived)
+                    continue
                 errors.append(f"BINDING_FILE_PATHS_REQUIRED:{oid}")
             result.append(current)
         elif require_complete:
@@ -324,7 +399,11 @@ def normalize_environment_bindings(
             # 不得从共享上下文推导遗漏的 FILE/NON_FILE 类型。
             errors.append(f"BINDING_REQUIRED:{oid}")
         else:
-            result.append(derive_binding(obligation, bindable, user_blob))
+            result.append(
+                derive_binding(
+                    obligation, allowed_paths, user_blob, file_binding_paths=file_binding_paths
+                )
+            )
     return result, errors
 
 
@@ -340,6 +419,10 @@ def attach_bindings_to_obligations(
         if binding:
             row["verifier_kind"] = binding["verifier_kind"]
             row["required_paths"] = list(binding["required_paths"])
+            row["initial_required_paths"] = list(
+                binding.get("initial_required_paths", binding["required_paths"])
+            )
+            row["output_paths"] = list(binding.get("output_paths") or [])
             row["observable"] = binding.get("observable") or ""
         attached.append(row)
     return attached
@@ -362,6 +445,10 @@ def environment_bindings(task: dict[str, Any] | None) -> list[dict[str, Any]]:
             {
                 "obligation_id": obligation.get("id"),
                 "required_paths": list(obligation.get("required_paths") or []),
+                "initial_required_paths": list(
+                    obligation.get("initial_required_paths", obligation.get("required_paths") or [])
+                ),
+                "output_paths": list(obligation.get("output_paths") or []),
                 "observable": obligation.get("observable") or "",
                 "verifier_kind": kind,
             }
@@ -374,7 +461,24 @@ def file_required_paths(task: dict[str, Any] | None) -> list[str]:
     for binding in environment_bindings(task):
         if binding.get("verifier_kind") != FILE:
             continue
-        for path in binding.get("required_paths") or []:
+        initial = binding.get("initial_required_paths")
+        candidates = initial if isinstance(initial, list) else binding.get("required_paths") or []
+        for path in candidates:
+            if isinstance(path, str) and path and path not in paths:
+                paths.append(path)
+    return paths
+
+
+def file_output_paths(task: dict[str, Any] | None) -> list[str]:
+    """Return FILE paths expected after execution, including new outputs."""
+    paths: list[str] = []
+    for binding in environment_bindings(task):
+        if binding.get("verifier_kind") != FILE:
+            continue
+        candidates = binding.get("output_paths")
+        if not isinstance(candidates, list):
+            candidates = binding.get("required_paths") or []
+        for path in candidates:
             if isinstance(path, str) and path and path not in paths:
                 paths.append(path)
     return paths
@@ -479,6 +583,7 @@ __all__ = [
     "expand_tree_paths",
     "file_obligation_ids",
     "file_required_paths",
+    "file_output_paths",
     "looks_like_synthetic_stub",
     "missing_binding_paths",
     "non_file_obligation_ids",

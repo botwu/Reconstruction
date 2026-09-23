@@ -51,7 +51,9 @@ for index in range(repetitions):
         child = (
             "import os, sys\n"
             "sys.dont_write_bytecode = True\n"
-            "sys.path.insert(0, os.environ['TRACEFORGE_WORKSPACE'])\n"
+            "workspace = os.environ['TRACEFORGE_WORKSPACE']\n"
+            "os.chdir(workspace)\n"
+            "sys.path.insert(0, workspace)\n"
             "exec(compile(" + repr(python_code) + ", '<environment-probe>', 'exec'), "
             "{'__name__': '__main__'})\n"
         )

@@ -134,6 +134,23 @@ def test_intent_to_environment_keeps_tagged_tool_evidence():
     assert result["session_timeline_scope"] == "FULL_SESSION"
 
 
+def test_task_source_keeps_span_relations_for_intent() -> None:
+    from traceforge.reconstruction.eligible_reconstruction import _task_source
+
+    source = {
+        "tasks": [{"task_id": "t1", "span_ids": ["s1"]}],
+        "relations": [
+            {"from_span_id": "s1", "to_span_id": "s2", "kind": "continuation"},
+            {"from_span_id": "s3", "to_span_id": "s4", "kind": "unrelated"},
+        ],
+    }
+    result = _task_source(
+        source,
+        {"task_id": "t1", "source_task": {"task_id": "t1", "span_ids": ["s1"]}},
+    )
+    assert result["relations"] == [source["relations"][0]]
+
+
 def test_selected_span_file_ops_ignore_other_spans() -> None:
     from traceforge.reconstruction.eligible_reconstruction import _task_source
 

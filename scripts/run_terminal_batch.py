@@ -17,14 +17,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from traceforge.reconstruction.batch_process import run_batch_process
 
 SCHEMA = "traceforge.terminal-batch.v1"
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -108,16 +108,12 @@ def _run_one(
         command.append("--execute-rollout")
     started = _now()
     try:
-        completed = subprocess.run(
+        return_code = run_batch_process(
             command,
             cwd=args.repo_root,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            check=False,
+            stdout_path=output / "run.log",
+            timeout_seconds=args.session_timeout_seconds,
         )
-        (output / "run.log").write_text(completed.stdout or "", encoding="utf-8")
-        return_code = completed.returncode
     except OSError as exc:
         (output / "run.log").write_text(str(exc) + "\n", encoding="utf-8")
         return_code = 127
@@ -137,7 +133,11 @@ def _run_one(
         "line_number": candidate["line_number"],
         "output": str(output),
         "return_code": return_code,
-        "status": (manifest or {}).get("status", "PROCESS_ERROR"),
+        "status": (
+            "PROCESS_TIMEOUT" if return_code is None
+            else (manifest or {}).get("status", "PROCESS_ERROR")
+        ),
+        "timeout_seconds": args.session_timeout_seconds,
         "stopped_at": (manifest or {}).get("stopped_at"),
         "manifest": str(manifest_path) if manifest is not None else None,
         "started_at": started,
@@ -158,10 +158,14 @@ def main() -> int:
     parser.add_argument("--rollout-trials", type=int, default=2)
     parser.add_argument("--rollout-timeout-seconds", type=int, default=14400)
     parser.add_argument("--rollout-max-iterations", type=int, default=500)
+    parser.add_argument("--session-timeout-seconds", type=int, default=7200,
+                        help="整条 session 的总时限（秒），包含重建、RED 和 rollout")
     parser.add_argument("--sandbox", action="store_true")
     parser.add_argument("--execute-red", action="store_true")
     parser.add_argument("--execute-rollout", action="store_true")
     args = parser.parse_args()
+    if args.session_timeout_seconds <= 0:
+        parser.error("--session-timeout-seconds 必须大于 0")
     if args.workers < 1:
         parser.error("--workers must be >= 1")
     candidates = _read_manifest(args.manifest)
@@ -177,10 +181,17 @@ def main() -> int:
     rows.sort(key=lambda item: item["index"])
     payload = {
         "schema_version": SCHEMA,
+        "status": (
+            "COMPLETED"
+            if all(item["status"] in {"READY", "READY_VARIANT"} for item in rows)
+            else "COMPLETED_WITH_ERRORS"
+        ),
         "created_at": _now(),
         "repo_root": str(args.repo_root),
         "candidate_count": len(rows),
-        "completed_count": sum(item["return_code"] == 0 for item in rows),
+        "completed_count": sum(
+            item["status"] in {"READY", "READY_VARIANT"} for item in rows
+        ),
         "status_counts": {
             status: sum(item["status"] == status for item in rows)
             for status in sorted({item["status"] for item in rows})
@@ -189,6 +200,7 @@ def main() -> int:
             "rollout_trials": args.rollout_trials,
             "rollout_timeout_seconds": args.rollout_timeout_seconds,
             "rollout_max_iterations": args.rollout_max_iterations,
+            "session_timeout_seconds": args.session_timeout_seconds,
         },
         "candidates": rows,
     }

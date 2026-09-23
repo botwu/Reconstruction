@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
@@ -1001,10 +1002,48 @@ def _usable_tool_result(item: dict[str, Any]) -> bool:
     return True
 
 
-def normalize_file_ops(timeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _infer_workspace_root(timeline: list[dict[str, Any]]) -> str | None:
+    """Infer a common absolute project root before stripping host prefixes."""
+    parents: list[str] = []
+    for item in timeline:
+        args = item.get("arguments") if isinstance(item, dict) else None
+        if not isinstance(args, dict):
+            continue
+        for key in ("path", "file_path", "filePath", "filename", "file"):
+            value = args.get(key)
+            if not isinstance(value, str):
+                continue
+            raw = value.strip().replace("\\", "/")
+            if not re.match(r"^(?:[A-Za-z]:/|/)", raw):
+                continue
+            parent = str(PurePosixPath(raw).parent)
+            if parent not in {".", "/"} and parent not in parents:
+                parents.append(parent)
+    if len(parents) < 2:
+        return None
+    try:
+        common = os.path.commonpath(parents).replace("\\", "/")
+    except ValueError:
+        return None
+    if len(PurePosixPath(common).parts) < 3 or common in {"/", "."}:
+        return None
+    return common.rstrip("/")
+
+
+def normalize_file_ops(
+    timeline: list[dict[str, Any]], *, workspace_root: str | None = None
+) -> list[dict[str, Any]]:
     """把 Claude 文件工具和 exec cat/sed/Get-Content 收成同一条 read/write 流。"""
 
-    session_workdir = _session_workdir(timeline)
+    # Some captured sessions carry absolute paths but omit cwd on every tool
+    # event. Infer one common project root before normalising; otherwise the
+    # host prefix becomes a fake workspace directory and every downstream
+    # binding is wrong.
+    session_workdir = (
+        _session_workdir(timeline)
+        or workspace_root
+        or _infer_workspace_root(timeline)
+    )
     ops: list[dict[str, Any]] = []
     for item in timeline:
         if not isinstance(item, dict):
@@ -1248,7 +1287,7 @@ def replay_from_timeline(
     mutated: set[str] = set(prior_mutated_paths or ())
     untrusted: set[str] = set(prior_untrusted_paths or ())
     unresolved_mutation = False
-    for op in normalize_file_ops(timeline):
+    for op in normalize_file_ops(timeline, workspace_root=_infer_workspace_root(timeline)):
         kind = op["kind"]
         event_id = str(op.get("event_id") or "unknown")
         workdir = op.get("workdir") if isinstance(op.get("workdir"), str) else None
@@ -1393,6 +1432,7 @@ def replay_from_timeline(
         tuple(mutations),
         tuple(partial),
         tuple(barriers),
+        _infer_workspace_root(timeline),
     )
     if destination is not None:
         root = Path(destination)

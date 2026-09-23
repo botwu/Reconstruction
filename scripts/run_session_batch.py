@@ -7,11 +7,12 @@ import argparse
 import hashlib
 import json
 import os
-import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from traceforge.reconstruction.batch_process import run_batch_process
 
 BATCH_SCHEMA = "traceforge.raw-session-batch.v1"
 
@@ -135,10 +136,13 @@ def execute_batch(
     execute_red: bool = False,
     execute_rollout: bool = False,
     rollout_trials: int = 2,
+    session_timeout_seconds: int = 7200,
     repo_root: str | Path | None = None,
 ) -> dict[str, Any]:
     if workers != 1:
         raise BatchInputError("当前批处理先固定 workers=1，避免共享 Hermes/AGS 资源污染")
+    if session_timeout_seconds <= 0:
+        raise BatchInputError("session_timeout_seconds 必须大于 0")
     manifest_file = Path(manifest_path).resolve()
     _manifest, rows = load_inventory(manifest_file)
     selected = _selected(rows, offset=offset, limit=limit)
@@ -189,16 +193,14 @@ def execute_batch(
                 os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
             )
             started = datetime.now(UTC).isoformat()
-            completed = subprocess.run(
+            return_code = run_batch_process(
                 command,
                 cwd=repo,
                 env=env,
-                text=True,
-                capture_output=True,
-                check=False,
+                stdout_path=run_root / "batch_stdout.txt",
+                stderr_path=run_root / "batch_stderr.txt",
+                timeout_seconds=session_timeout_seconds,
             )
-            (run_root / "batch_stdout.txt").write_text(completed.stdout, encoding="utf-8")
-            (run_root / "batch_stderr.txt").write_text(completed.stderr, encoding="utf-8")
             manifest_file_run = run_root / "reconstruction_manifest.json"
             if manifest_file_run.is_file():
                 result_manifest = _read_json(manifest_file_run)
@@ -218,12 +220,15 @@ def execute_batch(
                 else:
                     status = "PROCESS_ERROR"
                     stage_receipt = None
+            if return_code is None:
+                status = "PROCESS_TIMEOUT"
             result = {
                 "session_id": session_id,
                 "rubric": row["rubric"],
                 "line_number": row["line_number"],
                 "status": status,
-                "exit_code": completed.returncode,
+                "exit_code": return_code,
+                "timeout_seconds": session_timeout_seconds,
                 "started_at": started,
                 "finished_at": datetime.now(UTC).isoformat(),
                 "manifest": str(manifest_file_run) if result_manifest is not None else None,
@@ -237,7 +242,11 @@ def execute_batch(
         counts[result["status"]] = counts.get(result["status"], 0) + 1
     final = {
         "schema_version": BATCH_SCHEMA,
-        "status": "COMPLETED",
+        "status": (
+            "COMPLETED"
+            if all(item["status"] in {"READY", "READY_VARIANT"} for item in results)
+            else "COMPLETED_WITH_ERRORS"
+        ),
         "created_at": datetime.now(UTC).isoformat(),
         "inventory_manifest": str(manifest_file),
         "coverage_complete": True,
@@ -265,6 +274,8 @@ def main() -> int:
     parser.add_argument("--execute-red", action="store_true")
     parser.add_argument("--execute-rollout", action="store_true")
     parser.add_argument("--rollout-trials", type=int, default=2)
+    parser.add_argument("--session-timeout-seconds", type=int, default=7200,
+                        help="整条 session 的总时限（秒），包含重建、RED 和 rollout")
     parser.add_argument("--plan-only", action="store_true")
     args = parser.parse_args()
     try:
@@ -299,6 +310,7 @@ def main() -> int:
             execute_red=args.execute_red,
             execute_rollout=args.execute_rollout,
             rollout_trials=args.rollout_trials,
+            session_timeout_seconds=args.session_timeout_seconds,
         )
     except (BatchInputError, FileExistsError, OSError) as exc:
         print(f"批处理失败：{exc}", file=sys.stderr)

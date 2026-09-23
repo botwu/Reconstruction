@@ -703,7 +703,6 @@ def is_fatal_tool_result(function_name: str, result: str) -> bool:
         "PROTECTED_FILE_OVERWRITE" in result
         or "DUPLICATE_CONFLICTING_PATH" in result
         or "DUPLICATE_PATH" in result
-        or "unknown evidence_ref_id" in result
         or "evidence_ref_ids required" in result
         or "cannot write files" in result
         or (

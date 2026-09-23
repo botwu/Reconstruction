@@ -57,6 +57,8 @@ class VerificationConfig:
     def validate(self) -> None:
         if self.execute_rollout and self.rollout_trials < 2:
             raise ValueError("真实复验要求至少两次 Hermes rollout")
+        if self.execute_rollout and not self.should_run_red():
+            raise ValueError("真实 rollout 要求同时执行 Harbor RED；请设置 --execute-red")
         if not 1 <= self.max_rounds <= 3:
             raise ValueError("Verifier 迭代次数必须在 1 到 3 之间")
         if not self.model_name.strip() or "/" not in self.rollout_model:

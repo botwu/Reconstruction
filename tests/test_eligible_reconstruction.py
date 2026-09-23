@@ -718,7 +718,7 @@ def test_cli_reconstruct_run_writes_manifest(
     published = Path(capsys.readouterr().out.strip())
     payload = json.loads(published.read_text(encoding="utf-8"))
     assert payload["status"] == "REVIEW"
-    assert payload["stopped_at"] == "tasks"
+    assert payload["stopped_at"] == "verification"
     assert published.name == "reconstruction_manifest.json"
     assert (output / "reconstruction_source.json").is_file()
     task_result = payload["tasks"][0]

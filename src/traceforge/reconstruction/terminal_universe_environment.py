@@ -30,11 +30,24 @@ def _safe_path(value: str) -> str:
     p = PurePosixPath(value.replace("\\", "/"))
     if not value or not p.parts or p.is_absolute() or ".." in p.parts or ":" in p.parts[0]:
         raise EnvironmentReconstructionError(f"unsafe path: {value!r}")
-    if any(
-        part in {"solution", "tests", "environment", "hidden_control", ".git"} for part in p.parts
-    ):
+    # 项目自身的 tests/ 是 task-start workspace 的可见源码；真正的隐藏区是
+    # verifier/control 目录。Harbor 的 task/tests 与 workspace/tests 物理分离，
+    # 不能把两个语义混成一个路径黑名单。
+    parts = p.parts
+    hidden = (
+        "solution" in parts
+        or "environment" in parts
+        or "hidden_control" in parts
+        or ".git" in parts
+        or any(
+            parts[index] == "tests" and index + 1 < len(parts) and parts[index + 1] == "control"
+            for index in range(len(parts))
+        )
+    )
+    if hidden:
         raise EnvironmentReconstructionError(f"hidden path is not public workspace: {value!r}")
-    return p.as_posix().lstrip("./")
+    normalized = p.as_posix()
+    return normalized[2:] if normalized.startswith("./") else normalized
 
 
 def _payload(event: dict[str, Any]) -> dict[str, Any]:
@@ -117,6 +130,7 @@ class ReplayResult:
     withheld_changes: tuple[WithheldChange, ...]
     partial_evidence: tuple[dict[str, Any], ...]
     unknown_mutation_barriers: tuple[str, ...]
+    workspace_root: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         # Replay artifacts may be published for debugging.  Never put withheld
@@ -139,6 +153,7 @@ class ReplayResult:
             "withheld_changes": public_changes,
             "partial_evidence": list(self.partial_evidence),
             "unknown_mutation_barriers": list(self.unknown_mutation_barriers),
+            "workspace_root": self.workspace_root,
         }
 
 
@@ -480,15 +495,21 @@ def select_sufficient_candidate(
             )
             continue
         if decision == "ENVIRONMENT_NOT_READY":
-            rejected.append(
-                {
-                    "index": index,
-                    "reason": "ENVIRONMENT_CONTRACT_NOT_READY",
-                    "environment_status": candidate.get("environment_status"),
-                    "reason_codes": list(candidate.get("reason_codes") or []),
-                }
-            )
-            continue
+            # Sufficiency 回答“上下文是否足以尝试”；runtime preflight 是执行
+            # 收据，不是第二道充分性闸门。未完成的收据仍交给下游 verifier/rollout；
+            # 只有确定性的基础设施或管线故障才排除候选，REVIEW 仅作审计提示。
+            environment_status = str(candidate.get("environment_status") or "REVIEW")
+            if environment_status in {"INFRA_ERROR", "PIPELINE_ERROR"}:
+                rejected.append(
+                    {
+                        "index": index,
+                        "reason": "ENVIRONMENT_CONTRACT_NOT_READY",
+                        "environment_status": environment_status,
+                        "reason_codes": list(candidate.get("reason_codes") or []),
+                    }
+                )
+                continue
+            decision = "READY"
         if decision != "READY":
             rejected.append({"index": index, "reason": "COMPLETION_NOT_READY"})
             continue

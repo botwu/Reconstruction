@@ -195,11 +195,11 @@ def _prompt(
         "Use only explicit user intent and evidence refs; never turn assistant/tool actions into requirements.",
         "Do not merge another tagged task. A clarification/correction belongs here only when its message is in this task tag.",
         "Do not web-search or invent workspace paths. Bind only paths listed in ALLOWED_OBSERVED_PATHS.",
-        "FILE required_paths may only come from FILE_BINDING_PATHS (observed bodies). Listing-only names are tree shape, not FILE evidence. When FILE_BINDING_PATHS is empty, do not invent a project.",
+        "initial_required_paths are task-start inputs; they may name an explicitly referenced but currently missing input and must remain a blocker. output_paths are only explicit new/generated final files. required_paths is their union. Listing-only names are not bindings. When FILE_BINDING_PATHS is empty, do not invent a project.",
         "Classify every acceptance obligation exactly once in environment_bindings. Do not omit an obligation or infer a missing binding from shared context; missing bindings are a REVIEW error.",
         "FILE 表示该义务的完成状态可以从沙盒文件或本地程序行为中完整验证。observable 必须描述用户要求的最终状态，不能仅检查初始文件仍然存在。",
         "Return JSON only, with no Markdown or prose before/after it.",
-        "{\"task_id\":\"same tag\",\"task_instruction\":\"...\",\"core_objective\":\"...\",\"acceptance_obligations\":[{\"id\":\"obl-001\",\"text\":\"...\",\"evidence_ref_ids\":[\"user:<message_index>\"]}],\"environment_bindings\":[{\"obligation_id\":\"obl-001\",\"required_paths\":[\"observed/path\"],\"observable\":\"任务完成后可观测、且足以证明本条义务达成的具体状态\",\"verifier_kind\":\"FILE|NON_FILE\"}],\"success_criteria\":[\"...\"],\"specified_output_format\":null,\"has_examples\":false,\"mandatory_constraints\":[],\"prohibitions\":[]}",
+        "{\"task_id\":\"same tag\",\"task_instruction\":\"...\",\"core_objective\":\"...\",\"acceptance_obligations\":[{\"id\":\"obl-001\",\"text\":\"...\",\"evidence_ref_ids\":[\"user:<message_index>\"]}],\"environment_bindings\":[{\"obligation_id\":\"obl-001\",\"required_paths\":[\"input-or-output/path\"],\"initial_required_paths\":[\"existing-or-missing-input\"],\"output_paths\":[\"new/generated/output\"],\"observable\":\"任务完成后可观测、且足以证明本条义务达成的具体状态\",\"verifier_kind\":\"FILE|NON_FILE\"}],\"success_criteria\":[\"...\"],\"specified_output_format\":null,\"has_examples\":false,\"mandatory_constraints\":[],\"prohibitions\":[]}",
         "Cite evidence ids exactly as listed in TASK_USER_MESSAGES / list_user_texts. Obligation evidence ids must be user:<message_index>.",
         "When FILE_BINDING_PATHS is non-empty and the anchor can bind those files, at least one FILE obligation is required.",
         "read_user_text accepts id=user:<message_index> or index=<original message_index>.",
@@ -271,7 +271,13 @@ def _gate(
     return ("READY" if not errors else "REVIEW"), errors, payload
 
 
-def run_intent_recovery(*, source: dict[str, Any], agent: AgentRuntime, output_root: str | Path) -> dict[str, Any]:
+def run_intent_recovery(
+    *,
+    source: dict[str, Any],
+    agent: AgentRuntime,
+    output_root: str | Path,
+    replay_files_by_task: dict[str, list[str]] | None = None,
+) -> dict[str, Any]:
     tasks = selected_task_views(source)
     if not tasks: raise IntentRecoveryError("筛选记录没有可重建的真实任务标签")
     root = Path(output_root); root.mkdir(parents=True, exist_ok=True)
@@ -289,7 +295,10 @@ def run_intent_recovery(*, source: dict[str, Any], agent: AgentRuntime, output_r
             )
             continue
         allowed_paths = collect_allowed_paths(source, records)
-        file_binding_paths = collect_file_binding_paths(source, records)
+        replay_files = (replay_files_by_task or {}).get(task_id)
+        file_binding_paths = collect_file_binding_paths(
+            source, records, replay_files=replay_files
+        )
         user_blob = " ".join(str(item.get("text") or "") for item in records)
         instruction = _prompt(source, task, records, allowed_paths, file_binding_paths)
         task_root = root / "tasks" / task_id; task_root.mkdir(parents=True, exist_ok=True)

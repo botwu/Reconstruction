@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -86,14 +85,14 @@ def test_session_batch_requires_reconstruction_manifest_for_ready(
     manifest, config = inventory(tmp_path)
     output = tmp_path / "batch"
 
-    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def run(command: list[str], **kwargs: object) -> int | None:
         run_root = Path(command[command.index("--output") + 1])
         receipt = run_root / "session_segmentation" / "session_task_segmentation.json"
         receipt.parent.mkdir(parents=True)
         receipt.write_text(json.dumps({"status": receipt_status}), encoding="utf-8")
-        return subprocess.CompletedProcess(command, exit_code, stdout="", stderr="")
+        return exit_code
 
-    monkeypatch.setattr(batch.subprocess, "run", run)
+    monkeypatch.setattr(batch, "run_batch_process", run)
     report = batch.execute_batch(
         manifest_path=manifest, output_root=output, config=config, repo_root=_REPO
     )
@@ -103,3 +102,72 @@ def test_session_batch_requires_reconstruction_manifest_for_ready(
     assert row["manifest"] is None
     assert row["stage_receipt"].endswith("session_task_segmentation.json")
     assert report["status_counts"] == {expected: 1}
+
+def test_session_batch_records_timeout_and_preserves_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest, config = inventory(tmp_path)
+    output = tmp_path / "batch"
+
+    def run(command: list[str], **kwargs: object) -> int | None:
+        assert kwargs["timeout_seconds"] == 1
+        Path(kwargs["stdout_path"]).write_text("partial")
+        Path(kwargs["stderr_path"]).write_text("slow")
+        return None
+
+    monkeypatch.setattr(batch, "run_batch_process", run)
+    report = batch.execute_batch(
+        manifest_path=manifest,
+        output_root=output,
+        config=config,
+        repo_root=_REPO,
+        session_timeout_seconds=1,
+    )
+
+    row = result_row(output)
+    assert row["status"] == "PROCESS_TIMEOUT"
+    assert row["exit_code"] is None
+    assert row["timeout_seconds"] == 1
+    assert report["status"] == "COMPLETED_WITH_ERRORS"
+    assert (output / "runs" / "r04-one" / "batch_stdout.txt").read_text() == "partial"
+    assert (output / "runs" / "r04-one" / "batch_stderr.txt").read_text() == "slow"
+
+
+def test_session_batch_real_timeout_continues_to_next_session(tmp_path: Path) -> None:
+    manifest, config = inventory(tmp_path)
+    payload = json.loads(manifest.read_text())
+    sessions = Path(payload["sessions"])
+    first = json.loads(sessions.read_text())
+    sessions.write_text(
+        json.dumps(first) + "\n"
+        + json.dumps({**first, "session_id": "r04-two", "line_number": 2}) + "\n"
+    )
+    payload["pending_sessions"] = 2
+    manifest.write_text(json.dumps(payload))
+    repo = tmp_path / "fake_repo"
+    package = repo / "src" / "traceforge"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "cli.py").write_text(
+        "import json, sys, time\n"
+        "from pathlib import Path\n"
+        "def main():\n"
+        "    line = sys.argv[sys.argv.index('--line-number') + 1]\n"
+        "    print('session ' + line, flush=True)\n"
+        "    if line == '1':\n"
+        "        time.sleep(30)\n"
+        "    root = Path(sys.argv[sys.argv.index('--output') + 1])\n"
+        "    (root / 'reconstruction_manifest.json').write_text(json.dumps({'status': 'READY'}))\n"
+        "    return 0\n"
+    )
+    output = tmp_path / "batch"
+    report = batch.execute_batch(
+        manifest_path=manifest, output_root=output, config=config,
+        repo_root=repo, session_timeout_seconds=2,
+    )
+    rows = [json.loads(line) for line in (output / "batch_results.jsonl").read_text().splitlines()]
+    assert [row["status"] for row in rows] == ["PROCESS_TIMEOUT", "READY"]
+    assert [row["exit_code"] for row in rows] == [None, 0]
+    assert report["completed_sessions"] == 2
+    assert report["status"] == "COMPLETED_WITH_ERRORS"
+    assert (output / "runs" / "r04-one" / "batch_stdout.txt").read_text() == "session 1\n"

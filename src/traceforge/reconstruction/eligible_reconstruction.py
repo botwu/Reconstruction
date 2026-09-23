@@ -143,6 +143,9 @@ def execution_support_route(
             "allow_file_verifier": False,
         }
     if has_bindings and not explicit_file:
+        # A file-bound task without replayed file bodies cannot be completed
+        # from an empty workspace. Stop before completion and keep the gap
+        # explicit in the manifest.
         return {
             **payload,
             "route": "NO_FILE_WORKSPACE",
@@ -215,6 +218,21 @@ def _write_eligible_manifest(
         status = "PENDING_EXECUTION"
     else:
         status = "REVIEW"
+    stopped_stages = {
+        str(item.get("stopped_at"))
+        for item in results
+        if item.get("status") not in ready_statuses and item.get("stopped_at")
+    }
+    if status in ready_statuses:
+        stopped_at = None
+    elif status == ENVIRONMENT_UNRECONSTRUCTABLE:
+        stopped_at = "sufficiency"
+    elif len(stopped_stages) == 1:
+        stopped_at = next(iter(stopped_stages))
+    elif stopped_stages:
+        stopped_at = "mixed"
+    else:
+        stopped_at = "tasks"
     manifest: dict[str, Any] = {
         "schema_version": (
             RAW_SESSION_RECONSTRUCTION_SCHEMA
@@ -222,10 +240,7 @@ def _write_eligible_manifest(
             else ELIGIBLE_RECONSTRUCTION_SCHEMA
         ),
         "status": status,
-        "stopped_at": (
-            None if status in ready_statuses
-            else ("sufficiency" if status == ENVIRONMENT_UNRECONSTRUCTABLE else "tasks")
-        ),
+        "stopped_at": stopped_at,
         "source": {
             "entry_mode": source.get("entry_mode", "SCREENED_ELIGIBLE"),
             "source_ref": source.get("source_ref"),
@@ -263,6 +278,22 @@ def _write_manifest(root: Path, payload: dict[str, Any]) -> Path:
     return path
 
 
+def _task_relations(source: dict[str, Any], task: dict[str, Any]) -> list[dict[str, Any]]:
+    anchor = task.get("source_task") if isinstance(task.get("source_task"), dict) else task
+    task_id = task.get("task_id")
+    spans = {str(item) for item in anchor.get("span_ids") or []}
+    return [
+        relation
+        for relation in source.get("relations") or []
+        if (
+            relation.get("from_task_id") == task_id
+            or relation.get("to_task_id") == task_id
+            or relation.get("from_span_id") in spans
+            or relation.get("to_span_id") in spans
+        )
+    ]
+
+
 def _task_source(source: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
     """给每个 task 保留完整 session 工具上下文；task 标签只作证据锚点。"""
     anchor = task.get("source_task") if isinstance(task.get("source_task"), dict) else task
@@ -273,12 +304,7 @@ def _task_source(source: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]
         raise EligibleReconstructionError("Intent 缺少原始任务的 span_ids")
     out = copy.deepcopy(source)
     out["tasks"] = [copy.deepcopy(anchor)]
-    out["relations"] = [
-        r
-        for r in source.get("relations") or []
-        if r.get("from_task_id") == task.get("task_id")
-        or r.get("to_task_id") == task.get("task_id")
-    ]
+    out["relations"] = _task_relations(source, task)
     out["selected_task_ids"] = [task.get("task_id")]
     out["selected_span_ids"] = sorted(spans)
     out["selected_tool_timeline"] = [
@@ -457,7 +483,10 @@ def _task_result(
                     "reason_codes": [item.get("code") for item in environment.get("blockers", [])],
                 }
             )
-        elif environment_status != "READY":
+        elif environment_status in {"INFRA_ERROR", "PIPELINE_ERROR"}:
+            # Context sufficiency and execution preflight are separate. Keep
+            # confirmed infra/pipeline failures out; ordinary REVIEW receipts
+            # remain auditable and continue to the downstream verifier.
             rows.append(
                 {
                     "decision": "ENVIRONMENT_NOT_READY",
@@ -467,7 +496,13 @@ def _task_result(
                 }
             )
         else:
-            rows.append({"decision": "READY", "confidence": judge.get("confidence", 0.0)})
+            rows.append(
+                {
+                    "decision": "READY",
+                    "environment_status": environment_status,
+                    "confidence": judge.get("confidence", 0.0),
+                }
+            )
     selected, audit = select_sufficient_candidate(rows, judges)
     result["sufficiency_audit"] = audit
     if selected is None:
@@ -533,45 +568,51 @@ def _task_result(
     if fit.get("decision") == "REVIEW_TASK_FIT":
         result["status"] = "REVIEW"
         result["stopped_at"] = "task_fit"
-        result["errors"] = ["TASK_FIT_REVIEW"]
+        result["errors"] = list(fit.get("errors") or ["TASK_FIT_REVIEW"])
         return result
     if fit.get("decision") == "INCOMPATIBLE":
-        proposal = judges[selected].get("variant_proposal") if isinstance(judges[selected], dict) else None
-        if proposal is not None:
-            try:
-                variant = build_task_variant(
-                    parent_task=task_contract,
+        # Only confirmed reproducible conflicts may create a variant. An
+        # unresolved/static incompatibility remains an audit warning.
+        if fit.get("variant_eligible") is True:
+            proposal = judges[selected].get("variant_proposal") if isinstance(judges[selected], dict) else None
+            if proposal is not None:
+                try:
+                    variant = build_task_variant(
+                        parent_task=task_contract,
+                        environment=environment,
+                        fit=fit,
+                        proposal=proposal,
+                    )
+                except Exception as exc:
+                    result["status"] = "PIPELINE_ERROR"
+                    result["stopped_at"] = "task_fit"
+                    result["errors"] = ["VARIANT_CONTRACT_INVALID", str(exc)]
+                    return result
+            else:
+                variant = generate_task_variant(
+                    task=task_contract,
                     environment=environment,
                     fit=fit,
-                    proposal=proposal,
+                    workspace_root=Path(chosen["workspace"]),
+                    agent=agent,
+                    output_root=task_root / "variant",
                 )
-            except Exception as exc:
+            if variant is None:
+                result["status"] = "SKIPPED_TASK_INCOMPATIBLE"
+                result["stopped_at"] = "task_fit"
+                result["errors"] = ["TASK_ENVIRONMENT_INCOMPATIBLE"]
+                return result
+            _write_stage_json(task_root, "variant_proposal.json", variant)
+            result["variant"] = variant
+            if not isinstance(variant.get("task"), dict):
                 result["status"] = "PIPELINE_ERROR"
                 result["stopped_at"] = "task_fit"
-                result["errors"] = ["VARIANT_CONTRACT_INVALID", str(exc)]
+                result["errors"] = ["VARIANT_TASK_MISSING"]
                 return result
-        elif fit.get("variant_eligible") is True:
-            variant = generate_task_variant(
-                task=task_contract,
-                environment=environment,
-                fit=fit,
-                workspace_root=Path(chosen["workspace"]),
-                agent=agent,
-                output_root=task_root / "variant",
-            )
-        if variant is None:
-            result["status"] = "SKIPPED_TASK_INCOMPATIBLE"
-            result["stopped_at"] = "task_fit"
-            result["errors"] = ["TASK_ENVIRONMENT_INCOMPATIBLE"]
-            return result
-        _write_stage_json(task_root, "variant_proposal.json", variant)
-        result["variant"] = variant
-        if not isinstance(variant.get("task"), dict):
-            result["status"] = "PIPELINE_ERROR"
-            result["stopped_at"] = "task_fit"
-            result["errors"] = ["VARIANT_TASK_MISSING"]
-            return result
-        task_for_verification = variant["task"]
+            task_for_verification = variant["task"]
+        else:
+            fit["execution_policy"] = "PROCEED_ORIGINAL"
+    _write_stage_json(task_root, "task_fit.json", fit)
     result["executed_task"] = task_for_verification
     if not support.get("allow_file_verifier"):
         result["verification"] = {
@@ -689,9 +730,26 @@ def run_eligible_reconstruction(
         write_reconstruction_sft_curation(root, results)
         return manifest
     intent_source = copy.deepcopy(source)
-    intent_source["tasks"] = [item[0] for item in routed]
+    intent_source["tasks"] = []
+    for screening, _task_source_value, _replay, _support in routed:
+        intent_task = copy.deepcopy(screening)
+        intent_task["relations"] = _task_relations(source, screening)
+        intent_source["tasks"].append(intent_task)
+    replay_files_by_task = {
+        str(screening.get("task_id")): [
+            str(item.path)
+            for item in replay.files
+            if getattr(item, "completeness", "COMPLETE") == "COMPLETE"
+        ]
+        for screening, _task_source_value, replay, _support in routed
+    }
     try:
-        intent = run_intent_recovery(source=intent_source, agent=agent, output_root=root / "intent")
+        intent = run_intent_recovery(
+            source=intent_source,
+            agent=agent,
+            output_root=root / "intent",
+            replay_files_by_task=replay_files_by_task,
+        )
     except IntentRecoveryError as exc:
         intent = {
             "schema_version": INTENT_SCHEMA,

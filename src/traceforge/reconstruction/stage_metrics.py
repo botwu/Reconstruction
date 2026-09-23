@@ -63,4 +63,7 @@ def reconstruction_stage_metrics(
         metrics[f"{name}_ready_count"] = counts["READY"] + counts["READY_VARIANT"]
         metrics[f"{name}_ready_variant_count"] = counts["READY_VARIANT"]
         metrics[f"{name}_review_count"] = counts["REVIEW"]
+        if name == "task_fit":
+            metrics[f"{name}_ready_count"] += counts["READY_ORIGINAL"]
+            metrics[f"{name}_review_count"] += counts["REVIEW_TASK_FIT"]
     return metrics

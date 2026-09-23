@@ -116,7 +116,7 @@ def run_verifier_recovery(
             "If no FILE obligation can be observed by file-based pytest, return status=REVIEW with open_questions.",
             "Finish with a JSON object only. status must be exactly READY or REVIEW.",
             "READY schema: {status: 'READY', test_outputs_py: <exact bytes last passed to write_test>, oracle_solutions: [{name, script, justification}, {name, script, justification}], mutation_solutions: [{name, script, justification}], missing_capability_tests: [<bare test name>], protective_tests: [<bare test name>], obligation_coverage: {<each FILE obligation id>: [<test name>]}, expected_value_strategy: <independent calculation explanation>, open_questions: []}.",
-            "Provide two distinct valid reference scripts and at least one meaningful incorrect implementation script, all starting from the initial workspace. Scripts execute in the workspace and may not access /tests or /solution.",
+            "Provide exactly two distinct valid reference scripts and exactly one meaningful incorrect implementation script, all starting from the initial workspace. Scripts execute in the workspace and may not access /tests or /solution.",
             "REVIEW schema: {status: 'REVIEW', open_questions: [<specific unresolved problem>]}.",
             "TASK:",
             json.dumps(task, ensure_ascii=False, sort_keys=True),

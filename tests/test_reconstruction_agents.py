@@ -26,6 +26,7 @@ from traceforge.reconstruction.agents.runtime import (
     classify_hermes_failure,
     apply_anthropic_messages_client,
     merge_completion_files,
+    is_fatal_tool_result,
     pin_anthropic_channel_env,
     pin_hermes_timeout_env,
 )
@@ -72,6 +73,13 @@ def _runtime(factory: FakeHermesFactory | None = None):
         api_key="sk-test",
         provider="anthropic",
     )
+
+
+def test_unknown_evidence_reference_does_not_discard_agent_payload() -> None:
+    """A bad read reference is recoverable; policy writes remain fatal."""
+
+    assert is_fatal_tool_result("read_evidence", "error: unknown evidence_ref_id: ev-typo") is False
+    assert is_fatal_tool_result("write_file", "error: PROTECTED_FILE_OVERWRITE:foo.py") is True
 
 
 def test_runtime_copies_replay_files_when_workspace_missing(tmp_path: Path) -> None:

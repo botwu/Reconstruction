@@ -43,15 +43,27 @@ def test_replay_withholds_mutations_and_materializes_first_read(tmp_path: Path):
     assert (tmp_path / "replay/src/app.py").read_text() == "print('ok')"
 
 
-def test_completion_rejects_hidden_path_and_unknown_evidence(tmp_path: Path):
+def test_completion_rejects_hidden_control_path(tmp_path: Path):
     replay = replay_initial_workspace(events())
     candidate = {
         "decision": "READY",
-        "files": [{"path": "tests/test.py", "content": "x", "evidence_ref_ids": ["ev"]}],
+        "files": [{"path": "tests/control/test.py", "content": "x", "evidence_ref_ids": ["ev"]}],
     }
     assert validate_completion_candidate(candidate, replay, {"ev"})[0] is False
     with pytest.raises(EnvironmentReconstructionError):
         materialize_environment(replay, candidate, tmp_path / "env", evidence_refs={"ev"})
+
+
+def test_completion_allows_visible_project_tests(tmp_path: Path):
+    replay = replay_initial_workspace(events())
+    candidate = {
+        "decision": "READY",
+        "files": [{"path": "tests/test.py", "content": "assert True\n", "evidence_ref_ids": ["ev"]}],
+    }
+    valid, errors = validate_completion_candidate(candidate, replay, {"ev"})
+    assert valid, errors
+    materialize_environment(replay, candidate, tmp_path / "env", evidence_refs={"ev"})
+    assert (tmp_path / "env/workspace/tests/test.py").read_text() == "assert True\n"
 
 
 def test_completion_prompt_exposes_paper_contract():
@@ -98,6 +110,22 @@ def test_stage3_skips_unreconstructable_and_selects_later_candidate():
     assert audit["rejected"][0]["reason"] == "SKIPPED_UNRECONSTRUCTABLE"
     assert audit["rejected"][0]["reason_codes"] == ["REFERENCED_ASSET_MISSING"]
 
+
+
+def test_stage3_allows_preflight_review_after_sufficiency():
+    from traceforge.reconstruction.terminal_universe_environment import select_sufficient_candidate
+
+    selected, audit = select_sufficient_candidate(
+        [{
+            "decision": "ENVIRONMENT_NOT_READY",
+            "environment_status": "REVIEW",
+            "reason_codes": ["ENVIRONMENT_PROBES_REQUIRED"],
+        }],
+        [{"label": "SUFFICIENT", "decision": "READY", "confidence": 0.8}],
+    )
+    assert selected == 0
+    assert audit["eligible_count"] == 1
+    assert audit["rejected"] == []
 
 def test_stage3_rejects_non_ready_environment_contract():
     from traceforge.reconstruction.terminal_universe_environment import select_sufficient_candidate

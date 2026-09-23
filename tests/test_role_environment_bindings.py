@@ -676,3 +676,65 @@ def test_normalize_binding_path_drops_prose_trailing_punctuation() -> None:
         "twitter-api-client-main/twitter/util.py"
     )
     assert normalize_binding_path("main.py,") == "main.py"
+
+
+def test_output_file_binding_does_not_require_initial_workspace() -> None:
+    obligations = [{"id": "o1", "text": "写入 .pi-subagents/report.md", "evidence_ref_ids": ["user:0"]}]
+    payload = {
+        "environment_bindings": [
+            {
+                "obligation_id": "o1",
+                "required_paths": [],
+                "observable": "报告文件生成并包含审查结论",
+                "verifier_kind": "FILE",
+            }
+        ]
+    }
+    bindings, errors = normalize_environment_bindings(
+        payload,
+        obligations,
+        [".pi-subagents/report.md"],
+        user_blob="写入 .pi-subagents/report.md",
+        file_binding_paths=[],
+    )
+    assert errors == []
+    assert bindings[0]["required_paths"] == [".pi-subagents/report.md"]
+    assert bindings[0]["initial_required_paths"] == []
+    assert bindings[0]["output_paths"] == [".pi-subagents/report.md"]
+    task = {"environment_bindings": bindings}
+    assert file_required_paths(task) == []
+
+
+def test_missing_initial_input_is_not_reclassified_as_output() -> None:
+    from traceforge.reconstruction.environment_bindings import derive_binding
+
+    binding = derive_binding(
+        {"id": "o1", "text": "修复 missing.py"},
+        ["missing.py"],
+        "修复 missing.py",
+        file_binding_paths=[],
+    )
+    assert binding["initial_required_paths"] == ["missing.py"]
+    assert binding["output_paths"] == []
+
+
+def test_mixed_required_and_explicit_output_paths_are_preserved() -> None:
+    obligations = [{"id": "o1", "text": "更新 src/foo.py 并生成 report.md", "evidence_ref_ids": ["user:0"]}]
+    payload = {
+        "environment_bindings": [{
+            "obligation_id": "o1",
+            "required_paths": ["src/foo.py", "report.md"],
+            "output_paths": ["report.md"],
+            "observable": "报告生成",
+            "verifier_kind": "FILE",
+        }]
+    }
+    bindings, errors = normalize_environment_bindings(
+        payload, obligations, ["src/foo.py", "report.md"],
+        user_blob="更新 src/foo.py 并生成 report.md",
+        file_binding_paths=["src/foo.py"],
+    )
+    assert errors == []
+    assert bindings[0]["required_paths"] == ["src/foo.py", "report.md"]
+    assert bindings[0]["initial_required_paths"] == ["src/foo.py"]
+    assert bindings[0]["output_paths"] == ["report.md"]

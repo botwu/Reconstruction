@@ -148,7 +148,7 @@ def _shared_footer(
     ]
     return [
         "A short stub such as 'body unobserved' is not a body; those paths must not READY.",
-        "FILE environment_bindings required_paths must exist as real bodies, not placeholders.",
+        "FILE environment_bindings initial_required_paths must exist as real bodies; output_paths are created by the solver and must not be pre-created.",
         "NON_FILE bindings are context; do not invent verifier files for them.",
         "Optional web_search is for typical layout names only. Do not write web source",
         "into user paths. Do not implement the task, write target tests, or overwrite COMPLETE.",
@@ -164,7 +164,7 @@ def _shared_footer(
         "Never use a host absolute path.",
         "Cite event_id as evidence_ref_ids. Do not page every evidence record.",
         "Do not write runtime logs.",
-        "decision=READY only when required FILE/listing/binding bodies are real",
+        "decision=READY only when required initial FILE/listing/binding bodies are real",
         "and you did not solve the task.",
         "After grounded writes, finish JSON. Do not keep exploring.",
         f"ENVIRONMENT_BINDINGS: {json.dumps(environment_bindings(task), ensure_ascii=False)}",

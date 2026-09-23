@@ -24,7 +24,7 @@ VERIFIER_SYSTEM = """你是独立的 code/file 任务验证器构建者。参照
 oracle 可写用户明确要求的任务文件；不得写入受保护的注入器实现文件（如 injector.cpp、loader.cpp、robloxdll.cpp）。不得把历史失败轨迹的实现当成正确参考解。
 生成自足 pytest 文件，测试中的 workspace 根路径必须通过环境变量
 TRACEFORGE_WORKSPACE 获取。测试文件只在独立 verifier 中可见。
-同时给出至少两个独立完整的合法参考解程序和一个语义错误实现程序，供验证器校准。
+同时给出恰好两个独立完整的合法参考解程序和恰好一个语义错误实现程序，供验证器校准。
 每个参考解都必须独立完成全部 FILE 义务，不能把两个组件分作两个参考解。
 返回的是修改工作区的安装程序，不是目标文件的源码。推荐标准库 Path.write_text 配合
 repr 字符串写入文件；安装时不要导入目标程序的 ROS/仿真依赖或启动服务。
@@ -270,9 +270,9 @@ def _strings(value: Any, name: str, *, required: bool = False) -> tuple[str, ...
     return tuple(value)
 
 
-def _variants(value: Any, name: str, minimum: int) -> tuple[SolutionVariant, ...]:
-    if not isinstance(value, list) or len(value) < minimum:
-        raise VerifierSynthesisError(f"{name} 至少需要 {minimum} 个")
+def _variants(value: Any, name: str, expected: int) -> tuple[SolutionVariant, ...]:
+    if not isinstance(value, list) or len(value) != expected:
+        raise VerifierSynthesisError(f"{name} 必须恰好包含 {expected} 个")
     output = []
     for item in value:
         if not isinstance(item, dict) or set(item) != {"name", "script", "justification"}:

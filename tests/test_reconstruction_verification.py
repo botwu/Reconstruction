@@ -169,6 +169,17 @@ def test_verification_config_requires_two_replay_trials(tmp_path: Path) -> None:
         raise AssertionError("single trial must not pass reproducibility configuration")
 
 
+def test_rollout_requires_red_execution(tmp_path: Path) -> None:
+    config = VerificationConfig(
+        harbor_root=tmp_path,
+        model_name="claude-opus-4-8",
+        rollout_model="anthropic/claude-opus-4-8",
+        execute_rollout=True,
+    )
+    with pytest.raises(ValueError, match="execute-red"):
+        config.validate()
+
+
 def test_verifier_task_rejects_backfilled_criteria() -> None:
     with pytest.raises(ValueError, match="验收义务"):
         verifier_task({"core_objective": "do x", "success_criteria": ["output exists"]})

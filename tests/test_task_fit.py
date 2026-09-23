@@ -213,5 +213,61 @@ def test_probe_pass_without_workspace_execution_receipt_cannot_make_environment_
             ],
         },
     )
-    assert environment["status"] == "REVIEW"
-    assert any(error.startswith("ENVIRONMENT_PROBE_NOT_PASS") for error in environment["errors"])
+    assert environment["status"] == "READY"
+    assert environment["execution_readiness"] == "FAILED"
+    assert any(error.startswith("ENVIRONMENT_PROBE_NOT_PASS") for error in environment["execution_errors"])
+
+
+def test_ready_original_normalizes_unknown_with_bound_evidence(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / "src").mkdir(parents=True)
+    (workspace / "src/main.py").write_text("print(1)\n", encoding="utf-8")
+    environment = _probed_environment(workspace)
+    task = build_task_contract(task=_task(required="src"))
+    fit = fit_task_environment(
+        environment=environment,
+        task=task,
+        agent_fit={
+            "decision": "ready_original",
+            "requirements": [{
+                "obligation_id": "obl-1",
+                "status": "unknown",
+                "reason": "目标行为是待实现能力，入口证据存在。",
+                "evidence_paths": ["src"],
+                "probe_ids": [],
+            }],
+        },
+    )
+    assert fit["decision"] == "READY_ORIGINAL"
+    assert fit["requirements"][0]["status"] == "SATISFIED"
+    assert fit["requirements"][0]["status_before_normalization"] == "UNKNOWN"
+
+
+def test_non_file_obligation_does_not_require_fake_evidence(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / "src").mkdir(parents=True)
+    (workspace / "src/main.py").write_text("print(1)\n", encoding="utf-8")
+    environment = _probed_environment(workspace)
+    task = _task(required="src")
+    task["acceptance_obligations"].append({"id": "obl-2", "text": "提交分析"})
+    task["environment_bindings"].append({
+        "obligation_id": "obl-2",
+        "required_paths": [],
+        "observable": "提交分析",
+        "verifier_kind": "NON_FILE",
+    })
+    fit = fit_task_environment(
+        environment=environment,
+        task=build_task_contract(task=task),
+        agent_fit={
+            "decision": "READY_ORIGINAL",
+            "requirements": [
+                {"obligation_id": "obl-1", "status": "UNKNOWN", "reason": "入口存在。", "evidence_paths": ["src"], "probe_ids": []},
+                {"obligation_id": "obl-2", "status": "UNKNOWN", "reason": "文字义务由后续验证。"},
+            ],
+        },
+    )
+    assert fit["decision"] == "REVIEW_TASK_FIT"
+    assert "TASK_FIT_UNKNOWN:obl-1" not in fit["errors"]
+    assert "TASK_FIT_UNKNOWN:obl-2" in fit["errors"]
+    assert {item["status"] for item in fit["requirements"]} == {"SATISFIED", "UNKNOWN"}

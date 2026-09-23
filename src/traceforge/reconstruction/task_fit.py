@@ -28,6 +28,13 @@ class TaskFitError(ValueError):
     """任务拟合结果不满足证据与派生契约。"""
 
 
+def _initial_binding_paths(binding: dict[str, Any]) -> list[str]:
+    paths = binding.get("initial_required_paths")
+    if isinstance(paths, list):
+        return [path for path in paths if isinstance(path, str) and path]
+    return [path for path in binding.get("required_paths") or [] if isinstance(path, str) and path]
+
+
 def artifact_hash(value: Any) -> str:
     """稳定摘要用于绑定原任务、环境快照和变体。"""
     return hashlib.sha256(
@@ -54,11 +61,35 @@ def build_environment_contract(
     *, workspace_root: str | Path, sufficiency: dict[str, Any], replay: Any = None,
     env_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """静态缺口和真实探测共同门禁；可读文件不等于可执行环境。"""
+    """建立上下文契约，并单独记录后续执行是否已探测。
+
+    补全后的工作区先回答一个问题：它是否保留了足够的、有依据的任务
+    上下文。load/reset/dependency 探测属于后续执行就绪证据，不能把一个
+    已经足够的上下文重新降级成 ``REVIEW``。探测失败仍然完整记录，交给
+    Verifier/Harbor 的真实执行阶段处理。
+    """
     workspace = Path(workspace_root)
     inventory = workspace_tree_hash(workspace) if workspace.is_dir() else {}
     assessment = assess_reconstructability(sufficiency, replay)
-    errors = list(assessment.get("errors") or [])
+    # A sufficiency result can be semantically ready while an execution
+    # preflight is unavailable. Keep confirmed reconstruction blockers intact,
+    # but do not turn a preflight-only failure into a context rejection.
+    preflight = sufficiency.get("execution_preflight")
+    preflight_errors = {
+        str(error)
+        for error in (preflight.get("errors") if isinstance(preflight, dict) else [])
+        if isinstance(error, str)
+    }
+    assessment_errors = [str(error) for error in assessment.get("errors") or []]
+    if (
+        sufficiency.get("semantic_status") == "READY"
+        and preflight_errors
+        and assessment["status"] in {"INFRA_ERROR", "PIPELINE_ERROR"}
+        and assessment_errors
+        and set(assessment_errors) <= preflight_errors
+    ):
+        assessment = {**assessment, "status": "READY", "errors": []}
+    context_errors = list(assessment.get("errors") or [])
     status = assessment["status"]
     probes = {
         p["probe_id"]: p for p in sufficiency.get("environment_probes", [])
@@ -67,20 +98,21 @@ def build_environment_contract(
     checks = sufficiency.get("environment_checks")
     checks = checks if isinstance(checks, list) else []
     checked: set[str] = set()
+    execution_errors: list[str] = []
     # 静态证据已确认不可重建时，无需再要求执行探针。
     checks_required = status not in {ENVIRONMENT_UNRECONSTRUCTABLE, "INFRA_ERROR"}
     for check in checks if checks_required else []:
         if not isinstance(check, dict):
-            errors.append("ENVIRONMENT_CHECK_INVALID")
+            execution_errors.append("ENVIRONMENT_CHECK_INVALID")
             continue
         kind = check.get("kind")
         refs = check.get("probe_ids")
         if kind not in {"load", "reset", "dependency"} or kind in checked:
-            errors.append("ENVIRONMENT_CHECK_KIND_INVALID")
+            execution_errors.append("ENVIRONMENT_CHECK_KIND_INVALID")
             continue
         checked.add(kind)
         if not isinstance(refs, list) or not refs or not str(check.get("reason") or "").strip():
-            errors.append(f"ENVIRONMENT_CHECK_EVIDENCE_REQUIRED:{kind}")
+            execution_errors.append(f"ENVIRONMENT_CHECK_EVIDENCE_REQUIRED:{kind}")
             continue
         for ref in refs:
             probe = probes.get(ref) if isinstance(ref, str) else None
@@ -90,7 +122,7 @@ def build_environment_contract(
                 or probe.get("environment_unchanged") is not True
                 or (kind == "reset" and probe.get("reproducible") is not True)
             ):
-                errors.append(f"ENVIRONMENT_PROBE_NOT_PASS:{kind}")
+                execution_errors.append(f"ENVIRONMENT_PROBE_NOT_PASS:{kind}")
                 continue
             executions = probe.get("executions")
             if (
@@ -107,23 +139,35 @@ def build_environment_contract(
                     for item in executions
                 )
             ):
-                errors.append(f"ENVIRONMENT_PROBE_RECEIPT_INVALID:{kind}")
+                execution_errors.append(f"ENVIRONMENT_PROBE_RECEIPT_INVALID:{kind}")
     if checks_required and checked != {"load", "reset", "dependency"}:
-        errors.append("ENVIRONMENT_PROBES_REQUIRED")
+        execution_errors.append("ENVIRONMENT_PROBES_REQUIRED")
     if not workspace.is_dir():
-        errors.append("WORKSPACE_NOT_FOUND")
+        context_errors.append("WORKSPACE_NOT_FOUND")
         status = "PIPELINE_ERROR"
     expected_hashes = sufficiency.get("workspace_hashes")
     if isinstance(expected_hashes, dict) and expected_hashes != inventory:
-        errors.append("ENVIRONMENT_CHANGED_AFTER_SUFFICIENCY")
+        context_errors.append("ENVIRONMENT_CHANGED_AFTER_SUFFICIENCY")
         status = "PIPELINE_ERROR"
-    probe_errors = sorted(set(errors))
-    # 缺少或失败的探针不能被静态文件完整性覆盖，也不等于不可重建。
-    if status == "READY" and errors:
+    context_errors = sorted(set(context_errors))
+    execution_errors = sorted(set(execution_errors))
+    # Context readiness is independent from execution readiness. A missing or
+    # failed probe is evidence for the execution stage, not reconstruction
+    # failure and not a reason to discard the candidate before Verifier.
+    if status == "READY" and context_errors:
         status = "REVIEW"
+    if status in {ENVIRONMENT_UNRECONSTRUCTABLE, "INFRA_ERROR", "PIPELINE_ERROR"}:
+        execution_readiness = "NOT_APPLICABLE"
+    elif checked == {"load", "reset", "dependency"} and not execution_errors:
+        execution_readiness = "PROBED"
+    elif execution_errors:
+        execution_readiness = "FAILED"
+    else:
+        execution_readiness = "UNPROBED"
     return {
         "schema_version": ENVIRONMENT_CONTRACT_SCHEMA,
         "status": status,
+        "context_status": status,
         "workspace_hashes": inventory,
         "workspace_sha256": artifact_hash(inventory),
         "workspace_ref": str(workspace),
@@ -132,13 +176,9 @@ def build_environment_contract(
         "checks": checks,
         "probes": list(probes.values()),
         "blockers": list(assessment.get("blockers") or []),
-        "errors": probe_errors,
-        "execution_readiness": (
-            "PROBED" if checked == {"load", "reset", "dependency"} and not any(
-                error.startswith(("ENVIRONMENT_CHECK_", "ENVIRONMENT_PROBE"))
-                for error in errors
-            ) else "UNPROBED"
-        ),
+        "errors": context_errors,
+        "execution_errors": execution_errors,
+        "execution_readiness": execution_readiness,
         "limitations": [
             "探测只覆盖任务所需的入口、依赖与可重复初态，不是任意程序可解性的证明。",
             "reset 探测在同一只读快照上使用新的临时目录重复执行，不包含外部服务复位。",
@@ -189,7 +229,7 @@ def fit_task_environment(
         files = environment["workspace_hashes"]
         requirements = []
         for binding in task["environment_bindings"]:
-            required = list(binding.get("required_paths") or [])
+            required = _initial_binding_paths(binding)
             missing = [path for path in required if not _path_present(path, files)]
             requirements.append(
                 {
@@ -214,6 +254,10 @@ def fit_task_environment(
         return result
     expected = {item["id"] for item in task["acceptance_obligations"]}
     seen: set[str] = set()
+    requirements = copy.deepcopy(requirements)
+    for item in requirements:
+        if isinstance(item, dict) and isinstance(item.get("status"), str):
+            item["status"] = item["status"].strip().upper()
     probes = {p["probe_id"]: p for p in environment["probes"]}
     errors: list[str] = []
     for item in requirements:
@@ -229,8 +273,23 @@ def fit_task_environment(
             errors.append(f"TASK_FIT_STATUS_INVALID:{oid}")
         if not isinstance(item.get("reason"), str) or not item["reason"].strip():
             errors.append(f"TASK_FIT_REASON_REQUIRED:{oid}")
-        paths, refs = item.get("evidence_paths"), item.get("probe_ids")
-        if not isinstance(paths, list) or not isinstance(refs, list) or not (paths or refs):
+        paths = item.get("evidence_paths", [])
+        refs = item.get("probe_ids", [])
+        if paths is None:
+            paths = []
+        if refs is None:
+            refs = []
+        if not isinstance(paths, list) or not isinstance(refs, list):
+            errors.append(f"TASK_FIT_EVIDENCE_INVALID:{oid}")
+            continue
+        binding = next(
+            (
+                value for value in task["environment_bindings"]
+                if value.get("obligation_id") == oid
+            ),
+            {},
+        )
+        if binding.get("verifier_kind") != "NON_FILE" and not (paths or refs):
             errors.append(f"TASK_FIT_EVIDENCE_REQUIRED:{oid}")
             continue
         if any(not _path_present(p, environment["workspace_hashes"]) for p in paths):
@@ -256,9 +315,30 @@ def fit_task_environment(
     if errors:
         return result
     statuses = {item["status"] for item in requirements}
+    raw_decision = agent_fit.get("decision")
+    decision = raw_decision.strip().upper() if isinstance(raw_decision, str) else raw_decision
     if "UNKNOWN" in statuses:
-        return result
-    decision = agent_fit.get("decision")
+        # A pre-task target may be absent while its source and verifier surface
+        # are grounded. Preserve the original state for audit, but allow that
+        # narrow READY_ORIGINAL case to proceed. Unknowns without evidence stay
+        # REVIEW; they cannot be turned into a rollout claim.
+        unresolved: list[str] = []
+        if decision == "READY_ORIGINAL":
+            for item in requirements:
+                if item["status"] != "UNKNOWN":
+                    continue
+                if item.get("evidence_paths") or item.get("probe_ids"):
+                    item["status_before_normalization"] = "UNKNOWN"
+                    item["status"] = "SATISFIED"
+                else:
+                    unresolved.append(item["obligation_id"])
+        else:
+            unresolved = [item["obligation_id"] for item in requirements if item["status"] == "UNKNOWN"]
+        result["requirements"] = copy.deepcopy(requirements)
+        if unresolved:
+            result["errors"] = [*(result.get("errors") or []), *[f"TASK_FIT_UNKNOWN:{oid}" for oid in unresolved]]
+            return result
+        statuses = {item["status"] for item in requirements}
     if statuses == {"SATISFIED"} and decision == "READY_ORIGINAL":
         result["decision"] = "READY_ORIGINAL"
     elif "UNSATISFIED" in statuses and decision == "INCOMPATIBLE":

@@ -54,6 +54,10 @@ class _Executor:
             return {"status": "FAIL", "feedback": json.dumps({"failed_cases": ["nop"]})}
         return {"status": "PASS", "feedback": "{}"}
 
+    def publish_calibrated_bundle(self, *, label, trials):
+        del label, trials
+        return {}
+
 
 def test_agent_verifier_uses_feedback_rounds(monkeypatch, tmp_path: Path):
     agent = _Agent()

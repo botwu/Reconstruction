@@ -203,3 +203,18 @@ def test_tool_response_is_bounded_while_session_preserves_complete_output(tmp_pa
     assert result["status"] == "PASS"
     schema = tool_schemas(("run_environment_probe",))[0]["function"]["parameters"]
     assert schema["properties"]["timeout_seconds"]["maximum"] == 60
+
+
+def test_probe_child_cwd_is_workspace_even_when_runtime_starts_at_root(tmp_path: Path) -> None:
+    session, _runtime = _session(tmp_path)
+    result = run_environment_probe(
+        session,
+        python_code=(
+            "import os\nfrom pathlib import Path\n"
+            "assert Path.cwd().resolve() == Path(os.environ['TRACEFORGE_WORKSPACE']).resolve()\n"
+            "print(Path('entry.py').read_text(), end='')"
+        ),
+        purpose="load",
+    )
+    assert result["status"] == "PASS"
+    assert result["executions"][0]["stdout"] == "VALUE = 42\n"

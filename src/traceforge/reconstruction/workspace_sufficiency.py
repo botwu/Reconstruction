@@ -66,7 +66,7 @@ def run_workspace_sufficiency(
             "Inspect the workspace with tools. Do not modify it. Do not solve the task.",
             "This is the task-start environment: the requested feature is expected to be missing.",
             "Do not require acceptance obligations to pass already; that would erase the RED baseline. Judge whether a solver can implement them from the available context.",
-            "FILE environment_bindings required_paths must exist and must not be an all-stub tree.",
+            "FILE initial_required_paths are task-start inputs and must be present; output_paths are post-execution targets and must not be pre-created.",
             "Partial excerpts may suffice when they expose the interfaces and structures needed to implement the task.",
             "Return INSUFFICIENT only when required source, execution context, or domain facts are unavailable enough that implementation cannot start; missing target behavior alone is not a blocker.",
             "STATIC_INTEGRITY_REPORT is a read-only syntax/token diagnostic under the stated host Python version, not a completeness proof.",
@@ -78,12 +78,15 @@ def run_workspace_sufficiency(
             "Do not infer these categories from keywords. Explain their relationship to the actual task and inspected source.",
             "Every issue requires one classification. RECONSTRUCTION_GAP or unclassified issues forbid READY.",
             "After judging sufficiency, compare the recovered task with the verified workspace. "
-            "When the workspace is sufficient, use run_environment_probe in the same read-only "
-            "sandbox for one load, one repeatable reset, and one dependency check. Use "
-            "task_conflict only when a concrete fitted task requirement is impossible; a solver "
-            "timeout is not task conflict. Include every returned probe_id in environment_checks.",
+            "run_environment_probe is optional supporting evidence at this stage: use it when "
+            "a concrete load, reset, dependency, or task conflict is informative, but do not "
+            "require a load/reset/dependency triad before declaring contextual sufficiency. "
+            "A probe timeout is execution evidence, not task conflict. Include any returned "
+            "probe_id in environment_checks; later Verifier/Harbor execution decides whether "
+            "the candidate is runnable.",
             "Each task_fit requirement must include obligation_id, SATISFIED|UNSATISFIED|UNKNOWN, "
-            "a reason, and evidence_paths or probe_ids. TaskFit measures whether the recovered "
+            "a reason, and grounded evidence_paths or probe_ids when applicable. A probe is not "
+            "mandatory when the public workspace path itself is sufficient evidence. TaskFit measures whether the recovered "
             "environment can support implementing and checking the obligation, not whether the "
             "requested change is already present: an absent target behavior is expected pre-task "
             "and should be SATISFIED when its source, interfaces, dependencies, and verifier "
@@ -138,8 +141,7 @@ def run_workspace_sufficiency(
     )
     if not inspected:
         errors.append("NO_ACTIVE_WORKSPACE_INSPECTION")
-    # Preserve model diagnostics even when the runtime preflight failed; the
-    # overall decision remains REVIEW because errors are a hard gate.
+
     payload = ran.payload if isinstance(ran.payload, dict) else {}
     label = str(payload.get("label", "UNKNOWN"))
     decision = str(payload.get("decision", "REVIEW"))
@@ -152,8 +154,6 @@ def run_workspace_sufficiency(
         label = "UNKNOWN"
     if decision not in {"READY", "REVIEW"}:
         errors.append("INVALID_DECISION")
-        decision = "REVIEW"
-    if errors or label != "SUFFICIENT":
         decision = "REVIEW"
     try:
         confidence = float(payload.get("confidence", 0.0))
@@ -173,21 +173,34 @@ def run_workspace_sufficiency(
         missing = list(dict.fromkeys([*missing_paths, *[str(item) for item in missing]]))
     if reconstruction_gap:
         label = "INSUFFICIENT"
+
+    # A model-created runtime receipt is execution evidence, not a semantic
+    # completeness proof. Only the explicit runtime/sandbox safety errors are
+    # removed from semantic_errors; malformed or uninspected judge output
+    # remains a real sufficiency failure.
+    execution_only_prefixes = ("REAL_PROBE_REQUIRED",)
+    semantic_errors = [
+        error for error in errors
+        if not error.startswith(execution_only_prefixes)
+    ]
+    warnings: list[str] = []
     if stub_only:
-        errors.append("MISSING_PROJECT_SPECIFIC_CONTENT")
-        label = "INSUFFICIENT"
-    # An explicit INSUFFICIENT result is authoritative. A partial or stub
-    # workspace may be sufficient for a narrowly scoped analytical task, but
-    # that must be established by the model's evidence, never by a keyword
-    # based upgrade here.
-    # Recompute the decision after every schema and runtime check.  A malformed
-    # confidence or an incomplete Hermes turn can never yield READY.
-    if errors or label != "SUFFICIENT":
+        warnings.append("MISSING_PROJECT_SPECIFIC_CONTENT")
+    semantic_status = (
+        "READY" if label == "SUFFICIENT" and decision == "READY" and not semantic_errors
+        else "REVIEW"
+    )
+    if semantic_status != "READY":
         decision = "REVIEW"
+    preflight_errors = [
+        error for error in errors if error.startswith(execution_only_prefixes)
+    ]
+    result_status = semantic_status
     result = {
         "schema_version": SUFFICIENCY_SCHEMA,
         "prompt_version": SUFFICIENCY_PROMPT_VERSION,
-        "status": "READY" if label == "SUFFICIENT" and decision == "READY" else "REVIEW",
+        "status": result_status,
+        "semantic_status": semantic_status,
         "label": label,
         "decision": decision,
         "reason": str(payload.get("reason", "")),
@@ -196,6 +209,8 @@ def run_workspace_sufficiency(
         "integrity_report": integrity,
         "confidence": confidence,
         "errors": errors,
+        "semantic_errors": semantic_errors,
+        "warnings": warnings,
         "file_count": file_count,
         "workspace_hashes": input_inventory,
         "read_only_probe": session.read_only_probe,
@@ -215,6 +230,11 @@ def run_workspace_sufficiency(
         result["environment_checks"] = payload["environment_checks"]
     if session.environment_probes:
         result["environment_probes"] = session.environment_probes
+    result["execution_preflight"] = {
+        "status": "READY" if not preflight_errors else "REVIEW",
+        "errors": preflight_errors,
+        "probe_count": len(session.environment_probes),
+    }
     (root / "sufficiency.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
