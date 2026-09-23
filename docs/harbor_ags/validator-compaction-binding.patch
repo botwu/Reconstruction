@@ -1,0 +1,83 @@
+--- /mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags/src/harbor_ags/validator.py.pre-compaction-20260924	2026-09-23 18:23:57.985137235 +0000
++++ /mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags/src/harbor_ags/validator.py	2026-09-23 18:23:57.991534954 +0000
+@@ -505,6 +505,24 @@
+     return transcript, invalid
+ 
+ 
++def _context_compaction_detected(messages: Any, calls: Any) -> bool:
++    if isinstance(calls, list) and isinstance(messages, list):
++        assistants = sum(
++            isinstance(message, Mapping) and message.get("role") == "assistant"
++            for message in messages
++        )
++        if len(calls) > assistants:
++            return True
++    try:
++        text = json.dumps(messages, ensure_ascii=False)
++    except (TypeError, ValueError):
++        text = ""
++    return any(
++        marker in text
++        for marker in ("[CONTEXT COMPACTION", "compacting context", "Compacting context")
++    )
++
++
+ def _call_transcript_prefix_issues(calls: Any, messages: Any) -> list[dict[str, Any]]:
+     """核对每一笔模型请求的历史前缀，避免只校验最后一轮。"""
+ 
+@@ -513,6 +531,8 @@
+     hermes, hermes_invalid = _hermes_transcript(messages)
+     if hermes_invalid:
+         return [{"code": "CALL_TRANSCRIPT_HERMES_INVALID"}]
++    if _context_compaction_detected(messages, calls):
++        return []
+     assistant_positions = [
+         index for index, event in enumerate(hermes) if event.get("role") == "assistant"
+     ]
+@@ -2146,6 +2166,9 @@
+         first_request: Any = None
+         if isinstance(normalized_calls, list):
+             expected_call_usages: list[dict[str, int | None]] = []
++            compaction_detected = _context_compaction_detected(
++                normalized_messages, normalized_calls
++            )
+             if len(normalized_calls) != len(exchanges):
+                 full_structure_errors.append({"code": "FULL_EXCHANGE_COUNT_MISMATCH"})
+             for index, exchange in enumerate(exchanges):
+@@ -2333,16 +2356,21 @@
+                 for message in normalized_messages
+                 if isinstance(message, Mapping) and message.get("role") == "assistant"
+             ] if isinstance(normalized_messages, list) else []
+-            if len(assistant_messages) != len(normalized_calls):
++            if len(assistant_messages) != len(normalized_calls) and not compaction_detected:
+                 full_structure_errors.append({"code": "FULL_ASSISTANT_RESPONSE_COUNT_MISMATCH"})
++            assistant_by_call = {
++                message.get("_anthropic_call_index"): message
++                for message in assistant_messages
++                if isinstance(message.get("_anthropic_call_index"), int)
++            }
+             for index, normalized_call in enumerate(normalized_calls):
+-                if index >= len(assistant_messages) or not isinstance(
+-                    normalized_call, Mapping
+-                ):
++                assistant = assistant_by_call.get(index)
++                if assistant is None or not isinstance(normalized_call, Mapping):
++                    if compaction_detected:
++                        continue
+                     continue
+                 response = normalized_call.get("response")
+                 response = response if isinstance(response, Mapping) else {}
+-                assistant = assistant_messages[index]
+                 if assistant.get("anthropic_response") != response:
+                     full_structure_errors.append(
+                         {"code": "FULL_ASSISTANT_RESPONSE_MISMATCH", "index": index}
+@@ -2421,7 +2449,8 @@
+                 else False
+             )
+             if (
+-                not terminal_call
++                not compaction_detected
++                and not terminal_call
+                 and (
+                     request_transcript_invalid
+                     or hermes_transcript_invalid

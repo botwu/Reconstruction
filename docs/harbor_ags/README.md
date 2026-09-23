@@ -1,14 +1,21 @@
 # Harbor AGS runtime pin
 
-TraceForge executes the Harbor AGS runtime from the external `harbor_root`.
-The rollout plan records the SHA-256 of `src/harbor_ags/evidence.py` and
-refuses to execute if that file changes after plan creation.
+TraceForge executes the Harbor AGS runtime from the external harbor_root.
+The rollout plan records the SHA-256 of src/harbor_ags/evidence.py and
+src/harbor_ags/validator.py and refuses to execute if either file changes
+after plan creation.
 
-The checked-in patch `evidence-compaction-binding.patch` is applied to the
-runtime source at `/mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags`.
-It binds Hermes assistant messages to capture exchanges by `tool_call_id`,
-keeps compacted capture calls as raw evidence with warnings, and computes
-ATIF usage from represented calls while retaining full raw usage separately.
+The checked-in patches evidence-compaction-binding.patch and
+validator-compaction-binding.patch are applied to the runtime source at
+/mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags. They bind Hermes
+assistant messages to capture exchanges by tool_call_id, keep compacted
+capture calls as raw evidence with warnings, and compute ATIF usage from
+represented calls while retaining full raw usage separately. The validator
+skips only positional transcript/count checks that are undefined after
+compaction; raw capture completeness and tool-result integrity remain strict.
 
 Runtime evidence.py SHA-256:
-`98fdc7fc0e98b9c298571d2483d286fc72be16776cab140eb3e718d54846aeba`
+98fdc7fc0e98b9c298571d2483d286fc72be16776cab140eb3e718d54846aeba
+
+Runtime validator.py SHA-256:
+f05494204a5889a31470ed8c53a8529fcaf88970262e1174586b1825ee95d094

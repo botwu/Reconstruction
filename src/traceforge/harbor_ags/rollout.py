@@ -107,9 +107,13 @@ def _sha256_tree(root: Path) -> str:
 def _harbor_runtime_metadata(harbor_root: Path) -> dict[str, Any]:
     """Record the external Harbor evidence runtime used for this plan."""
     files: dict[str, str] = {}
-    evidence = harbor_root / "src" / "harbor_ags" / "evidence.py"
-    if evidence.is_file():
-        files["src/harbor_ags/evidence.py"] = _sha256_file(evidence)
+    for relative in (
+        "src/harbor_ags/evidence.py",
+        "src/harbor_ags/validator.py",
+    ):
+        runtime_file = harbor_root / relative
+        if runtime_file.is_file():
+            files[relative] = _sha256_file(runtime_file)
     return {"files": files}
 
 
