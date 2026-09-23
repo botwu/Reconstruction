@@ -327,7 +327,8 @@ def _apply_response_receipts(
         return
     errors, receipts = _attach_response_receipts(rollout, expected_trials)
     result["response_receipts"] = receipts
-    trials = (rollout.get("results") or {}).get("trials")
+    raw_results = rollout.get("results")
+    trials = raw_results.get("trials") if isinstance(raw_results, dict) else None
     skipped = [
         {
             "index": index,
