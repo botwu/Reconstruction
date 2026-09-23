@@ -323,7 +323,11 @@ def fit_task_environment(
         # explicit audit result and let downstream verification decide.
         result["errors"] = [
             *(result.get("errors") or []),
-            *[f"TASK_FIT_UNKNOWN:{item['obligation_id']}" for item in requirements if item["status"] == "UNKNOWN"],
+            *[
+                f"TASK_FIT_UNKNOWN:{item['obligation_id']}"
+                for item in requirements
+                if item["status"] == "UNKNOWN"
+            ],
         ]
         result["requirements"] = copy.deepcopy(requirements)
         return result
