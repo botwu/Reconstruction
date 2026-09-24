@@ -1,5 +1,5 @@
 --- /mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags/src/harbor_ags/validator.py.pre-compaction-20260924	2026-09-23 18:23:57.985137235 +0000
-+++ /mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags/src/harbor_ags/validator.py	2026-09-23 18:23:57.991534954 +0000
++++ /mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags/src/harbor_ags/validator.py	2026-09-24 07:16:40.064433460 +0000
 @@ -505,6 +505,24 @@
      return transcript, invalid
  
@@ -34,7 +34,121 @@
      assistant_positions = [
          index for index, event in enumerate(hermes) if event.get("role") == "assistant"
      ]
-@@ -2146,6 +2166,9 @@
+@@ -1586,6 +1606,71 @@
+ ) -> tuple[bool, list[dict[str, Any]], dict[str, str]]:
+     errors: list[dict[str, Any]] = []
+     hashes: dict[str, str] = {}
++    # Harbor's native artifact collector emits a list of source/destination
++    # records.  Accept that contract while retaining the stricter explicit
++    # file/hash manifest below for TraceForge-produced manifests.
++    if isinstance(manifest, list):
++        if not manifest:
++            return False, [{"code": "ARTIFACT_MANIFEST_EMPTY"}], hashes
++        trial_root = trial_root.resolve()
++        for index, entry in enumerate(manifest):
++            if not isinstance(entry, Mapping):
++                errors.append({"code": "ARTIFACT_ENTRY_SHAPE", "index": index})
++                continue
++            destination = entry.get("destination")
++            kind = entry.get("type")
++            if entry.get("status") not in {None, "ok"}:
++                errors.append({"code": "ARTIFACT_STATUS_INVALID", "index": index})
++                continue
++            if not isinstance(destination, str) or not destination.strip():
++                errors.append({"code": "ARTIFACT_DESTINATION_INVALID", "index": index})
++                continue
++            raw_path = Path(destination)
++            if raw_path.is_absolute() or raw_path.parts[:1] != ("artifacts",) or ".." in raw_path.parts:
++                errors.append({"code": "ARTIFACT_PATH_ABSOLUTE", "index": index})
++                continue
++            unresolved = trial_root / raw_path
++            candidate = unresolved.resolve()
++            try:
++                candidate.relative_to(trial_root)
++            except ValueError:
++                errors.append({"code": "ARTIFACT_PATH_TRAVERSAL", "index": index})
++                continue
++            current = unresolved
++            symlink_found = False
++            while current != trial_root:
++                if current.is_symlink():
++                    symlink_found = True
++                    break
++                current = current.parent
++            if symlink_found:
++                errors.append({"code": "ARTIFACT_SYMLINK", "index": index})
++                continue
++            if kind == "directory":
++                if not candidate.is_dir():
++                    errors.append({"code": "ARTIFACT_DIRECTORY_MISSING", "index": index})
++                    continue
++                for child in candidate.rglob("*"):
++                    if child.is_symlink():
++                        errors.append({"code": "ARTIFACT_SYMLINK", "index": index})
++                        break
++                    if child.is_file():
++                        if child.stat().st_nlink > 1:
++                            errors.append({"code": "ARTIFACT_HARDLINK", "index": index})
++                            break
++                        relative = child.relative_to(trial_root).as_posix()
++                        hashes[f"artifact:{relative}"] = hashlib.sha256(child.read_bytes()).hexdigest()
++            elif kind == "file":
++                if not candidate.is_file():
++                    errors.append({"code": "ARTIFACT_FILE_MISSING", "index": index})
++                    continue
++                if candidate.stat().st_nlink > 1:
++                    errors.append({"code": "ARTIFACT_HARDLINK", "index": index})
++                    continue
++                hashes[f"artifact:{raw_path.as_posix()}"] = hashlib.sha256(candidate.read_bytes()).hexdigest()
++            else:
++                errors.append({"code": "ARTIFACT_TYPE_INVALID", "index": index})
++        return not errors, errors, hashes
+     if not isinstance(manifest, Mapping):
+         return False, [{"code": "ARTIFACT_MANIFEST_NOT_OBJECT"}], hashes
+     entries = manifest.get("files")
+@@ -1599,6 +1684,9 @@
+             errors.append({"code": "ARTIFACT_ENTRY_SHAPE", "index": index})
+             continue
+         raw_path = Path(entry["path"])
++        if ".." in raw_path.parts:
++            errors.append({"code": "ARTIFACT_PATH_TRAVERSAL", "index": index})
++            continue
+         if raw_path.is_absolute():
+             errors.append({"code": "ARTIFACT_PATH_ABSOLUTE", "index": index})
+             continue
+@@ -2017,6 +2105,22 @@
+                 if isinstance(manifest_tasks, list)
+                 else []
+             )
++            # A replicated dataset may intentionally reuse the same logical task
++            # name for identical trials.  Directory identities must remain unique;
++            # a duplicate name is valid only when its bundle contract is identical.
++            duplicate_name_contracts: dict[str, set[str]] = {}
++            for entry in manifest_tasks if isinstance(manifest_tasks, list) else []:
++                if not isinstance(entry, Mapping):
++                    continue
++                name = entry.get("task_name")
++                bundle = entry.get("task_bundle")
++                if not isinstance(name, str) or not isinstance(bundle, Mapping):
++                    continue
++                normalized_bundle = dict(bundle)
++                normalized_bundle.pop("task_bundle_root", None)
++                duplicate_name_contracts.setdefault(name, set()).add(
++                    canonical_json_sha256(normalized_bundle)
++                )
+             manifest_identities_valid = (
+                 all(isinstance(value, str) and value for value in manifest_task_dirs)
+                 and all(
+@@ -2024,7 +2128,7 @@
+                     for value in manifest_task_names
+                 )
+                 and len(manifest_task_dirs) == len(set(manifest_task_dirs))
+-                and len(manifest_task_names) == len(set(manifest_task_names))
++                and all(len(values) == 1 for values in duplicate_name_contracts.values())
+             )
+             if (
+                 not isinstance(manifest_entry, Mapping)
+@@ -2146,6 +2250,9 @@
          first_request: Any = None
          if isinstance(normalized_calls, list):
              expected_call_usages: list[dict[str, int | None]] = []
@@ -44,7 +158,7 @@
              if len(normalized_calls) != len(exchanges):
                  full_structure_errors.append({"code": "FULL_EXCHANGE_COUNT_MISMATCH"})
              for index, exchange in enumerate(exchanges):
-@@ -2333,16 +2356,21 @@
+@@ -2333,16 +2440,21 @@
                  for message in normalized_messages
                  if isinstance(message, Mapping) and message.get("role") == "assistant"
              ] if isinstance(normalized_messages, list) else []
@@ -71,7 +185,43 @@
                  if assistant.get("anthropic_response") != response:
                      full_structure_errors.append(
                          {"code": "FULL_ASSISTANT_RESPONSE_MISMATCH", "index": index}
-@@ -2421,7 +2449,8 @@
+@@ -2395,12 +2507,34 @@
+                     full_structure_errors.append(
+                         {"code": "FULL_ASSISTANT_FINISH_REASON_MISMATCH", "index": index}
+                     )
++            result_calls = normalized_calls
++            if compaction_detected:
++                result_calls = [
++                    call
++                    for index, call in enumerate(normalized_calls)
++                    if index in {
++                        message.get("_anthropic_call_index")
++                        for message in assistant_messages
++                        if isinstance(message.get("_anthropic_call_index"), int)
++                    }
++                ]
+             request_tool_results, request_tool_result_conflict = (
+-                _tool_result_map_from_requests(normalized_calls)
++                _tool_result_map_from_requests(result_calls)
+             )
+             hermes_tool_results, hermes_tool_result_conflict = (
+                 _tool_result_map_from_messages(normalized_messages)
+             )
++            if compaction_detected:
++                # Each represented request repeats the visible history. Keep
++                # only results that survive in Hermes after compaction; the
++                # repeated capture IDs are expected and are checked by the
++                # evidence reconciler.
++                request_tool_results = {
++                    key: value
++                    for key, value in request_tool_results.items()
++                    if key in hermes_tool_results
++                }
++                request_tool_result_conflict = False
+             if (
+                 request_tool_result_conflict
+                 or hermes_tool_result_conflict
+@@ -2421,7 +2555,8 @@
                  else False
              )
              if (
