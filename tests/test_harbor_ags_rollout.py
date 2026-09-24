@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from traceforge.harbor_ags.adapter import validate_harbor_bundle
 from traceforge.harbor_ags.rollout import (
     HarborRolloutConfig,
     HarborRolloutError,
@@ -455,3 +456,54 @@ def test_publish_bundle_rejects_modified_plan_input(tmp_path: Path, tampered: st
     with pytest.raises(HarborRolloutError, match="hash"):
         publish_rollout_bundle(plan, destination)
     assert not destination.exists()
+
+
+@pytest.mark.parametrize("filename", ["agent.py", "capture.py", "evidence.py", "validator.py"])
+@pytest.mark.parametrize("deleted", [False, True])
+def test_rollout_rejects_changed_or_missing_pinned_runtime(
+    tmp_path: Path, filename: str, deleted: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "traceforge.harbor_ags.rollout.validate_harbor_bundle",
+        lambda task_dir, **_: validate_harbor_bundle(task_dir),
+    )
+    harbor = _harbor_root(tmp_path / "harbor")
+    runtime_file = harbor / "src" / "harbor_ags" / filename
+    runtime_file.parent.mkdir(parents=True)
+    runtime_file.write_text("# reviewed runtime\n")
+    output = build_rollout_plan(
+        HarborRolloutConfig(
+            task_dir=_bundle(tmp_path / "task"),
+            harbor_root=harbor,
+            output_root=tmp_path / "plans",
+            jobs_root=tmp_path / "jobs",
+        )
+    )
+    plan = json.loads((output / "rollout_plan.json").read_text())
+    assert plan["harbor_runtime"]["files"][f"src/harbor_ags/{filename}"] == hashlib.sha256(
+        runtime_file.read_bytes()
+    ).hexdigest()
+    if deleted:
+        runtime_file.unlink()
+    else:
+        runtime_file.write_text("# unreviewed runtime\n")
+    with pytest.raises(HarborRolloutError, match="Harbor runtime changed after plan creation"):
+        execute_rollout_plan(output)
+
+
+def test_rollout_preserves_separate_capture_idle_timeout(tmp_path: Path) -> None:
+    harbor = _harbor_root(tmp_path / "harbor")
+    source = harbor / "configs/hermes-batch.yaml"
+    source.write_text(source.read_text().replace(
+        "      expected_commit: abc", "      expected_commit: abc\n      capture_timeout_sec: 300"
+    ))
+    output = build_rollout_plan(
+        HarborRolloutConfig(
+            task_dir=_bundle(tmp_path / "task"),
+            harbor_root=harbor,
+            output_root=tmp_path / "plans",
+            jobs_root=tmp_path / "jobs",
+            timeout_seconds=1800,
+        )
+    )
+    assert "capture_timeout_sec: 300" in (output / "harbor-config.yaml").read_text()

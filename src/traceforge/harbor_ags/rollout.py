@@ -108,6 +108,8 @@ def _harbor_runtime_metadata(harbor_root: Path) -> dict[str, Any]:
     """Record the external Harbor evidence runtime used for this plan."""
     files: dict[str, str] = {}
     for relative in (
+        "src/harbor_ags/agent.py",
+        "src/harbor_ags/capture.py",
         "src/harbor_ags/evidence.py",
         "src/harbor_ags/validator.py",
     ):
@@ -972,7 +974,7 @@ def execute_rollout_plan(
                 if not isinstance(relative, str) or not isinstance(expected_hash, str):
                     continue
                 runtime_path = harbor_root / relative
-                if runtime_path.is_file() and _sha256_file(runtime_path) != expected_hash:
+                if not runtime_path.is_file() or _sha256_file(runtime_path) != expected_hash:
                     raise HarborRolloutError(
                         f"Harbor runtime changed after plan creation: {relative}"
                     )

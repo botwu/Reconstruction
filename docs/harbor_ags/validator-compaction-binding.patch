@@ -1,9 +1,6 @@
---- /mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags/src/harbor_ags/validator.py.pre-compaction-20260924	2026-09-23 18:23:57.985137235 +0000
-+++ /mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags/src/harbor_ags/validator.py	2026-09-24 07:16:40.064433460 +0000
-@@ -505,6 +505,24 @@
-     return transcript, invalid
- 
- 
+--- a/src/harbor_ags/validator.py
++++ b/src/harbor_ags/validator.py
+@@ -507,0 +508,18 @@
 +def _context_compaction_detected(messages: Any, calls: Any) -> bool:
 +    if isinstance(calls, list) and isinstance(messages, list):
 +        assistants = sum(
@@ -22,22 +19,114 @@
 +    )
 +
 +
- def _call_transcript_prefix_issues(calls: Any, messages: Any) -> list[dict[str, Any]]:
-     """核对每一笔模型请求的历史前缀，避免只校验最后一轮。"""
- 
-@@ -513,6 +531,8 @@
-     hermes, hermes_invalid = _hermes_transcript(messages)
-     if hermes_invalid:
-         return [{"code": "CALL_TRANSCRIPT_HERMES_INVALID"}]
+@@ -515,0 +534,2 @@
 +    if _context_compaction_detected(messages, calls):
 +        return []
-     assistant_positions = [
-         index for index, event in enumerate(hermes) if event.get("role") == "assistant"
-     ]
-@@ -1586,6 +1606,71 @@
- ) -> tuple[bool, list[dict[str, Any]], dict[str, str]]:
-     errors: list[dict[str, Any]] = []
-     hashes: dict[str, str] = {}
+@@ -581,0 +602,2 @@
++                    if normalized_block.get("type") == "thinking":
++                        continue
+@@ -592,0 +615,13 @@
++                expected_projection: list[Any] = []
++                if isinstance(expected_content, list):
++                    for block in expected_content:
++                        if not isinstance(block, Mapping):
++                            expected_projection.append(block)
++                            continue
++                        if block.get("type") == "thinking":
++                            continue
++                        normalized_block = dict(block)
++                        normalized_block.pop("signature", None)
++                        expected_projection.append(normalized_block)
++                else:
++                    expected_projection = expected_content
+@@ -595,2 +630,2 @@
+-                    or injected != 1
+-                    or projected != expected_content
++                    or injected > 1
++                    or projected != expected_projection
+@@ -1227,0 +1263,69 @@
++def _superseded_transport_exchange_ids(exchanges: Sequence[Any]) -> set[str]:
++    """Recover only empty transport failures followed by the same raw request.
++
++    Every attempt still undergoes capture validation. A retry only discharges
++    completeness errors; it cannot erase received content or evidence defects.
++    """
++    successful_after: dict[tuple[Any, ...], _dt.datetime] = {}
++    superseded: set[str] = set()
++    for exchange in reversed(exchanges):
++        if not isinstance(exchange, Mapping):
++            continue
++        request_errors, request_raw = _validate_raw_body(
++            exchange.get("request"), location="retry:request"
++        )
++        headers = exchange.get("request_headers")
++        if (
++            request_errors
++            or request_raw is None
++            or not isinstance(headers, Mapping)
++            or any(
++                not isinstance(exchange.get(name), str)
++                for name in ("method", "path", "upstream_url")
++            )
++        ):
++            continue
++        try:
++            started = _dt.datetime.fromisoformat(exchange["started_at"])
++            finished = _dt.datetime.fromisoformat(exchange["finished_at"])
++            if started.utcoffset() is None or finished.utcoffset() is None or finished < started:
++                continue
++        except (KeyError, TypeError, ValueError):
++            continue
++        identity = (
++            request_raw,
++            exchange.get("method"),
++            exchange.get("path"),
++            exchange.get("upstream_url"),
++            canonical_json_sha256(headers),
++        )
++        if (
++            exchange.get("response_status") == 200
++            and exchange.get("complete") is True
++            and exchange.get("error_code") is None
++        ):
++            successful_after[identity] = started
++            continue
++        exchange_id = exchange.get("exchange_id")
++        response = exchange.get("response")
++        if not (
++            isinstance(exchange_id, str)
++            and identity in successful_after
++            and finished <= successful_after[identity]
++            and exchange.get("response_status") == 200
++            and exchange.get("streaming") is True
++            and exchange.get("complete") is False
++            and exchange.get("error_code") == "UPSTREAM_TRANSPORT_ERROR"
++            and exchange.get("sse_event_count") == 0
++            and isinstance(response, Mapping)
++            and response.get("message") == assemble_anthropic_sse([])
++        ):
++            continue
++        body_errors, response_raw = _validate_raw_body(
++            response.get("body"), location="retry:response"
++        )
++        if not body_errors and response_raw == b"":
++            superseded.add(exchange_id)
++    return superseded
++
++
+@@ -1229,0 +1334 @@
++    superseded_transport = _superseded_transport_exchange_ids(exchanges)
+@@ -1289,0 +1395 @@
++        recovered = exchange_id in superseded_transport
+@@ -1343 +1449 @@
+-        if item.get("complete") is not True:
++        if item.get("complete") is not True and not recovered:
+@@ -1345 +1451 @@
+-        if item.get("error_code") is not None:
++        if item.get("error_code") is not None and not recovered:
+@@ -1453,0 +1560 @@
++                and not recovered
+@@ -1588,0 +1696,65 @@
 +    # Harbor's native artifact collector emits a list of source/destination
 +    # records.  Accept that contract while retaining the stricter explicit
 +    # file/hash manifest below for TraceForge-produced manifests.
@@ -103,23 +192,22 @@
 +            else:
 +                errors.append({"code": "ARTIFACT_TYPE_INVALID", "index": index})
 +        return not errors, errors, hashes
-     if not isinstance(manifest, Mapping):
-         return False, [{"code": "ARTIFACT_MANIFEST_NOT_OBJECT"}], hashes
-     entries = manifest.get("files")
-@@ -1599,6 +1684,9 @@
-             errors.append({"code": "ARTIFACT_ENTRY_SHAPE", "index": index})
-             continue
-         raw_path = Path(entry["path"])
+@@ -1601,0 +1774,3 @@
 +        if ".." in raw_path.parts:
 +            errors.append({"code": "ARTIFACT_PATH_TRAVERSAL", "index": index})
 +            continue
-         if raw_path.is_absolute():
-             errors.append({"code": "ARTIFACT_PATH_ABSOLUTE", "index": index})
-             continue
-@@ -2017,6 +2105,22 @@
-                 if isinstance(manifest_tasks, list)
-                 else []
-             )
+@@ -1892,0 +2068,8 @@
++    superseded_transport = _superseded_transport_exchange_ids(exchanges)
++    if superseded_transport:
++        warnings.append(
++            {
++                "code": "RETRY_SUPERSEDED_TRANSPORT_ERROR",
++                "exchange_ids": sorted(superseded_transport),
++            }
++        )
+@@ -1896,0 +2080 @@
++        and item.get("exchange_id") not in superseded_transport
+@@ -2019,0 +2204,16 @@
 +            # A replicated dataset may intentionally reuse the same logical task
 +            # name for identical trials.  Directory identities must remain unique;
 +            # a duplicate name is valid only when its bundle contract is identical.
@@ -136,41 +224,23 @@
 +                duplicate_name_contracts.setdefault(name, set()).add(
 +                    canonical_json_sha256(normalized_bundle)
 +                )
-             manifest_identities_valid = (
-                 all(isinstance(value, str) and value for value in manifest_task_dirs)
-                 and all(
-@@ -2024,7 +2128,7 @@
-                     for value in manifest_task_names
-                 )
-                 and len(manifest_task_dirs) == len(set(manifest_task_dirs))
+@@ -2027 +2227 @@
 -                and len(manifest_task_names) == len(set(manifest_task_names))
 +                and all(len(values) == 1 for values in duplicate_name_contracts.values())
-             )
-             if (
-                 not isinstance(manifest_entry, Mapping)
-@@ -2146,6 +2250,9 @@
-         first_request: Any = None
-         if isinstance(normalized_calls, list):
-             expected_call_usages: list[dict[str, int | None]] = []
+@@ -2148,0 +2349,3 @@
 +            compaction_detected = _context_compaction_detected(
 +                normalized_messages, normalized_calls
 +            )
-             if len(normalized_calls) != len(exchanges):
-                 full_structure_errors.append({"code": "FULL_EXCHANGE_COUNT_MISMATCH"})
-             for index, exchange in enumerate(exchanges):
-@@ -2333,16 +2440,21 @@
-                 for message in normalized_messages
-                 if isinstance(message, Mapping) and message.get("role") == "assistant"
-             ] if isinstance(normalized_messages, list) else []
+@@ -2336 +2539 @@
 -            if len(assistant_messages) != len(normalized_calls):
 +            if len(assistant_messages) != len(normalized_calls) and not compaction_detected:
-                 full_structure_errors.append({"code": "FULL_ASSISTANT_RESPONSE_COUNT_MISMATCH"})
+@@ -2337,0 +2541,5 @@
 +            assistant_by_call = {
 +                message.get("_anthropic_call_index"): message
 +                for message in assistant_messages
 +                if isinstance(message.get("_anthropic_call_index"), int)
 +            }
-             for index, normalized_call in enumerate(normalized_calls):
+@@ -2339,3 +2547,4 @@
 -                if index >= len(assistant_messages) or not isinstance(
 -                    normalized_call, Mapping
 -                ):
@@ -178,17 +248,9 @@
 +                if assistant is None or not isinstance(normalized_call, Mapping):
 +                    if compaction_detected:
 +                        continue
-                     continue
-                 response = normalized_call.get("response")
-                 response = response if isinstance(response, Mapping) else {}
+@@ -2345 +2553,0 @@
 -                assistant = assistant_messages[index]
-                 if assistant.get("anthropic_response") != response:
-                     full_structure_errors.append(
-                         {"code": "FULL_ASSISTANT_RESPONSE_MISMATCH", "index": index}
-@@ -2395,12 +2507,34 @@
-                     full_structure_errors.append(
-                         {"code": "FULL_ASSISTANT_FINISH_REASON_MISMATCH", "index": index}
-                     )
+@@ -2397,0 +2606,11 @@
 +            result_calls = normalized_calls
 +            if compaction_detected:
 +                result_calls = [
@@ -200,13 +262,10 @@
 +                        if isinstance(message.get("_anthropic_call_index"), int)
 +                    }
 +                ]
-             request_tool_results, request_tool_result_conflict = (
+@@ -2399 +2618 @@
 -                _tool_result_map_from_requests(normalized_calls)
 +                _tool_result_map_from_requests(result_calls)
-             )
-             hermes_tool_results, hermes_tool_result_conflict = (
-                 _tool_result_map_from_messages(normalized_messages)
-             )
+@@ -2403,0 +2623,11 @@
 +            if compaction_detected:
 +                # Each represented request repeats the visible history. Keep
 +                # only results that survive in Hermes after compaction; the
@@ -218,16 +277,7 @@
 +                    if key in hermes_tool_results
 +                }
 +                request_tool_result_conflict = False
-             if (
-                 request_tool_result_conflict
-                 or hermes_tool_result_conflict
-@@ -2421,7 +2555,8 @@
-                 else False
-             )
-             if (
+@@ -2424 +2654,2 @@
 -                not terminal_call
 +                not compaction_detected
 +                and not terminal_call
-                 and (
-                     request_transcript_invalid
-                     or hermes_transcript_invalid
