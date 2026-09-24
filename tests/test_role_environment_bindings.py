@@ -25,7 +25,6 @@ from traceforge.reconstruction.environment_bindings import (
 )
 from traceforge.reconstruction.intent_recovery import _gate
 from traceforge.reconstruction.terminal_universe_environment import validate_completion_candidate
-from traceforge.reconstruction.workspace_sufficiency import excerpt_or_stub_only_insufficiency
 from traceforge.verifier.synthesis import VerifierSynthesisError, candidate_from_payload
 
 
@@ -399,14 +398,6 @@ def test_non_file_coverage_is_not_required() -> None:
     assert "obl-001" not in file_obligation_ids(task)
     assert "obl-001" in non_file_obligation_ids(task)
     assert file_obligation_ids(task) == ["obl-002"]
-
-
-def test_explicit_insufficient_is_never_upgraded_by_excerpt_keywords() -> None:
-    assert not excerpt_or_stub_only_insufficiency(
-        "INSUFFICIENT",
-        "7 of 9 required files are stubs with observed name markers.",
-        ["Injector.cpp — full source code (currently stub)"],
-    )
 
 
 def test_existence_only_missing_and_oracle_injector_are_rejected() -> None:

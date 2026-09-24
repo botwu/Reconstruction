@@ -24,18 +24,6 @@ from traceforge.reconstruction.workspace_integrity import (
 
 SUFFICIENCY_SCHEMA = "traceforge.workspace-sufficiency.v1"
 SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v7-observed-source-integrity"
-# Partial or stub excerpts can be valid evidence for some analytical tasks, but
-# the model's explicit INSUFFICIENT decision is authoritative. Never promote
-# it to SUFFICIENT based on keyword matching: missing domain context cannot be
-# inferred from the existence of files.
-
-def excerpt_or_stub_only_insufficiency(
-    label: str, reason: str, missing_context: list[Any]
-) -> bool:
-    """Compatibility helper; explicit model insufficiency is never overridden."""
-
-    del reason, missing_context
-    return False
 
 
 def run_workspace_sufficiency(
