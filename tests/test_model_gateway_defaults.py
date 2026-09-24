@@ -1,13 +1,8 @@
-def test_deepseek_config_default_is_a_real_model():
-    from traceforge.reconstruction.model_gateway import resolve_model_name
-
-    assert (
-        resolve_model_name("claude-opus-4-8", config_path="config.yaml", channel="deepseek")
-        == "bailian/deepseek-v4-flash-0731"
-    )
+import pytest
 
 
-def test_channel_model_field_overrides_default(tmp_path):
+@pytest.mark.parametrize("requested", [None, "claude-opus-4-8"])
+def test_channel_model_field_overrides_default(tmp_path, requested):
     from traceforge.reconstruction.model_gateway import resolve_model_name
 
     config = tmp_path / "config.yaml"
@@ -16,7 +11,7 @@ def test_channel_model_field_overrides_default(tmp_path):
         encoding="utf-8",
     )
     assert (
-        resolve_model_name(None, config_path=config, channel="deepseek")
+        resolve_model_name(requested, config_path=config, channel="deepseek")
         == "bailian/deepseek-v4-flash-0731"
     )
 
