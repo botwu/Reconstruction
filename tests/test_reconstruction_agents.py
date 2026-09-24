@@ -487,7 +487,10 @@ def test_merge_completion_files_prefers_sandbox_write() -> None:
     assert payload["candidates"][0]["files"][0]["content"].startswith("#pragma once")
 
 
-def test_production_runtime_binds_role_scoped_proxy_and_writes_with_provenance(tmp_path: Path) -> None:
+@pytest.mark.parametrize("retry_missing_refs", [False, True])
+def test_production_runtime_binds_role_scoped_proxy_and_writes_with_provenance(
+    tmp_path: Path, retry_missing_refs: bool,
+) -> None:
     class ProxyAgent:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
@@ -504,6 +507,12 @@ def test_production_runtime_binds_role_scoped_proxy_and_writes_with_provenance(t
             }
             assert self._skip_mcp_refresh is True
             assert self._invoke_tool("list_evidence", {}, task_id).startswith("[")
+            if retry_missing_refs:
+                rejected = self._invoke_tool(
+                    "write_file", {"path": "context.txt", "content": "from-evidence"}, task_id,
+                )
+                assert rejected == "error: evidence_ref_ids required"
+                assert not (root / "context.txt").exists()
             assert self._invoke_tool(
                 "write_file",
                 {"path": "context.txt", "content": "from-evidence", "evidence_ref_ids": ["e1"]},
