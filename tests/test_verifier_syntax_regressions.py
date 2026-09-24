@@ -58,3 +58,56 @@ def test_shell_heredoc_is_not_misclassified_as_python() -> None:
         "PY"
     )
     assert python_script_syntax_error(script) is None
+
+
+def test_optional_review_headings_not_authorized_by_task_are_rejected() -> None:
+    payload = _payload("echo a")
+    payload["test_outputs_py"] = (
+        "import re\n"
+        "def test_missing():\n    assert False\n"
+        "def test_protective():\n    assert True\n"
+        "def test_output():\n"
+        "    text = 'review'\n"
+        "    assert re.search(r'\\bStrengths\\b', text)\n"
+        "    assert re.search(r'\\bresidual\\s*risk', text)\n"
+    )
+    with pytest.raises(
+        VerifierSynthesisError, match="UNSUPPORTED_LITERAL_REQUIREMENT:STRENGTHS"
+    ):
+        candidate_from_payload(
+            payload,
+            obligation_ids=["output"],
+            model_name="fixture",
+            prompt_sha256="prompt",
+            response_sha256="response",
+            task={"acceptance_obligations": [{"id": "output", "description": "write review"}]},
+        )
+
+
+def test_explicit_review_heading_requirement_is_allowed() -> None:
+    payload = _payload("echo a")
+    payload["test_outputs_py"] = (
+        "import re\n"
+        "def test_missing():\n    assert False\n"
+        "def test_protective():\n    assert True\n"
+        "def test_output():\n"
+        "    text = 'review'\n"
+        "    assert re.search(r'\\bStrengths\\b', text)\n"
+        "    assert re.search(r'\\bresidual\\s*risk', text)\n"
+    )
+    candidate, _ = candidate_from_payload(
+        payload,
+        obligation_ids=["output"],
+        model_name="fixture",
+        prompt_sha256="prompt",
+        response_sha256="response",
+        task={
+            "acceptance_obligations": [
+                {
+                    "id": "output",
+                    "description": "The report must contain Strengths and Residual Risks sections.",
+                }
+            ]
+        },
+    )
+    assert candidate is not None

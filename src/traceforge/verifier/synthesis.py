@@ -121,16 +121,118 @@ def oracle_writes_injector(script: str) -> bool:
     return False
 
 
+def _task_requirement_text(task: dict[str, Any] | None) -> str:
+    """提取任务原文；只有任务原文可以授权固定标题。"""
+
+    if not isinstance(task, dict):
+        return ""
+    return json.dumps(task, ensure_ascii=False, sort_keys=True).lower()
+
+
+_HEADING_TERMS = (
+    ("STRENGTHS", re.compile(r"\bstrengths?\b", re.IGNORECASE)),
+    ("RESIDUAL_RISKS", re.compile(r"\bresidual(?:\s+|\s*\*)risks?\b", re.IGNORECASE)),
+)
+_HEADING_CONTEXT = re.compile(
+    r"\b(?:heading|headings|section|sections|title|titles|label|labels|"
+    r"header|headers|field|fields|key|keys|exact|exactly|literal|verbatim|"
+    r"fixed|named|called|wording|phrase)\b",
+    re.IGNORECASE,
+)
+_HEADING_EQUIVALENT = re.compile(
+    r"\b(?:equivalent|equivalence|semantic(?:s|ally)?|synonym(?:s)?|"
+    r"similar|same meaning|or comparable|or alternative)\b",
+    re.IGNORECASE,
+)
+
+
+def _task_explicitly_requires_heading(task_text: str, term: re.Pattern[str]) -> bool:
+    """判断任务是否明确要求固定标题，而不是只要求相同语义。"""
+
+    for match in term.finditer(task_text):
+        window = task_text[max(0, match.start() - 100) : match.end() + 100]
+        if _HEADING_EQUIVALENT.search(window):
+            continue
+        if _HEADING_CONTEXT.search(window):
+            return True
+        # 引号中的标题通常是字面契约；只有同时出现要求性动词时才授权。
+        if re.search(
+            r"\b(?:must|should|required|include|contain|write|use|return|provide)\b",
+            window,
+            re.IGNORECASE,
+        ) and re.search(r"""['"][^'"]{1,80}['"]""", window):
+            return True
+    return False
+
+
+def _literal_heading_checks(test_outputs_py: str) -> set[str]:
+    """找出测试代码中实际约束固定标题的调用和比较。"""
+
+    try:
+        tree = ast.parse(test_outputs_py)
+    except SyntaxError:
+        return set()
+    found: set[str] = set()
+
+    def add_for_text(value: str) -> None:
+        # 正则字符串里的转义符不是报告内容；去掉后再识别标题词。
+        normalized = re.sub(r"\\[A-Za-z]", " ", value)
+        for code, pattern in _HEADING_TERMS:
+            if pattern.search(normalized):
+                found.add(code)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            callee = node.func
+            name = (
+                f"{callee.value.id}.{callee.attr}"
+                if isinstance(callee, ast.Attribute) and isinstance(callee.value, ast.Name)
+                else callee.id
+                if isinstance(callee, ast.Name)
+                else ""
+            )
+            if name in {"re.search", "re.match", "re.fullmatch", "re.findall", "re.finditer"}:
+                if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                    add_for_text(node.args[0].value)
+        elif isinstance(node, ast.Compare):
+            # 覆盖 literal in report、lower 后比较，以及 not-in 形式。
+            for operand in (node.left, *node.comparators):
+                if isinstance(operand, ast.Constant) and isinstance(operand.value, str):
+                    add_for_text(operand.value)
+    return found
+
+
+def unsupported_literal_heading_requirements(
+    test_outputs_py: str,
+    *,
+    task: dict[str, Any] | None,
+) -> list[str]:
+    """拒绝任务未要求的固定报告标题，避免把编辑措辞当成行为契约。"""
+
+    task_text = _task_requirement_text(task)
+    if not task_text:
+        return []
+    errors: list[str] = []
+    for code, pattern in _HEADING_TERMS:
+        if code in _literal_heading_checks(test_outputs_py) and not _task_explicitly_requires_heading(
+            task_text, pattern
+        ):
+            errors.append(f"UNSUPPORTED_LITERAL_REQUIREMENT:{code}")
+    return errors
+
+
 def red_shape_errors(
     *,
     test_outputs_py: str,
     missing_capability_tests: tuple[str, ...],
     oracle_solutions: tuple[SolutionVariant, ...],
+    task: dict[str, Any] | None = None,
 ) -> list[str]:
     errors = [
         f"EXISTENCE_ONLY_MISSING:{name}"
         for name in existence_only_missing_tests(test_outputs_py, missing_capability_tests)
     ]
+    errors.extend(unsupported_literal_heading_requirements(test_outputs_py, task=task))
     for variant in oracle_solutions:
         if oracle_writes_injector(variant.script):
             errors.append(f"ORACLE_WRITES_INJECTOR:{variant.name}")
@@ -336,6 +438,7 @@ def synthesize_verifier(
         model_name=model_name,
         prompt_sha256=digest,
         response_sha256=response.content_sha256,
+        task=task,
     )
     audit.update(extra)
     return candidate, audit
@@ -348,6 +451,7 @@ def candidate_from_payload(
     model_name: str,
     prompt_sha256: str,
     response_sha256: str,
+    task: dict[str, Any] | None = None,
 ) -> tuple[VerifierCandidate | None, dict[str, Any]]:
     """把模型 JSON 校验成 VerifierCandidate；不执行测试代码。"""
 
@@ -400,6 +504,7 @@ def candidate_from_payload(
         test_outputs_py=code,
         missing_capability_tests=missing,
         oracle_solutions=oracles,
+        task=task,
     )
     if shape:
         raise VerifierSynthesisError(shape[0])
@@ -431,6 +536,7 @@ __all__ = [
     "VerifierCandidate",
     "VerifierSynthesisError",
     "candidate_from_payload",
+    "unsupported_literal_heading_requirements",
     "python_script_syntax_error",
     "is_python_solution",
     "validate_solution_scripts",

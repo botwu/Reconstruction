@@ -170,6 +170,7 @@ def run_verifier_recovery(
             model_name=agent.model_name,
             prompt_sha256=digest,
             response_sha256=hashlib.sha256((ran.final_text or "").encode("utf-8")).hexdigest(),
+            task=task,
         )
     except VerifierSynthesisError as exc:
         errors.append(str(exc))
