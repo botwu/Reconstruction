@@ -95,3 +95,9 @@ def test_receipt_rejects_duplicate_or_empty_criteria() -> None:
     invalid["criteriaSatisfied"] = []
     with pytest.raises(ResponseReceiptError, match="criteriaSatisfied"):
         parse_acceptance_report(fence + json.dumps(invalid) + end)
+
+
+def test_receipt_scope_does_not_promote_self_reported_success_to_semantic_verification() -> None:
+    receipt = build_response_receipt(trajectory())
+    assert receipt["verification_scope"] == "REPORT_STRUCTURE_ONLY"
+    assert receipt["semantic_verified"] is False

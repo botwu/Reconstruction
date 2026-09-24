@@ -89,31 +89,55 @@ def _config(tmp_path: Path, *, execute_red=True):
     )
 
 
-def test_mixed_non_file_obligation_blocks_real_rollout(tmp_path: Path, monkeypatch):
+def test_mixed_non_file_obligation_allows_attempt_but_blocks_certification(tmp_path: Path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "billing.py").write_text("def bill(x): return x\n", encoding="utf-8")
     task = _task()
-    task["acceptance_obligations"].append({"id": "research", "text": "检索官方税率来源并引用"})
+    task["acceptance_obligations"].append({"id": "research", "text": "research official rates"})
     task["environment_bindings"].append({
         "obligation_id": "research", "verifier_kind": "NON_FILE", "required_paths": [], "observable": "",
     })
+    candidate = SimpleNamespace(
+        candidate_id="fixture", test_outputs_py="fixture",
+        to_dict=lambda: {"fixture": True},
+    )
+    attempts = []
 
     class FakeExec:
         def __init__(self, **kwargs):
-            del kwargs
-            pytest.fail("unresolved NON_FILE obligation must block real rollout")
+            self.attempts = []
+            self.bundle = tmp_path / "fixture-bundle"
+
+        def run(self, candidate):
+            attempts.append("red")
+            return {"status": "PASS"}
+
+        def _run_bundle(self, *args, **kwargs):
+            attempts.append("rollout")
+            return {
+                "execution": {"status": "COMPLETED"},
+                "results": {"quality_gate": {"ok": True}, "trials": [
+                    {"status": "PASS", "reward": 1.0},
+                    {"status": "PASS", "reward": 1.0},
+                ]},
+            }
 
     monkeypatch.setattr(verification_module, "HarborCalibrationExecutor", FakeExec)
+    monkeypatch.setattr(recovery_module, "run_verifier_recovery", lambda **kwargs: (
+        {"status": "READY", "unverified_obligations": ["research"]}, candidate
+    ))
     result = run_reconstruction_verification(
         task=task, workspace_root=workspace, model=None,
         agent=object(), output_root=tmp_path / "verification",
         config=_config(tmp_path),
     )
+    assert attempts == ["red", "rollout"]
     assert result["status"] == "REVIEW"
     assert result["unverified_obligations"] == ["research"]
     assert "UNVERIFIED_OBLIGATIONS" in result["errors"]
-    assert result["rollout"] == "NOT_RUN"
+    assert result["sft_eligible"] is False
+    assert not verification_module._certification_complete(result, 2)
 
 
 @pytest.mark.parametrize("execute_red", [True, False])

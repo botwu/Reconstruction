@@ -15,6 +15,7 @@ from traceforge.reconstruction.verification import (
     write_execution_manifest,
     _acceptance_report_obligation_ids,
     _apply_response_receipts,
+    _record_unverified_obligations,
 )
 from traceforge.reconstruction.verifier_recovery import run_verifier_recovery
 
@@ -431,3 +432,86 @@ def test_response_receipt_still_rejects_invalid_successful_trial(tmp_path: Path)
     assert any(item.startswith("RESPONSE_RECEIPT_INVALID:0:") for item in result["errors"])
     assert "NON_FILE_RESPONSE_UNVERIFIED" in result["errors"]
     assert result["unverified_obligations"] == ["obl-002"]
+
+
+def _response_task(*, semantic: bool = False) -> dict:
+    obligations = [
+        {"id": "obl-001", "text": "output exists"},
+        {"id": "obl-002", "text": "finish with acceptance-report JSON"},
+    ]
+    if semantic:
+        obligations.append({"id": "obl-003", "text": "the acceptance-report correctly reviews every code change"})
+    return {
+        **_TASK, "acceptance_obligations": obligations,
+        "environment_bindings": [
+            {"obligation_id": item["id"], "verifier_kind": "FILE" if item["id"] == "obl-001" else "NON_FILE"}
+            for item in obligations
+        ],
+    }
+
+
+def test_response_structure_obligation_is_pending_until_rollout_not_a_precondition() -> None:
+    result = {"errors": [], "unverified_obligations": []}
+    assert not _record_unverified_obligations(result, task=_response_task())
+    assert result["unverified_obligations"] == ["obl-002"]
+    assert result["pending_response_obligations"] == ["obl-002"]
+    assert result["errors"] == []
+
+
+def test_unknown_semantic_response_obligation_remains_visible_without_blocking_attempt() -> None:
+    result = {"errors": [], "unverified_obligations": []}
+    assert not _record_unverified_obligations(result, task=_response_task(semantic=True))
+    assert result["unverified_obligations"] == ["obl-002", "obl-003"]
+    assert result["pending_response_obligations"] == ["obl-002", "obl-003"]
+
+
+def test_receipt_does_not_clear_obligations_without_machine_contract(tmp_path: Path) -> None:
+    from test_response_receipt import trajectory
+
+    path = tmp_path / "trajectory.full.json"
+    path.write_bytes(trajectory())
+    rollout = {"results": {"trials": [
+        {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
+        {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
+    ]}}
+    result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002", "obl-003"]}
+    _apply_response_receipts(result, rollout, _response_task(semantic=True), 2)
+    assert result["unverified_obligations"] == ["obl-002", "obl-003"]
+    assert len(result["response_receipts"]) == 2
+    assert all(item["verification_scope"] == "REPORT_STRUCTURE_ONLY" for item in result["response_receipts"])
+    assert all(item["semantic_verified"] is False for item in result["response_receipts"])
+
+
+def test_missing_trial_entry_does_not_clear_response_obligation() -> None:
+    result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
+    _apply_response_receipts(result, {"results": {"trials": [None]}}, _response_task(), 1)
+    assert result["unverified_obligations"] == ["obl-002"]
+    assert result["status"] == "REVIEW"
+    assert "NON_FILE_RESPONSE_UNVERIFIED" in result["errors"]
+
+
+def test_report_structure_path_reaches_verifier_before_response_exists(tmp_path: Path, monkeypatch) -> None:
+    from traceforge.reconstruction import verifier_recovery
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.py").write_text("print(1)\n")
+    calls = []
+
+    def stop_at_verifier(**kwargs):
+        calls.append(kwargs["task"])
+        return {"errors": ["FIXTURE_STOP_AFTER_GATE"]}, None
+
+    monkeypatch.setattr(verifier_recovery, "run_verifier_recovery", stop_at_verifier)
+    result = run_reconstruction_verification(
+        task=_response_task(), workspace_root=workspace, model=None, agent=object(),
+        output_root=tmp_path / "verification",
+        config=VerificationConfig(
+            harbor_root=tmp_path, model_name="test", rollout_model="test/test",
+            execute_red=True, execute_rollout=True, max_rounds=1,
+        ),
+    )
+    assert len(calls) == 1
+    assert result["unverified_obligations"] == ["obl-002"]
+    assert result["pending_response_obligations"] == ["obl-002"]
+    assert result["rollout"] == "NOT_RUN"

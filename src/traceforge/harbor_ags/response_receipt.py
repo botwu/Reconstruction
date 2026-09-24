@@ -33,6 +33,7 @@ _REQUIRED_REPORT_FIELDS = (
 )
 
 
+
 class ResponseReceiptError(ValueError):
     """Trajectory or acceptance-report does not satisfy the receipt contract."""
 
@@ -158,6 +159,8 @@ def build_response_receipt(trajectory_bytes: bytes) -> dict[str, Any]:
         "response_sha256": hashlib.sha256(response.encode("utf-8")).hexdigest(),
         "acceptance_report_sha256": hashlib.sha256(report_body.encode("utf-8")).hexdigest(),
         "report": report,
+        "verification_scope": "REPORT_STRUCTURE_ONLY",
+        "semantic_verified": False,
     }
 
 

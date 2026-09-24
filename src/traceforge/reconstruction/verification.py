@@ -175,9 +175,13 @@ def _set_rollout_eligibility(result: dict[str, Any], expected_trials: int) -> bo
     """集中维护 rollout、NON_FILE 义务和 SFT 资格的关系。"""
     passed = _rollout_passed(result, expected_trials)
     unresolved = result.get("unverified_obligations") or []
-    eligible = passed and not unresolved
+    eligible = (
+        passed and not unresolved and result.get("status") == "READY"
+        and not (result.get("errors") or [])
+    )
     result["sft_eligible"] = eligible
-    if passed and unresolved:
+    if unresolved:
+        result["status"] = "REVIEW"
         result["errors"] = list(
             dict.fromkeys([*(result.get("errors") or []), "SFT_UNVERIFIED_OBLIGATIONS"])
         )
@@ -224,6 +228,12 @@ def write_execution_manifest(
 def _write_verification(
     root: Path, result: dict[str, Any], config: VerificationConfig
 ) -> None:
+    if result.get("unverified_obligations"):
+        result["status"] = "REVIEW"
+        result["sft_eligible"] = False
+        result["errors"] = list(dict.fromkeys([
+            *(result.get("errors") or []), "UNVERIFIED_OBLIGATIONS"
+        ]))
     _write(root / "verification.json", result)
     write_execution_manifest(root, result, config)
 
@@ -246,7 +256,7 @@ def _workspace_files(root: Path) -> dict[str, str]:
 
 
 def _acceptance_report_obligation_ids(task: dict[str, Any]) -> list[str]:
-    """Return only NON_FILE obligations explicitly requiring acceptance-report."""
+    """识别需采集报告的义务；关键字命中不代表语义已验证。"""
 
     non_file = set(non_file_obligation_ids(task))
     ids: list[str] = []
@@ -284,6 +294,7 @@ def _attach_response_receipts(
         # Receipts are evidence for successful completed responses. Failed,
         # timed out, or infrastructure-error trials retain their own diagnosis.
         if not isinstance(trial, dict):
+            errors.append(f"RESPONSE_RECEIPT_TRIAL_INVALID:{index}")
             continue
         trial_status = trial.get("status")
         if trial_status != "PASS":
@@ -309,6 +320,8 @@ def _attach_response_receipts(
                 "assistant_message_index",
                 "response_sha256",
                 "acceptance_report_sha256",
+                "verification_scope",
+                "semantic_verified",
             )
         }
         trial["response_receipt"] = summary
@@ -349,16 +362,11 @@ def _apply_response_receipts(
             )
         )
         return
-    # Do not clear the obligation until every trial has a successful receipt.
+    # 回执证明原始响应与报告结构，不能用自报成功清除义务。
     if skipped:
         result["status"] = "REVIEW"
         result["sft_eligible"] = False
         return
-    result["unverified_obligations"] = [
-        item
-        for item in result.get("unverified_obligations") or []
-        if item not in set(obligation_ids)
-    ]
 
 
 class HarborCalibrationExecutor:
@@ -695,14 +703,8 @@ def _record_unverified_obligations(
     *,
     task: dict[str, Any],
     audit: dict[str, Any] | None = None,
-    block_non_file: bool = False,
 ) -> bool:
-    """Record obligations that the current verifier cannot prove.
-
-    NON_FILE obligations may remain visible while RED-only calibration is used
-    to inspect the FILE subset. A real Hermes rollout must block on every
-    unresolved obligation because no calibrated evaluator covers it.
-    """
+    """记录后验义务；NON_FILE 未验证阻止最终认证，不阻止采集真实响应。"""
 
     non_file = set(non_file_obligation_ids(task))
     recorded = list(result.get("unverified_obligations") or [])
@@ -715,7 +717,10 @@ def _record_unverified_obligations(
         recorded.append("INVALID_UNVERIFIED_OBLIGATIONS")
     unresolved = list(dict.fromkeys(recorded))
     result["unverified_obligations"] = unresolved
-    blocking = unresolved if block_non_file else [item for item in unresolved if item not in non_file]
+    result["pending_response_obligations"] = [
+        item for item in unresolved if item in non_file
+    ]
+    blocking = [item for item in unresolved if item not in non_file]
     if not blocking:
         return False
     result["status"] = "REVIEW"
@@ -755,10 +760,9 @@ def run_reconstruction_verification(
             result["errors"] = ["NON_FILE_TASK"]
             _write_verification(root, result, config)
             return result
-        # There is currently no calibrated NON_FILE evaluator. Do not spend
-        # model or sandbox calls certifying only the file subset of a task.
+        # 响应结构必须在真实 rollout 产生后验收；未支持的语义义务不能被跳过。
         if _record_unverified_obligations(
-            result, task=task, block_non_file=config.execute_rollout
+            result, task=task
         ):
             _write_verification(root, result, config)
             return result
@@ -785,7 +789,7 @@ def run_reconstruction_verification(
                 )
                 audit = recovered
                 if _record_unverified_obligations(
-                    result, task=task, audit=recovered, block_non_file=config.execute_rollout
+                    result, task=task, audit=recovered
                 ):
                     iterations.append({
                         "round": round_number,
@@ -993,7 +997,7 @@ def run_reconstruction_verification(
         else:
             result["errors"] = ["VERIFIER_SOURCE_MISSING"]
         if _record_unverified_obligations(
-            result, task=task, audit=audit, block_non_file=config.execute_rollout
+            result, task=task, audit=audit
         ):
             candidate = None
         if candidate is not None and result["status"] != "READY":
