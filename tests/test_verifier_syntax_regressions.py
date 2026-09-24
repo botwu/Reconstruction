@@ -6,6 +6,7 @@ from traceforge.verifier.synthesis import (
     VerifierSynthesisError,
     candidate_from_payload,
     python_script_syntax_error,
+    swallowed_assertion_tests,
 )
 
 
@@ -111,3 +112,32 @@ def test_explicit_review_heading_requirement_is_allowed() -> None:
         },
     )
     assert candidate is not None
+
+
+
+def test_mutation_test_cannot_swallow_its_own_assertion_error() -> None:
+    code = """
+def test_missing():
+    assert False
+def test_mutation():
+    try:
+        validate_review(path)
+        raise AssertionError("did not reject")
+    except AssertionError:
+        pass
+def test_output():
+    assert True
+"""
+    assert swallowed_assertion_tests(code, ("test_mutation",)) == ["test_mutation"]
+    payload = _payload("echo a")
+    payload["test_outputs_py"] = code
+    payload["protective_tests"] = ["test_mutation"]
+    payload["obligation_coverage"] = {"output": ["test_mutation"]}
+    with pytest.raises(VerifierSynthesisError, match="MUTATION_TEST_SWALLOWS_ASSERTION"):
+        candidate_from_payload(
+            payload,
+            obligation_ids=["output"],
+            model_name="fixture",
+            prompt_sha256="prompt",
+            response_sha256="response",
+        )

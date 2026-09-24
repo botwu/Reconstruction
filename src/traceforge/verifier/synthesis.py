@@ -100,6 +100,48 @@ def existence_only_missing_tests(code: str, missing_names: tuple[str, ...]) -> l
     return bad
 
 
+def swallowed_assertion_tests(code: str, test_names: tuple[str, ...]) -> list[str]:
+    """Reject mutation tests that swallow their own expected AssertionError.
+
+    A common malformed RED test wraps the validator call and its deliberate
+    raise AssertionError in except AssertionError: pass. That test passes even
+    when the validator accepts the mutation, so it is not protection evidence.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    names = set(test_names)
+    bad: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or node.name not in names:
+            continue
+        for trial in ast.walk(node):
+            if not isinstance(trial, ast.Try):
+                continue
+            deliberate_raise = any(
+                isinstance(item, ast.Raise)
+                and (
+                    isinstance(item.exc, ast.Name)
+                    and item.exc.id == "AssertionError"
+                    or isinstance(item.exc, ast.Call)
+                    and isinstance(item.exc.func, ast.Name)
+                    and item.exc.func.id == "AssertionError"
+                )
+                for item in ast.walk(trial)
+            )
+            swallowed = any(
+                isinstance(handler.type, ast.Name)
+                and handler.type.id == "AssertionError"
+                and any(isinstance(item, ast.Pass) for item in ast.walk(handler))
+                for handler in trial.handlers
+            )
+            if deliberate_raise and swallowed:
+                bad.append(node.name)
+                break
+    return bad
+
+
 def oracle_write_destinations(script: str) -> list[str]:
     """Literal paths a script writes to. Mentions in review text are ignored."""
 
@@ -231,6 +273,7 @@ def red_shape_errors(
     test_outputs_py: str,
     missing_capability_tests: tuple[str, ...],
     oracle_solutions: tuple[SolutionVariant, ...],
+    mutation_test_names: tuple[str, ...] = (),
     task: dict[str, Any] | None = None,
 ) -> list[str]:
     errors = [
@@ -238,6 +281,10 @@ def red_shape_errors(
         for name in existence_only_missing_tests(test_outputs_py, missing_capability_tests)
     ]
     errors.extend(unsupported_literal_heading_requirements(test_outputs_py, task=task))
+    errors.extend(
+        f"MUTATION_TEST_SWALLOWS_ASSERTION:{name}"
+        for name in swallowed_assertion_tests(test_outputs_py, mutation_test_names)
+    )
     for variant in oracle_solutions:
         if oracle_writes_injector(variant.script):
             errors.append(f"ORACLE_WRITES_INJECTOR:{variant.name}")
@@ -509,6 +556,7 @@ def candidate_from_payload(
         test_outputs_py=code,
         missing_capability_tests=missing,
         oracle_solutions=oracles,
+        mutation_test_names=protective,
         task=task,
     )
     if shape:
@@ -542,6 +590,7 @@ __all__ = [
     "VerifierSynthesisError",
     "candidate_from_payload",
     "unsupported_literal_heading_requirements",
+    "swallowed_assertion_tests",
     "python_script_syntax_error",
     "is_python_solution",
     "validate_solution_scripts",
