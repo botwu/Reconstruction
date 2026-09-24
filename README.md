@@ -1,44 +1,47 @@
 # TraceForge
 
-TraceForge 从真实回流 session 重建可验证任务与环境，并在 Harbor 上做 RED 校准。
+TraceForge 从真实 session 中恢复用户任务、补全 task-start 环境并生成行为验证器，交付 Harbor 任务包；真实 agent 在包中执行后，再交付执行轨迹和验收证据。
 
-当前优先目标是跑通一条真实 terminal 任务：原始轨迹 → 筛选 → 恢复任务和初始环境 → 环境补全与充分性检查 → 隐藏验证器 → RED 校准 → 解题 rollout 与验收。先完成单条闭环，再扩展批量；当前尚无真实 terminal 样本完成这条全链路。
+**当前尚无可信的完整端到端验收结果。** 已有真实重建、RED 校准和解题轨迹，但任务绑定、环境补全反馈与输出义务验收仍有未解决问题。最新审计结论、历史运行证据和待修事项统一见 [当前状态](docs/current-status.md)，不能仅凭某个阶段的 `READY` 宣布任务已完成。
 
-代码中的 `READY` 表示重建产物通过 RED 校准；完整端到端还需单独检查真实解题 rollout 和质量门禁。离线测试通过、命令退出码为 0、审计脚本的 `pipeline_ok=true` 都不能单独证明端到端成功。
+## 阅读入口
 
-## 开始之前
+1. [当前状态与交付标准](docs/current-status.md)
+2. [原始会话处理流程](docs/raw-session-pipeline.md)
+3. [源码阅读地图与契约](docs/rebuild-live-map.md)
+4. [AGENTS.md](AGENTS.md)：唯一开发规范
 
-1. [AGENTS.md](AGENTS.md)：唯一开发规范
-2. [reconstruct run 阅读地图](docs/rebuild-live-map.md)：当前主链、要改的文件、对照产物
+## 当前入口
 
-## 当前主链
+R04/R05 按原始 session 处理使用 `reconstruct raw-run`；`reconstruct run --records` 保留给已有筛选记录的路径。两者进入共同的重建主链。
 
 ```text
-terminal 原始 JSONL + screening records
-→ reconstruct run
-→ Intent → Completion → Sufficiency → Verifier
-→ Harbor RED（--execute-red）
-→ Hermes 解题复验（--execute-rollout）
+原始 session → 任务分段 → Intent → Replay/Route
+→ Completion → Sufficiency → Environment Contract / TaskFit
+→ Verifier / Harbor RED → Harbor bundle
+→ 独立的 Hermes rollout 与完整验收
 ```
 
-入口是 `reconstruct run`，不是轨迹编译。筛选用 `screening run`。
+以下命令需要配置可用模型、Hermes、Harbor/AGS 环境；行号对应冻结输入，运行目录必须唯一：
 
 ```bash
-PYTHONPATH=src python -m traceforge reconstruct run \
-    --input return_data/four_batch/by-rubric/R04.jsonl \
-    --records <records.jsonl> \
-    --line-number <筛选记录对应的原始行号> \
+PYTHONPATH=src python -m traceforge reconstruct raw-run \
+    --input return_data/four_batch/frozen_r04_r05/R04.jsonl \
+    --line-number <原始行号> \
     --output artifacts/terminal-live/<run-id> \
     --config config.yaml \
-    --channel claude \
-    --model-name claude-opus-4-6 \
     --hermes-home "$HERMES_HOME" \
     --sandbox \
     --execute-red \
-    --execute-rollout
+    --execute-rollout \
+    --rollout-trials 2 \
+    --rollout-timeout-seconds 14400 \
+    --rollout-max-iterations 500
 ```
 
-## 测试
+`--execute-red` 校准重建任务的验证器；`--execute-rollout` 追加真实解题复验。这两个阶段在产物和资格判断上分开。批处理入口为 `scripts/prepare_session_batch.py`、`scripts/run_session_batch.py`，输入清单说明见 [原始会话流程](docs/raw-session-pipeline.md)。
+
+## 开发检查
 
 ```bash
 uv sync --dev --python 3.12
@@ -47,13 +50,6 @@ uv run ruff check .
 uv run ruff format --check .
 ```
 
-`config.yaml`、真实回流和运行产物不进 Git。
+这些是开发检查命令，不代表当前版本已经通过所有检查。离线测试、命令退出码或单个 RED 数值均不能替代真实产物验收。
 
-## 核心边界
-
-- 回流提供生成约束，不提供 Ground Truth
-- READY 表示 Harbor 对初始 workspace 做出 RED
-- 不要发明源码、不要写解题、不要写目标测试
-- 真实数据、密钥、模型缓存不进入本仓库
-
-开发规范只引用 [AGENTS.md](AGENTS.md)。
+原始轨迹提供重建依据；生成内容必须区分观察事实和补全推断。Completion 不提前实现用户目标，也不把参考答案或隐藏测试放进 agent 工作区。`config.yaml`、真实数据、凭据和运行产物不进入 Git。

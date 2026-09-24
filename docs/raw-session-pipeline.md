@@ -1,78 +1,65 @@
-# 当前原始会话重建主链
+# 原始会话重建流程
 
-本页只说明当前代码的真实调用关系。reconstruct run 仍用于已有 screening record 的兼容路径；R04/R05 当前实验使用 reconstruct raw-run，不读取筛选结论，也不把 intake 伪装成 ELIGIBLE。
+本页说明调用关系与阶段职责。运行结论和未解决问题统一维护在 [当前状态](current-status.md)，模块文件见 [阅读地图](rebuild-live-map.md)。
+
+R04/R05 按条重建使用 `reconstruct raw-run`，不读取筛选结论。已有筛选记录使用 `reconstruct run --records`，两者共享后续主链；原始 intake 不会被改写为筛选 ELIGIBLE。
 
 ## 输入与批处理
 
-scripts/prepare_session_batch.py 调用 session_inventory.prepare_session_batch，只读扫描上游 R04/R05，按物理 JSONL 行建立冻结副本和 sessions.jsonl。它校验 distribution 中的记录数、字节数和 SHA256；校验不通过就不发布可批处理清单。当前清单位于 artifacts/r04-r05-all-sessions-v1/：
+`scripts/prepare_session_batch.py` 调用 `session_inventory.prepare_session_batch`，按物理 JSONL 行创建冻结输入和 `sessions.jsonl`，核对 distribution 的记录数、字节数和 SHA256。现有 R04/R05 清单共 8229 个 session（R04 6535、R05 1694），证据为 `artifacts/r04-r05-all-sessions-v1/source_manifest.json`。冻结清单通过只说明输入覆盖完整。
 
-- R04 6535 行，R05 1694 行，共 8229 行；
-- 无非法 JSON 行、无重复物理行，字节数和 SHA256 与 distribution 一致；
-- source_manifest.json 为 READY 且 coverage_complete=true；
-- 冻结输入在 return_data/four_batch/frozen_r04_r05/，不会覆盖旧的 by-rubric。
+`scripts/run_session_batch.py` 顺序处理冻结清单。每条需要最终 `reconstruction_manifest.json`；只有阶段收据而没有最终清单时记录 PROCESS_ERROR，不把局部结果当成完成。
 
-scripts/run_session_batch.py 固定单进程顺序执行。每行只允许出现一个最终 reconstruction_manifest.json；只有分段收据而没有最终重建清单时，批处理记为 PROCESS_ERROR，不会把分段成功冒充为端到端完成。
+## 单条处理
 
-## 单条 raw-run
+```text
+原始 JSONL 行
+→ Session Task Agent → RAW_SESSION source
+→ Intent → Replay / Route
+→ Completion 候选 → Sufficiency
+→ Environment Contract / TaskFit / 可选变体
+→ 执行门禁 → Verifier / RED
+→ Harbor bundle → 可选真实 Hermes rollout → 完整验收
+```
 
-调用关系是：
+### Session Task Agent 与 Intent
 
-raw JSONL 行 → Session Task Agent → RAW_SESSION source → Intent → Replay/Route → Completion → Sufficiency → Environment Contract/TaskFit → Verifier/RED → Hermes Rollout
+`raw_session.build_raw_session_source` 将 user span 分为 task 或 context，并校验覆盖、重叠和用户消息引用。失败保留分段收据；成功只证明任务边界协议完整。
 
-### 1. Session Task Agent
+`intent_recovery.run_intent_recovery` 恢复原始目标、验收义务和环境绑定，每项义务引用真实用户消息。初始必要路径与最终输出路径必须区分：用户要求新增的文件不应被当成必须预先存在的输入。Intent 产物是拟合任务，仍需审查路径与义务是否符合原意。
 
-raw_session.build_raw_session_source 先用 build_spans 建立 user span，再让只读的 SESSION_TASK_ROLE 将每个 span 精确分到一个 task 或 context。门禁要求：
+### Replay 与路由
 
-- label_status=COMPLETE；
-- 所有 span 恰好覆盖一次，无未知 span、重叠或遗漏；
-- evidence_refs.message_indices 必须是任务内真实 user message 的子集；
-- task 的 message_indices 保留该任务所有 user message，避免把续写/约束丢掉。
+`env_replay.replay_from_timeline` 恢复首次可信文件内容，区分完整文件、片段、未知修改和 withheld changes；不执行原始 shell。当前任务使用完整 session 工具时间线，提供跨 turn 上下文，但不等价于每个任务起点的独立快照。
 
-失败写入 session_task_segmentation.json 并返回 SESSION_TASK_REVIEW 或 INPUT_INVALID。成功只表示边界收据完整，不表示任务可重建。
+Intent 后重新计算 `execution_support_route`：有回放文件走 TERMINAL_FILE；无回放文件而有 FILE 义务可以走 DEFAULT_EMPTY。没有受支持的文件验收时保留 REVIEW，而不生成虚假的文件验收结论。
 
-### 2. Intent
+### Completion
 
-intent_recovery.run_intent_recovery 只恢复用户原始目标、验收义务和 environment_bindings。每条义务必须有真实 user:<message_index> 证据。raw 路径只使用 intake_selected=true，不会写 reconstruction_eligible 或 screening decision。
+`complete_from_replayed` 或 `complete_from_default_empty` 生成 task-start 环境候选，补全相关上下文与依赖，记录事实来源和不确定性。不得提前解题或把参考答案、隐藏验证测试交给 agent。
 
-Intent 通过后才会生成可执行 q；Intent 失败只保留审计契约，不进入 Completion。
+候选通过结构、引用、写入边界和泄漏检查后物化 workspace。Completion READY 不代表依赖可用、源码正确或任务可解。当前是一次生成后逐个候选判断，没有基于后续结果自动返回 Completion 修复的跨阶段循环。
 
-### 3. Replay 与支持路由
+### Sufficiency、环境合同与 TaskFit
 
-env_replay.replay_from_timeline 按工具时间线恢复首次可信文件内容，区分完整文件、部分证据、未知 mutation 和 withheld changes；它不执行原始 shell，也不伪造未观察文件。
+`workspace_sufficiency.run_workspace_sufficiency` 检查绑定路径、workspace hash 与源码完整性，并在只读沙盒中评估任务所需上下文。执行探针通过 `run_environment_probe` 产生真实收据，核对退出码、超时、输入快照与 reset 重复执行；临时写入使用探针 scratch。
 
-当前编排保留完整 session tool timeline（session_timeline_scope=FULL_SESSION），因此每个 task 的 replay 是 session 级初始证据，不是用户在该 task 时刻的独立快照。这保证跨 turn 证据不被截断，但后续 task 依赖前 task 产物时可能包含不适合作为独立起点的状态，属于当前已知限制。
+上下文充分性与执行证据分开：`environment_contract.status/context_status` 表示上下文；`execution_readiness` 表示探针状态。三种探针收据满足要求时可标为 PROBED，不是任意任务可解性的证明。探针能力必须与任务相关，只读审查不自动要求编译项目。
 
-execution_support_route 在 Intent 后重新计算：有文件回放走 TERMINAL_FILE；没有可观测文件但有 FILE 义务走 DEFAULT_EMPTY；只有 NON_FILE 义务或 retrieval 没有可验证文件时提前 REVIEW，不进入假的文件 Verifier。
+TaskFit 衡量环境能否支持完成和验证原任务；目标功能未实现属于正常 task-start 状态。只有明确且可复现的任务冲突才允许从补全环境与原任务共同生成变体；仅有执行故障或缺少上下文不应冒充任务冲突。变体保留来源和变更义务，再交给后续验证；当前主编排没有通用的变体后重新运行 Sufficiency 循环。
 
-### 4. Completion
+### Verifier、RED 与 rollout
 
-complete_from_replayed 或 complete_from_default_empty 只补全缺失上下文、部分文件和依赖，禁止实现用户目标、写 solution 或写隐藏测试。候选通过结构、证据引用、受保护文件和泄漏门禁并物化 workspace 后，候选自身可标为 READY。
+有 FILE 验收义务才调用现有文件 Verifier。真实 rollout 请求还会在 Verifier 之前检查环境执行收据；不满足时写 `verification/execution_gate.json` 并停止。RED-only 路径与此不同。
 
-这个 READY 只表示候选产物符合 Completion 契约，不表示程序能加载、依赖齐全或任务可解。候选可以因模型决策、证据不足或沙盒初始化失败停在 REVIEW；后续候选会继续检查。
+Verifier 生成隐藏 pytest、oracle 和 mutation；RED 要求初始缺失能力检查失败、保护性检查通过、oracle 通过、mutation 失败。Verifier 内有有限轮反馈修复。校准成功可发布 Harbor bundle，`verification.status=READY` 不证明真实 agent 已解题。
 
-### 5. Sufficiency、环境和 TaskFit
+真实 Hermes rollout 在 task-start 环境执行，验收读取 trial、reward、质量门禁、轨迹、输入绑定与 cleanup。只有这些结果和义务覆盖都完整才可能关闭认证。当前所有 NON_FILE 义务的前置阻断与 rollout 后 response receipt 存在顺序冲突，尚不能宣称最终响应验收完整。
 
-workspace_sufficiency.run_workspace_sufficiency 先做 workspace hash、绑定路径和完整性诊断，再在只读沙盒中要求模型检查源码并产生 load/reset/dependency 探针。现在探针以真实 task workspace 作为 cwd，临时写入只能进入 TRACEFORGE_PROBE_SCRATCH；环境契约还会核对 workspace 前后快照、退出码、超时和 reset 执行次数。
+## 产物边界
 
-- 确认缺失必要资产、绑定路径或必要路径受未知 mutation 影响：SKIPPED_UNRECONSTRUCTABLE；
-- 模型/AGS/网络故障：INFRA_ERROR；
-- 收据、完整性分类或契约错误：PIPELINE_ERROR；
-- 证据不足、UNKNOWN 或 INSUFFICIENT：REVIEW；
-- 无这些问题且探针完整：环境契约才可能 READY。
+- 重建：用户任务、task-start workspace、环境声明、verifier 与参考校准材料。
+- rollout：真实 agent 执行及最终输出，保留 `agent/trajectory.full.json`。
+- 验收：RED、trial、reward、response receipt、manifest 和 cleanup 的关联证据。
 
-TaskFit 衡量补全环境是否支持未来 agent 实现并验证原任务；目标功能尚未实现是正常的初态，不应误判为冲突。只有经过探针且有可复现 task_conflict 证据的真实环境冲突，才允许生成环境约束变体。缺失资产不能生成变体；变体必须保留核心意图并重新走后续验证。
-
-### 6. Verifier、RED 与 Rollout
-
-只有存在明确 FILE 验收义务才进入 verification.py。Verifier 在初始 workspace 上生成隐藏 pytest、oracle 和 mutation；RED 校准必须同时满足：missing-capability 测试失败、protective 测试通过、oracle 全部通过、mutation 全部失败。校准成功时 verification.status=READY、calibration=PASS，但 rollout 默认仍是 NOT_RUN。
-
-真实 Hermes rollout 还要求 execution 完成、quality gate 通过、trial 数量准确、每次 trial PASS/reward=1、cleanup 和轨迹证据完整，并且没有未验证义务，才会设置 sft_eligible=true 和 certification_closed=true。Rollout 失败不会把已经完成的 RED 校准伪装成成功。
-
-Harbor/AGS 的计划、执行和读取是三步：计划目录在 verification/plans/，实际 job 在 verification/jobs/，Hermes 交付 bundle 在 verification/deliverables/hermes-replay/harbor_bundle/。真实轨迹应在 job trial 下的 agent/trajectory.full.json，并与 artifacts manifest、reconstruction certification 和 cleanup ledger 一起由 read_rollout_results 校验。没有这些真实文件，不能声称已有 rollout 轨迹交付。
-
-## 当前证据
-
-- 离线全量回归：通过；
-- R04/R05 原始输入清单：8229 行已完成覆盖校验；
-- raw 单条真实烟测：已证明分段、Intent、Replay 和 Completion 可以产生真实中间产物；
-- 当前没有通过 Verifier/RED 的真实 raw-run，也没有真实 Hermes trajectory.full.json 或 harbor_bundle。因此当前项目处于“重建主链可执行、最终交付闭环仍未完成”，不能把 Completion 或环境 READY 当成端到端完成。
+Harbor 计划在 `verification/plans/`，实际 job 在 `verification/jobs/`，交付包在 `verification/deliverables/hermes-replay/harbor_bundle/`。完整格式与核查顺序见 [当前状态](current-status.md)。日志和历史诊断不是交付资格证明，缺少实际产物不得补写成功标志。
