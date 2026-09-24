@@ -29,7 +29,7 @@ terminal JSONL + screening records.jsonl
   → Environment Contract / Task Fit（环境事实与拟合任务分开）
   → Verifier（仅当 allow_file_verifier）
   → Harbor RED（--execute-red）
-  → Hermes rollout（--execute-rollout，只写 SFT，不改 READY）
+  → Hermes rollout（--execute-rollout；失败或有未验证义务则 REVIEW，完整验收才进入 SFT）
 ```
 
 每次重建还会在 `tasks/<task_id>/task_environment_pair.json` 保存论文中的

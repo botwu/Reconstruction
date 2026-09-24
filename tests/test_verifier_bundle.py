@@ -1,5 +1,6 @@
 """生成包的隐藏面、路径和 verifier 基础设施错误验证。"""
 
+import json
 import subprocess
 from dataclasses import replace
 
@@ -76,6 +77,123 @@ def test_bundle_keeps_solution_and_verifier_outside_workspace(tmp_path):
     assert (output / "artifact_manifest.json").is_file()
     assert (output / "task/workspace/input.txt").stat().st_mode & 0o002
     assert (output / "task/workspace").stat().st_mode & 0o002
+
+
+@pytest.mark.parametrize("shape", [
+    {"criteriaSatisfied": [
+        {"id": "criterion-1", "status": "satisfied", "evidence": "第一条证据"},
+        {"id": "criterion-2", "status": "not-applicable", "evidence": "第二条说明"},
+    ]},
+    {"review": {"status": "accepted", "references": ["packages/core/task.py:8"]}},
+])
+def test_bundle_preserves_original_user_contract(tmp_path, shape):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    contract = (
+        "## Acceptance Contract\n"
+        "保留原始状态值，最后给出 acceptance-report。\n"
+        "```acceptance-report\n" + json.dumps(shape, ensure_ascii=False) + "\n```"
+    )
+    output = compile_bundle(
+        task={
+            "task_instruction": "审查变更并按指定 schema 返回。",
+            "source_task": {"user_texts": [
+                "框架 bootstrap 内容不属于本次用户验收约定",
+                "只读审查。存在严重问题时不得通过。\n\n" + contract,
+            ]},
+            "acceptance_obligations": [
+                {"id": "obl-003", "text": "最后给出 acceptance-report。"}
+            ],
+        },
+        workspace_root=root,
+        verifier=_verifier(),
+        output_root=tmp_path / "out",
+    )
+    instruction = (output / "task/instruction.md").read_text(encoding="utf-8")
+    assert contract in instruction
+    assert "存在严重问题时不得通过" in instruction
+    assert "bootstrap" not in instruction
+    assert instruction.count("```acceptance-report") == 1
+    assert "commandsRun" not in instruction
+    for criterion in shape.get("criteriaSatisfied", []):
+        assert instruction.count(criterion["id"]) == 1
+
+
+@pytest.mark.parametrize("contract, error", [
+    ("指定 schema 另见缺失附件。", "ACCEPTANCE_REPORT_SCHEMA_MISSING"),
+    ("```acceptance-report\n{invalid}\n```", "ACCEPTANCE_REPORT_SCHEMA_INVALID"),
+])
+def test_bundle_rejects_unavailable_acceptance_schema(tmp_path, contract, error):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    with pytest.raises(ValueError, match=error):
+        compile_bundle(
+            task={"task_instruction": "最后返回 acceptance-report。\n" + contract},
+            workspace_root=root,
+            verifier=_verifier(),
+            output_root=tmp_path / "out",
+        )
+
+
+def test_bundle_keeps_tasks_without_contract_unchanged(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    original = "生成汇总报告。"
+    output = compile_bundle(
+        task={"task_instruction": original},
+        workspace_root=root,
+        verifier=_verifier(),
+        output_root=tmp_path / "out",
+    )
+    assert (output / "task/instruction.md").read_text() == original + "\n"
+
+
+def test_bundle_exposes_public_requirements_only(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    task = {
+        "task_instruction": "只读审查。",
+        "acceptance_obligations": [
+            {"text": "写出审查结果。", "observable": "报告存在且覆盖两项变更。",
+             "evidence_ref_ids": ["user:2"], "required_paths": ["隐藏绑定元数据"]}
+        ],
+        "specified_output_format": "结论和发现数量。",
+        "mandatory_constraints": ["只读审查。", "禁止重复运行已验证的测试。"],
+        "prohibitions": ["不运行 Git 命令。"],
+    }
+    output = compile_bundle(
+        task=task, workspace_root=root, verifier=_verifier(), output_root=tmp_path / "out",
+    )
+    instruction = (output / "task/instruction.md").read_text()
+    for required in (
+        "写出审查结果。", "报告存在且覆盖两项变更。", "结论和发现数量。",
+        "禁止重复运行已验证的测试。", "不运行 Git 命令。",
+    ):
+        assert required in instruction
+    assert instruction.count("只读审查。") == 1
+    assert "隐藏绑定元数据" not in instruction
+    assert "user:2" not in instruction
+    assert "acceptance-report" not in instruction
+
+
+def test_bundle_marks_partial_source_observations_and_binds_content(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    source = root / ".traceforge/source-excerpts.json"
+    source.parent.mkdir()
+    source.write_text('{"files": [{"path": "core.py", "segments": []}]}')
+    arguments = {
+        "task": {"task_instruction": "审查变更。"},
+        "workspace_root": root, "verifier": _verifier(), "output_root": tmp_path / "out",
+    }
+    first = compile_bundle(**arguments)
+    instruction = (first / "task/instruction.md").read_text()
+    assert ".traceforge/source-excerpts.json" in instruction
+    assert "不能将其视为完整源码" in instruction
+    assert "不能以报告自述替代验证" in instruction
+    source.write_text('{"files": [{"path": "other.py", "segments": []}]}')
+    second = compile_bundle(**arguments)
+    assert second != first
 
 
 def test_bundle_rejects_symlink(tmp_path):
@@ -196,7 +314,7 @@ def test_bundle_digest_includes_compiler_contract(tmp_path):
     manifest = __import__("json").loads(
         (output / "compile_manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v3-workspace-contract"
+    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v4-user-contract"
     assert manifest["entrypoint_contract"] == {
         "workspace_mount": "/home/user/workspace",
         "solution_mount": "/solution",

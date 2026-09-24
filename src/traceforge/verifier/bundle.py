@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from traceforge.harbor_ags.adapter import validate_bundle_layout
+from traceforge.task_instruction import render_task_instruction
 from traceforge.trajectory.artifacts import (
     ArtifactWorkspace,
     artifact_entry_dicts,
@@ -17,7 +18,9 @@ from traceforge.trajectory.artifacts import (
 
 from .synthesis import VerifierCandidate, is_python_solution, validate_solution_scripts
 
-_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v3-workspace-contract"
+_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v4-user-contract"
+
+
 def _make_workspace_solver_writable(workspace: Path) -> None:
     """让 AGS 中以普通 user 运行的 oracle/Hermes 能修改公开 workspace。"""
 
@@ -44,6 +47,12 @@ def compile_bundle(
     instruction = task.get("task_instruction") or task.get("core_objective")
     if not isinstance(instruction, str) or not instruction.strip():
         raise ValueError("缺少自足的任务指令")
+    instruction = render_task_instruction(task, instruction)
+    if (workspace_root / ".traceforge/source-excerpts.json").is_file():
+        instruction += (
+            "\n\n请查看 .traceforge/source-excerpts.json 中的部分原始源码观察及未恢复区间；"
+            "不能将其视为完整源码，也不能以报告自述替代验证。"
+        )
     if not workspace_root.is_dir():
         raise ValueError("初始 workspace 不存在")
     tree: dict[str, str] = {}

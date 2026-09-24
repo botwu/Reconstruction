@@ -62,7 +62,9 @@ def test_red_only_publishes_real_bundle_without_claiming_rollout(tmp_path, monke
         (bundle / "task/tests/control/input-manifest.json").read_text()
     )
     assert input_manifest["schema_version"] == "traceforge.control-input-manifest.v1"
-    assert (bundle / "task/instruction.md").read_text().strip() == _TASK["task_instruction"]
+    instruction = (bundle / "task/instruction.md").read_text()
+    assert instruction.startswith(_TASK["task_instruction"])
+    assert all(item["text"] in instruction for item in _TASK["acceptance_obligations"])
     assert (bundle / "task/workspace/main.py").read_text() == "print('task-start')\n"
     assert (bundle / "task/tests/test_outputs.py").read_text() == result["verifier"]["test_outputs_py"]
     assert result["calibration"] == "PASS"
@@ -94,7 +96,7 @@ def test_publication_failure_cannot_leave_ready(tmp_path, monkeypatch):
 
 def test_rollout_failure_preserves_calibrated_delivery(tmp_path, monkeypatch):
     result = _verify(tmp_path, monkeypatch, rollout=True)
-    assert result["status"] == "READY"
+    assert result["status"] == "REVIEW"
     assert Path(result["harbor_bundle"]).is_dir()
     assert result["rollout"]["harbor_bundle"] == result["harbor_bundle"]
     assert result["rollout"]["plan"] == result["rollout_plan"]

@@ -256,3 +256,52 @@ def test_intent_prompt_previews_context_without_changing_raw_session():
     assert "采集工作流尚未发布到生产" in prompt
     assert "另一个任务" not in prompt
     assert json.dumps(source, ensure_ascii=False) == before
+
+
+def test_intent_preserves_contract_and_original_review_gate(tmp_path: Path) -> None:
+    contract = (
+        "## Acceptance Contract\n"
+        "criterion-1 和 criterion-2 均须提供独立证据。\n"
+        "```acceptance-report\n"
+        '{"criteriaSatisfied":[{"id":"criterion-1","status":"satisfied"},'
+        '{"id":"criterion-2","status":"not-applicable"}],"customEvidence":[]}\n'
+        "```"
+    )
+    source = _padded_source(
+        user_index=2, text="只读审查，零个严重问题才允许通过。\n\n" + contract
+    )
+    task = source["tasks"][0]
+    runtime = _CaptureRuntime({
+        "task_id": task["task_id"],
+        "task_instruction": "只读审查，然后按指定 schema 返回 acceptance-report。",
+        "core_objective": "审查变更",
+        "acceptance_obligations": [{
+            "id": "obl-001", "text": "提供审查结论", "evidence_ref_ids": ["user:2"],
+        }],
+        "mandatory_constraints": ["只读，不执行 Git 命令。"],
+    })
+    result = run_intent_recovery(source=source, agent=runtime, output_root=tmp_path)
+    assert result["status"] == "READY", result["errors"]
+    instruction = result["task"]["task_instruction"]
+    assert contract in instruction
+    assert "零个严重问题才允许通过" in instruction
+    assert "只读，不执行 Git 命令。" in instruction
+    assert "customEvidence" in instruction
+    assert instruction.count("```acceptance-report") == 1
+
+
+def test_intent_reviews_missing_acceptance_schema(tmp_path: Path) -> None:
+    source = _padded_source(user_index=2, text="返回指定格式的 acceptance-report。")
+    task = source["tasks"][0]
+    runtime = _CaptureRuntime({
+        "task_id": task["task_id"],
+        "task_instruction": "返回指定格式的 acceptance-report。",
+        "core_objective": "审查变更",
+        "acceptance_obligations": [{
+            "id": "obl-001", "text": "返回 acceptance-report。", "evidence_ref_ids": ["user:2"],
+        }],
+    })
+    result = run_intent_recovery(source=source, agent=runtime, output_root=tmp_path)
+    assert result["status"] == "REVIEW"
+    assert any(code.startswith("ACCEPTANCE_REPORT_SCHEMA_MISSING") for code in result["errors"])
+    assert "criteriaSatisfied" not in result["task"]["task_instruction"]

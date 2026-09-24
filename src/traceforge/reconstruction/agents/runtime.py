@@ -449,7 +449,7 @@ def _traceforge_model_timeout_seconds() -> float:
 
 
 def _traceforge_agent_max_iterations(role: AgentRole) -> int:
-    """可选的整角色迭代上限，防止模型无响应时按角色上限长时间空转。"""
+    """显式预算覆盖角色默认值，避免调高预算后仍被默认值截断。"""
 
     raw = os.environ.get("TRACEFORGE_AGENT_MAX_ITERATIONS", "").strip()
     if not raw:
@@ -458,7 +458,7 @@ def _traceforge_agent_max_iterations(role: AgentRole) -> int:
         limit = int(raw)
     except ValueError:
         return role.max_iterations
-    return max(1, min(role.max_iterations, limit))
+    return max(1, limit)
 
 
 def apply_anthropic_messages_client(agent: Any, *, base_url: str, api_key: str) -> None:
