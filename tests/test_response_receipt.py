@@ -11,6 +11,7 @@ from traceforge.harbor_ags.response_receipt import (
     build_response_receipt,
     parse_acceptance_report,
     verify_response_receipt,
+    evaluate_response_contract,
 )
 
 
@@ -101,3 +102,138 @@ def test_receipt_scope_does_not_promote_self_reported_success_to_semantic_verifi
     receipt = build_response_receipt(trajectory())
     assert receipt["verification_scope"] == "REPORT_STRUCTURE_ONLY"
     assert receipt["semantic_verified"] is False
+
+
+def acceptance_contract() -> dict:
+    return {
+        "schema_version": "traceforge.response-contract.v1",
+        "checks": [{
+            "kind": "acceptance_report", "obligation_id": "obl-report",
+            "criterion_ids": ["criterion-1"],
+            "required_fields": {"criteriaSatisfied": "array", "changedFiles": "array",
+                                "noStagedFiles": "boolean", "diffSummary": "string"},
+        }],
+    }
+
+
+def test_machine_contract_accepts_structure_without_proving_self_reported_facts() -> None:
+    outcome = evaluate_response_contract(trajectory(), acceptance_contract())
+    assert outcome["verified_obligation_ids"] == ["obl-report"]
+    assert outcome["checks"][0]["verification_scope"] == "REPORT_STRUCTURE_ONLY"
+    assert outcome["semantic_verified"] is False
+
+
+@pytest.mark.parametrize("field,value", [
+    ("criterion_ids", ["criterion-1", "criterion-2"]),
+    ("required_fields", {"manualNotes": "string"}),
+    ("required_fields", {"noStagedFiles": "string"}),
+])
+def test_machine_contract_rejects_missing_criteria_fields_and_type_mismatches(field, value) -> None:
+    contract = acceptance_contract()
+    contract["checks"][0][field] = value
+    assert evaluate_response_contract(trajectory(), contract)["verified_obligation_ids"] == []
+
+
+def test_unknown_machine_check_does_not_clear_obligation() -> None:
+    contract = acceptance_contract()
+    contract["checks"][0]["kind"] = "semantic_correctness"
+    assert evaluate_response_contract(trajectory(), contract)["verified_obligation_ids"] == []
+
+
+def _summary_fixture(tmp_path, *, summary="APPROVED; Critical: 0; Important: 0; Minor: 1; review.md"):
+    import hashlib
+
+    report_bytes = b"APPROVED\nCritical: 0\nImportant: 0\nMinor: 1\nMinor issue: source.py:4 naming.\n"
+    relative = "logs/artifacts/traceforge/workspace/review.md"
+    target = tmp_path / "artifacts" / relative
+    target.parent.mkdir(parents=True)
+    target.write_bytes(report_bytes)
+    (tmp_path / "artifacts/manifest.json").write_text(json.dumps({
+        "schema_version": "traceforge-harbor-artifacts/v1",
+        "files": [{"path": relative, "size_bytes": len(report_bytes),
+                   "sha256": hashlib.sha256(report_bytes).hexdigest()}],
+    }))
+    contract = {"schema_version": "traceforge.response-contract.v1", "checks": [{
+        "kind": "basic_summary", "obligation_id": "obl-summary",
+        "verdicts": ["APPROVED", "CHANGES_REQUIRED"],
+        "finding_levels": ["Critical", "Important", "Minor"],
+        "report_path": "review.md", "match_report": True,
+    }]}
+    return trajectory(summary), contract, target
+
+
+def test_basic_summary_compares_real_manifest_bound_trial_report(tmp_path) -> None:
+    data, contract, target = _summary_fixture(tmp_path)
+    outcome = evaluate_response_contract(data, contract, trial_root=tmp_path)
+    assert outcome["verified_obligation_ids"] == ["obl-summary"]
+    check = outcome["checks"][0]
+    assert check["verification_scope"] == "REPORT_CONSISTENCY_ONLY"
+    assert check["report_sha256"]
+    assert outcome["semantic_verified"] is False
+
+
+@pytest.mark.parametrize("summary", [
+    "APPROVED; Critical: 1; Important: 0; Minor: 1; review.md",
+    "CHANGES_REQUIRED; Critical: 0; Important: 0; Minor: 1; review.md",
+    "APPROVED; Critical: 0; Important: 0; Minor: 1; other.md",
+    "APPROVED; Critical: 0; Important: 0; Minor: 1; review.md; everything is perfect",
+])
+def test_basic_summary_rejects_mismatch_or_extra_claims(tmp_path, summary) -> None:
+    data, contract, _ = _summary_fixture(tmp_path, summary=summary)
+    assert evaluate_response_contract(data, contract, trial_root=tmp_path)["verified_obligation_ids"] == []
+
+
+def test_basic_summary_refuses_tampered_or_missing_report(tmp_path) -> None:
+    data, contract, target = _summary_fixture(tmp_path)
+    target.write_text("APPROVED\nCritical: 0\nImportant: 0\nMinor: 1\n")
+    assert evaluate_response_contract(data, contract, trial_root=tmp_path)["verified_obligation_ids"] == []
+    target.unlink()
+    assert evaluate_response_contract(data, contract, trial_root=tmp_path)["verified_obligation_ids"] == []
+
+
+def test_basic_summary_cannot_read_reference_or_escape_trial(tmp_path) -> None:
+    data, contract, target = _summary_fixture(tmp_path)
+    contract["checks"][0]["report_path"] = "../../solution/review.md"
+    assert evaluate_response_contract(data, contract, trial_root=tmp_path)["verified_obligation_ids"] == []
+
+
+def test_duplicate_contract_obligation_cannot_be_cleared_by_one_passing_check() -> None:
+    contract = acceptance_contract()
+    contract["checks"].append({**contract["checks"][0], "kind": "unsupported"})
+    with pytest.raises(ResponseReceiptError, match="DUPLICATE"):
+        evaluate_response_contract(trajectory(), contract)
+
+
+def test_report_contract_status_claims_are_not_semantic_acceptance() -> None:
+    value = report()
+    value["criteriaSatisfied"][0]["status"] = "not-satisfied"
+    value["noStagedFiles"] = False
+    fence = chr(96) * 3
+    data = trajectory(fence + "acceptance-report\n" + json.dumps(value) + "\n" + fence)
+    outcome = evaluate_response_contract(data, acceptance_contract())
+    assert outcome["verified_obligation_ids"] == ["obl-report"]
+    assert outcome["semantic_verified"] is False
+
+
+def test_basic_summary_refuses_symlink_into_reference_files(tmp_path) -> None:
+    data, contract, target = _summary_fixture(tmp_path)
+    reference = tmp_path / "reference.md"
+    reference.write_bytes(target.read_bytes())
+    target.unlink()
+    target.symlink_to(reference)
+    outcome = evaluate_response_contract(data, contract, trial_root=tmp_path)
+    assert outcome["verified_obligation_ids"] == []
+    assert "RESPONSE_REPORT_PATH_UNSAFE" in outcome["checks"][0]["errors"]
+
+
+def test_malformed_contract_cannot_be_treated_as_empty_success() -> None:
+    with pytest.raises(ResponseReceiptError, match="CHECKS_REQUIRED"):
+        evaluate_response_contract(trajectory(), {"schema_version": "traceforge.response-contract.v1", "checks": 1})
+
+
+def test_binding_only_receipt_round_trips_without_claiming_acceptance_report() -> None:
+    data = trajectory("APPROVED; Critical: 0; Important: 0; Minor: 0; review.md")
+    receipt = build_response_receipt(data, require_acceptance_report=False)
+    assert receipt["report"] is None
+    assert receipt["verification_scope"] == "FINAL_RESPONSE_BINDING_ONLY"
+    assert verify_response_receipt(receipt, data)["semantic_verified"] is False

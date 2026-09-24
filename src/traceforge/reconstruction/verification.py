@@ -13,7 +13,8 @@ from typing import Any
 
 from traceforge.harbor_ags.response_receipt import (
     ResponseReceiptError,
-    build_response_receipt_from_path,
+    build_response_receipt,
+    evaluate_response_contract,
 )
 from traceforge.harbor_ags.results import (
     HarborResultError,
@@ -276,7 +277,7 @@ def _acceptance_report_obligation_ids(task: dict[str, Any]) -> list[str]:
 
 
 def _attach_response_receipts(
-    rollout: dict[str, Any], expected_trials: int
+    rollout: dict[str, Any], expected_trials: int, response_contract: dict[str, Any] | None = None
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Validate terminal acceptance reports and store hash receipts only."""
 
@@ -308,7 +309,18 @@ def _attach_response_receipts(
             errors.append(f"RESPONSE_RECEIPT_TRAJECTORY_MISSING:{index}")
             continue
         try:
-            receipt = build_response_receipt_from_path(path)
+            raw = Path(path).read_bytes()
+            checks = response_contract.get("checks", []) if isinstance(response_contract, dict) else []
+            require_report = response_contract is None or any(
+                isinstance(check, dict) and check.get("kind") == "acceptance_report"
+                for check in (checks if isinstance(checks, list) else [])
+            )
+            receipt = build_response_receipt(raw, require_acceptance_report=require_report)
+            trial_root = Path(path).parent.parent if Path(path).parent.name == "agent" else None
+            evaluation = (
+                evaluate_response_contract(raw, response_contract, trial_root=trial_root)
+                if response_contract is not None else None
+            )
         except (ResponseReceiptError, OSError) as exc:
             errors.append(f"RESPONSE_RECEIPT_INVALID:{index}:{exc}")
             continue
@@ -324,6 +336,11 @@ def _attach_response_receipts(
                 "semantic_verified",
             )
         }
+        summary["verified_obligation_ids"] = (
+            evaluation["verified_obligation_ids"] if evaluation is not None else []
+        )
+        summary["contract_checks"] = evaluation["checks"] if evaluation is not None else []
+        summary["contract_sha256"] = evaluation["contract_sha256"] if evaluation is not None else None
         trial["response_receipt"] = summary
         trial["response_receipt_status"] = "VERIFIED"
         receipts.append(summary)
@@ -336,9 +353,10 @@ def _apply_response_receipts(
     """Apply receipts without clearing unrelated NON_FILE obligations."""
 
     obligation_ids = _acceptance_report_obligation_ids(task)
-    if not obligation_ids:
+    response_contract = task.get("response_contract")
+    if not obligation_ids and response_contract is None:
         return
-    errors, receipts = _attach_response_receipts(rollout, expected_trials)
+    errors, receipts = _attach_response_receipts(rollout, expected_trials, response_contract)
     result["response_receipts"] = receipts
     raw_results = rollout.get("results")
     trials = raw_results.get("trials") if isinstance(raw_results, dict) else None
@@ -367,6 +385,30 @@ def _apply_response_receipts(
         result["status"] = "REVIEW"
         result["sft_eligible"] = False
         return
+    if len(receipts) != expected_trials:
+        result["status"] = "REVIEW"
+        result["sft_eligible"] = False
+        result["errors"] = [*(result.get("errors") or []), "NON_FILE_RESPONSE_UNVERIFIED"]
+        return
+    verified = set(non_file_obligation_ids(task))
+    for receipt in receipts:
+        verified.intersection_update(receipt["verified_obligation_ids"])
+    result["unverified_obligations"] = [
+        item for item in result.get("unverified_obligations") or [] if item not in verified
+    ]
+    result["pending_response_obligations"] = [
+        item for item in result["unverified_obligations"] if item in set(non_file_obligation_ids(task))
+    ]
+    contract_errors = [
+        f"RESPONSE_CONTRACT_UNVERIFIED:{index}:{check['obligation_id']}:{error}"
+        for index, receipt in enumerate(receipts)
+        for check in receipt["contract_checks"]
+        for error in check.get("errors") or []
+    ]
+    if contract_errors:
+        result["status"] = "REVIEW"
+        result["sft_eligible"] = False
+        result["errors"] = list(dict.fromkeys([*(result.get("errors") or []), *contract_errors]))
 
 
 class HarborCalibrationExecutor:
