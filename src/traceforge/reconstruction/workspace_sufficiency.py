@@ -147,13 +147,14 @@ def run_workspace_sufficiency(
     # Probe execution is a deterministic environment-stage responsibility.
     # The model may still judge contextual sufficiency without it, but it must
     # never be reported as execution-ready with zero or partial probes.
+    execution_probe_errors: list[str] = []
     probe_kinds = {
         item.get("purpose")
         for item in session.environment_probes
         if isinstance(item, dict) and item.get("status") == "PASS"
     }
     if probe_kinds != {"load", "reset", "dependency"}:
-        errors.append("ENVIRONMENT_PROBES_REQUIRED")
+        execution_probe_errors.append("ENVIRONMENT_PROBES_REQUIRED")
     payload = ran.payload if isinstance(ran.payload, dict) else {}
     label = str(payload.get("label", "UNKNOWN"))
     decision = str(payload.get("decision", "REVIEW"))
@@ -210,6 +211,7 @@ def run_workspace_sufficiency(
     preflight_errors = [
         error for error in errors if error.startswith(execution_only_prefixes)
     ]
+    preflight_errors.extend(execution_probe_errors)
     result_status = semantic_status
     result = {
         "schema_version": SUFFICIENCY_SCHEMA,
