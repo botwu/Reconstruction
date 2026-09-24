@@ -1023,6 +1023,9 @@ def execute_rollout_plan(
             text=True,
             timeout=timeout_seconds,
             check=False,
+            # 让 Harbor job 脱离启动它的 SSH/交互进程组；长 Hermes
+            # trial 不应因外层会话断开而收到 SIGTERM。
+            start_new_session=True,
         )
     except subprocess.TimeoutExpired as exc:
         return {
