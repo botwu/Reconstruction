@@ -43,6 +43,7 @@ from traceforge.reconstruction.task_fit import (
     build_environment_contract,
     build_task_contract,
     build_task_variant,
+    environment_execution_blockers,
     fit_task_environment,
     generate_task_variant,
 )
@@ -626,6 +627,32 @@ def _task_result(
             }
         )
         return result
+    # A context-ready snapshot may still be review-only. Do not let an
+    # explicit Hermes request turn missing execution probes into a real run.
+    if verification_config.execute_rollout:
+        execution_blockers = environment_execution_blockers(environment)
+        if execution_blockers:
+            verification = {
+                "schema_version": "traceforge.reconstruction-verification.v1",
+                "status": "REVIEW",
+                "errors": execution_blockers,
+                "execution_gate": {
+                    "status": "BLOCKED",
+                    "blockers": execution_blockers,
+                    "execution_readiness": environment.get("execution_readiness"),
+                },
+                "rollout": "SKIPPED",
+                "sft_eligible": False,
+                "unverified_obligations": [],
+            }
+            _write_stage_json(
+                task_root / "verification", "execution_gate.json", verification["execution_gate"]
+            )
+            result["verification"] = verification
+            result["status"] = "REVIEW"
+            result["stopped_at"] = "verification"
+            result["errors"] = execution_blockers
+            return result
     verification = run_reconstruction_verification(
         task=task_for_verification,
         workspace_root=chosen["workspace"],

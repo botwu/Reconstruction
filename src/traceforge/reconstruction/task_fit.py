@@ -186,6 +186,29 @@ def build_environment_contract(
     }
 
 
+def environment_execution_blockers(environment: dict[str, Any] | None) -> list[str]:
+    """Return deterministic blockers for a real verifier/Hermes execution.
+
+    READY certifies that the reconstructed context is present. A real agent run
+    additionally needs immutable load/reset/dependency probes. This keeps a
+    review snapshot from being presented as an executable task.
+    """
+    if not isinstance(environment, dict):
+        return ["ENVIRONMENT_CONTRACT_MISSING"]
+    blockers: list[str] = []
+    if environment.get("status") != "READY":
+        blockers.append(f"ENVIRONMENT_CONTEXT_{environment.get('status', 'UNKNOWN')}")
+    if environment.get("execution_readiness") != "PROBED":
+        blockers.append("ENVIRONMENT_EXECUTION_UNREADY")
+    for error in environment.get("execution_errors") or []:
+        if isinstance(error, str) and error:
+            blockers.append(error)
+    probes = environment.get("probes")
+    if not isinstance(probes, list) or not probes:
+        blockers.append("ENVIRONMENT_PROBES_REQUIRED")
+    return list(dict.fromkeys(blockers))
+
+
 def build_task_contract(*, task: dict[str, Any]) -> dict[str, Any]:
     """原始用户意图只复制不改写；派生任务另存。"""
     for key in ("task_id", "task_instruction", "core_objective"):

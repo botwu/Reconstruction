@@ -10,6 +10,7 @@ from traceforge.reconstruction.task_fit import (
     build_environment_contract,
     build_task_contract,
     build_task_variant,
+    environment_execution_blockers,
     fit_task_environment,
 )
 
@@ -216,6 +217,19 @@ def test_probe_pass_without_workspace_execution_receipt_cannot_make_environment_
     assert environment["status"] == "READY"
     assert environment["execution_readiness"] == "FAILED"
     assert any(error.startswith("ENVIRONMENT_PROBE_NOT_PASS") for error in environment["execution_errors"])
+
+
+def test_execution_blockers_keep_unprobed_review_snapshot_out_of_rollout() -> None:
+    environment = {
+        "status": "READY",
+        "execution_readiness": "FAILED",
+        "execution_errors": ["ENVIRONMENT_PROBES_REQUIRED"],
+        "probes": [],
+    }
+    assert environment_execution_blockers(environment) == [
+        "ENVIRONMENT_EXECUTION_UNREADY",
+        "ENVIRONMENT_PROBES_REQUIRED",
+    ]
 
 
 def test_unknown_with_bound_evidence_stays_review(tmp_path: Path) -> None:

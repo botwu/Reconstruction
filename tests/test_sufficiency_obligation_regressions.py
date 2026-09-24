@@ -89,7 +89,7 @@ def _config(tmp_path: Path, *, execute_red=True):
     )
 
 
-def test_mixed_non_file_obligation_still_runs_file_red(tmp_path: Path, monkeypatch):
+def test_mixed_non_file_obligation_blocks_real_rollout(tmp_path: Path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "billing.py").write_text("def bill(x): return x\n", encoding="utf-8")
@@ -98,34 +98,21 @@ def test_mixed_non_file_obligation_still_runs_file_red(tmp_path: Path, monkeypat
     task["environment_bindings"].append({
         "obligation_id": "research", "verifier_kind": "NON_FILE", "required_paths": [], "observable": "",
     })
-    constructed: list[bool] = []
 
     class FakeExec:
         def __init__(self, **kwargs):
             del kwargs
-            constructed.append(True)
-            self.attempts = []
-            self.bundle = None
-
-        def run(self, generated):
-            del generated
-            pytest.fail("recovery without a candidate must not calibrate")
+            pytest.fail("unresolved NON_FILE obligation must block real rollout")
 
     monkeypatch.setattr(verification_module, "HarborCalibrationExecutor", FakeExec)
-    monkeypatch.setattr(
-        recovery_module,
-        "run_verifier_recovery",
-        lambda **kwargs: ({"status": "REVIEW", "errors": ["VERIFIER_REVIEW"], "unverified_obligations": []}, None),
-    )
     result = run_reconstruction_verification(
         task=task, workspace_root=workspace, model=None,
         agent=object(), output_root=tmp_path / "verification",
         config=_config(tmp_path),
     )
-    assert constructed
+    assert result["status"] == "REVIEW"
     assert result["unverified_obligations"] == ["research"]
-    assert "UNVERIFIED_OBLIGATIONS" not in result["errors"]
-    assert result["sft_eligible"] is False
+    assert "UNVERIFIED_OBLIGATIONS" in result["errors"]
     assert result["rollout"] == "NOT_RUN"
 
 

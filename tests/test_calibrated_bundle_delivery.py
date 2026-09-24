@@ -52,11 +52,16 @@ def test_red_only_publishes_real_bundle_without_claiming_rollout(tmp_path, monke
     for relative in (
         "task/task.toml", "task/instruction.md", "task/workspace/main.py",
         "task/solution/solve.sh", "task/tests/test_outputs.py",
-        "task/tests/rubric.json", "dataset.toml", "artifact_manifest.json",
+        "task/tests/rubric.json", "task/tests/control/input-manifest.json",
+        "dataset.toml", "artifact_manifest.json",
     ):
         assert (bundle / relative).is_file(), relative
     assert (bundle / "task/environment").is_dir()
     assert (bundle / "task/tests/control").is_dir()
+    input_manifest = json.loads(
+        (bundle / "task/tests/control/input-manifest.json").read_text()
+    )
+    assert input_manifest["schema_version"] == "traceforge.control-input-manifest.v1"
     assert (bundle / "task/instruction.md").read_text().strip() == _TASK["task_instruction"]
     assert (bundle / "task/workspace/main.py").read_text() == "print('task-start')\n"
     assert (bundle / "task/tests/test_outputs.py").read_text() == result["verifier"]["test_outputs_py"]

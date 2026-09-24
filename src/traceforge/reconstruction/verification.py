@@ -695,8 +695,14 @@ def _record_unverified_obligations(
     *,
     task: dict[str, Any],
     audit: dict[str, Any] | None = None,
+    block_non_file: bool = False,
 ) -> bool:
-    """记下无法用 pytest 证明的义务。NON_FILE 不挡 FILE 义务的 RED。"""
+    """Record obligations that the current verifier cannot prove.
+
+    NON_FILE obligations may remain visible while RED-only calibration is used
+    to inspect the FILE subset. A real Hermes rollout must block on every
+    unresolved obligation because no calibrated evaluator covers it.
+    """
 
     non_file = set(non_file_obligation_ids(task))
     recorded = list(result.get("unverified_obligations") or [])
@@ -709,7 +715,7 @@ def _record_unverified_obligations(
         recorded.append("INVALID_UNVERIFIED_OBLIGATIONS")
     unresolved = list(dict.fromkeys(recorded))
     result["unverified_obligations"] = unresolved
-    blocking = [item for item in unresolved if item not in non_file]
+    blocking = unresolved if block_non_file else [item for item in unresolved if item not in non_file]
     if not blocking:
         return False
     result["status"] = "REVIEW"
@@ -751,7 +757,9 @@ def run_reconstruction_verification(
             return result
         # There is currently no calibrated NON_FILE evaluator. Do not spend
         # model or sandbox calls certifying only the file subset of a task.
-        if _record_unverified_obligations(result, task=task):
+        if _record_unverified_obligations(
+            result, task=task, block_non_file=config.execute_rollout
+        ):
             _write_verification(root, result, config)
             return result
         if agent is not None and config.should_run_red():
@@ -776,7 +784,9 @@ def run_reconstruction_verification(
                     round_number=round_number,
                 )
                 audit = recovered
-                if _record_unverified_obligations(result, task=task, audit=recovered):
+                if _record_unverified_obligations(
+                    result, task=task, audit=recovered, block_non_file=config.execute_rollout
+                ):
                     iterations.append({
                         "round": round_number,
                         "status": "REVIEW",
@@ -982,7 +992,9 @@ def run_reconstruction_verification(
             return result
         else:
             result["errors"] = ["VERIFIER_SOURCE_MISSING"]
-        if _record_unverified_obligations(result, task=task, audit=audit):
+        if _record_unverified_obligations(
+            result, task=task, audit=audit, block_non_file=config.execute_rollout
+        ):
             candidate = None
         if candidate is not None and result["status"] != "READY":
             bundle = compile_bundle(

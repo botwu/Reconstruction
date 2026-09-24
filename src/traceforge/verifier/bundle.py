@@ -135,6 +135,33 @@ def compile_bundle(
             json.dumps(env_metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        # Bind the hidden control inputs used by grading to this immutable
+        # task snapshot. The grader uses this file to publish an
+        # evaluation_contract instead of silently grading an unbound bundle.
+        (root / "tests/control/input-manifest.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "traceforge.control-input-manifest.v1",
+                    "task_id": task.get("task_id"),
+                    "source_task_hash": task.get("source_task_hash"),
+                    "workspace_sha256": tree,
+                    "environment_metadata": env_metadata,
+                    "hidden_control_files": (
+                        sorted(
+                            path.relative_to(hidden_source).as_posix()
+                            for path in hidden_source.rglob("*")
+                            if path.is_file()
+                        )
+                        if hidden_source is not None
+                        else []
+                    ),
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ) + "\n",
+            encoding="utf-8",
+        )
         (root / "instruction.md").write_text(instruction + "\n", encoding="utf-8")
         (root / "task.toml").write_text(
             'schema_version = "1.4"\n[task]\n'
