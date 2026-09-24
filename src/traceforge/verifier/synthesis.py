@@ -155,12 +155,17 @@ def _task_explicitly_requires_heading(task_text: str, term: re.Pattern[str]) -> 
             continue
         if _HEADING_CONTEXT.search(window):
             return True
-        # 引号中的标题通常是字面契约；只有同时出现要求性动词时才授权。
-        if re.search(
+        # 只有标题词本身被引用且邻近出现要求性动词，才授权字面契约。
+        quoted_term = re.search(
+            rf"""['"]\s*{re.escape(match.group())}\s*['"]""",
+            window,
+            re.IGNORECASE,
+        )
+        if quoted_term and re.search(
             r"\b(?:must|should|required|include|contain|write|use|return|provide)\b",
             window,
             re.IGNORECASE,
-        ) and re.search(r"""['"][^'"]{1,80}['"]""", window):
+        ):
             return True
     return False
 
