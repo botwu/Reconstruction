@@ -541,6 +541,90 @@ def select_sufficient_candidate(
     }
 
 
+SOURCE_EXCERPTS_PATH = ".traceforge/source-excerpts.json"
+
+
+def _public_source_excerpts(
+    replay: ReplayResult, evidence_refs: set[str],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """保留任务前受信片段及真实缺口，不补造源码，也不公开隐藏写入。"""
+    partial_paths = {_safe_path(item.path) for item in replay.files if item.completeness == "PARTIAL"}
+    invalid_paths = {
+        item.get("path") for item in replay.partial_evidence
+        if str(item.get("reason", "")).startswith("read_segment_")
+    }
+    blocked_refs = {item.event_id for item in replay.withheld_changes}
+    blocked_refs.update(
+        item.get("source_event_id") for item in replay.partial_evidence
+        if item.get("reason") in {"read_after_first_mutation", "read_after_unparsed_mutation"}
+    )
+    by_path: dict[str, list[dict[str, Any]]] = {}
+    for item in replay.partial_evidence:
+        path = item.get("path")
+        ref = item.get("source_event_id")
+        if (
+            item.get("reason") == "read_segment"
+            and path in partial_paths - invalid_paths
+            and ref in evidence_refs - blocked_refs
+            and item.get("range_valid") is True
+        ):
+            by_path.setdefault(path, []).append(item)
+    files: list[dict[str, Any]] = []
+    texts: dict[str, str] = {}
+    for path, segments in sorted(by_path.items()):
+        observed: dict[int, str] = {}
+        totals = {item["total_lines"] for item in segments if item.get("total_lines") is not None}
+        valid = len(totals) <= 1
+        for item in segments:
+            numbers, contents = item["line_numbers"], item["line_contents"]
+            valid = valid and bool(numbers) and len(numbers) == len(contents)
+            for number, content in zip(numbers, contents):
+                valid = valid and isinstance(number, int) and number > 0 and isinstance(content, str)
+                if number in observed and observed[number] != content:
+                    valid = False
+                observed[number] = content
+        total = next(iter(totals), None)
+        if not valid or (total is not None and (not isinstance(total, int) or max(observed) > total)):
+            continue
+        missing: list[list[int]] | None = None
+        if total is not None:
+            missing = []
+            previous = 0
+            for number in sorted(observed):
+                if number > previous + 1:
+                    missing.append([previous + 1, number - 1])
+                previous = number
+            if previous < total:
+                missing.append([previous + 1, total])
+        index: list[dict[str, Any]] = []
+        for item in segments:
+            excerpt_path = f".traceforge/source-excerpts/{len(texts) + 1:04d}.txt"
+            numbers = item["line_numbers"]
+            texts[excerpt_path] = (
+                f"# 部分原始源码：{path}；以下编号为原文件行号，不代表完整文件。\n\n"
+                + "\n".join(f"{number}: {line}" for number, line in zip(numbers, item["line_contents"]))
+                + "\n"
+            )
+            index.append({
+                "source_event_id": item["source_event_id"],
+                "excerpt_path": excerpt_path,
+                "line_start": numbers[0],
+                "line_end": numbers[-1],
+            })
+        files.append({
+            "path": path,
+            "total_lines": total,
+            "missing_line_ranges": missing,
+            "segments": index,
+        })
+    return {
+        "schema_version": "traceforge.source-excerpts.v1",
+        "notice": "仅含任务开始前的部分源码观察；行号对应原文件，缺失区间为闭区间。"
+                  "null 表示总行数或完整缺口未知。不得将这些片段视为完整源码或补造缺失部分。",
+        "files": files,
+    }, texts
+
+
 def materialize_environment(
     replay: ReplayResult,
     candidate: dict[str, Any],
@@ -564,6 +648,7 @@ def materialize_environment(
     )
     if not ok:
         raise EnvironmentReconstructionError(";".join(errors))
+    excerpts, excerpt_texts = _public_source_excerpts(replay, evidence_refs)
     root = Path(destination)
     if root.exists():
         shutil.rmtree(root)
@@ -594,6 +679,23 @@ def materialize_environment(
             "evidence_ref_ids": list(item.get("evidence_ref_ids", [])),
             "content_sha256": hashlib.sha256(item["content"].encode("utf-8")).hexdigest(),
         }
+    if excerpts["files"]:
+        excerpt_texts[SOURCE_EXCERPTS_PATH] = json.dumps(excerpts, ensure_ascii=False, indent=2) + "\n"
+        for relative, content in excerpt_texts.items():
+            target = public / relative
+            if target.exists():
+                raise EnvironmentReconstructionError("SOURCE_EXCERPTS_PATH_COLLISION")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            provenance[relative] = {
+                "kind": "OBSERVED_EXCERPTS",
+                "evidence_ref_ids": sorted({
+                    segment["source_event_id"]
+                    for item in excerpts["files"] for segment in item["segments"]
+                    if relative == SOURCE_EXCERPTS_PATH or relative == segment["excerpt_path"]
+                }),
+                "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            }
     (hidden / "withheld_changes.json").write_text(
         json.dumps([asdict(x) for x in replay.withheld_changes], ensure_ascii=False, indent=2)
         + "\n",

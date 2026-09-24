@@ -289,6 +289,8 @@ _NUMBERED_DISPLAY_LINE = re.compile(r"^[ \t]*\d+: ?")
 
 
 _NATIVE_NUMBERED_LINE = re.compile(r"^[ \t]*(\d+)\t")
+_HASH_NUMBERED_LINE = re.compile(r"^[ \t]*(\d+)#(?:[A-Z]{2}|\[[A-Z][A-Z0-9_]*\]):")
+_PI_READ_FOOTER = re.compile(r"\r?\n(?:\r?\n)?\[Showing lines [^\r\n]+\]\s*$")
 _READ_TOTAL = re.compile(r"(?:Showing lines (\d+)-(\d+) of (\d+)|End of file - total (\d+) lines)")
 
 
@@ -312,6 +314,13 @@ def _read_tool_observation(text: str, arguments: dict[str, Any]) -> dict[str, An
             total = int(declared.group(3) or declared.group(4))
         body = _READ_TOOL_FOOTER.sub("", body)
         prefix = re.compile(r"^[ \t]*(\d+): ?")
+    elif arguments.get("raw") is not True and _HASH_NUMBERED_LINE.match(text):
+        footer = _PI_READ_FOOTER.search(text)
+        declared = _READ_TOTAL.search(footer.group(0)) if footer else None
+        if declared:
+            total = int(declared.group(3))
+        body = _PI_READ_FOOTER.sub("", text)
+        prefix = _HASH_NUMBERED_LINE
     else:
         body = text
         declared = None
@@ -327,7 +336,7 @@ def _read_tool_observation(text: str, arguments: dict[str, Any]) -> dict[str, An
         return {"content": None, "partial": True}
     contents = [line[match.end():] for line, match in zip(lines, matches) if match is not None]
     content = "".join(contents)
-    if wrapped and content and not content.endswith("\n"):
+    if (wrapped or prefix is _HASH_NUMBERED_LINE) and content and not content.endswith("\n"):
         content += "\n"
     if total is not None:
         range_valid = numbers[-1] <= total
@@ -997,7 +1006,7 @@ def _usable_tool_result(item: dict[str, Any]) -> bool:
     if status in {"error", "failed", "failure", "cancelled", "timeout", "cleared"}:
         return False
     result = item.get("result_text")
-    if isinstance(result, str) and result.lstrip().lower().startswith(("error:", "command failed", "traceback", "<tool_use_error>", "[tool result content cleared]")):
+    if isinstance(result, str) and result.lstrip().lower().startswith(("error:", "file not found:", "command failed", "traceback", "<tool_use_error>", "[tool result content cleared]")):
         return False
     return True
 

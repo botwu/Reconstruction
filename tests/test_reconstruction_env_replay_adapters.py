@@ -292,3 +292,64 @@ def test_native_read_segments_conflict_stays_partial() -> None:
         item.get("reason") == "read_segment_conflict"
         for item in replay.partial_evidence
     )
+
+
+def _hash_read(start: int, end: int, total: int, *, call_id: str) -> dict[str, object]:
+    return {
+        "call_id": call_id,
+        "name": "read",
+        "arguments": {"path": "/work/main.py", "offset": start, "limit": end - start + 1},
+        "result_text": "\n".join(f"{line:4}#AB:    line-{line}" for line in range(start, end + 1))
+        + f"\n\n[Showing lines {start}-{end} of {total} (50.0KB limit). Use offset={end + 1} to continue.]",
+    }
+
+
+def test_pi_hashline_reads_remove_display_metadata_and_merge_full_coverage() -> None:
+    replay = replay_from_timeline([
+        _hash_read(1, 2, 3, call_id="first"),
+        _hash_read(2, 3, 3, call_id="last"),
+    ])
+    assert replay.files[0].content == "    line-1\n    line-2\n    line-3\n"
+    assert replay.files[0].completeness == "COMPLETE"
+
+
+def test_pi_hashline_gaps_keep_later_evidence_without_inventing_source() -> None:
+    replay = replay_from_timeline([
+        _hash_read(1, 2, 5, call_id="first"),
+        _hash_read(4, 5, 5, call_id="last"),
+    ])
+    assert replay.files[0].completeness == "PARTIAL"
+    assert replay.files[0].content == "    line-1\n    line-2\n"
+    segments = [item for item in replay.partial_evidence if item["reason"] == "read_segment"]
+    assert [(item["source_event_id"], item["line_numbers"]) for item in segments] == [
+        ("first", [1, 2]), ("last", [4, 5]),
+    ]
+    assert segments[1]["content"] == "    line-4\n    line-5\n"
+
+
+def test_pi_hashline_inconsistent_footer_cannot_certify_complete_file() -> None:
+    event = _hash_read(1, 2, 2, call_id="read")
+    event["result_text"] = str(event["result_text"]).replace("lines 1-2", "lines 2-3")
+    replay = replay_from_timeline([event])
+    assert replay.files[0].completeness == "PARTIAL"
+    assert any(item["reason"] == "read_segment_range_mismatch" for item in replay.partial_evidence)
+
+
+def test_pi_raw_read_preserves_hashline_like_source_bytes() -> None:
+    source = "1#AB:literal source\n2#CD:literal source"
+    replay = replay_from_timeline([_read(source, raw=True)])
+    assert replay.files[0].content == source
+    assert replay.files[0].completeness == "COMPLETE"
+
+
+def test_pi_redacted_hash_is_metadata_but_source_redactions_are_preserved() -> None:
+    replay = replay_from_timeline([_read(
+        "1#AB:before\n2#[INTERNAL_NAME_REDACTED]:[PII_REDACTED]\n"
+        "\n[Showing lines 1-2 of 2.]",
+    )])
+    assert replay.files[0].content == "before\n[PII_REDACTED]\n"
+
+
+def test_pi_missing_file_result_is_not_materialized_as_source() -> None:
+    replay = replay_from_timeline([_read("File not found: /work/main.py", raw=True)])
+    assert replay.files == ()
