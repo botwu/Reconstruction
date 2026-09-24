@@ -20,7 +20,7 @@ from traceforge.reconstruction.environment_bindings import (
 from traceforge.screening.task_labels import apply_task_tags, is_selected_reconstruction_task
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v10-anchor-deepen"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v11-scoped-path-evidence"
 _STUB_OBSERVABLE = "replayed excerpts still present"
 _REVIEW_ONLY = re.compile(
     r"(?i)(只读(?:代码)?(?:评审|审查)|只审查(?:并)?不修改|只查看.*不修改|"
@@ -195,6 +195,7 @@ def _prompt(
         "Use only explicit user intent and evidence refs; never turn assistant/tool actions into requirements.",
         "Do not merge another tagged task. A clarification/correction belongs here only when its message is in this task tag.",
         "Do not web-search or invent workspace paths. Bind only paths listed in ALLOWED_OBSERVED_PATHS.",
+        "路径按证据角色绑定：引用用户消息中实际要求读取/修改的路径是初始输入；明确新增/生成的路径是执行输出，不要求 task-start 已存在。格式示例、分类词、工具正文中的字符串不是环境依赖。每条义务只使用其 evidence_ref_ids 引用的用户要求，不能把其他消息的平台说明转成依赖。",
         "initial_required_paths are task-start inputs; they may name an explicitly referenced but currently missing input and must remain a blocker. output_paths are only explicit new/generated final files. required_paths is their union. Listing-only names are not bindings. When FILE_BINDING_PATHS is empty, do not invent a project.",
         "Classify every acceptance obligation exactly once in environment_bindings. Do not omit an obligation or infer a missing binding from shared context; missing bindings are a REVIEW error.",
         "FILE 表示该义务的完成状态可以从沙盒文件或本地程序行为中完整验证。observable 必须描述用户要求的最终状态，不能仅检查初始文件仍然存在。",
@@ -227,6 +228,7 @@ def _gate(
     *,
     allowed_paths: list[str],
     user_blob: str,
+    user_records: list[dict[str, Any]] | None = None,
     file_binding_paths: list[str] | None = None,
 ) -> tuple[str, list[str], dict[str, Any]]:
     errors: list[str] = []
@@ -249,6 +251,7 @@ def _gate(
         normalized,
         allowed_paths,
         user_blob=user_blob,
+        user_records=user_records,
         file_binding_paths=file_binding_paths,
         # 模型返回该字段时必须覆盖全部义务；旧 fixture 未返回字段时，
         # 保留确定性的兼容推导。
@@ -320,6 +323,7 @@ def run_intent_recovery(
                 known_ids,
                 allowed_paths=allowed_paths,
                 user_blob=user_blob,
+                user_records=records,
                 file_binding_paths=file_binding_paths,
             )
             errors = list(ran.errors) + errors

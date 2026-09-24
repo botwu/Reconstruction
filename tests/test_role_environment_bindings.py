@@ -729,3 +729,89 @@ def test_mixed_required_and_explicit_output_paths_are_preserved() -> None:
     assert bindings[0]["required_paths"] == ["src/foo.py", "report.md"]
     assert bindings[0]["initial_required_paths"] == ["src/foo.py"]
     assert bindings[0]["output_paths"] == ["report.md"]
+
+
+def test_review_contract_examples_are_not_workspace_evidence() -> None:
+    """真实只读审查合同中的分类词和 JSON 格式示例不能变成环境输入。"""
+    request = (
+        "Read `brief.md` and inspect `src/core.rs`. Review panic/cancellation/shutdown "
+        "behavior and lock/lifetime safety. Return Critical/Important/Minor findings. "
+        "Write the full report to `reports/review.md`.\n"
+        "Finish with a fenced JSON block in this shape:\n"
+        "```acceptance-report\n"
+        '{"changedFiles": ["src/file.ts"], "testsAdded": ["test/file.test.ts"]}\n'
+        "```\n"
+    )
+    records = [
+        {"id": "user:1", "text": "Platform instructions: load references/tools.md and AGENTS.md"},
+        {"id": "user:2", "text": request},
+    ]
+    source = {"tool_timeline": [{
+        "name": "read_file", "arguments": {"path": "src/core.rs"},
+        "result_text": '// Example: src/from_comment.ts\nfn run() {}\n',
+    }]}
+    allowed = collect_allowed_paths(source, records)
+    assert {"brief.md", "src/core.rs", "reports/review.md"} <= set(allowed)
+    assert not ({"Critical/", "Critical/Important/", "panic/", "panic/cancellation/",
+                 "lock/", "src/file.ts", "test/file.test.ts", "src/from_comment.ts"}
+                & set(allowed))
+    obligations = [{"id": "review", "text": "Write reports/review.md with findings",
+                    "evidence_ref_ids": ["user:2"]}]
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{"obligation_id": "review", "verifier_kind": "FILE",
+                                    "required_paths": [], "observable": "报告提供准确的审查发现"}]},
+        obligations, allowed, user_blob="\n".join(row["text"] for row in records),
+        user_records=records, file_binding_paths=["src/core.rs", "src/"],
+    )
+    assert errors == []
+    assert set(bindings[0]["initial_required_paths"]) == {"brief.md", "src/core.rs"}
+    assert bindings[0]["output_paths"] == ["reports/review.md"]
+    assert "AGENTS.md" not in bindings[0]["required_paths"]
+    assert "references/tools.md" not in bindings[0]["required_paths"]
+
+
+def test_real_directories_are_kept_without_promoting_parent_prefixes() -> None:
+    request = "Inspect `src/` and assets/. Create reports/result.md."
+    allowed = collect_allowed_paths({}, [{"id": "user:0", "text": request}])
+    assert {"src/", "assets/", "reports/result.md"} <= set(allowed)
+    from traceforge.reconstruction.environment_bindings import derive_binding
+
+    binding = derive_binding({"id": "o1", "text": request}, allowed, request,
+                             file_binding_paths=[])
+    assert set(binding["initial_required_paths"]) == {"src/", "assets/"}
+    assert binding["output_paths"] == ["reports/result.md"]
+    assert "reports/" not in binding["required_paths"]
+
+
+def test_new_test_file_is_an_output_while_explicit_missing_input_stays_input() -> None:
+    request = "Modify src/parser.py and add tests/test_parser.py."
+    allowed = collect_allowed_paths({}, [{"id": "user:0", "text": request}])
+    obligations = [{"id": "o1", "text": request, "evidence_ref_ids": ["user:0"]}]
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{"obligation_id": "o1", "verifier_kind": "FILE",
+                                    "required_paths": ["src/parser.py", "tests/test_parser.py"],
+                                    "observable": "解析器修复且新测试覆盖回归"}]},
+        obligations, allowed, user_blob=request, file_binding_paths=[],
+    )
+    assert errors == []
+    assert bindings[0]["initial_required_paths"] == ["src/parser.py"]
+    assert bindings[0]["output_paths"] == ["tests/test_parser.py"]
+
+
+def test_inline_example_is_context_but_observed_same_path_remains_bindable() -> None:
+    request = "Inspect src/real.py; output examples, e.g. src/example.py:12."
+    records = [{"id": "user:0", "text": request}]
+    assert "src/example.py" not in collect_allowed_paths({}, records)
+    source = {"tool_timeline": [{"name": "read_file",
+                                "arguments": {"path": "src/example.py"},
+                                "result_text": "def run(): return 1\n"}]}
+    assert "src/example.py" in collect_allowed_paths(source, records)
+
+
+def test_listing_path_column_is_allowed_but_matched_source_text_is_not() -> None:
+    allowed = collect_allowed_paths({"tool_timeline": [{
+        "name": "exec", "arguments": {"command": "rg example src/"},
+        "result_text": 'src/real.py:12:# example src/fiction.py\n',
+    }]})
+    assert {"src/", "src/real.py"} <= set(allowed)
+    assert "src/fiction.py" not in allowed
