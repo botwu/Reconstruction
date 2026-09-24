@@ -12,10 +12,12 @@ assistant messages to capture exchanges by tool_call_id, keep compacted
 capture calls as raw evidence with warnings, and compute ATIF usage from
 represented calls while retaining full raw usage separately. The validator
 skips only positional transcript/count checks that are undefined after
-compaction; raw capture completeness and tool-result integrity remain strict.
+compaction; raw capture completeness and tool-result integrity remain strict. It also
+accepts Harbor's native list-shaped artifact manifest after validating bounded
+destinations, status, regular files, symlinks, and hardlinks.
 
 Runtime evidence.py SHA-256:
 98fdc7fc0e98b9c298571d2483d286fc72be16776cab140eb3e718d54846aeba
 
 Runtime validator.py SHA-256:
-f05494204a5889a31470ed8c53a8529fcaf88970262e1174586b1825ee95d094
+9a54deaff2baba525f993d9476a7e8080e2389a30f2d4b4612269019486fb420
