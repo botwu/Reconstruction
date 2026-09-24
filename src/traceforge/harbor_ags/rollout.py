@@ -462,19 +462,23 @@ def _bind_agent_budgets(rendered: str, iterations: int, timeout_seconds: int) ->
         body = body.rstrip() + f"\n{indent}override_timeout_sec: {timeout_seconds}\n"
     kwargs_pattern = rf"(?m)^{indent}kwargs:[ \t]*$"
     kwargs = re.search(kwargs_pattern, body)
+    limits = {"max_iterations": iterations, "capture_timeout_sec": timeout_seconds}
     if kwargs is None:
-        body = body.rstrip() + f"\n{indent}kwargs:\n{indent}  max_iterations: {iterations}\n"
+        body = body.rstrip() + f"\n{indent}kwargs:\n" + "".join(
+            f"{indent}  {name}: {value}\n" for name, value in limits.items()
+        )
     else:
         # 仅在当前 kwargs 的直属字段中改写，不能匹配 env 映射里的内容。
         tail = body[kwargs.end():]
         boundary = re.search(rf"(?m)^{indent}\S", tail)
         finish = kwargs.end() + boundary.start() if boundary else len(body)
         contents = body[kwargs.end():finish]
-        pattern = rf"(?m)^{indent}  max_iterations:[^\n]*$"
-        if re.search(pattern, contents):
-            contents = re.sub(pattern, f"{indent}  max_iterations: {iterations}", contents)
-        else:
-            contents = f"\n{indent}  max_iterations: {iterations}" + contents
+        for name, value in limits.items():
+            pattern = rf"(?m)^{indent}  {name}:[^\n]*$"
+            if re.search(pattern, contents):
+                contents = re.sub(pattern, f"{indent}  {name}: {value}", contents)
+            else:
+                contents = f"\n{indent}  {name}: {value}" + contents
         body = body[:kwargs.end()] + contents + body[finish:]
     return rendered[:block.start()] + body + rendered[block.end():]
 
@@ -946,6 +950,31 @@ def _assert_plan_integrity(plan_dir: Path, plan: dict[str, Any]) -> None:
         raise HarborRolloutError("rollout plan command 未绑定到本 plan 的 harbor run")
 
 
+def _update_run_receipt(
+    plan_dir: Path, *, status: str, returncode: int | None = None, error: str = ""
+) -> None:
+    """原子更新真实执行状态，保留不可变计划及其清单绑定。"""
+
+    path = plan_dir / "run_receipt.json"
+    try:
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise HarborRolloutError("run_receipt.json 无法读取") from exc
+    if not isinstance(receipt, dict):
+        raise HarborRolloutError("run_receipt.json 根节点必须是对象")
+    receipt.update(
+        status=status,
+        external_execution=True,
+        returncode=returncode,
+        error=_redact_output(error)[-2000:],
+    )
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(
+        json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    os.replace(temporary, path)
+
+
 def execute_rollout_plan(
     plan_dir: Path,
     *,
@@ -1014,6 +1043,7 @@ def execute_rollout_plan(
     missing = _missing_execution_credentials(env, str(mode))
     if missing:
         raise HarborRolloutError(f"执行 Harbor 前缺少凭据环境变量：{', '.join(missing)}")
+    _update_run_receipt(plan_dir, status="EXECUTING")
     try:
         result = subprocess.run(
             command,
@@ -1028,14 +1058,29 @@ def execute_rollout_plan(
             start_new_session=True,
         )
     except subprocess.TimeoutExpired as exc:
+        _update_run_receipt(plan_dir, status="TIMEOUT", error=str(exc))
         return {
             "status": "TIMEOUT",
             "returncode": None,
             "stdout": "",
-            "stderr": _redact_output(str(exc)[:2000]),
+            "stderr": _redact_output(str(exc))[-2000:],
         }
+    except BaseException as exc:
+        _update_run_receipt(
+            plan_dir,
+            status="ABORTED",
+            error=f"{type(exc).__name__}: {_redact_output(str(exc))[-1800:]}",
+        )
+        raise
+    status = "COMPLETED" if result.returncode == 0 else "FAILED"
+    _update_run_receipt(
+        plan_dir,
+        status=status,
+        returncode=result.returncode,
+        error=result.stderr if result.returncode else "",
+    )
     return {
-        "status": "COMPLETED" if result.returncode == 0 else "FAILED",
+        "status": status,
         "returncode": result.returncode,
         "stdout": _redact_output(result.stdout[-4000:]),
         "stderr": _redact_output(result.stderr[-4000:]),

@@ -57,6 +57,26 @@ def _trial_diagnostic(trial_dir: Path, result: dict[str, Any]) -> dict[str, str]
         final_response = meta.get("final_response")
         if isinstance(final_response, str) and final_response:
             diagnostic["agent_error"] = _redact_detail(final_response)
+    if isinstance(exception, dict):
+        traceback = exception.get("exception_traceback")
+        evidence = traceback if isinstance(traceback, str) else ""
+        causes = (
+            "RemoteProtocolError", "SandboxException", "ConnectException",
+            "EvidenceError", "TimeoutExpired",
+        )
+        cause = next((marker for marker in causes if marker in evidence), None)
+        if cause is None:
+            # 长日志只读取末尾；优先保留结构化 traceback 给出的原因。
+            try:
+                with (trial_dir / "trial.log").open("rb") as log:
+                    log.seek(0, 2)
+                    log.seek(max(0, log.tell() - 65536))
+                    evidence = log.read().decode("utf-8", errors="replace")
+            except OSError:
+                evidence = ""
+            cause = next((marker for marker in causes if marker in evidence), None)
+        if cause is not None:
+            diagnostic["cause_code"] = cause
     return diagnostic
 
 

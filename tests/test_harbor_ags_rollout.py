@@ -125,6 +125,7 @@ def test_prepare_rollout_materializes_dataset_without_executing(
     assert "n_concurrent: 2" in config_text
     assert "n_concurrent: 8" not in config_text
     assert "max_iterations: 30" in config_text
+    assert "capture_timeout_sec: 900" in config_text
     assert f"job_name: {json.dumps(plan['job_name'])}" in config_text
     assert plan["job_name"] == plan["run_id"]
     assert 'model_name: "anthropic/claude-opus-4-8"' in config_text
@@ -239,12 +240,19 @@ def test_execute_rollout_is_explicit(
     observed: list[list[str]] = []
 
     def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert _kwargs["start_new_session"] is True
+        assert json.loads((output / "run_receipt.json").read_text())["status"] == "EXECUTING"
         observed.append(command)
         return subprocess.CompletedProcess(command, 0, "ok", "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     result = execute_rollout_plan(output)
     assert result["status"] == "COMPLETED"
+    receipt = json.loads((output / "run_receipt.json").read_text())
+    assert receipt["status"] == "COMPLETED"
+    assert receipt["external_execution"] is True
+    assert receipt["returncode"] == 0
+    assert receipt["error"] == ""
     assert len(observed) == 1
     assert observed[0][1] == "run"
 
@@ -455,3 +463,64 @@ def test_publish_bundle_rejects_modified_plan_input(tmp_path: Path, tampered: st
     with pytest.raises(HarborRolloutError, match="hash"):
         publish_rollout_bundle(plan, destination)
     assert not destination.exists()
+
+
+@pytest.mark.parametrize("agent_kwargs", ["", "    kwargs:\n      capture_timeout_sec: 120\n"])
+def test_capture_timeout_follows_rollout_budget(tmp_path: Path, agent_kwargs: str) -> None:
+    harbor = _harbor_root(tmp_path / "harbor")
+    source = harbor / "configs/hermes-batch.yaml"
+    source.write_text(source.read_text().replace(
+        "    kwargs:\n      expected_commit: abc\n", agent_kwargs
+    ))
+    plan = build_rollout_plan(HarborRolloutConfig(
+        task_dir=_bundle(tmp_path / "task"), harbor_root=harbor,
+        output_root=tmp_path / "plans", jobs_root=tmp_path / "jobs",
+        timeout_seconds=14400, agent_max_iterations=500,
+    ))
+    rendered = (plan / "harbor-config.yaml").read_text()
+    assert rendered.count("      capture_timeout_sec: 14400") == 1
+    assert "capture_timeout_sec: 120" not in rendered
+    assert "      max_iterations: 500" in rendered
+
+
+@pytest.mark.parametrize("outcome", ["FAILED", "TIMEOUT", "ABORTED"])
+def test_execution_receipt_records_failure_without_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str,
+) -> None:
+    plan = build_rollout_plan(HarborRolloutConfig(
+        task_dir=_bundle(tmp_path / "task"), harbor_root=_harbor_root(tmp_path / "harbor"),
+        output_root=tmp_path / "plans", jobs_root=tmp_path / "jobs",
+    ))
+    monkeypatch.setenv("AGS_API_KEY", "ags-secret")
+    monkeypatch.setenv("TOKENHUB_KEY", "llm-secret")
+    manifest_before = (plan / "artifact_manifest.json").read_bytes()
+    plan_before = (plan / "rollout_plan.json").read_bytes()
+    detail = "x" * 3000 + " api_key=sk-redact-receipt-value"
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert kwargs["start_new_session"] is True
+        assert json.loads((plan / "run_receipt.json").read_text())["status"] == "EXECUTING"
+        if outcome == "TIMEOUT":
+            raise subprocess.TimeoutExpired([detail], 14400)
+        if outcome == "ABORTED":
+            raise KeyboardInterrupt(detail)
+        return subprocess.CompletedProcess(command, 1, "", detail)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    if outcome == "ABORTED":
+        with pytest.raises(KeyboardInterrupt):
+            execute_rollout_plan(plan)
+    else:
+        result = execute_rollout_plan(plan)
+        assert result["status"] == outcome
+    receipt = json.loads((plan / "run_receipt.json").read_text())
+    assert receipt["status"] == outcome
+    assert receipt["external_execution"] is True
+    assert receipt["returncode"] == (1 if outcome == "FAILED" else None)
+    assert 0 < len(receipt["error"]) <= 2000
+    assert "sk-redact-receipt-value" not in receipt["error"]
+    assert "[REDACTED]" in receipt["error"]
+    if outcome == "ABORTED":
+        assert receipt["error"].startswith("KeyboardInterrupt:")
+    assert (plan / "artifact_manifest.json").read_bytes() == manifest_before
+    assert (plan / "rollout_plan.json").read_bytes() == plan_before

@@ -1,8 +1,10 @@
 """Harbor Job 结果读取和质量门禁测试。"""
 
-import json
 import hashlib
+import json
 from pathlib import Path
+
+import pytest
 
 from traceforge.harbor_ags.results import read_rollout_results
 
@@ -254,3 +256,28 @@ def test_results_include_bounded_hermes_failure_detail(tmp_path: Path) -> None:
     assert row["error_code"] == "TrajectoryCaptureError"
     assert "sk-abcdefghijklmnopqrs" not in row["error_detail"]
     assert row["agent_error"] == "HTTP 503: no channel"
+
+
+@pytest.mark.parametrize("traceback, log_text, cause", [
+    ("RemoteProtocolError: incomplete chunked read", "SandboxException", "RemoteProtocolError"),
+    ("", "RemoteProtocolError: incomplete chunked read", "RemoteProtocolError"),
+    ("unknown error", "no transport error", None),
+])
+def test_results_preserve_nested_transport_cause(
+    tmp_path: Path, traceback: str, log_text: str, cause: str | None,
+) -> None:
+    job = tmp_path / "job"
+    trial = job / "task--trial-001"
+    _write(trial / "result.json", {
+        "exception_info": {
+            "exception_type": "TrajectoryCaptureError",
+            "exception_message": "trajectory capture failed",
+            "exception_traceback": traceback,
+        },
+        "agent_result": {},
+    })
+    (trial / "trial.log").write_text(log_text, encoding="utf-8")
+    report = read_rollout_results(job)
+    assert report["trials"][0]["error_code"] == "TrajectoryCaptureError"
+    assert report["trials"][0].get("cause_code") == cause
+    assert report["quality_gate"]["ok"] is False
