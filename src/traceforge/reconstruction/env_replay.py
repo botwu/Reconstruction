@@ -289,14 +289,18 @@ _NUMBERED_DISPLAY_LINE = re.compile(r"^[ \t]*\d+: ?")
 
 
 _NATIVE_NUMBERED_LINE = re.compile(r"^[ \t]*(\d+)\t")
+_HASH_NUMBERED_LINE = re.compile(r"^[ \t]*(\d+)#(?:[A-Z]{2}|\[[A-Z][A-Z0-9_]*\]):")
+_PI_READ_FOOTER = re.compile(r"\r?\n(?:\r?\n)?\[Showing lines [^\r\n]+\]\s*$")
 _READ_TOTAL = re.compile(r"(?:Showing lines (\d+)-(\d+) of (\d+)|End of file - total (\d+) lines)")
 
 
 def _read_tool_observation(text: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """展示行号优先于请求 offset；只有明确总行数才能证明分段已覆盖整文件。"""
 
-    text = _unwrap_exec_result(text)
     partial = any(key in arguments for key in ("offset", "limit", "line_start", "line_end"))
+    if arguments.get("raw") is True:
+        return {"content": text, "partial": partial}
+    text = _unwrap_exec_result(text)
     result: dict[str, Any] = {"content": text, "partial": partial}
     wrapped = text.startswith("<path>")
     total: int | None = None
@@ -312,6 +316,13 @@ def _read_tool_observation(text: str, arguments: dict[str, Any]) -> dict[str, An
             total = int(declared.group(3) or declared.group(4))
         body = _READ_TOOL_FOOTER.sub("", body)
         prefix = re.compile(r"^[ \t]*(\d+): ?")
+    elif _HASH_NUMBERED_LINE.match(text):
+        footer = _PI_READ_FOOTER.search(text)
+        declared = _READ_TOTAL.search(footer.group(0)) if footer else None
+        if declared:
+            total = int(declared.group(3))
+        body = _PI_READ_FOOTER.sub("", text)
+        prefix = _HASH_NUMBERED_LINE
     else:
         body = text
         declared = None
@@ -319,7 +330,9 @@ def _read_tool_observation(text: str, arguments: dict[str, Any]) -> dict[str, An
     lines = body.splitlines(keepends=True)
     matches = [prefix.match(line) for line in lines]
     if not lines or not all(matches):
-        return {"content": None, "partial": True} if wrapped else result
+        if wrapped or prefix is _HASH_NUMBERED_LINE:
+            return {"content": None, "partial": True}
+        return result
     numbers = [int(match.group(1)) for match in matches if match is not None]
     if any(number < 1 for number in numbers) or any(
         right <= left for left, right in zip(numbers, numbers[1:])
@@ -327,7 +340,7 @@ def _read_tool_observation(text: str, arguments: dict[str, Any]) -> dict[str, An
         return {"content": None, "partial": True}
     contents = [line[match.end():] for line, match in zip(lines, matches) if match is not None]
     content = "".join(contents)
-    if wrapped and content and not content.endswith("\n"):
+    if (wrapped or prefix is _HASH_NUMBERED_LINE) and content and not content.endswith("\n"):
         content += "\n"
     if total is not None:
         range_valid = numbers[-1] <= total
@@ -997,7 +1010,7 @@ def _usable_tool_result(item: dict[str, Any]) -> bool:
     if status in {"error", "failed", "failure", "cancelled", "timeout", "cleared"}:
         return False
     result = item.get("result_text")
-    if isinstance(result, str) and result.lstrip().lower().startswith(("error:", "command failed", "traceback", "<tool_use_error>", "[tool result content cleared]")):
+    if isinstance(result, str) and result.lstrip().lower().startswith(("error:", "file not found:", "command failed", "traceback", "<tool_use_error>", "[tool result content cleared]")):
         return False
     return True
 
@@ -1418,8 +1431,8 @@ def replay_from_timeline(
                 {"path": path, "reason": "read_result_missing", "source_event_id": event_id}
             )
             continue
+        # 工具适配阶段已处理输出包装；再次解包会改写 raw 读取的源码字节。
         text = _normalize_numbered_display(text, str(op.get("command") or ""))
-        text = _unwrap_exec_result(text)
         completeness = "PARTIAL" if op.get("partial") else "COMPLETE"
         if completeness == "PARTIAL":
             partial.append(
