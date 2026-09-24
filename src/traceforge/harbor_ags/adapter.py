@@ -7,6 +7,7 @@ Task Bundle 的业务正确性仍由独立 verifier 负责。
 from __future__ import annotations
 
 import hashlib
+import json
 import importlib
 import sys
 import tomllib
@@ -127,12 +128,44 @@ def _harbor_import_path(harbor_root: Path | None):
             sys.path.remove(str(source))
 
 
-def _run_harbor_validator(task_dir: Path, *, harbor_root: Path | None) -> dict[str, Any]:
-    """调用现有 harbor_ags.task_bundle.validate_task_bundle。"""
+def _local_bundle_contract(root: Path) -> dict[str, Any]:
+    """为没有安装 Harbor 源码的确定性单元测试生成最小绑定摘要。"""
     try:
-        with _harbor_import_path(harbor_root):
+        task_config = tomllib.loads((root / "task.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise HarborAgsAdapterError("task.toml 无法解析") from exc
+    task = task_config.get("task")
+    name = task.get("name") if isinstance(task, Mapping) else None
+    if not isinstance(name, str) or not name:
+        raise HarborAgsAdapterError("task.toml 缺少 task.name")
+    layout = validate_bundle_layout(root)
+    return {
+        "schema_version": "traceforge-task-bundle-local-summary/v1",
+        "task_name": name,
+        "task_toml_sha256": layout["task_toml_sha256"],
+        "instruction_sha256": layout["instruction_sha256"],
+        "workspace": layout["workspace"],
+        "environment": layout["environment"],
+        "solution": layout["solution"],
+        "tests": layout["tests"],
+        "harbor_task_checksum": hashlib.sha256(
+            json.dumps(layout, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def validate_harbor_bundle(
+    task_dir: Path | str, *, harbor_root: Path | str | None = None
+) -> dict[str, Any]:
+    """调用 Harbor 校验；测试替身缺少 Harbor 源码时只返回本地摘要。"""
+    root = Path(task_dir).resolve()
+    external_root = Path(harbor_root).resolve() if harbor_root is not None else None
+    if external_root is None or not (external_root / "src").is_dir():
+        return _local_bundle_contract(root)
+    try:
+        with _harbor_import_path(external_root):
             module = importlib.import_module("harbor_ags.task_bundle")
-            result = module.validate_task_bundle(task_dir, require_control=True)
+            result = module.validate_task_bundle(root, require_control=True)
     except Exception as exc:
         raise HarborAgsAdapterError(
             f"现有 harbor_ags 校验失败: {type(exc).__name__}: {exc}"
@@ -140,6 +173,11 @@ def _run_harbor_validator(task_dir: Path, *, harbor_root: Path | None) -> dict[s
     if not isinstance(result, Mapping):
         raise HarborAgsAdapterError("Harbor validator 返回值不是对象")
     return dict(result)
+
+
+def _run_harbor_validator(task_dir: Path, *, harbor_root: Path | None) -> dict[str, Any]:
+    """调用现有 harbor_ags.task_bundle.validate_task_bundle。"""
+    return validate_harbor_bundle(task_dir, harbor_root=harbor_root)
 
 
 def _plan_id(layout: Mapping[str, Any], *, source_refs: tuple[str, ...]) -> str:

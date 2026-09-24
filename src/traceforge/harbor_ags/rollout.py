@@ -33,7 +33,7 @@ from traceforge.trajectory.artifacts import (
 )
 from traceforge.trajectory.json_codec import stable_id
 
-from .adapter import validate_bundle_layout
+from .adapter import validate_bundle_layout, validate_harbor_bundle
 
 DEFAULT_RUNTIME_CONFIG = Path(
     "/mnt/afs_toolcall/wujian1/Projects/workspace/TraceRconstruction/config.yaml"
@@ -146,25 +146,39 @@ def _redact_output(value: str) -> str:
 
 
 def _materialize_dataset(
-    task_dir: Path, destination: Path, *, trials: int
+    task_dir: Path,
+    destination: Path,
+    *,
+    trials: int,
+    harbor_root: Path,
 ) -> tuple[Path, dict[str, Any]]:
-    """将单个 Bundle 复制成 Harbor 可读取的 Dataset；源目录只读消费。"""
+    """复制 Bundle，并发布 Harbor 编译清单，确保运行后可做完整绑定。"""
 
     if destination.exists():
         raise HarborRolloutError(f"Dataset 目标已存在，拒绝覆盖：{destination}")
     destination.mkdir(parents=True)
     task_name = _task_name(task_dir)
     task_slug = _safe_name(task_name.replace("/", "_")) or "task"
-    task_targets = []
+    task_targets: list[str] = []
     task_hashes: dict[str, str] = {}
+    manifest_tasks: list[dict[str, Any]] = []
     for index in range(1, trials + 1):
         suffix = f"--trial-{index:03d}" if trials > 1 else ""
         task_target = destination / f"{task_slug}{suffix}"
         shutil.copytree(task_dir, task_target, symlinks=False)
         _ensure_workspace_snapshot_hook(task_target / "task.toml")
+        bundle_contract = validate_harbor_bundle(task_target, harbor_root=harbor_root)
         relative = task_target.relative_to(destination).as_posix()
         task_targets.append(relative)
         task_hashes[relative] = _sha256_tree(task_target)
+        manifest_tasks.append(
+            {
+                "task_name": bundle_contract["task_name"],
+                "task_dir": relative,
+                "instruction_sha256": bundle_contract["instruction_sha256"],
+                "task_bundle": bundle_contract,
+            }
+        )
     dataset_toml = (
         "[dataset]\n"
         f'name = "traceforge/generated-{hashlib.sha256(task_name.encode()).hexdigest()[:12]}"\n'
@@ -173,14 +187,25 @@ def _materialize_dataset(
         'authors = [{ name = "TraceForge" }]\n'
     )
     (destination / "dataset.toml").write_text(dataset_toml, encoding="utf-8")
+    compile_manifest = {
+        "schema_version": "traceforge-harbor-compiled-dataset/v1",
+        "scenario": "traceforge-reconstruction",
+        "n_trials": trials,
+        "tasks": manifest_tasks,
+    }
+    compile_path = destination / "compile-manifest.json"
+    compile_path.write_text(
+        json.dumps(compile_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
     return destination, {
         "dataset_root": str(destination),
         "task_relative_paths": task_targets,
         "trial_count": trials,
         "task_hashes": task_hashes,
         "dataset_toml_sha256": _sha256_file(destination / "dataset.toml"),
+        "compile_manifest_sha256": _sha256_file(compile_path),
     }
-
 
 def _ensure_workspace_snapshot_hook(task_toml: Path) -> None:
     """声明在 Harbor artifact collection 前复制 Agent 最终 workspace。
@@ -532,6 +557,37 @@ def _bundle_files(root: Path) -> list[dict[str, Any]]:
     return files
 
 
+def _rebind_compile_manifest(
+    source: Path,
+    destination: Path,
+    *,
+    source_task_relative: str,
+) -> None:
+    """导出单任务 bundle 时重绑定编译清单中的实际 task 路径。"""
+
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise HarborRolloutError("compile-manifest.json 无法读取") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("tasks"), list):
+        raise HarborRolloutError("compile-manifest.json 契约无效")
+    candidates = [
+        item
+        for item in payload["tasks"]
+        if isinstance(item, dict) and item.get("task_dir") == source_task_relative
+    ]
+    if len(candidates) != 1:
+        raise HarborRolloutError("compile-manifest 未绑定导出的 task")
+    task = dict(candidates[0])
+    task["task_dir"] = "task"
+    payload["tasks"] = [task]
+    payload["n_trials"] = 1
+    destination.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+
 def publish_rollout_bundle(plan_dir: Path | str, destination: Path | str) -> Path:
     """原子发布计划实际使用的任务输入；只保存输入，不宣称执行通过。
 
@@ -570,6 +626,13 @@ def publish_rollout_bundle(plan_dir: Path | str, destination: Path | str) -> Pat
         shutil.copytree(source, task_target, symlinks=False)
         validate_bundle_layout(task_target)
         shutil.copy2(dataset_root / "dataset.toml", workspace.staging_path / "dataset.toml")
+        compile_manifest = dataset_root / "compile-manifest.json"
+        if compile_manifest.is_file():
+            _rebind_compile_manifest(
+                compile_manifest,
+                workspace.staging_path / "compile-manifest.json",
+                source_task_relative=paths[0],
+            )
         if _sha256_tree(task_target) != dataset["task_hashes"][paths[0]]:
             raise HarborRolloutError("Harbor bundle 复制后的 task hash 不匹配")
         files = _bundle_files(workspace.staging_path)
@@ -675,7 +738,10 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
     workspace = ArtifactWorkspace(config.output_root.resolve(), run_id)
     try:
         _dataset_staging_root, dataset_meta = _materialize_dataset(
-            task_dir, workspace.staging_path / "dataset", trials=config.trials
+            task_dir,
+            workspace.staging_path / "dataset",
+            trials=config.trials,
+            harbor_root=harbor_root,
         )
         dataset_root = workspace.final_path / "dataset"
         dataset_meta["dataset_root"] = str(dataset_root)
@@ -847,6 +913,18 @@ def _assert_plan_integrity(plan_dir: Path, plan: dict[str, Any]) -> None:
         or dataset_meta.get("dataset_toml_sha256") != _sha256_file(dataset_toml)
     ):
         raise HarborRolloutError("dataset.toml hash 与 plan 不一致")
+    # compile-manifest was added after the first rollout plans were published.
+    # Keep those immutable historical plans executable; new plans bind the file
+    # and must still fail closed on a missing or mismatched manifest.
+    compile_hash = dataset_meta.get("compile_manifest_sha256")
+    if compile_hash is not None:
+        compile_manifest = dataset / "compile-manifest.json"
+        if (
+            not compile_manifest.is_file()
+            or not isinstance(compile_hash, str)
+            or compile_hash != _sha256_file(compile_manifest)
+        ):
+            raise HarborRolloutError("compile-manifest.json hash 与 plan 不一致")
     materialized = plan.get("harbor_config")
     published = (
         Path(materialized["materialized"]).resolve()

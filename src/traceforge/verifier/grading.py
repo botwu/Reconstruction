@@ -120,6 +120,37 @@ def pytest_command(tests: Path, xml_path: Path, site: Path) -> list[str]:
     ]
 
 
+
+
+def _evaluation_contract(*, rubric_path: Path, verifier_path: Path, control_manifest_path: Path) -> dict[str, Any] | None:
+    """Bind verifier output to the immutable Task Bundle inputs when present."""
+    try:
+        rubric = json.loads(rubric_path.read_text(encoding="utf-8"))
+        manifest = json.loads(control_manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(rubric, dict) or not isinstance(manifest, dict):
+            return None
+        criteria = rubric.get("criteria")
+        if not isinstance(criteria, list):
+            return None
+        normalized = [
+            {"id": item["id"], "weight": float(item["weight"])}
+            for item in criteria
+            if isinstance(item, dict) and "id" in item and "weight" in item
+        ]
+        if len(normalized) != len(criteria):
+            return None
+        return {
+            "schema_version": "traceforge-evaluation-contract/v1",
+            "rubric_sha256": hashlib.sha256(rubric_path.read_bytes()).hexdigest(),
+            "verifier_sha256": hashlib.sha256(verifier_path.read_bytes()).hexdigest(),
+            "control_manifest_sha256": hashlib.sha256(control_manifest_path.read_bytes()).hexdigest(),
+            "aggregation": rubric.get("aggregation"),
+            "criteria": normalized,
+        }
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
+
+
 def grade(
     *,
     workspace: Path,
@@ -184,6 +215,22 @@ def grade(
             verdict["error_code"] = "VERIFIER_TIMEOUT"
         except (OSError, ET.ParseError):
             verdict["error_code"] = "VERIFIER_IO_ERROR"
+    verdict["reason_code"] = (
+        "OK"
+        if verdict.get("status") == "TASK_PASS"
+        else (str(verdict.get("error_code") or "TEST_FAILURE"))
+    )
+    verdict["details"] = {
+        "tests": verdict.get("tests", []),
+        "error_code": verdict.get("error_code"),
+    }
+    contract = _evaluation_contract(
+        rubric_path=tests.parent / "rubric.json",
+        verifier_path=tests.parent / "grader.py",
+        control_manifest_path=tests.parent / "control/input-manifest.json",
+    )
+    if contract is not None:
+        verdict["evaluation_contract"] = contract
     verdict["reward"] = reward
     (log_dir / "verdict.json").write_text(
         json.dumps(verdict, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
