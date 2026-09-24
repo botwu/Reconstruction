@@ -179,6 +179,10 @@ def build_environment_contract(
         "errors": context_errors,
         "execution_errors": execution_errors,
         "execution_readiness": execution_readiness,
+        "execution_status": (
+            "EXECUTABLE" if execution_readiness == "PROBED"
+            else ("NOT_APPLICABLE" if execution_readiness == "NOT_APPLICABLE" else "UNEXECUTABLE")
+        ),
         "limitations": [
             "探测只覆盖任务所需的入口、依赖与可重复初态，不是任意程序可解性的证明。",
             "reset 探测在同一只读快照上使用新的临时目录重复执行，不包含外部服务复位。",

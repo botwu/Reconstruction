@@ -132,6 +132,9 @@ def build_task_environment_pair(
             "execution_readiness": (result.get("environment_contract") or {}).get(
                 "execution_readiness"
             ),
+            "execution_status": (result.get("environment_contract") or {}).get(
+                "execution_status"
+            ),
         },
         "provenance": {
             "source_schema_version": source.get("schema_version"),

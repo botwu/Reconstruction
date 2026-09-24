@@ -94,6 +94,8 @@ def test_valid_bound_code_is_read_only_and_does_not_require_external_imports(tmp
     assert result["integrity_report"]["issues"] == []
     assert result["integrity_report"]["python_version"]
     assert result["integrity_report"]["limitations"]
+    assert result["execution_preflight"]["status"] == "REVIEW"
+    assert "ENVIRONMENT_PROBES_REQUIRED" in result["execution_preflight"]["errors"]
     assert not side_effect.exists()
     assert (workspace / "billing.py").read_text(encoding="utf-8") == source
 

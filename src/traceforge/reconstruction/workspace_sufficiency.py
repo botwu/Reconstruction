@@ -78,10 +78,12 @@ def run_workspace_sufficiency(
             "Do not infer these categories from keywords. Explain their relationship to the actual task and inspected source.",
             "Every issue requires one classification. RECONSTRUCTION_GAP or unclassified issues forbid READY.",
             "After judging sufficiency, compare the recovered task with the verified workspace. "
-            "run_environment_probe is optional supporting evidence at this stage: use it when "
-            "a concrete load, reset, dependency, or task conflict is informative, but do not "
-            "require a load/reset/dependency triad before declaring contextual sufficiency. "
-            "A probe timeout is execution evidence, not task conflict. Include any returned "
+            "Contextual sufficiency and execution readiness are separate decisions: do not "
+            "downgrade a review-only context merely because runtime probes are unavailable. "
+            "For an executable candidate, however, run_environment_probe must provide load, "
+            "reset, and dependency evidence; an empty or partial probe set must be reported "
+            "as execution_preflight REVIEW. A probe timeout is execution evidence, not task "
+            "conflict. Include any returned "
             "probe_id in environment_checks; later Verifier/Harbor execution decides whether "
             "the candidate is runnable.",
             "Each task_fit requirement must include obligation_id, SATISFIED|UNSATISFIED|UNKNOWN, "
@@ -142,6 +144,16 @@ def run_workspace_sufficiency(
     if not inspected:
         errors.append("NO_ACTIVE_WORKSPACE_INSPECTION")
 
+    # Probe execution is a deterministic environment-stage responsibility.
+    # The model may still judge contextual sufficiency without it, but it must
+    # never be reported as execution-ready with zero or partial probes.
+    probe_kinds = {
+        item.get("purpose")
+        for item in session.environment_probes
+        if isinstance(item, dict) and item.get("status") == "PASS"
+    }
+    if probe_kinds != {"load", "reset", "dependency"}:
+        errors.append("ENVIRONMENT_PROBES_REQUIRED")
     payload = ran.payload if isinstance(ran.payload, dict) else {}
     label = str(payload.get("label", "UNKNOWN"))
     decision = str(payload.get("decision", "REVIEW"))
@@ -178,7 +190,10 @@ def run_workspace_sufficiency(
     # completeness proof. Only the explicit runtime/sandbox safety errors are
     # removed from semantic_errors; malformed or uninspected judge output
     # remains a real sufficiency failure.
-    execution_only_prefixes = ("REAL_PROBE_REQUIRED",)
+    execution_only_prefixes = (
+        "REAL_PROBE_REQUIRED",
+        "ENVIRONMENT_PROBES_REQUIRED",
+    )
     semantic_errors = [
         error for error in errors
         if not error.startswith(execution_only_prefixes)
