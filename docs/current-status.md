@@ -81,3 +81,19 @@ line 41 的任务是只读代码审查：阅读 brief、先前报告和相关源
 7. `verification/jobs/` 下的 trial 和 `agent/trajectory.full.json`：真实命令、模型响应、最终输出与验收是否一致，是否正常结束并保全证据。
 
 历史结果用来定位缺陷；新交付必须从修复后的源码重新运行，不能手改旧 reward、补造轨迹或把参考结果当作真实 agent 输出。
+
+## 2026-09-24 源码整合与清理
+
+主工作目录已从 `e1feb64` 快进到包含上游修复与 response receipt 的整合代码。本次离线验证对应源码提交 `b149265`；后续维护文档提交不改源码。
+
+- 已修复 read 输出的 hash 行号解析；显式 raw 读取保留原始字节，不再重复解包；缺失文件错误不作为源码。原始轨迹与旧 workspace 不回写。
+- 已允许 Completion 在漏传证据编号后补正工具参数；第一次无证据的写入仍被拒绝，保护文件等权限限制保持生效。
+- 已同步 rollout 与 capture 时限，并真实记录 EXECUTING / COMPLETED / FAILED / TIMEOUT / ABORTED；异常记录不宣称沙盒已经清理。
+- 删除两个过时导出脚本、一个一次性调试脚本和无调用充分性兼容函数及其镜像测试，共删除 478 行。
+- 清理 47 项可再生缓存、重复日志和已完成修改的一次性编辑文件，合计 11,345,110 字节。保留真实数据、配置、运行证据和交付包。
+
+主目录原有未提交改动完整保存在本地 Git 引用 `refs/backup/pre-integration-20260924`（`95ce199`，20 个已跟踪文件、3 个未跟踪文件）。经过审查的修复已迁入；包含新上游 schema 硬门禁的 `task_instruction.py`、旧 TaskFit 严拒规则和临时 sys.path 修改没有直接覆盖当前实现。备份不作为生产实现，也未上传远程。
+
+离线回归：`690 passed, 5 skipped, 5 warnings in 91.68s (0:01:31)`。`ruff check src tests scripts --select E9,F63,F7,F82 --no-cache` 与 `git diff --check` 通过；这不表示全部 Ruff 规则已通过。详细记录在部署机 `artifacts/maintenance-20260924/`，产物索引在 `artifacts/README.md`。
+
+本次维护没有发起新的模型 rollout。前述路径绑定污染、跨模块补全反馈、NON_FILE 验收顺序和 verifier 语义质量仍未完成真实复验，不能因代码合并和离线检查通过就宣布端到端完成。
