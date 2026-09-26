@@ -140,10 +140,13 @@ def test_unknown_machine_check_does_not_clear_obligation() -> None:
     assert evaluate_response_contract(trajectory(), contract)["verified_obligation_ids"] == []
 
 
-def _summary_fixture(tmp_path, *, summary="APPROVED; Critical: 0; Important: 0; Minor: 1; review.md"):
+def _summary_fixture(
+    tmp_path, *, summary="APPROVED; Critical: 0; Important: 0; Minor: 1; review.md",
+    report_text: str | None = None,
+):
     import hashlib
 
-    report_bytes = b"APPROVED\nCritical: 0\nImportant: 0\nMinor: 1\nMinor issue: source.py:4 naming.\n"
+    report_bytes = (report_text or "APPROVED\nCritical: 0\nImportant: 0\nMinor: 1\nMinor issue: source.py:4 naming.\n").encode("utf-8")
     relative = "logs/artifacts/traceforge/workspace/review.md"
     target = tmp_path / "artifacts" / relative
     target.parent.mkdir(parents=True)
@@ -237,3 +240,98 @@ def test_binding_only_receipt_round_trips_without_claiming_acceptance_report() -
     assert receipt["report"] is None
     assert receipt["verification_scope"] == "FINAL_RESPONSE_BINDING_ONLY"
     assert verify_response_receipt(receipt, data)["semantic_verified"] is False
+
+
+_SECTION_REVIEW = """# Code Review
+## Verdict
+CHANGES_REQUIRED
+
+## Critical Findings
+- None.
+
+## Important
+- file.py:12 - cancellation loses its owner.
+  - Reproduction detail supporting the same finding.
+
+## Minor
+1. file.py:22 - misleading name.
+
+## Strengths
+- The successful path preserves ownership.
+"""
+
+
+def test_summary_counts_top_level_findings_without_requiring_numeric_report_fields(tmp_path) -> None:
+    data, contract, _ = _summary_fixture(
+        tmp_path, report_text=_SECTION_REVIEW,
+        summary="CHANGES_REQUIRED; Critical: 0; Important: 1; Minor: 1; review.md",
+    )
+    outcome = evaluate_response_contract(data, contract, trial_root=tmp_path)
+    assert outcome["verified_obligation_ids"] == ["obl-summary"]
+
+
+def test_report_main_verdict_ignores_historical_verdict_mentions(tmp_path) -> None:
+    report_text = _SECTION_REVIEW.replace(
+        "## Critical Findings",
+        "Earlier reviewers wrote APPROVED. The rubric explains CHANGES_REQUIRED.\n"
+        "> Historical verdict: APPROVED\n\n## Critical Findings",
+    )
+    data, contract, _ = _summary_fixture(
+        tmp_path, report_text=report_text,
+        summary="CHANGES_REQUIRED; Critical: 0; Important: 1; Minor: 1; review.md",
+    )
+    assert evaluate_response_contract(data, contract, trial_root=tmp_path)["verified_obligation_ids"] == ["obl-summary"]
+
+
+def test_summary_rejects_real_count_mismatch_against_section_findings(tmp_path) -> None:
+    data, contract, _ = _summary_fixture(
+        tmp_path, report_text=_SECTION_REVIEW,
+        summary="CHANGES_REQUIRED; Critical: 0; Important: 0; Minor: 1; review.md",
+    )
+    outcome = evaluate_response_contract(data, contract, trial_root=tmp_path)
+    assert outcome["verified_obligation_ids"] == []
+    assert outcome["checks"][0]["errors"] == ["RESPONSE_SUMMARY_REPORT_MISMATCH"]
+
+
+@pytest.mark.parametrize("replacement", [
+    "",
+    "- None.\n- file.py:9 - actual issue.",
+    "There may be another problem.",
+])
+def test_uncertain_finding_section_is_not_guessed_as_zero(tmp_path, replacement) -> None:
+    data, contract, _ = _summary_fixture(
+        tmp_path, report_text=_SECTION_REVIEW.replace("- None.", replacement),
+        summary="CHANGES_REQUIRED; Critical: 0; Important: 1; Minor: 1; review.md",
+    )
+    assert evaluate_response_contract(data, contract, trial_root=tmp_path)["verified_obligation_ids"] == []
+
+
+def test_explicit_primary_verdict_takes_precedence_over_nested_history_heading(tmp_path) -> None:
+    report_text = _SECTION_REVIEW + "\n## History\n### Verdict\nAPPROVED\n"
+    data, contract, _ = _summary_fixture(
+        tmp_path, report_text=report_text,
+        summary="CHANGES_REQUIRED; Critical: 0; Important: 1; Minor: 1; review.md",
+    )
+    assert evaluate_response_contract(data, contract, trial_root=tmp_path)["verified_obligation_ids"] == ["obl-summary"]
+
+
+def test_explicit_numeric_severity_headings_still_match_summary(tmp_path) -> None:
+    report_text = (
+        "# Review\n## Verdict: CHANGES_REQUIRED\n"
+        "## Critical (0)\n- None.\n## Important (1)\n- file.py:12 - issue.\n"
+        "## Minor Findings (1)\n- file.py:22 - naming.\n"
+    )
+    data, contract, _ = _summary_fixture(
+        tmp_path, report_text=report_text,
+        summary="CHANGES_REQUIRED; Critical: 0; Important: 1; Minor: 1; review.md",
+    )
+    assert evaluate_response_contract(data, contract, trial_root=tmp_path)["verified_obligation_ids"] == ["obl-summary"]
+
+
+def test_conflicting_explicit_section_count_is_not_ignored(tmp_path) -> None:
+    report_text = _SECTION_REVIEW.replace("## Important", "## Important (2)")
+    data, contract, _ = _summary_fixture(
+        tmp_path, report_text=report_text,
+        summary="CHANGES_REQUIRED; Critical: 0; Important: 1; Minor: 1; review.md",
+    )
+    assert evaluate_response_contract(data, contract, trial_root=tmp_path)["verified_obligation_ids"] == []

@@ -261,6 +261,139 @@ def _summary_values(
     return found.pop(), counts, rest
 
 
+def _finding_count(lines: list[str], level: str) -> int:
+    """只计算严重度章节的顶层 finding；空章节不等于零个问题。"""
+
+    entries: list[tuple[int, str]] = []
+    other: list[str] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        match = re.match(r"^([ \t]*)(?:[-*+]|\d+[.)])\s+(.+)$", line)
+        if match:
+            entries.append((len(match.group(1).expandtabs(4)), match.group(2)))
+        else:
+            other.append(line)
+    empty = re.compile(
+        r"(?:none(?: found)?|no (?:" + re.escape(level) + r" )?findings)[.!]?",
+        re.IGNORECASE,
+    )
+    def is_empty(value: str) -> bool:
+        return empty.fullmatch(value.replace("*", "").replace(chr(96), "").strip()) is not None
+
+    if not entries:
+        if len(other) == 1 and is_empty(other[0]):
+            return 0
+        raise ResponseReceiptError(f"RESPONSE_REPORT_FINDINGS_AMBIGUOUS:{level}")
+    indent = min(item[0] for item in entries)
+    top = [body for depth, body in entries if depth == indent]
+    if any(
+        len(line) - len(line.lstrip()) <= indent or line.lstrip().startswith("#")
+        for line in other
+    ):
+        raise ResponseReceiptError(f"RESPONSE_REPORT_FINDINGS_AMBIGUOUS:{level}")
+    if any(is_empty(body) for body in top):
+        if len(entries) == 1 and len(top) == 1 and not other:
+            return 0
+        raise ResponseReceiptError(f"RESPONSE_REPORT_FINDINGS_AMBIGUOUS:{level}")
+    return len(top)
+
+
+def _report_values(report: str, verdicts: list[str], levels: list[str]) -> tuple[str, dict[str, int]]:
+    """从明确主结论与 finding 章节读取报告，不将历史引用当作当前判定。"""
+
+    lines: list[str] = []
+    fence: str | None = None
+    for line in report.splitlines():
+        stripped = line.lstrip()
+        marker = re.match(r"^(\x60{3,}|~{3,})", stripped)
+        if marker:
+            if fence is None:
+                fence = marker.group(1)
+            elif marker.group(1)[0] == fence[0] and len(marker.group(1)) >= len(fence):
+                fence = None
+            lines.append("")
+        else:
+            lines.append(line if fence is None and not stripped.startswith(">") else "")
+    headings = []
+    for index, line in enumerate(lines):
+        match = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        if match:
+            title = match.group(2).replace("*", "").replace(chr(96), "").strip()
+            headings.append((index, len(match.group(1)), title))
+
+    def section(index: int, depth: int) -> list[str]:
+        end = next((i for i, d, _ in headings if i > index and d <= depth), len(lines))
+        return lines[index + 1:end]
+
+    preamble_end = headings[0][0] if headings else len(lines)
+    if headings and headings[0][1] == 1:
+        preamble_end = headings[1][0] if len(headings) > 1 else len(lines)
+    preamble = [line for line in lines[:preamble_end] if not line.lstrip().startswith("#")]
+    enum = "(?:" + "|".join(re.escape(value) for value in verdicts) + ")"
+    lead = re.compile(r"^(?:verdict\s*:\s*)?(" + enum + r")(?:\s*$|\s*[:;,.\u2014-])", re.IGNORECASE)
+
+    def declared_verdict(value: str) -> str:
+        clean = value.replace("*", "").replace(chr(96), "").strip()
+        match = lead.match(clean)
+        if match is None:
+            raise ResponseReceiptError("RESPONSE_REPORT_VERDICT_AMBIGUOUS")
+        return next(value for value in verdicts if value.lower() == match.group(1).lower())
+
+    candidates = []
+    verdict_sections = []
+    for index, depth, title in headings:
+        match = re.fullmatch(r"(?:final\s+)?verdict(?:\s*[:\u2014-]\s*(.+))?", title, re.IGNORECASE)
+        if match:
+            body = next((line.strip() for line in section(index, depth) if line.strip()), "")
+            verdict_sections.append((depth, match.group(1) or body))
+    if verdict_sections:
+        shallowest = min(depth for depth, _ in verdict_sections)
+        candidates.extend(declared_verdict(value) for depth, value in verdict_sections if depth == shallowest)
+    content = [line for line in preamble if line.strip()]
+    for index, line in enumerate(content):
+        clean = line.replace("*", "").replace(chr(96), "").strip()
+        if re.match(r"^verdict\s*:", clean, re.IGNORECASE) or (index == 0 and lead.match(clean)):
+            candidates.append(declared_verdict(clean))
+    if len(set(candidates)) != 1:
+        raise ResponseReceiptError("RESPONSE_REPORT_VERDICT_AMBIGUOUS")
+    verdict = candidates[0]
+
+    sections: dict[str, list[tuple[int, int, int | None]]] = {}
+    for level in levels:
+        pattern = re.compile(
+            re.escape(level) + r"(?:\s+findings)?(?:\s*\((\d+)\)|\s*:\s*(\d+))?",
+            re.IGNORECASE,
+        )
+        sections[level] = []
+        for index, depth, title in headings:
+            match = pattern.fullmatch(title)
+            if match:
+                declared = match.group(1) or match.group(2)
+                sections[level].append((index, depth, int(declared) if declared is not None else None))
+    if any(sections.values()):
+        counts = {}
+        for level, matches in sections.items():
+            if matches:
+                shallowest = min(depth for _, depth, _ in matches)
+                matches = [item for item in matches if item[1] == shallowest]
+            if len(matches) != 1:
+                raise ResponseReceiptError(f"RESPONSE_REPORT_FINDINGS_AMBIGUOUS:{level}")
+            index, depth, declared = matches[0]
+            body = section(index, depth)
+            counts[level] = (
+                declared if declared is not None and not any(line.strip() for line in body)
+                else _finding_count(body, level)
+            )
+            if declared is not None and declared != counts[level]:
+                raise ResponseReceiptError(f"RESPONSE_REPORT_FINDINGS_COUNT_MISMATCH:{level}")
+        return verdict, counts
+    # 保留原有明确数字摘要的支持，不扫描后面章节的历史数值。
+    prefix = re.sub(enum, "", "\n".join(preamble))
+    _, counts, _ = _summary_values(verdict + "\n" + prefix, verdicts, levels)
+    return verdict, counts
+
+
 def _bound_report(trial_root: Path | None, report_path: str) -> tuple[str, str]:
     """只读取同一 trial 下经控制端 manifest 绑定的最终 workspace 文件。"""
 
@@ -326,7 +459,7 @@ def _check_basic_summary(
     rest = re.sub(r"\b(?:verdict|finding counts|findings|report path|report)\b", "", rest, flags=re.IGNORECASE)
     if re.sub(r"[\s\x60*_#|:;,()\-]", "", rest):
         raise ResponseReceiptError("RESPONSE_SUMMARY_EXTRA_CONTENT")
-    actual_verdict, actual_counts, _ = _summary_values(report, verdicts, levels)
+    actual_verdict, actual_counts = _report_values(report, verdicts, levels)
     if (verdict, counts) != (actual_verdict, actual_counts):
         raise ResponseReceiptError("RESPONSE_SUMMARY_REPORT_MISMATCH")
     return {
