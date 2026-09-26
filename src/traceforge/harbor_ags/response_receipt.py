@@ -77,8 +77,8 @@ def _string_list(value: Any, field: str) -> None:
         raise ResponseReceiptError(f"INVALID_REPORT_FIELD:{field}")
 
 
-def parse_acceptance_report(response_text: str) -> tuple[dict[str, Any], str]:
-    """Parse exactly one terminal acceptance-report fenced JSON object."""
+def _extract_acceptance_report(response_text: str) -> tuple[dict[str, Any], str]:
+    """只提取唯一且位于末尾的 JSON 报告，不附加任何业务字段。"""
 
     if not isinstance(response_text, str) or not response_text.strip():
         raise ResponseReceiptError("EMPTY_ASSISTANT_RESPONSE")
@@ -94,10 +94,10 @@ def parse_acceptance_report(response_text: str) -> tuple[dict[str, Any], str]:
         raise ResponseReceiptError("ACCEPTANCE_REPORT_INVALID_JSON") from exc
     if not isinstance(report, dict):
         raise ResponseReceiptError("ACCEPTANCE_REPORT_MUST_BE_OBJECT")
-    for field in _REQUIRED_REPORT_FIELDS:
-        if field not in report:
-            raise ResponseReceiptError(f"ACCEPTANCE_REPORT_FIELD_REQUIRED:{field}")
-    criteria = report["criteriaSatisfied"]
+    return report, body
+
+
+def _validate_report_criteria(criteria: Any) -> None:
     if (
         not isinstance(criteria, list)
         or not criteria
@@ -116,7 +116,9 @@ def parse_acceptance_report(response_text: str) -> tuple[dict[str, Any], str]:
             raise ResponseReceiptError("INVALID_CRITERION_STATUS")
         if not isinstance(item.get("evidence"), str) or not item["evidence"].strip():
             raise ResponseReceiptError("INVALID_CRITERION_EVIDENCE")
-    commands = report["commandsRun"]
+
+
+def _validate_report_commands(commands: Any) -> None:
     if not isinstance(commands, list) or any(not isinstance(item, dict) for item in commands):
         raise ResponseReceiptError("INVALID_REPORT_FIELD:commandsRun")
     for item in commands:
@@ -125,6 +127,17 @@ def parse_acceptance_report(response_text: str) -> tuple[dict[str, Any], str]:
             or item.get("result") not in _ALLOWED_COMMAND_RESULT
         ):
             raise ResponseReceiptError("INVALID_COMMAND_RESULT")
+
+
+def parse_acceptance_report(response_text: str) -> tuple[dict[str, Any], str]:
+    """无显式契约时保留既有 acceptance-report 字段验收。"""
+
+    report, body = _extract_acceptance_report(response_text)
+    for field in _REQUIRED_REPORT_FIELDS:
+        if field not in report:
+            raise ResponseReceiptError(f"ACCEPTANCE_REPORT_FIELD_REQUIRED:{field}")
+    _validate_report_criteria(report["criteriaSatisfied"])
+    _validate_report_commands(report["commandsRun"])
     for field in (
         "changedFiles",
         "testsAddedOrUpdated",
@@ -141,7 +154,8 @@ def parse_acceptance_report(response_text: str) -> tuple[dict[str, Any], str]:
 
 
 def build_response_receipt(
-    trajectory_bytes: bytes, *, require_acceptance_report: bool = True
+    trajectory_bytes: bytes, *, require_acceptance_report: bool = True,
+    validate_report_schema: bool = True,
 ) -> dict[str, Any]:
     """Build a receipt from exact ``trajectory.full.json`` bytes."""
 
@@ -152,8 +166,9 @@ def build_response_receipt(
     if not isinstance(trajectory, dict):
         raise ResponseReceiptError("TRAJECTORY_MUST_BE_OBJECT")
     index, response = final_assistant_response(trajectory)
+    parse_report = parse_acceptance_report if validate_report_schema else _extract_acceptance_report
     report, report_body = (
-        parse_acceptance_report(response)
+        parse_report(response)
         if require_acceptance_report or chr(96) * 3 + "acceptance-report" in response
         else (None, None)
     )
@@ -166,7 +181,10 @@ def build_response_receipt(
             hashlib.sha256(report_body.encode("utf-8")).hexdigest() if report_body is not None else None
         ),
         "report": report,
-        "verification_scope": "REPORT_STRUCTURE_ONLY" if report is not None else "FINAL_RESPONSE_BINDING_ONLY",
+        "verification_scope": (
+            ("REPORT_STRUCTURE_ONLY" if validate_report_schema else "REPORT_BINDING_ONLY")
+            if report is not None else "FINAL_RESPONSE_BINDING_ONLY"
+        ),
         "semantic_verified": False,
     }
 
@@ -177,7 +195,8 @@ def verify_response_receipt(receipt: dict[str, Any], trajectory_bytes: bytes) ->
     if not isinstance(receipt, dict) or receipt.get("schema_version") != RESPONSE_RECEIPT_SCHEMA:
         raise ResponseReceiptError("RECEIPT_SCHEMA_INVALID")
     expected = build_response_receipt(
-        trajectory_bytes, require_acceptance_report=receipt.get("report") is not None
+        trajectory_bytes, require_acceptance_report=receipt.get("report") is not None,
+        validate_report_schema=receipt.get("verification_scope") != "REPORT_BINDING_ONLY",
     )
     for field in (
         "trajectory_sha256",
@@ -209,13 +228,13 @@ RESPONSE_CONTRACT_SCHEMA = "traceforge.response-contract.v1"
 def _check_acceptance_report(response: str, check: dict[str, Any]) -> dict[str, Any]:
     """检查用户声明的字段和编号，不将自报状态当作事实证明。"""
 
-    report, _ = parse_acceptance_report(response)
+    report, _ = _extract_acceptance_report(response)
     fields = check.get("required_fields")
     expected_ids = check.get("criterion_ids")
     if (
         not isinstance(fields, dict) or not fields
         or any(not isinstance(key, str) or not key for key in fields)
-        or not isinstance(expected_ids, list) or not expected_ids
+        or not isinstance(expected_ids, list)
         or any(not isinstance(value, str) or not value for value in expected_ids)
         or len(set(expected_ids)) != len(expected_ids)
     ):
@@ -231,8 +250,17 @@ def _check_acceptance_report(response: str, check: dict[str, Any]) -> dict[str, 
             raise ResponseReceiptError(f"RESPONSE_CONTRACT_FIELD_MISMATCH:{field}")
         if kind in {"integer", "number"} and isinstance(report[field], bool):
             raise ResponseReceiptError(f"RESPONSE_CONTRACT_FIELD_MISMATCH:{field}")
-    if {item["id"] for item in report["criteriaSatisfied"]} != set(expected_ids):
-        raise ResponseReceiptError("RESPONSE_CONTRACT_CRITERIA_MISMATCH")
+    if "criteriaSatisfied" in fields or expected_ids:
+        if not expected_ids:
+            raise ResponseReceiptError("RESPONSE_CONTRACT_CRITERIA_REQUIRED")
+        _validate_report_criteria(report.get("criteriaSatisfied"))
+        if {item["id"] for item in report["criteriaSatisfied"]} != set(expected_ids):
+            raise ResponseReceiptError("RESPONSE_CONTRACT_CRITERIA_MISMATCH")
+    if "commandsRun" in fields:
+        _validate_report_commands(report["commandsRun"])
+    for field in ("changedFiles", "testsAddedOrUpdated", "validationOutput", "residualRisks", "reviewFindings"):
+        if fields.get(field) == "array":
+            _string_list(report[field], field)
     return {"verification_scope": "REPORT_STRUCTURE_ONLY"}
 
 

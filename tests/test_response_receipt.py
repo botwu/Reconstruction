@@ -335,3 +335,55 @@ def test_conflicting_explicit_section_count_is_not_ignored(tmp_path) -> None:
         summary="CHANGES_REQUIRED; Critical: 0; Important: 1; Minor: 1; review.md",
     )
     assert evaluate_response_contract(data, contract, trial_root=tmp_path)["verified_obligation_ids"] == []
+
+
+def test_explicit_report_contract_does_not_require_unrequested_legacy_fields() -> None:
+    value = {"criteriaSatisfied": report()["criteriaSatisfied"], "summary": "finished"}
+    contract = acceptance_contract()
+    contract["checks"][0]["required_fields"] = {"criteriaSatisfied": "array", "summary": "string"}
+    fence = chr(96) * 3
+    data = trajectory(fence + "acceptance-report\n" + json.dumps(value) + "\n" + fence)
+    assert evaluate_response_contract(data, contract)["verified_obligation_ids"] == ["obl-report"]
+    with pytest.raises(ResponseReceiptError, match="FIELD_REQUIRED"):
+        build_response_receipt(data)
+
+
+def test_explicit_report_without_criteria_uses_only_declared_fields() -> None:
+    contract = acceptance_contract()
+    contract["checks"][0].update(criterion_ids=[], required_fields={"summary": "string"})
+    fence = chr(96) * 3
+    data = trajectory(fence + 'acceptance-report\n{"summary":"finished"}\n' + fence)
+    assert evaluate_response_contract(data, contract)["verified_obligation_ids"] == ["obl-report"]
+
+
+@pytest.mark.parametrize("value", [
+    {"criteriaSatisfied": [{"id": "criterion-1", "status": "passed", "evidence": "specific"}]},
+    {"criteriaSatisfied": [{"id": "criterion-1", "status": "satisfied", "evidence": ""}]},
+])
+def test_explicit_contract_keeps_supported_nested_criteria_validation(value) -> None:
+    contract = acceptance_contract()
+    contract["checks"][0]["required_fields"] = {"criteriaSatisfied": "array"}
+    fence = chr(96) * 3
+    data = trajectory(fence + "acceptance-report\n" + json.dumps(value) + "\n" + fence)
+    assert evaluate_response_contract(data, contract)["verified_obligation_ids"] == []
+
+
+def test_contract_binding_only_receipt_does_not_claim_schema_validation() -> None:
+    fence = chr(96) * 3
+    data = trajectory(fence + 'acceptance-report\n{"summary":"finished"}\n' + fence)
+    receipt = build_response_receipt(data, validate_report_schema=False)
+    assert receipt["verification_scope"] == "REPORT_BINDING_ONLY"
+    assert verify_response_receipt(receipt, data)["verification_scope"] == "REPORT_BINDING_ONLY"
+
+
+@pytest.mark.parametrize("field,kind,value", [
+    ("commandsRun", "array", [{"command": "pytest", "result": "unknown"}]),
+    ("changedFiles", "array", [{"path": "file.py"}]),
+    ("custom", "unsupported-type", "value"),
+])
+def test_explicit_contract_does_not_pass_unsupported_shapes(field, kind, value) -> None:
+    contract = acceptance_contract()
+    contract["checks"][0].update(criterion_ids=[], required_fields={field: kind})
+    fence = chr(96) * 3
+    data = trajectory(fence + "acceptance-report\n" + json.dumps({field: value}) + "\n" + fence)
+    assert evaluate_response_contract(data, contract)["verified_obligation_ids"] == []

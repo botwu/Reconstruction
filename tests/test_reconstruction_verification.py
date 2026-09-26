@@ -598,3 +598,24 @@ def test_basic_summary_contract_uses_trial_snapshot_in_orchestration(tmp_path: P
     check = result["response_receipts"][0]["contract_checks"][0]
     assert check["verification_scope"] == "REPORT_CONSISTENCY_ONLY"
     assert check["report_sha256"]
+
+
+def test_explicit_report_contract_bypasses_only_unrequested_legacy_fields(tmp_path: Path) -> None:
+    from test_response_receipt import acceptance_contract, trajectory
+
+    task = _response_task()
+    task["response_contract"] = acceptance_contract()
+    task["response_contract"]["checks"][0].update(
+        obligation_id="obl-002", criterion_ids=[], required_fields={"summary": "string"}
+    )
+    fence = chr(96) * 3
+    path = tmp_path / "trajectory.full.json"
+    path.write_bytes(trajectory(fence + 'acceptance-report\n{"summary":"finished"}\n' + fence))
+    result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
+    _apply_response_receipts(result, {"results": {"trials": [
+        {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
+    ]}}, task, 1)
+    assert result["unverified_obligations"] == []
+    assert result["errors"] == []
+    assert result["response_receipts"][0]["verification_scope"] == "REPORT_BINDING_ONLY"
+    assert result["response_receipts"][0]["contract_checks"][0]["verification_scope"] == "REPORT_STRUCTURE_ONLY"

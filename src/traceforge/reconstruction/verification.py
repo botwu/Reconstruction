@@ -315,7 +315,10 @@ def _attach_response_receipts(
                 isinstance(check, dict) and check.get("kind") == "acceptance_report"
                 for check in (checks if isinstance(checks, list) else [])
             )
-            receipt = build_response_receipt(raw, require_acceptance_report=require_report)
+            receipt = build_response_receipt(
+                raw, require_acceptance_report=require_report,
+                validate_report_schema=response_contract is None,
+            )
             trial_root = Path(path).parent.parent if Path(path).parent.name == "agent" else None
             evaluation = (
                 evaluate_response_contract(raw, response_contract, trial_root=trial_root)
