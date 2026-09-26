@@ -327,7 +327,7 @@ def _attach_response_receipts(
 def _apply_response_receipts(
     result: dict[str, Any], rollout: dict[str, Any], task: dict[str, Any], expected_trials: int
 ) -> None:
-    """Apply receipts without clearing unrelated NON_FILE obligations."""
+    """保存响应格式证据；格式合法不能代替义务内容的验收。"""
 
     obligation_ids = _acceptance_report_obligation_ids(task)
     if not obligation_ids:
@@ -356,16 +356,12 @@ def _apply_response_receipts(
             )
         )
         return
-    # Do not clear the obligation until every trial has a successful receipt.
+    # 全部回执只证明结构与来源绑定，不能证明结论、数量或证据自述为真。
     if skipped or len(receipts) != expected_trials:
         result["status"] = "REVIEW"
         result["sft_eligible"] = False
         return
-    result["unverified_obligations"] = [
-        item
-        for item in result.get("unverified_obligations") or []
-        if item not in set(obligation_ids)
-    ]
+    result["response_receipt_scope"] = "FORMAT_ONLY"
 
 
 class HarborCalibrationExecutor:

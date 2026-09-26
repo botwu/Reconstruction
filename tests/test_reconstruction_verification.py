@@ -550,4 +550,35 @@ def test_receipt_does_not_cover_verdict_merely_placed_before_report(
     monkeypatch.setattr(verification, "_attach_response_receipts", lambda *args: ([], [{}, {}]))
     result = {"unverified_obligations": ["obl-002", "obl-003"]}
     _apply_response_receipts(result, {"results": {"trials": []}}, task, expected_trials=2)
-    assert result["unverified_obligations"] == ["obl-002"]
+    assert result["unverified_obligations"] == ["obl-002", "obl-003"]
+
+
+def test_valid_receipt_does_not_certify_combined_response_obligation(tmp_path: Path) -> None:
+    report = {
+        "criteriaSatisfied": [
+            {"id": "criterion-1", "status": "satisfied", "evidence": "self-report"}
+        ],
+        "changedFiles": [], "testsAddedOrUpdated": [], "commandsRun": [],
+        "validationOutput": [], "residualRisks": [], "noStagedFiles": True,
+        "diffSummary": "", "reviewFindings": [],
+    }
+    fence = chr(96) * 3
+    block = f"{fence}acceptance-report\n{json.dumps(report)}\n{fence}"
+    task = {
+        "source_task": {"user_texts": ["## Acceptance Contract\n" + block]},
+        "acceptance_obligations": [{
+            "id": "response",
+            "text": "Return the correct verdict, finding counts and report path, then acceptance-report JSON.",
+        }],
+        "environment_bindings": [{"obligation_id": "response", "verifier_kind": "NON_FILE"}],
+    }
+    path = tmp_path / "trajectory.json"
+    path.write_text(json.dumps({"messages": [{"role": "assistant", "content": block}]}))
+    rollout = {"results": {"trials": [
+        {"status": "PASS", "trajectory_path": str(path)},
+    ]}}
+    result = {"status": "READY", "unverified_obligations": ["response"]}
+    _apply_response_receipts(result, rollout, task, expected_trials=1)
+    assert rollout["results"]["trials"][0]["response_receipt_status"] == "VERIFIED"
+    assert result["unverified_obligations"] == ["response"]
+    assert result["response_receipt_scope"] == "FORMAT_ONLY"
