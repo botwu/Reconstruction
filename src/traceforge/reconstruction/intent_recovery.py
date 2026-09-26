@@ -18,6 +18,7 @@ from traceforge.reconstruction.environment_bindings import (
     normalize_environment_bindings,
 )
 from traceforge.screening.task_labels import apply_task_tags, is_selected_reconstruction_task
+from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
 INTENT_PROMPT_VERSION = "intent-recovery-agent-v11-scoped-path-evidence"
@@ -338,6 +339,13 @@ def run_intent_recovery(
         result_task = {"task_id": task_id, "source_task": task, "task_instruction": payload.get("task_instruction", ""), "core_objective": payload.get("core_objective", ""), "acceptance_obligations": payload.get("acceptance_obligations", []), "environment_bindings": payload.get("environment_bindings", []), "success_criteria": payload.get("success_criteria", []), "specified_output_format": payload.get("specified_output_format"), "has_examples": bool(payload.get("has_examples")), "mandatory_constraints": payload.get("mandatory_constraints", []), "prohibitions": payload.get("prohibitions", []), "evidence_refs": {"message_indices": [x["message_index"] for x in records if isinstance(x.get("message_index"), int)]}}
         if isinstance(payload.get("response_contract"), dict):
             result_task["response_contract"] = payload["response_contract"]
+        result_task["task_instruction"] = render_task_instruction(result_task)
+        response_contract = grounded_response_contract(result_task)
+        if response_contract is not None:
+            result_task["response_contract"] = response_contract
+        else:
+            # 不能从原文确认的检查不获验收资格；原义务继续保留，不阻断意图恢复。
+            result_task.pop("response_contract", None)
         result = {"schema_version": INTENT_SCHEMA, "prompt_version": INTENT_PROMPT_VERSION, "status": status, "task": result_task, "agent": {"role": INTENT_ROLE.name, "backend": ran.backend, "turns": len(ran.turns), "completed": ran.completed}, "errors": errors}
         (task_root / "intent.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         outputs.append(result)
