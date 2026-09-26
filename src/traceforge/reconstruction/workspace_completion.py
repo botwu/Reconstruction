@@ -464,7 +464,7 @@ def repair_workspace_completion(
 def _merge_completion_seed(
     candidate: dict[str, Any], seed_files: list[dict[str, Any]], seed_candidate: dict[str, Any],
 ) -> dict[str, Any]:
-    """修复输出是增量，未修改的文件与运行依赖不能在下一轮消失。"""
+    """文件按路径增量合并；运行声明省略时继承，显式值用于纠正旧声明。"""
     changed = candidate.get("files")
     if not isinstance(changed, list):
         return candidate
@@ -477,10 +477,8 @@ def _merge_completion_seed(
         "files": [item for item in seed_files if item["path"] not in changed_paths] + changed,
     }
     for key in ("dependencies", "runtime_constraints"):
-        values = candidate.get(key)
-        previous = seed_candidate.get(key) or []
-        if isinstance(values, list) and all(isinstance(item, str) for item in values):
-            merged[key] = list(dict.fromkeys([*previous, *values]))
+        if key not in candidate:
+            merged[key] = list(seed_candidate.get(key) or [])
     return merged
 
 
@@ -575,6 +573,12 @@ def _run_completion(
             "反馈是诊断，不是新的原始证据。写文件仍引用原始 evidence_ref_ids，原始 COMPLETE 和 PARTIAL 保护不变。",
             "不得为了通过探针而修改用户任务、预解任务或生成用户要求的目标产物。无法有依据修复时返回 REVIEW 并说明缺失事实。",
             "只读审查任务不要求整个项目可以编译；如果探针超出任务所需能力，保持文件不变并说明由 Sufficiency 更正探测范围。",
+            "运行声明需要纠错时返回完整的 dependencies/runtime_constraints 新数组；显式空数组会清除旧声明，省略字段才继承。只修文件时保留仍需要的声明。",
+            "CURRENT_RUNTIME_DECLARATIONS:",
+            json.dumps({
+                key: (seed_candidate or {}).get(key, [])
+                for key in ("dependencies", "runtime_constraints")
+            }, ensure_ascii=False),
             "REPAIR_FEEDBACK:",
             json.dumps(repair_feedback, ensure_ascii=False),
         ])

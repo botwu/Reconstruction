@@ -28,7 +28,7 @@ class RepairAgent:
         return AgentResult(
             role=role.name, backend=self.backend, completed=True,
             payload={"candidates": [{
-                "files": self.files, "dependencies": [], "runtime_constraints": [],
+                "files": self.files,
                 "uncertainties": [], "decision": "READY",
             }], "open_questions": []},
         )
@@ -279,3 +279,29 @@ def test_malformed_repair_path_is_review_not_uncaught_exception(tmp_path):
     }]), seed, replay)
     assert result["status"] == "REVIEW"
     assert result["errors"]
+
+
+@pytest.mark.parametrize("key,old,new", [
+    ("dependencies", ["numpy==1.26.4"], ["numpy==2.0.0"]),
+    ("runtime_constraints", ["Python 3.11"], ["Python 3.12"]),
+])
+@pytest.mark.parametrize("mode", ["replace", "clear", "inherit"])
+def test_repair_runtime_declarations_can_be_corrected(tmp_path, key, old, new, mode):
+    seed, replay = repair_seed(tmp_path)
+    seed[key] = old
+
+    class DeclarationAgent(RepairAgent):
+        def run(self, **kwargs):
+            result = super().run(**kwargs)
+            candidate = result.payload["candidates"][0]
+            if mode == "inherit":
+                candidate.pop(key, None)
+            else:
+                candidate[key] = new if mode == "replace" else []
+            return result
+
+    result = repair(tmp_path, DeclarationAgent(), seed, replay)
+    assert result["status"] == "READY"
+    expected = old if mode == "inherit" else new if mode == "replace" else []
+    assert result["candidates"][0][key] == expected
+    assert (Path(seed["workspace"]) / "original.py").read_text() == replay.files[0].content
