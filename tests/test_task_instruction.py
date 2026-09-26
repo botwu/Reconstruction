@@ -57,3 +57,74 @@ def test_response_contract_cannot_claim_file_semantics_or_unknown_report():
     task["response_contract"]["checks"][0]["obligation_id"] = "file"
     task["response_contract"]["checks"][1]["report_path"] = "private-answer.md"
     assert grounded_response_contract(task) is None
+
+
+def test_summary_levels_are_recovered_as_complete_source_group_not_model_subset():
+    task = _task()
+    task["response_contract"]["checks"][1]["finding_levels"] = ["Critical"]
+    contract = grounded_response_contract(task)
+    summary = next(check for check in contract["checks"] if check["kind"] == "basic_summary")
+    assert summary["finding_levels"] == ["Critical", "Important", "Minor"]
+
+
+def test_summary_levels_keep_complete_comma_delimited_source_group():
+    task = _task()
+    task["source_task"]["user_texts"][0] = task["source_task"]["user_texts"][0].replace(
+        "Critical/Important/Minor", "Critical, Important, and Minor"
+    )
+    task["response_contract"]["checks"][1]["finding_levels"] = ["Important"]
+    contract = grounded_response_contract(task)
+    assert contract["checks"][1]["finding_levels"] == ["Critical", "Important", "Minor"]
+
+
+def test_conflicting_source_level_groups_leave_summary_unverified():
+    task = _task()
+    task["source_task"]["user_texts"][0] += "\nAn alternative list is Critical/Minor."
+    task["response_contract"]["checks"][1]["finding_levels"] = ["Critical"]
+    contract = grounded_response_contract(task)
+    assert [check["kind"] for check in contract["checks"]] == ["acceptance_report"]
+
+
+def _extend_source_example(task, extra):
+    source = task["source_task"]["user_texts"][0]
+    start, end = source.index("{"), source.rindex("}") + 1
+    example = json.loads(source[start:end])
+    example.update(extra)
+    task["source_task"]["user_texts"][0] = source[:start] + json.dumps(example) + source[end:]
+
+
+def test_unknown_nested_object_is_not_flattened_into_certified_top_level_type():
+    task = _task()
+    _extend_source_example(task, {"proof": {"file": "source.py", "line": 12}})
+    contract = grounded_response_contract(task)
+    assert [check["kind"] for check in contract["checks"]] == ["basic_summary"]
+    assert "proof" in render_task_instruction(task)
+    assert task["environment_bindings"][1]["obligation_id"] == "format"
+
+
+def test_unknown_nested_array_shape_stays_unverified():
+    task = _task()
+    _extend_source_example(task, {"attachments": [{"file": "source.py"}]})
+    contract = grounded_response_contract(task)
+    assert [check["kind"] for check in contract["checks"]] == ["basic_summary"]
+
+
+def test_unchecked_extra_criterion_field_stays_unverified():
+    task = _task()
+    _extend_source_example(task, {"criteriaSatisfied": [{
+        "id": "criterion-1", "status": "satisfied", "evidence": "source.py:12",
+        "ticket": "required-issue-id",
+    }]})
+    contract = grounded_response_contract(task)
+    assert [check["kind"] for check in contract["checks"]] == ["basic_summary"]
+
+
+def test_supported_criterion_and_command_entry_shapes_remain_available():
+    task = _task()
+    _extend_source_example(task, {
+        "criteriaSatisfied": [{"id": "criterion-1", "status": "satisfied", "evidence": "source.py:12"}],
+        "commandsRun": [{"command": "pytest", "result": "passed", "summary": "2 passed"}],
+    })
+    contract = grounded_response_contract(task)
+    assert contract["checks"][0]["kind"] == "acceptance_report"
+    assert contract["checks"][0]["required_fields"]["commandsRun"] == "array"

@@ -78,6 +78,8 @@ def grounded_response_contract(task: dict[str, Any]) -> dict[str, Any] | None:
             continue
         if check.get("kind") == "acceptance_report" and len(examples) == 1:
             example = examples[0]
+            if not _supported_report_shape(example):
+                continue
             types = {key: _json_type(value) for key, value in example.items()}
             # 只在原要求明确标为 optional 时取消该字段的必填性。
             for key in list(types):
@@ -96,6 +98,9 @@ def grounded_response_contract(task: dict[str, Any]) -> dict[str, Any] | None:
             if any(not isinstance(value, str) or not value or value.lower() not in source.lower()
                    for value in [*verdicts, *levels]):
                 continue
+            levels = _grounded_finding_levels(prose, levels)
+            if levels is None:
+                continue
             path = check.get("report_path")
             if path not in output_paths or check.get("match_report") is not True:
                 continue
@@ -108,6 +113,47 @@ def grounded_response_contract(task: dict[str, Any]) -> dict[str, Any] | None:
         return None
     return {"schema_version": "traceforge.response-contract.v1", "checks": checks,
             "source_sha256": hashlib.sha256(source.encode()).hexdigest()}
+
+
+def _grounded_finding_levels(prose: str, declared: list[str]) -> list[str] | None:
+    """用模型标注定位原文的完整枚举；多个不同集合不能推断为同一要求。"""
+    token = r"[A-Za-z][A-Za-z0-9_-]*"
+    separator = r"(?:\s*/\s*|\s*,\s*(?:and\s+)?)"
+    groups: dict[tuple[str, ...], list[str]] = {}
+    required = {value.casefold() for value in declared}
+    for match in re.finditer(rf"(?<![\w-]){token}(?:{separator}{token})+(?![\w-])", prose):
+        values = re.split(separator, match.group())
+        key = tuple(value.casefold() for value in values)
+        if required.issubset(key) and len(set(key)) == len(key):
+            groups[key] = values
+    return next(iter(groups.values())) if len(groups) == 1 else None
+
+
+def _supported_report_shape(example: dict[str, Any]) -> bool:
+    """仅声明后验检查器能完整校验的嵌套结构，避免把 object 类型当作字段覆盖。"""
+    object_arrays = {
+        "criteriaSatisfied": {"id", "status", "evidence"},
+        "commandsRun": {"command", "result", "summary"},
+    }
+    string_arrays = {
+        "changedFiles", "testsAddedOrUpdated", "validationOutput", "residualRisks", "reviewFindings",
+    }
+    for key, value in example.items():
+        if isinstance(value, dict):
+            return False
+        if not isinstance(value, list):
+            continue
+        if key in object_arrays:
+            if any(
+                not isinstance(row, dict)
+                or not set(row).issubset(object_arrays[key])
+                or any(not isinstance(item, str) for item in row.values())
+                for row in value
+            ):
+                return False
+        elif key not in string_arrays or any(not isinstance(item, str) for item in value):
+            return False
+    return True
 
 
 def _json_type(value: Any) -> str:
