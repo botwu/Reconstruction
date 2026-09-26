@@ -46,6 +46,10 @@ class VerifierSynthesisError(ValueError):
     """验证器候选结构或语义来源不满足最低要求。"""
 
 
+# 只检查脚本中的显式路径文字，不把字符串引用当作实际访问的证明。
+_HIDDEN_ROOT_LITERAL = re.compile(
+    r"""(?:^|[\s'"\x60=([{,:;|&<>])/(?:\./|/)*(?:tests|solution)(?=$|[/\s'"\x60)\]},;:|&<>])"""
+)
 _EXISTENCE_ATTRS = frozenset({"exists", "is_file", "is_dir", "isfile", "isdir", "islink"})
 _PROTECTED_INJECTOR_NAMES = frozenset({"injector.cpp", "loader.cpp", "robloxdll.cpp"})
 _PATH_WRITE = re.compile(
@@ -433,8 +437,8 @@ def _variants(value: Any, name: str, expected: int) -> tuple[SolutionVariant, ..
             raise VerifierSynthesisError(f"{name} 条目字段不匹配")
         if any(not isinstance(item[k], str) or not item[k].strip() for k in item):
             raise VerifierSynthesisError(f"{name} 字段不能为空")
-        if "/tests" in item["script"] or "/solution" in item["script"]:
-            raise VerifierSynthesisError("参考解不能访问隐藏测试或解答目录")
+        if _HIDDEN_ROOT_LITERAL.search(item["script"]):
+            raise VerifierSynthesisError("参考解包含隐藏测试或解答目录的绝对路径")
         output.append(SolutionVariant(**item))
     if len({x.name for x in output}) != len(output):
         raise VerifierSynthesisError("参考解名称不能重复")

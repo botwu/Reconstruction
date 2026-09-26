@@ -69,3 +69,46 @@ def test_synthesis_requires_exact_solution_counts(field, count, expected):
     ]
     with pytest.raises(VerifierSynthesisError, match=f"{field} 必须恰好包含 {expected} 个"):
         synthesize_verifier(task=_task(), workspace_files={}, model=FakeModel(payload))
+
+
+@pytest.mark.parametrize("field", ["oracle_solutions", "mutation_solutions"])
+@pytest.mark.parametrize("path", [
+    "crates/fred-core/tests/task_identity.rs",
+    "tests/test_output.py",
+    "examples/solutions/main.py",
+    "/home/user/workspace/crates/fred-core/tests/task_identity.rs",
+    "/tests-data/input.txt",
+    "/solution.py",
+    "/solutions/main.py",
+])
+def test_solution_report_may_reference_public_paths(field, path):
+    payload = _payload()
+    payload[field][0]["script"] = (
+        "from pathlib import Path\n"
+        f"Path('review.md').write_text({path!r})\n"
+    )
+    candidate, _ = synthesize_verifier(
+        task=_task(), workspace_files={}, model=FakeModel(payload)
+    )
+    assert candidate is not None
+    variants = getattr(candidate, field)
+    assert variants[0].script == payload[field][0]["script"]
+
+
+@pytest.mark.parametrize("field", ["oracle_solutions", "mutation_solutions"])
+@pytest.mark.parametrize("script", [
+    "cat /tests",
+    "cat /tests/test_outputs.py",
+    "cat /solution",
+    "python3 /solution/solve.py",
+    "INPUT=/tests/control/truth.txt",
+    "cat /./tests/test_outputs.py",
+    "cat //solution/solve.py",
+    "from pathlib import Path\nPath('/tests/test_outputs.py').read_text()",
+    "print('/solution/solve.py')",
+])
+def test_solution_rejects_explicit_hidden_root_literals(field, script):
+    payload = _payload()
+    payload[field][0]["script"] = script
+    with pytest.raises(VerifierSynthesisError, match="隐藏"):
+        synthesize_verifier(task=_task(), workspace_files={}, model=FakeModel(payload))
