@@ -23,7 +23,7 @@ from traceforge.reconstruction.workspace_integrity import (
 )
 
 SUFFICIENCY_SCHEMA = "traceforge.workspace-sufficiency.v1"
-SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v7-observed-source-integrity"
+SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v8-task-scoped-feedback"
 
 
 def run_workspace_sufficiency(
@@ -33,6 +33,7 @@ def run_workspace_sufficiency(
     agent: AgentRuntime,
     output_root: str | Path,
     observed_paths: Iterable[str] = (),
+    repair_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     workspace = Path(workspace_root).resolve()
     # The role runtime deletes its sandbox before returning. Inventory is a
@@ -74,6 +75,13 @@ def run_workspace_sufficiency(
             "conflict. Include any returned "
             "probe_id in environment_checks; later Verifier/Harbor execution decides whether "
             "the candidate is runnable.",
+            "根据用户任务选择必要的探测能力。只读源码审查、分析或报告任务应验证必要源码可读、所需分析工具可用、"
+            "以及独立临时目录中的报告写入可重复；不应因没有 Cargo.toml 等构建入口而强求整个项目可以编译。"
+            "只有任务确实依赖构建、导入或程序运行时才检查相应依赖。每个探针必须说明它与任务的关系。",
+            "若提供 PREVIOUS_ENVIRONMENT_FEEDBACK，应复查上轮具体缺口；修复后的环境仍必须独立验证，"
+            "不可因为 Completion 声称已修复而直接通过。缺少探针时补充真实探针，探针范围不当时按任务纠正。",
+            "PREVIOUS_ENVIRONMENT_FEEDBACK:",
+            json.dumps(repair_feedback or {}, ensure_ascii=False),
             "Each task_fit requirement must include obligation_id, SATISFIED|UNSATISFIED|UNKNOWN, "
             "a reason, and grounded evidence_paths or probe_ids when applicable. A probe is not "
             "mandatory when the public workspace path itself is sufficient evidence. TaskFit measures whether the recovered "
