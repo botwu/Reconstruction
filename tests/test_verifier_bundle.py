@@ -196,7 +196,7 @@ def test_bundle_digest_includes_compiler_contract(tmp_path):
     manifest = __import__("json").loads(
         (output / "compile_manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v3-workspace-contract"
+    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v4-public-instruction"
     assert manifest["entrypoint_contract"] == {
         "workspace_mount": "/home/user/workspace",
         "solution_mount": "/solution",
