@@ -46,6 +46,29 @@ class _CaptureRuntime:
         )
 
 
+@pytest.mark.parametrize("contract", [{"schema_version": "traceforge.response-contract.v1",
+                                       "checks": []}, None, "invalid"])
+def test_intent_preserves_only_structured_response_contract(tmp_path: Path, contract) -> None:
+    source = _padded_source(user_index=1, text="解释超时日志，按指定结构回答")
+    task_id = source["tasks"][0]["task_id"]
+    runtime = _CaptureRuntime({
+        "task_id": task_id, "task_instruction": "解释超时日志，按指定结构回答",
+        "core_objective": "解释日志", "response_contract": contract,
+        "acceptance_obligations": [{"id": "o1", "text": "解释超时日志",
+                                     "evidence_ref_ids": ["user:1"]}],
+        "environment_bindings": [{"obligation_id": "o1", "verifier_kind": "NON_FILE",
+                                   "required_paths": [], "observable": "解释已返回"}],
+    })
+    result = run_intent_recovery(source=source, agent=runtime, output_root=tmp_path)
+    assert result["status"] == "READY"
+    if isinstance(contract, dict):
+        assert result["task"]["response_contract"] == contract
+    else:
+        assert "response_contract" not in result["task"]
+    assert "traceforge.response-contract.v1" in runtime.instruction
+    assert "不得把事实正确性或行为已完成声明成格式检查" in runtime.instruction
+
+
 def _padded_source(*, user_index: int, text: str, extra_task: bool = False) -> dict:
     messages: list[dict] = [{"role": "assistant", "content": f"pad-{i}"} for i in range(user_index)]
     messages.append({"role": "user", "content": text})
