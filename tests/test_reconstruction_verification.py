@@ -86,6 +86,10 @@ class VerifierRuntime:
 
     def run(self, *, role, instruction, session, output_root):
         self.called = True
+        if role.result_schema == "traceforge.verifier-semantic-review.v1":
+            return AgentResult(role=role.name, backend="test", completed=True, payload={
+                "decision": "ACCEPT", "issues": [], "obligation_reviews": [
+                    {"obligation_id": "obl-001", "covered": True, "reason": "编排单测审查替身"}]})
         if self.sandbox:
             session.sandbox = object()
             digest = hashlib.sha256(_VERIFIER_PAYLOAD["test_outputs_py"].encode("utf-8")).hexdigest()

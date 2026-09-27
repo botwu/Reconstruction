@@ -41,9 +41,15 @@ def review_verifier_candidate(
         result_schema="traceforge.verifier-semantic-review.v1",
         allow_write=False,
     )
+    contract = task.get("response_contract") or {}
+    response_ids = list(dict.fromkeys(
+        check["obligation_id"] for check in contract.get("checks", [])
+        if isinstance(check, dict) and isinstance(check.get("obligation_id"), str)
+    ))
     specification = {
         "task": task, "candidate": candidate.to_dict(),
         "file_obligation_ids": list(candidate.obligation_coverage),
+        "response_obligation_ids": response_ids,
     }
     instruction = "\n".join([
         "VERIFIER_SEMANTIC_REVIEW",
@@ -57,8 +63,11 @@ def review_verifier_candidate(
         "mutation 必须在正确输出路径/接口保持合法格式、正常执行，仅破坏实质行为；",
         "写到另一个路径、漏掉整个输出、崩溃或故意去掉标题，只能证明基础格式检查，不足以校准语义。",
         "检查 response_contract 只标注可机械验证的格式/一致性，不能覆盖真实性义务。",
+        "对每条 response_obligation_id，必须回到对应义务及其引用的原始用户消息核对：",
+        "该检查是否完整覆盖这条义务，是否误把事实正确、实际完成或外部操作降成了格式检查。",
+        "仅声明格式检查或哈希绑定不够；映射不完整或混入真实性要求时该义务 covered=false，给出具体反例。",
         "输出 JSON：{decision: ACCEPT|REVISE, obligation_reviews: [{obligation_id, covered: bool, reason}],",
-        "issues: [{obligation_id, problem, counterexample, repair}]}。每条 FILE 义务恰好一项。",
+        "issues: [{obligation_id, problem, counterexample, repair}]}。每条 FILE 和声明响应检查的义务恰好一项。",
         "发现问题时给具体错误产物/行为反例及可执行修复建议，让生成器改测试和参考解；",
         "不要凭空扩大任务或要求恢复无关工程。无问题才 ACCEPT；这个判断本身不代替真实 RED 执行。",
         json.dumps(specification, ensure_ascii=False, sort_keys=True),
@@ -68,7 +77,7 @@ def review_verifier_candidate(
     payload = dict(ran.payload) if isinstance(ran.payload, dict) else {}
     rows = payload.get("obligation_reviews")
     issues = payload.get("issues")
-    expected_ids = set(candidate.obligation_coverage)
+    expected_ids = set(candidate.obligation_coverage) | set(response_ids)
     valid_rows = (
         isinstance(rows, list) and len(rows) == len(expected_ids)
         and all(isinstance(row, dict) and isinstance(row.get("obligation_id"), str)

@@ -32,6 +32,10 @@ class _Agent:
         self.calls: list[str] = []
 
     def run(self, *, role, instruction, session, output_root):
+        if role.result_schema == "traceforge.verifier-semantic-review.v1":
+            return AgentResult(role=role.name, backend="fake", completed=True, payload={
+                "decision": "ACCEPT", "issues": [], "obligation_reviews": [
+                    {"obligation_id": "o", "covered": True, "reason": "反馈编排单测审查替身"}]})
         self.calls.append(instruction)
         return AgentResult(
             role=role.name,

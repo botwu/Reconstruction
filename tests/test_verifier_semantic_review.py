@@ -34,14 +34,15 @@ class ReviewRuntime:
         return AgentResult(role=role.name, backend="fixture", completed=True, payload=_payload("echo first"))
 
 
-def _run(tmp_path: Path, runtime: ReviewRuntime):
+def _run(tmp_path: Path, runtime: ReviewRuntime, task_extra=None):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "input.py").write_text("def get_value(): return 1\n")
     return run_verifier_recovery(
         task={"task_instruction": "Review input.py and write review.md", "acceptance_obligations": [
             {"id": "output", "text": "Write a correct review"}], "environment_bindings": [
-            {"obligation_id": "output", "verifier_kind": "FILE", "output_paths": ["review.md"]}]},
+            {"obligation_id": "output", "verifier_kind": "FILE", "output_paths": ["review.md"]}],
+              **(task_extra or {})},
         workspace_root=workspace, agent=runtime, output_root=tmp_path / "verifier",
     )
 
@@ -70,3 +71,12 @@ def test_accept_label_cannot_hide_uncovered_or_incomplete_review(tmp_path, cover
     result, candidate = _run(tmp_path, ReviewRuntime(covered=covered, completed=completed))
     assert candidate is None
     assert result["status"] == "REVIEW"
+
+
+def test_file_review_cannot_certify_unreviewed_response_obligation_mapping(tmp_path):
+    result, candidate = _run(tmp_path, ReviewRuntime(), {"response_contract": {
+        "schema_version": "traceforge.response-contract.v1", "checks": [
+            {"kind": "acceptance_report", "obligation_id": "factual_correctness"}]}})
+    assert candidate is None
+    assert result["status"] == "REVIEW"
+    assert "VERIFIER_REVIEW_INVALID" in result["errors"]

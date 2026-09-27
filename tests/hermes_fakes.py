@@ -81,7 +81,8 @@ class FakeHermesAgent:
                 "decision": "ACCEPT", "issues": [],
                 "obligation_reviews": [{"obligation_id": oid, "covered": True,
                                         "reason": "固定 fixture 模拟语义审查通过"}
-                                       for oid in specification["file_obligation_ids"]],
+                                       for oid in [*specification["file_obligation_ids"],
+                                                   *specification.get("response_obligation_ids", [])]],
             }
         elif task_id == "intent":
             records = []
