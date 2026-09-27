@@ -54,7 +54,7 @@ TaskFit 衡量环境能否支持完成和验证原任务；目标功能未实现
 
 Verifier 生成隐藏 pytest、oracle 和 mutation；RED 要求初始缺失能力检查失败、保护性检查通过、oracle 通过、mutation 失败。Verifier 内有有限轮反馈修复。校准成功可发布 Harbor bundle，`verification.status=READY` 不证明真实 agent 已解题。
 
-真实 Hermes rollout 在 task-start 环境执行，验收读取 trial、reward、质量门禁、轨迹、输入绑定与 cleanup。只有这些结果和义务覆盖都完整才可能关闭认证。当前所有 NON_FILE 义务的前置阻断与 rollout 后 response receipt 存在顺序冲突，尚不能宣称最终响应验收完整。
+真实 Hermes rollout 在 task-start 环境执行，验收读取 trial、reward、质量门禁、轨迹、输入绑定与 cleanup。只有这些结果和义务覆盖都完整才可能关闭认证。显式请求的诊断 rollout 允许 NON_FILE 响应义务暂未验证，但未覆盖的 FILE 义务仍会前置阻断。rollout 后的 response receipt 只证明响应格式和来源绑定；结论、数量、证据等内容义务未验时仍为 REVIEW，不能宣称最终响应验收完整。
 
 ## 产物边界
 

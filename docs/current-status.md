@@ -1,6 +1,6 @@
 # 当前状态与交付标准
 
-审计日期：2026-09-24。本次审计基线为 `90212de`；后续代码以 `git log` 为准。本页集中维护运行状态，流程与源码导航分别见 [原始会话流程](raw-session-pipeline.md)、[阅读地图](rebuild-live-map.md)。
+更新日期：2026-09-27。历史运行保留其原始结论；当前整合修复与新运行状态分开记录。本页集中维护运行状态，流程与源码导航分别见 [原始会话流程](raw-session-pipeline.md)、[阅读地图](rebuild-live-map.md)。
 
 **当前没有一条经过可信完整验收的端到端结果，尚不具备稳定批量交付的证据。** 已经有真实沙盒执行、环境候选、验证器、RED 校准和真实解题轨迹；仍需修复模块之间的语义和反馈关系，并用新运行验证产物质量。增加阻断条件只能避免误报成功，不能替代环境和验证器的改进。
 
@@ -33,6 +33,12 @@ bundle 是交付入口；运行轨迹单独位于 Harbor job trial 的 `agent/tr
 | `artifacts/r04-line41-e2e-v30/` | Intent、Completion、Sufficiency 产物；`verification/round-01.json` 为 PASS，NOP/oracle/mutation 数值完成校准；Hermes 实际进入沙盒执行 | Verifier 的报告格式/关键词检查不足以证明评审语义。Hermes 中断后缺少 `hermes-result.json`，导致 `TrajectoryCaptureError`；已见 SIGTERM 处理记录，不能据此断定信号发送者。job 保留一轮错误、一轮待运行，非完整验收 |
 | `artifacts/r04-line41-e2e-v31/` | 已生成任务、环境合同、TaskFit；`verification/round-01.json` 为 PASS | RED 完成后由本次调试代理主动停止；不是模型自然结束或只有 NOP 结果。终止后也出现缺少 `hermes-result.json` 的 capture error，不应将主动停止后的异常另算成自然失败。环境探针、任务绑定及验证语义仍需修正 |
 
+
+| `artifacts/r04-line41-sourcefix-v32/` | 启动预算校验拒绝低于配置的超时参数 | 没有调用模型，不计作 rollout |
+| `artifacts/r04-line41-sourcefix-v33/` | 从原始 R04 第 41 行重新执行，Intent、Replay、Completion、Sufficiency 与 TaskFit 已产出；Verifier 六轮均被同一静态检查拒绝 | 公开源码引用 `crates/fred-core/tests/...` 被误判成隐藏测试访问，未进入 RED 或 rollout；候选还出现路径污染与隐藏结果引用入口，不能交付 |
+
+v9 原始捕获重新核查：传输错误出现在第 47/60 次请求，第 48 次相同请求重试成功；最终响应完整，并非末次请求截断。格式围栏、schema、源码引用与评审内容仍有问题。捕获完整认证与任务通过是两种结论，历史 reward 保持不变。
+
 v28 的一份可核对 job 为：
 `tasks/rawtask_6b7d0cf92a8e2b17/verification/jobs/hermes-replay-v5/29843d809d1016d25e59d0428698fc16905dbec0b11676a6711a1d95c095b879/result.json`。
 
@@ -44,14 +50,14 @@ line 41 的任务是只读代码审查：阅读 brief、先前报告和相关源
 
 | 模块 | 已确认的问题 | 对产物的影响 |
 | --- | --- | --- |
-| Intent / 环境绑定 | 路径提取会把 `Critical/Important/`、`panic/cancellation/` 等描述词，以及全文中的示例路径纳入候选路径。v31 任务合同已经出现这类污染 | Completion 可能为了满足错误绑定创建无关目录或占位文件；必须修复信息提取与任务绑定，不能统一归因于数据不足 |
+| Intent / 环境绑定 | v31/v33 出现描述词、schema 示例路径和跨义务路径污染；已按原始义务引用过滤，并用 Replay 的工作根对齐路径 | v33 保存的原始模型响应重放为 4 个真实输入、1 个输出，污染归零；仍须新运行确认，缺失的原始输入不补造 |
 | Completion / Sufficiency | 当前先生成候选，再逐个评估；没有把后续充分性或执行问题反馈给 Completion 的跨模块修复闭环 | 能报告缺口，但还不能稳定地修复缺口并重新交付合格环境 |
 | 环境执行验收 | 上下文充分性与探针结果已分开；真实 rollout 要求 load/reset/dependency 收据。三个探针成功只证明实际检查过的能力 | 不能用固定探针数量证明任意任务可解；探针应对应任务需要，审查任务不能被默认要求编译工程 |
-| Verifier / 最终响应 | 真实 rollout 模式在启动前阻断所有未验 NON_FILE 义务，其中包括 acceptance-report；既有 response receipt 却要等 rollout 后才能生成 | 存在先后顺序冲突。最终响应验收尚未形成完整闭环，不能声称所有义务已经覆盖 |
+| Verifier / 最终响应 | 整合代码允许显式诊断 rollout，解除响应必须在执行前已有收据的先后矛盾；收据仅验证格式与轨迹绑定 | 合并了结论、数量、报告路径的 NON_FILE 义务仍需内容验收，不能因 JSON 合法就自动清除 |
 | RED / 内容质量 | NOP 失败、oracle 成功、mutation 失败能够检查候选验证器的区分能力，但当前样本的报告语义验证仍弱 | RED 数值 PASS 不等于报告结论正确、环境真实或任务合理 |
 | rollout 生命周期 | 已加入子进程会话隔离，降低普通 SSH 断开影响 | 隔离不能防止显式 SIGTERM，也不能代替一次完成并保全轨迹的真实复验 |
 
-以上问题在本次审计基线仍然存在。这里没有把文档整理、离线回归或源码门禁当成这些问题的修复结果。
+表中区分了已写入代码的修复和仍未闭合的问题。离线回归不代替从新输入开始的真实复验。
 
 ## 状态字段如何理解
 
@@ -59,7 +65,7 @@ line 41 的任务是只读代码审查：阅读 brief、先前报告和相关源
 - Sufficiency 的 `READY`：模型及相应结构检查认为上下文足够，执行探针另存。
 - `environment_contract.status/context_status`：上下文状态；`execution_readiness=PROBED` 才表示要求的探针收据完整。`execution_status=EXECUTABLE` 是派生标签，不是独立证明。
 - `task_fit.decision=READY_ORIGINAL`：已有环境与原任务的义务映射可支持继续验证，不表示目标已经实现。
-- `verification.status=READY`、`calibration=PASS`：重建验证器通过 RED，真实 rollout 另查。
+- `calibration=PASS`：重建验证器通过 RED；不能代表真实 rollout 通过。显式复验失败或有未验证义务时，`verification.status` 保持 `REVIEW`。
 - `sft_eligible=true`、`certification_closed=true`：代码要求真实复验、质量门禁和义务覆盖都完成。仍应核对实际文件与语义，不能只读一个布尔值。
 
 环境上下文 READY 与执行 FAILED 可以同时出现，这是两种判断，不能直接视为合同自相矛盾。当前执行门禁检查的是 `execution_readiness`，而不是独立读取 `execution_status`。
@@ -97,3 +103,11 @@ line 41 的任务是只读代码审查：阅读 brief、先前报告和相关源
 离线回归：`690 passed, 5 skipped, 5 warnings in 91.68s (0:01:31)`。`ruff check src tests scripts --select E9,F63,F7,F82 --no-cache` 与 `git diff --check` 通过；这不表示全部 Ruff 规则已通过。详细记录在部署机 `artifacts/maintenance-20260924/`，产物索引在 `artifacts/README.md`。
 
 本次维护没有发起新的模型 rollout。前述路径绑定污染、跨模块补全反馈、NON_FILE 验收顺序和 verifier 语义质量仍未完成真实复验，不能因代码合并和离线检查通过就宣布端到端完成。
+
+## 当前源头修复的边界
+
+- 整合主目录的原始字节回放、缺失证据参数重试、真实执行状态记录；同时保留原始用户契约、公开源码片段索引、严格响应格式收据和外部运行时哈希绑定。
+- Verifier 路径隔离按隐藏根目录边界判断，公开仓库中的 `tests/` 不再被整段脚本文本误拒绝。
+- capture 的单次无数据时限与整个 rollout 的预算分开。共享 Harbor 当前显式配置为 900 秒，源码默认 300 秒；外层 14400 秒预算不会覆盖显式 capture 配置。
+- Intent 路径污染、Completion 隐藏结果入口修复已整合，相关回归通过，全量回归和新运行待完成。新运行必须检查真实候选无无关占位文件、无已完成答案，不能复用 v33 候选。
+- 当前自动迭代仅覆盖 Verifier 生成和 RED 校准。rollout 失败不会自动回到 Completion 修复；不存在已验证的跨模块无限自修复循环。迭代次数可显式配置，真实运行仍受时间与资源预算约束。
