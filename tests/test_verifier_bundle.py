@@ -86,12 +86,12 @@ def test_bundle_keeps_solution_and_verifier_outside_workspace(tmp_path):
     ]},
     {"review": {"status": "accepted", "references": ["packages/core/task.py:8"]}},
 ])
-def test_bundle_preserves_original_user_contract(tmp_path, shape):
+@pytest.mark.parametrize("heading", ["## Acceptance Contract\n", ""])
+def test_bundle_preserves_original_user_contract(tmp_path, shape, heading):
     root = tmp_path / "workspace"
     root.mkdir()
     contract = (
-        "## Acceptance Contract\n"
-        "保留原始状态值，最后给出 acceptance-report。\n"
+        heading + "保留原始状态值，最后给出 acceptance-report。\n"
         "```acceptance-report\n" + json.dumps(shape, ensure_ascii=False) + "\n```"
     )
     output = compile_bundle(
@@ -128,11 +128,71 @@ def test_bundle_rejects_unavailable_acceptance_schema(tmp_path, contract, error)
     root.mkdir()
     with pytest.raises(ValueError, match=error):
         compile_bundle(
-            task={"task_instruction": "最后返回 acceptance-report。\n" + contract},
+            task={
+                "task_instruction": "最后返回 acceptance-report。",
+                "source_task": {"user_texts": [
+                    "## Acceptance Contract\n最后返回 acceptance-report。\n" + contract
+                ]},
+            },
             workspace_root=root,
             verifier=_verifier(),
             output_root=tmp_path / "out",
         )
+
+
+@pytest.mark.parametrize("instruction", [
+    "Describe the acceptance-report feature in README.",
+    "返回指定格式的 acceptance-report。",
+])
+def test_bundle_does_not_infer_schema_from_mentions_or_model_summary(tmp_path, instruction):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    output = compile_bundle(
+        task={
+            "task_instruction": instruction,
+            "source_task": {
+                "user_texts": ["Describe the acceptance-report feature in README."]
+            },
+        },
+        workspace_root=root,
+        verifier=_verifier(),
+        output_root=tmp_path / "out",
+    )
+    assert (output / "task/instruction.md").read_text() == instruction + "\n"
+
+
+def test_bundle_does_not_replace_missing_original_schema_with_model_schema(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    with pytest.raises(ValueError, match="ACCEPTANCE_REPORT_SCHEMA_MISSING"):
+        compile_bundle(
+            task={
+                "task_instruction": '最后返回 acceptance-report。\n'
+                '```acceptance-report\n{"modelInvented": true}\n```',
+                "source_task": {"user_texts": [
+                    "## Acceptance Contract\n最后返回 acceptance-report，指定 schema 另见缺失附件。"
+                ]},
+            },
+            workspace_root=root,
+            verifier=_verifier(),
+            output_root=tmp_path / "out",
+        )
+
+
+def test_bundle_keeps_contract_for_plain_report_without_json_schema(tmp_path):
+    root = tmp_path / "workspace"
+    root.mkdir()
+    contract = "## Acceptance Contract\n将审查结论写入 report.md。"
+    output = compile_bundle(
+        task={
+            "task_instruction": "审查代码并写报告。",
+            "source_task": {"user_texts": [contract]},
+        },
+        workspace_root=root,
+        verifier=_verifier(),
+        output_root=tmp_path / "out",
+    )
+    assert contract in (output / "task/instruction.md").read_text()
 
 
 def test_bundle_keeps_tasks_without_contract_unchanged(tmp_path):

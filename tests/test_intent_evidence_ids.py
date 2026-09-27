@@ -291,7 +291,9 @@ def test_intent_preserves_contract_and_original_review_gate(tmp_path: Path) -> N
 
 
 def test_intent_reviews_missing_acceptance_schema(tmp_path: Path) -> None:
-    source = _padded_source(user_index=2, text="返回指定格式的 acceptance-report。")
+    source = _padded_source(
+        user_index=2, text="## Acceptance Contract\n返回指定格式的 acceptance-report。"
+    )
     task = source["tasks"][0]
     runtime = _CaptureRuntime({
         "task_id": task["task_id"],

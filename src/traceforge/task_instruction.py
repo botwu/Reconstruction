@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 _CONTRACT_HEADING = re.compile(r"(?m)^##[ \t]+Acceptance Contract[ \t]*$")
+_REPORT_FENCE = re.compile(r"(?m)^```acceptance-report[ \t]*$")
 _REPORT_BLOCK = re.compile(r"(?ms)^```acceptance-report[ \t]*\n(.*?)^```[ \t]*$")
 
 
@@ -19,11 +20,16 @@ def render_task_instruction(task: dict[str, Any], instruction: str) -> str:
             parts.append(text.strip())
 
     source = task.get("source_task") or {}
+    contracts = []
     for text in source.get("user_texts") or ():
-        if isinstance(text, str) and (heading := _CONTRACT_HEADING.search(text)):
-            # 保留契约所在的主请求，防止模型摘要漏掉正文中的验收门槛。
-            append(text[:heading.start()])
-            append(text[heading.start():])
+        if not isinstance(text, str):
+            continue
+        if (heading := _CONTRACT_HEADING.search(text)) or _REPORT_FENCE.search(text):
+            # 原文结构标记才声明 schema 契约，模型摘要与普通提及不作此推断。
+            append(text)
+            contract = text[heading.start():] if heading else text
+            if "acceptance-report" in contract.lower():
+                contracts.append(contract)
     append(task.get("specified_output_format"))
     for item in task.get("acceptance_obligations") or ():
         if isinstance(item, dict):
@@ -34,8 +40,8 @@ def render_task_instruction(task: dict[str, Any], instruction: str) -> str:
             append(text)
 
     rendered = "\n\n".join(parts)
-    if "acceptance-report" in rendered.lower():
-        _acceptance_report_shape(rendered)
+    if contracts:
+        _acceptance_report_shape("\n\n".join(contracts))
     return rendered
 
 
