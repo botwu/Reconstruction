@@ -316,3 +316,24 @@ def test_unsupported_response_contract_stays_unverified_without_blocking_intent(
     assert result["status"] == "READY"
     assert "response_contract" not in result["task"]
     assert result["task"]["acceptance_obligations"][0]["id"] == "summary"
+
+
+def test_intent_missing_response_contract_stays_runnable_but_template_requests_it(tmp_path: Path) -> None:
+    text = ("Return only the verdict, finding counts, and report path, and finish with "
+            "a fenced JSON block tagged acceptance-report conforming to the specified schema.")
+    source = _padded_source(user_index=2, text=text)
+    task_id = source["tasks"][0]["task_id"]
+    runtime = _CaptureRuntime({
+        "task_id": task_id, "task_instruction": text, "core_objective": "返回评审摘要和验收报告",
+        "acceptance_obligations": [{"id": "obl-002", "text": text, "evidence_ref_ids": ["user:2"]}],
+        "environment_bindings": [{"obligation_id": "obl-002", "verifier_kind": "NON_FILE",
+                                  "required_paths": [], "observable": text}],
+    })
+    result = run_intent_recovery(source=source, agent=runtime, output_root=tmp_path)
+    assert result["status"] == "READY", result["errors"]
+    assert "response_contract" not in result["task"]
+    assert result["task"]["acceptance_obligations"][0]["id"] == "obl-002"
+    template = next(line for line in runtime.instruction.splitlines() if line.startswith('{"task_id":"same tag"'))
+    assert "response_contract" in json.loads(template)
+    assert "同一义务" in runtime.instruction
+    assert "全部通过" in runtime.instruction

@@ -526,13 +526,19 @@ def evaluate_response_contract(
     checks = contract.get("checks")
     if not isinstance(checks, list) or not checks:
         raise ResponseReceiptError("RESPONSE_CONTRACT_CHECKS_REQUIRED")
-    ids: set[str] = set()
+    seen: set[tuple[str, str]] = set()
+    obligation_passed: dict[str, bool] = {}
     for check in checks:
         if not isinstance(check, dict) or not isinstance(check.get("obligation_id"), str) or not check["obligation_id"]:
             raise ResponseReceiptError("RESPONSE_CONTRACT_OBLIGATION_INVALID")
-        if check["obligation_id"] in ids:
-            raise ResponseReceiptError("RESPONSE_CONTRACT_OBLIGATION_DUPLICATE")
-        ids.add(check["obligation_id"])
+        kind = check.get("kind")
+        if not isinstance(kind, str) or not kind:
+            raise ResponseReceiptError("RESPONSE_CONTRACT_CHECK_INVALID")
+        identity = (check["obligation_id"], kind)
+        if identity in seen:
+            raise ResponseReceiptError("RESPONSE_CONTRACT_CHECK_DUPLICATE")
+        seen.add(identity)
+        obligation_passed[check["obligation_id"]] = True
     try:
         trajectory = json.loads(trajectory_bytes.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
@@ -554,6 +560,8 @@ def evaluate_response_contract(
         except ResponseReceiptError as exc:
             row.update(status="REVIEW", errors=[str(exc)])
         outcomes.append(row)
+        if row["status"] != "PASS":
+            obligation_passed[check["obligation_id"]] = False
     return {
         "schema_version": RESPONSE_CONTRACT_SCHEMA,
         "contract_sha256": hashlib.sha256(
@@ -562,7 +570,7 @@ def evaluate_response_contract(
         "trajectory_sha256": hashlib.sha256(trajectory_bytes).hexdigest(),
         "response_sha256": hashlib.sha256(response.encode("utf-8")).hexdigest(),
         "checks": outcomes,
-        "verified_obligation_ids": [item["obligation_id"] for item in outcomes if item["status"] == "PASS"],
+        "verified_obligation_ids": [oid for oid, passed in obligation_passed.items() if passed],
         "semantic_verified": False,
     }
 

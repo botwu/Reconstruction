@@ -156,3 +156,27 @@ def test_nested_contract_fields_follow_only_source_example_keys():
     _extend_source_example(task, {"commandsRun": [{"command": "pytest", "result": "passed"}]})
     check = grounded_response_contract(task)["checks"][0]
     assert check["required_item_fields"]["commandsRun"] == {"command": "string", "result": "string"}
+
+
+def test_grounded_contract_preserves_both_checks_for_merged_response_obligation():
+    task = _task()
+    task["response_contract"]["checks"][1]["obligation_id"] = "format"
+    contract = grounded_response_contract(task)
+    assert [(check["obligation_id"], check["kind"]) for check in contract["checks"]] == [
+        ("format", "acceptance_report"), ("format", "basic_summary"),
+    ]
+
+
+def test_ungrounded_half_cannot_leave_merged_response_obligation_covered():
+    task = _task()
+    task["response_contract"]["checks"][1]["obligation_id"] = "format"
+    task["response_contract"]["checks"][1]["report_path"] = "unobserved.md"
+    assert grounded_response_contract(task) is None
+
+
+def test_duplicate_same_kind_cannot_silently_narrow_response_obligation():
+    task = _task()
+    task["response_contract"]["checks"] = [
+        task["response_contract"]["checks"][0], task["response_contract"]["checks"][0],
+    ]
+    assert grounded_response_contract(task) is None

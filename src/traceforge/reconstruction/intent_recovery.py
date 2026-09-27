@@ -22,7 +22,7 @@ from traceforge.screening.task_labels import apply_task_tags, is_selected_recons
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v11-scoped-path-evidence"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v12-explicit-response-contract"
 _STUB_OBSERVABLE = "replayed excerpts still present"
 _REVIEW_ONLY = re.compile(
     r"(?i)(只读(?:代码)?(?:评审|审查)|只审查(?:并)?不修改|只查看.*不修改|"
@@ -203,9 +203,9 @@ def _prompt(
         "initial_required_paths are task-start inputs; they may name an explicitly referenced but currently missing input and must remain a blocker. output_paths are only explicit new/generated final files. required_paths is their union. Listing-only names are not bindings. When FILE_BINDING_PATHS is empty, do not invent a project.",
         "Classify every acceptance obligation exactly once in environment_bindings. Do not omit an obligation or infer a missing binding from shared context; missing bindings are a REVIEW error.",
         "FILE 表示该义务的完成状态可以从沙盒文件或本地程序行为中完整验证。observable 必须描述用户要求的最终状态，不能仅检查初始文件仍然存在。",
-        '可选返回 response_contract={"schema_version":"traceforge.response-contract.v1","checks":[...]}。仅为纯输出结构或摘要一致性义务声明检查：{"kind":"acceptance_report","obligation_id":"...","criterion_ids":["..."],"required_fields":{"字段名":"类型"}} 或 {"kind":"basic_summary","obligation_id":"...","verdicts":["..."],"finding_levels":["..."],"report_path":"...","match_report":true}。所有字段、义务 ID、枚举和路径必须来自该义务引用的原用户要求；不得把事实正确性或行为已完成声明成格式检查。不认识的响应要求保留未验证。',
+        '必须返回 response_contract 字段；原用户要求包含下列已支持响应结构时，声明完整检查，否则返回 null 并保留原义务未验证。契约为 response_contract={"schema_version":"traceforge.response-contract.v1","checks":[...]}。仅为纯输出结构或摘要一致性义务声明检查：{"kind":"acceptance_report","obligation_id":"...","criterion_ids":["..."],"required_fields":{"字段名":"类型"}} 或 {"kind":"basic_summary","obligation_id":"...","verdicts":["..."],"finding_levels":["..."],"report_path":"...","match_report":true}。所有字段、义务 ID、枚举和路径必须来自该义务引用的原用户要求；不得把事实正确性或行为已完成声明成格式检查。不认识的响应要求保留未验证。同一义务包含摘要和 acceptance-report 时，在 checks 中使用相同 obligation_id 分别列出 basic_summary 与 acceptance_report；该义务的检查必须全部通过，不能只声明其中一项。',
         "Return JSON only, with no Markdown or prose before/after it.",
-        "{\"task_id\":\"same tag\",\"task_instruction\":\"...\",\"core_objective\":\"...\",\"acceptance_obligations\":[{\"id\":\"obl-001\",\"text\":\"...\",\"evidence_ref_ids\":[\"user:<message_index>\"]}],\"environment_bindings\":[{\"obligation_id\":\"obl-001\",\"required_paths\":[\"input-or-output/path\"],\"initial_required_paths\":[\"existing-or-missing-input\"],\"output_paths\":[\"new/generated/output\"],\"observable\":\"任务完成后可观测、且足以证明本条义务达成的具体状态\",\"verifier_kind\":\"FILE|NON_FILE\"}],\"success_criteria\":[\"...\"],\"specified_output_format\":null,\"has_examples\":false,\"mandatory_constraints\":[],\"prohibitions\":[]}",
+        "{\"task_id\":\"same tag\",\"task_instruction\":\"...\",\"core_objective\":\"...\",\"acceptance_obligations\":[{\"id\":\"obl-001\",\"text\":\"...\",\"evidence_ref_ids\":[\"user:<message_index>\"]}],\"environment_bindings\":[{\"obligation_id\":\"obl-001\",\"required_paths\":[\"input-or-output/path\"],\"initial_required_paths\":[\"existing-or-missing-input\"],\"output_paths\":[\"new/generated/output\"],\"observable\":\"任务完成后可观测、且足以证明本条义务达成的具体状态\",\"verifier_kind\":\"FILE|NON_FILE\"}],\"success_criteria\":[\"...\"],\"specified_output_format\":null,\"has_examples\":false,\"mandatory_constraints\":[],\"prohibitions\":[],\"response_contract\":null}",
         "Cite evidence ids exactly as listed in TASK_USER_MESSAGES / list_user_texts. Obligation evidence ids must be user:<message_index>.",
         "When FILE_BINDING_PATHS is non-empty and the anchor can bind those files, at least one FILE obligation is required.",
         "read_user_text accepts id=user:<message_index> or index=<original message_index>.",

@@ -202,7 +202,7 @@ def test_basic_summary_cannot_read_reference_or_escape_trial(tmp_path) -> None:
 
 def test_duplicate_contract_obligation_cannot_be_cleared_by_one_passing_check() -> None:
     contract = acceptance_contract()
-    contract["checks"].append({**contract["checks"][0], "kind": "unsupported"})
+    contract["checks"].append(dict(contract["checks"][0]))
     with pytest.raises(ResponseReceiptError, match="DUPLICATE"):
         evaluate_response_contract(trajectory(), contract)
 
@@ -443,3 +443,33 @@ def test_invalid_or_unsupported_item_contract_cannot_clear_obligation(item_field
     contract["checks"][0]["required_fields"]["commandsRun"] = "array"
     contract["checks"][0]["required_item_fields"] = item_fields
     assert evaluate_response_contract(trajectory(), contract)["verified_obligation_ids"] == []
+
+
+@pytest.mark.parametrize("bad_summary,bad_acceptance", [(False, False), (True, False), (False, True)])
+def test_merged_response_obligation_requires_every_check(tmp_path, bad_summary, bad_acceptance) -> None:
+    summary = "APPROVED; Critical: 0; Important: 0; Minor: 1; review.md"
+    if bad_summary:
+        summary = summary.replace("Minor: 1", "Minor: 2")
+    _, contract, _ = _summary_fixture(tmp_path)
+    acceptance = report()
+    if bad_acceptance:
+        acceptance.pop("noStagedFiles")
+    report_check = acceptance_contract()["checks"][0]
+    report_check["obligation_id"] = "obl-summary"
+    contract["checks"].append(report_check)
+    fence = chr(96) * 3
+    data = trajectory(summary + "\n" + fence + "acceptance-report\n" + json.dumps(acceptance) + "\n" + fence)
+    result = evaluate_response_contract(data, contract, trial_root=tmp_path)
+    assert [row["status"] for row in result["checks"]] == [
+        "REVIEW" if bad_summary else "PASS", "REVIEW" if bad_acceptance else "PASS",
+    ]
+    assert result["verified_obligation_ids"] == ([] if bad_summary or bad_acceptance else ["obl-summary"])
+    assert result["semantic_verified"] is False
+
+
+def test_unknown_check_in_merged_obligation_prevents_partial_clear() -> None:
+    contract = acceptance_contract()
+    contract["checks"].append({**contract["checks"][0], "kind": "unsupported"})
+    result = evaluate_response_contract(trajectory(), contract)
+    assert [row["status"] for row in result["checks"]] == ["PASS", "REVIEW"]
+    assert result["verified_obligation_ids"] == []

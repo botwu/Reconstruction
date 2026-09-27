@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import Counter
 from typing import Any
 
 _REPORT_BLOCK = re.compile(r"(?ms)^```acceptance-report[^\S\n]*\n(.*?)^```[^\S\n]*$")
@@ -86,14 +87,19 @@ def grounded_response_contract(task: dict[str, Any]) -> dict[str, Any] | None:
     output_paths = {path for row in bindings if isinstance(row, dict)
                     for path in row.get("output_paths", []) if isinstance(path, str) and not path.endswith("/")}
     checks: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
+    declared_counts: Counter[str] = Counter()
     for check in declared.get("checks", []) if isinstance(declared.get("checks"), list) else []:
         if not isinstance(check, dict):
             continue
         oid = check.get("obligation_id")
-        if not isinstance(oid, str) or oid not in non_file_ids or oid in seen:
+        if not isinstance(oid, str) or oid not in non_file_ids:
             continue
-        if check.get("kind") == "acceptance_report" and len(examples) == 1:
+        declared_counts[oid] += 1
+        kind = check.get("kind")
+        if not isinstance(kind, str) or (oid, kind) in seen:
+            continue
+        if kind == "acceptance_report" and len(examples) == 1:
             example = examples[0]
             if not _supported_report_shape(example):
                 continue
@@ -133,7 +139,11 @@ def grounded_response_contract(task: dict[str, Any]) -> dict[str, Any] | None:
                            "finding_levels": levels, "report_path": path, "match_report": True})
         else:
             continue
-        seen.add(oid)
+        seen.add((oid, kind))
+    # 合并义务不能在部分检查无法落地时退化为“只验通过的半条”。
+    grounded_counts = Counter(check["obligation_id"] for check in checks)
+    checks = [check for check in checks
+              if grounded_counts[check["obligation_id"]] == declared_counts[check["obligation_id"]]]
     if not checks:
         return None
     return {"schema_version": "traceforge.response-contract.v1", "checks": checks,
