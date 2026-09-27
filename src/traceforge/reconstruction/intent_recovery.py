@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from traceforge.reconstruction.agents import INTENT_ROLE, AgentRuntime, AgentSession
+from traceforge.reconstruction.env_replay import replay_workspace_root
 from traceforge.reconstruction.environment_bindings import (
     FILE,
     _READ_CODE,
@@ -229,6 +230,8 @@ def _gate(
     allowed_paths: list[str],
     user_blob: str,
     file_binding_paths: list[str] | None = None,
+    user_text_by_id: dict[str, str] | None = None,
+    workspace_root: str | None = None,
 ) -> tuple[str, list[str], dict[str, Any]]:
     errors: list[str] = []
     if str(payload.get("task_id") or task.get("task_id")) != str(task.get("task_id")): errors.append("TASK_ID_MISMATCH")
@@ -251,6 +254,8 @@ def _gate(
         allowed_paths,
         user_blob=user_blob,
         file_binding_paths=file_binding_paths,
+        user_text_by_id=user_text_by_id,
+        workspace_root=workspace_root,
         # 模型返回该字段时必须覆盖全部义务；旧 fixture 未返回字段时，
         # 保留确定性的兼容推导。
         require_complete="environment_bindings" in payload,
@@ -295,8 +300,8 @@ def run_intent_recovery(
                 }
             )
             continue
-        allowed_paths = collect_allowed_paths(source, records)
         replay_files = (replay_files_by_task or {}).get(task_id)
+        allowed_paths = collect_allowed_paths(source, records, replay_files=replay_files)
         file_binding_paths = collect_file_binding_paths(
             source, records, replay_files=replay_files
         )
@@ -322,6 +327,8 @@ def run_intent_recovery(
                 allowed_paths=allowed_paths,
                 user_blob=user_blob,
                 file_binding_paths=file_binding_paths,
+                user_text_by_id={item["id"]: item["text"] for item in records},
+                workspace_root=replay_workspace_root(source.get("tool_timeline") or []),
             )
             errors = list(ran.errors) + errors
             if errors:

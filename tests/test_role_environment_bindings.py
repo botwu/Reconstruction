@@ -729,3 +729,161 @@ def test_mixed_required_and_explicit_output_paths_are_preserved() -> None:
     assert bindings[0]["required_paths"] == ["src/foo.py", "report.md"]
     assert bindings[0]["initial_required_paths"] == ["src/foo.py"]
     assert bindings[0]["output_paths"] == ["report.md"]
+
+
+def test_file_binding_fallback_uses_only_cited_user_request() -> None:
+    records = [
+        {"id": "user:1", "text": "Bootstrap: read AGENTS.md and references/tools.md."},
+        {"id": "user:2", "text": (
+            "Read from C:\\Users\\reviewer\\project\\app\\plan.md, "
+            "C:\\Users\\reviewer\\project\\app\\progress.md.\n"
+            "Inspect src/core.rs for panic/cancellation/shutdown and lock/lifetime safety. "
+            "Report Critical/Important/Minor findings. Write review.md.\n"
+            "```acceptance-report\n"
+            '{"changedFiles":["src/example.ts"],"reviewFindings":["example.ts:12 - finding"]}\n'
+            "```"
+        )},
+    ]
+    allowed = collect_allowed_paths(None, records, replay_files=["src/core.rs"])
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "FILE", "required_paths": [],
+            "observable": "审查报告包含文件行号和结论",
+        }]},
+        [{"id": "o1", "text": "写入审查报告", "evidence_ref_ids": ["user:2"]}],
+        allowed, user_blob="\n".join(item["text"] for item in records),
+        user_text_by_id={item["id"]: item["text"] for item in records},
+        file_binding_paths=["src/core.rs"],
+    )
+    assert errors == []
+    assert set(bindings[0]["initial_required_paths"]) == {
+        "Users/reviewer/project/app/plan.md", "Users/reviewer/project/app/progress.md",
+        "src/core.rs",
+    }
+    assert bindings[0]["output_paths"] == ["review.md"]
+    assert bindings[0]["observable"] == "审查报告包含文件行号和结论"
+    assert "Critical/" not in allowed
+    assert "panic/" not in allowed
+    assert "src/example.ts" not in allowed
+
+
+def test_explicit_missing_input_survives_the_normal_binding_path() -> None:
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "FILE",
+            "required_paths": ["missing.py"], "observable": "修复明确指定的输入",
+        }]},
+        [{"id": "o1", "text": "修复 missing.py", "evidence_ref_ids": ["user:2"]}],
+        ["missing.py"], user_blob="修复 missing.py", file_binding_paths=[],
+    )
+    assert errors == []
+    assert bindings[0]["initial_required_paths"] == ["missing.py"]
+    assert bindings[0]["output_paths"] == []
+
+
+def test_file_binding_keeps_task_paths_inside_bash_fence() -> None:
+    text = "请修复下面读取的文件：\n```bash\ncat src/input.py\n```"
+    allowed = collect_allowed_paths(None, [{"id": "user:2", "text": text}])
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "FILE",
+            "required_paths": [], "observable": "输入文件缺陷修复",
+        }]},
+        [{"id": "o1", "text": "修复输入", "evidence_ref_ids": ["user:2"]}],
+        allowed, user_blob=text, file_binding_paths=[],
+    )
+    assert errors == []
+    assert bindings[0]["initial_required_paths"] == ["src/input.py"]
+
+
+def test_directory_tokens_must_end_at_a_path_boundary() -> None:
+    allowed = collect_allowed_paths(None, [{
+        "text": "检查 modules/ 和 src/nested/；评审 panic/cancellation/shutdown 与 Critical/Important。",
+    }])
+    assert "modules/" in allowed
+    assert "src/nested/" in allowed
+    assert "panic/" not in allowed
+    assert "Critical/" not in allowed
+
+
+def test_binding_paths_share_replay_root_and_two_relative_input_anchors() -> None:
+    from traceforge.reconstruction.env_replay import normalize_file_ops, replay_workspace_root
+
+    timeline = [
+        {"call_id": "brief", "name": "read",
+         "arguments": {"path": "C:/work/app/.config/brief.md", "cwd": "C:/work"},
+         "result_text": "brief"},
+        {"call_id": "report", "name": "read",
+         "arguments": {"path": "C:/work/app/.reports/previous.md"}, "result_text": "report"},
+        {"call_id": "neighbor", "name": "read",
+         "arguments": {"path": "C:/work/neighbor/settings.md"}, "result_text": "settings"},
+    ]
+    text = (
+        "Read C:\\work\\app\\plan.md and C:\\work\\app\\progress.md. "
+        "Read .config/brief.md and .reports/previous.md. Write .reports/final.md."
+    )
+    paths = [item["path"] for item in normalize_file_ops(timeline)]
+    source = {"tool_timeline": timeline}
+    allowed = collect_allowed_paths(source, [{"id": "user:2", "text": text}], replay_files=paths)
+    assert "app/.reports/final.md" in allowed
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "FILE",
+            "required_paths": [
+                "C:/work/app/plan.md", "C:/work/app/progress.md",
+                "C:/work/app/.config/brief.md", "C:/work/app/.reports/previous.md",
+            ],
+            "output_paths": ["C:/work/app/.reports/final.md"],
+            "observable": "报告存在且包含审查证据",
+        }]},
+        [{"id": "o1", "text": "审查并写入报告", "evidence_ref_ids": ["user:2"]}],
+        allowed, user_blob=text, file_binding_paths=paths,
+        workspace_root=replay_workspace_root(timeline),
+    )
+    assert errors == []
+    assert set(bindings[0]["initial_required_paths"]) == {
+        "app/plan.md", "app/progress.md", "app/.config/brief.md", "app/.reports/previous.md",
+    }
+    assert bindings[0]["output_paths"] == ["app/.reports/final.md"]
+
+
+def test_ambiguous_relative_root_preserves_explicit_output_and_reports_error() -> None:
+    text = "Read .config/brief.md and .reports/previous.md. Write .reports/final.md."
+    paths = [
+        f"{root}/{path}" for root in ("first", "second")
+        for path in (".config/brief.md", ".reports/previous.md")
+    ]
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "FILE",
+            "required_paths": [".config/brief.md"],
+            "output_paths": ["first/.reports/final.md"], "observable": "报告生成",
+        }]},
+        [{"id": "o1", "text": "生成报告", "evidence_ref_ids": ["user:2"]}],
+        paths + [".config/brief.md", ".reports/previous.md",
+                 ".reports/final.md", "first/.reports/final.md"],
+        user_blob=text, file_binding_paths=paths,
+    )
+    assert "BINDING_PATH_ROOT_AMBIGUOUS:o1" in errors
+    assert any(error.startswith("BINDING_OUTPUT_PATH_NOT_EXPLICIT") for error in errors)
+    assert bindings[0]["output_paths"] == [".reports/final.md"]
+
+
+def test_conflicting_absolute_root_is_never_prefixed_with_relative_root() -> None:
+    text = (
+        "Read .config/brief.md and .reports/previous.md and C:/work/other/input.md. "
+        "Write .reports/final.md."
+    )
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "FILE",
+            "required_paths": ["C:/work/other/input.md"], "observable": "完成审查",
+        }]},
+        [{"id": "o1", "text": "审查", "evidence_ref_ids": ["user:2"]}],
+        ["other/input.md", "app/.config/brief.md", "app/.reports/previous.md"],
+        user_blob=text, workspace_root="C:/work",
+        file_binding_paths=["app/.config/brief.md", "app/.reports/previous.md"],
+    )
+    assert "BINDING_PATH_ROOT_CONFLICT:o1" in errors
+    assert bindings[0]["initial_required_paths"] == ["other/input.md"]
+    assert bindings[0]["output_paths"] == [".reports/final.md"]
