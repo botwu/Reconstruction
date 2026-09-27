@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -43,12 +44,7 @@ MAX_CANDIDATES = 5
 
 
 def timeline_evidence(timeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Losslessly expose the complete timeline to evidence tools.
-
-    This is an index over original events, not a selected-span projection.
-    Anonymous/duplicate calls receive deterministic local ids so every record
-    remains addressable without dropping arguments or result bodies.
-    """
+    """为调用方过滤后的时间线建立证据索引，保留正文并区分匿名、重复 ID。"""
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, item in enumerate(timeline):
@@ -430,35 +426,33 @@ def _run_completion(
     if not 1 <= max_candidates <= MAX_CANDIDATES:
         raise ValueError(f"max_candidates must be between 1 and {MAX_CANDIDATES}")
     origin = ENV_DEFAULT_EMPTY if env_origin == ENV_DEFAULT_EMPTY else ENV_REPLAYED
-    evidence = timeline_evidence(timeline)
-    public_timeline = list(timeline)
-    if origin == ENV_REPLAYED:
-        # Replay barriers are private audit facts. A read after an unknown or
-        # known mutation must not re-enter Completion as trusted evidence,
-        # including through hole cards and listing extraction.
-        blocked_reasons = {
-            "unparsed_mutation_scope",
-            "unparsed_mutation_unscoped",
-            "read_after_unparsed_mutation",
-            "read_after_first_mutation",
-            "modified_after_observation",
-        }
-        blocked_refs = {
-            str(item.get("source_event_id"))
-            for item in (getattr(replay, "partial_evidence", ()) or ())
-            if isinstance(item, dict)
-            and item.get("reason") in blocked_reasons
-            and item.get("source_event_id")
-        }
-        evidence = [
-            item for item in evidence
-            if str(item.get("evidence_ref_id") or "") not in blocked_refs
-        ]
-        public_timeline = [
-            item for item in timeline
-            if not isinstance(item, dict)
-            or str(item.get("call_id") or "") not in blocked_refs
-        ]
+    # 只暴露身份明确的原始事件；不为匿名或重复 ID 生成可误绑定的别名。
+    blocked_reasons = {
+        "unparsed_mutation_scope",
+        "unparsed_mutation_unscoped",
+        "read_after_unparsed_mutation",
+        "read_after_first_mutation",
+        "modified_after_observation",
+    }
+    blocked_refs = {item.event_id for item in replay.withheld_changes}
+    blocked_refs.update(
+        str(item.get("source_event_id"))
+        for item in replay.partial_evidence
+        if isinstance(item, dict)
+        and item.get("reason") in blocked_reasons
+        and item.get("source_event_id")
+    )
+    ref_counts = Counter(
+        str(item.get("call_id") or "") for item in timeline if isinstance(item, dict)
+    )
+    public_timeline = [
+        item for item in timeline
+        if isinstance(item, dict)
+        and item.get("call_id")
+        and ref_counts[str(item["call_id"])] == 1
+        and str(item["call_id"]) not in blocked_refs
+    ]
+    evidence = timeline_evidence(public_timeline)
     strategy = STRATEGY_DEFAULT_EMPTY if origin == ENV_DEFAULT_EMPTY else STRATEGY_REPLAYED
     role = (
         COMPLETION_DEFAULT_EMPTY_ROLE
@@ -466,7 +460,7 @@ def _run_completion(
         else COMPLETION_REPLAYED_ROLE
     )
     sketch = (
-        build_tool_process_sketch(timeline, task=task)
+        build_tool_process_sketch(public_timeline, task=task)
         if origin == ENV_DEFAULT_EMPTY
         else None
     )

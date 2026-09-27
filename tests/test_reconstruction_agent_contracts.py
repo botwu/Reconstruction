@@ -9,6 +9,7 @@ import pytest
 from hermes_fakes import tagged_record
 
 from traceforge.reconstruction.agents.runtime import AgentResult
+from traceforge.reconstruction.agents.session import execute_tool
 from traceforge.reconstruction.env_replay import replay_from_timeline
 from traceforge.reconstruction.intent_recovery import run_intent_recovery
 from traceforge.reconstruction.session_source import build_reconstruction_source
@@ -170,6 +171,91 @@ def test_completion_evidence_is_lossless_beyond_former_limits() -> None:
     assert evidence[-1]["arguments"]["custom"] == "x" * 500
     duplicate = timeline_evidence([{}, {"call_id": "c1"}, {"call_id": "c1"}])
     assert len({item["evidence_ref_id"] for item in duplicate}) == 3
+
+
+@pytest.mark.parametrize("env_origin", ["REPLAYED", "DEFAULT_EMPTY"])
+@pytest.mark.parametrize("write_id", ["hidden-write", None])
+def test_completion_excludes_hidden_output_and_post_write_evidence(
+    tmp_path: Path, env_origin: str, write_id: str | None
+) -> None:
+    """新建隐藏报告及其重读不能经原 ID、重复 ID 或匿名 ID 进入补全。"""
+
+    hidden_write = {
+        "call_id": write_id,
+        "name": "write",
+        "arguments": {"path": "review.md", "content": "HIDDEN_REVIEW_PAYLOAD"},
+        "result_text": "wrote review.md",
+    }
+    timeline = [
+        {"call_id": "initial-read", "name": "read_file",
+         "arguments": {"path": "src/context.py"}, "result_text": "INITIAL_SOURCE\n"},
+        {"call_id": "initial-list", "name": "list_dir",
+         "arguments": {"path": "src"}, "result_text": "context.py"},
+        hidden_write,
+        {"call_id": "post-read", "name": "read_file",
+         "arguments": {"path": "review.md"}, "result_text": "HIDDEN_REVIEW_PAYLOAD"},
+        dict(hidden_write),
+        {"name": "lookup", "result_text": "ANONYMOUS_CONTEXT"},
+        {"call_id": "duplicate", "name": "lookup", "result_text": "FIRST_CONTEXT"},
+        {"call_id": "duplicate", "name": "lookup", "result_text": "SECOND_CONTEXT"},
+        {"call_id": "later-initial-read", "name": "read_file",
+         "arguments": {"path": "src/other.py"}, "result_text": "OTHER_INITIAL_SOURCE\n"},
+    ]
+    replay = replay_from_timeline(timeline)
+    assert replay.withheld_changes[0].classification == "agent_created_file"
+    assert any(item.get("reason") == "read_after_first_mutation"
+               for item in replay.partial_evidence)
+    runtime = ResultRuntime({"candidates": [_candidate()]})
+    result = run_workspace_completion(
+        task={"core_objective": "检查 src/context.py"},
+        replay=replay,
+        timeline=timeline,
+        agent=runtime,
+        output_root=tmp_path / "completion",
+        env_origin=env_origin,
+        source={
+            "selected_span_ids": ["public-task"],
+            "raw_session": {"messages": [{"role": "assistant", "content": "RAW_HIDDEN_ANSWER"}]},
+            "tool_timeline": timeline,
+            "selected_tool_timeline": timeline,
+        },
+    )
+    assert runtime.session is not None
+    public_refs = {"initial-read", "initial-list", "later-initial-read"}
+    if env_origin == "DEFAULT_EMPTY":
+        public_refs.add("task:q")
+    assert set(result["evidence_ref_ids"]) == public_refs
+    assert {item["evidence_ref_id"] for item in runtime.session.evidence} == public_refs
+    assert "HIDDEN_REVIEW_PAYLOAD" not in json.dumps(runtime.session.evidence)
+    assert "review.md" not in runtime.instruction
+    assert "RAW_HIDDEN_ANSWER" not in runtime.instruction
+    assert runtime.session.session_context is None
+    assert runtime.session.user_records == []
+    assert runtime.session.user_texts == []
+    assert "HIDDEN_REVIEW_PAYLOAD" not in json.dumps(runtime.session.replay_files)
+    assert execute_tool("read_session_context", {}, runtime.session).startswith("error:")
+    assert execute_tool("read_session_message", {"index": 0}, runtime.session).startswith("error:")
+    assert execute_tool("read_file", {"path": "review.md"}, runtime.session).startswith("error:")
+    for ref in (
+        "hidden-write", "hidden-write@4", "unknown", "post-read",
+        "timeline:2", "timeline:4", "timeline:5", "duplicate", "duplicate@7",
+    ):
+        for key in ("id", "evidence_ref_id"):
+            assert execute_tool("read_evidence", {key: ref}, runtime.session) == (
+                "error: unknown evidence_ref_id"
+            )
+    assert "INITIAL_SOURCE" in execute_tool(
+        "read_evidence", {"id": "initial-read"}, runtime.session
+    )
+    assert "initial-list" in execute_tool("list_evidence", {}, runtime.session)
+    # 隐藏事件前后首次观察的 ID 均绑定到原事件及其正文，不因过滤重编号。
+    for replayed in replay.files:
+        evidence = json.loads(execute_tool(
+            "read_evidence", {"id": replayed.first_observation_event_id}, runtime.session
+        ))
+        assert evidence["call_id"] == replayed.first_observation_event_id
+        assert evidence["evidence_ref_id"] == replayed.first_observation_event_id
+        assert evidence["result_text"] == replayed.content
 
 
 def test_completion_prompt_omits_raw_session(tmp_path: Path) -> None:
