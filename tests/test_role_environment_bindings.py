@@ -871,3 +871,17 @@ def test_path_aliases_do_not_guess_from_basename_or_conflicting_anchors() -> Non
     aliases = collect_binding_path_aliases(source, records)
     assert "main.py" not in aliases
     assert not path_is_allowed("main.py", collect_file_binding_paths(source))
+
+
+def test_path_mapping_preserves_non_path_escape_sequences() -> None:
+    observable = r"修复 src/parser.py，使正则 \d+ 匹配数字并正确处理 \n"
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{"obligation_id": "o1", "verifier_kind": "FILE",
+                                    "required_paths": ["src/parser.py"],
+                                    "observable": observable}]},
+        [{"id": "o1", "text": "修复 src/parser.py"}], ["repo/src/parser.py"],
+        user_blob="修复 src/parser.py", file_binding_paths=["repo/src/parser.py"],
+        path_aliases={"src/parser.py": "repo/src/parser.py"},
+    )
+    assert errors == []
+    assert bindings[0]["observable"] == observable.replace("src/parser.py", "repo/src/parser.py")

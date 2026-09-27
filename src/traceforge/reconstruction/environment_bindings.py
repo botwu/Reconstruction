@@ -147,13 +147,14 @@ def _binding_context_text(text: str, aliases: dict[str, str]) -> str:
 
 def _replace_binding_paths(text: str, aliases: dict[str, str]) -> str:
     """按已有映射替换路径；保留 observable 的其余语义。"""
-    text = text.replace("\\", "/")
     if not aliases:
         return text
-    pattern = re.compile(r"(?<![\w./-])(?:" + "|".join(
-        re.escape(path) for path in sorted(aliases, key=len, reverse=True)
-    ) + r")(?![\w/-]|\.[\w])")
-    return pattern.sub(lambda match: aliases[match.group(0)], text)
+    replacements = dict(aliases)
+    replacements.update({path.replace("/", "\\"): target for path, target in aliases.items()})
+    pattern = re.compile(r"(?<![\w./\\-])(?:" + "|".join(
+        re.escape(path) for path in sorted(replacements, key=len, reverse=True)
+    ) + r")(?![\w/\\-]|\.[\w])")
+    return pattern.sub(lambda match: replacements[match.group(0)], text)
 
 
 def _canonical_binding_path(raw: str, aliases: dict[str, str]) -> str | None:
