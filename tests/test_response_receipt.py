@@ -387,3 +387,59 @@ def test_explicit_contract_does_not_pass_unsupported_shapes(field, kind, value) 
     fence = chr(96) * 3
     data = trajectory(fence + "acceptance-report\n" + json.dumps({field: value}) + "\n" + fence)
     assert evaluate_response_contract(data, contract)["verified_obligation_ids"] == []
+
+
+@pytest.mark.parametrize("summary", [None, 7, {"value": "passed"}])
+def test_explicit_item_schema_rejects_missing_or_wrong_summary(summary) -> None:
+    value = report()
+    if summary is None:
+        value["commandsRun"][0].pop("summary")
+    else:
+        value["commandsRun"][0]["summary"] = summary
+    contract = acceptance_contract()
+    check = contract["checks"][0]
+    check["required_fields"]["commandsRun"] = "array"
+    check["required_item_fields"] = {
+        "commandsRun": {"command": "string", "result": "string", "summary": "string"},
+    }
+    fence = chr(96) * 3
+    data = trajectory(fence + "acceptance-report\n" + json.dumps(value) + "\n" + fence)
+    outcome = evaluate_response_contract(data, contract)
+    assert outcome["verified_obligation_ids"] == []
+
+
+def test_explicit_item_schema_validates_criterion_fields_and_keeps_structure_scope() -> None:
+    contract = acceptance_contract()
+    contract["checks"][0]["required_item_fields"] = {
+        "criteriaSatisfied": {"id": "string", "status": "string", "evidence": "string"},
+    }
+    outcome = evaluate_response_contract(trajectory(), contract)
+    assert outcome["verified_obligation_ids"] == ["obl-report"]
+    assert outcome["semantic_verified"] is False
+    assert outcome["checks"][0]["verification_scope"] == "REPORT_STRUCTURE_ONLY"
+
+
+def test_undeclared_command_summary_is_not_required_by_explicit_or_legacy_parser() -> None:
+    value = report()
+    value["commandsRun"][0].pop("summary")
+    fence = chr(96) * 3
+    response = fence + "acceptance-report\n" + json.dumps(value) + "\n" + fence
+    assert parse_acceptance_report(response)[0] == value
+    contract = acceptance_contract()
+    check = contract["checks"][0]
+    check["required_fields"]["commandsRun"] = "array"
+    check["required_item_fields"] = {"commandsRun": {"command": "string", "result": "string"}}
+    assert evaluate_response_contract(trajectory(response), contract)["verified_obligation_ids"] == ["obl-report"]
+
+
+@pytest.mark.parametrize("item_fields", [
+    {"commandsRun": {"summary": "unsupported"}},
+    {"commandsRun": ["summary"]},
+    {"commandsRun": {"summary": "object"}},
+    {"unknown": {"summary": "string"}},
+])
+def test_invalid_or_unsupported_item_contract_cannot_clear_obligation(item_fields) -> None:
+    contract = acceptance_contract()
+    contract["checks"][0]["required_fields"]["commandsRun"] = "array"
+    contract["checks"][0]["required_item_fields"] = item_fields
+    assert evaluate_response_contract(trajectory(), contract)["verified_obligation_ids"] == []

@@ -11,6 +11,13 @@ _REPORT_BLOCK = re.compile(r"(?ms)^```acceptance-report[^\S\n]*\n(.*?)^```[^\S\n
 _CONTRACT = re.compile(r"(?mi)^(?:#{1,6}\s+)?Acceptance Contract\s*$")
 
 
+# 契约生成与后验检查共享同一组已支持嵌套字段。
+RESPONSE_REPORT_ITEM_FIELDS = {
+    "criteriaSatisfied": frozenset({"id", "status", "evidence"}),
+    "commandsRun": frozenset({"command", "result", "summary"}),
+}
+
+
 def source_user_texts(task: dict[str, Any]) -> list[str]:
     """仅使用所属任务的用户消息；工具输出不能新增公开验收要求。"""
     source = task.get("source_task") or {}
@@ -89,8 +96,13 @@ def grounded_response_contract(task: dict[str, Any]) -> dict[str, Any] | None:
             ids = [row.get("id") for row in criteria if isinstance(row, dict)] if isinstance(criteria, list) else []
             if not ids or any(not isinstance(value, str) or not value for value in ids):
                 continue
+            item_fields = {
+                key: {name: _json_type(value) for row in example[key] for name, value in row.items()}
+                for key in RESPONSE_REPORT_ITEM_FIELDS if types.get(key) == "array" and example[key]
+            }
             checks.append({"kind": "acceptance_report", "obligation_id": oid,
-                           "required_fields": types, "criterion_ids": ids})
+                           "required_fields": types, "criterion_ids": ids,
+                           "required_item_fields": item_fields})
         elif check.get("kind") == "basic_summary":
             verdicts, levels = check.get("verdicts"), check.get("finding_levels")
             if not (isinstance(verdicts, list) and verdicts and isinstance(levels, list) and levels):
@@ -131,10 +143,6 @@ def _grounded_finding_levels(prose: str, declared: list[str]) -> list[str] | Non
 
 def _supported_report_shape(example: dict[str, Any]) -> bool:
     """仅声明后验检查器能完整校验的嵌套结构，避免把 object 类型当作字段覆盖。"""
-    object_arrays = {
-        "criteriaSatisfied": {"id", "status", "evidence"},
-        "commandsRun": {"command", "result", "summary"},
-    }
     string_arrays = {
         "changedFiles", "testsAddedOrUpdated", "validationOutput", "residualRisks", "reviewFindings",
     }
@@ -143,10 +151,10 @@ def _supported_report_shape(example: dict[str, Any]) -> bool:
             return False
         if not isinstance(value, list):
             continue
-        if key in object_arrays:
+        if key in RESPONSE_REPORT_ITEM_FIELDS:
             if any(
                 not isinstance(row, dict)
-                or not set(row).issubset(object_arrays[key])
+                or not set(row).issubset(RESPONSE_REPORT_ITEM_FIELDS[key])
                 or any(not isinstance(item, str) for item in row.values())
                 for row in value
             ):

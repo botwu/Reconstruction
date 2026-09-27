@@ -13,6 +13,8 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from traceforge.task_instruction import RESPONSE_REPORT_ITEM_FIELDS
+
 RESPONSE_RECEIPT_SCHEMA = "traceforge.response-receipt.v1"
 _ACCEPTANCE_RE = re.compile(
     r"```acceptance-report\r?\n(?P<body>\{.*?\})\r?\n```\s*\Z",
@@ -250,6 +252,23 @@ def _check_acceptance_report(response: str, check: dict[str, Any]) -> dict[str, 
             raise ResponseReceiptError(f"RESPONSE_CONTRACT_FIELD_MISMATCH:{field}")
         if kind in {"integer", "number"} and isinstance(report[field], bool):
             raise ResponseReceiptError(f"RESPONSE_CONTRACT_FIELD_MISMATCH:{field}")
+    item_fields = check.get("required_item_fields", {})
+    if not isinstance(item_fields, dict):
+        raise ResponseReceiptError("RESPONSE_CONTRACT_ITEM_FIELDS_INVALID")
+    for field, declared in item_fields.items():
+        if (
+            field not in RESPONSE_REPORT_ITEM_FIELDS
+            or fields.get(field) != "array"
+            or not isinstance(declared, dict) or not declared
+            or any(
+                name not in RESPONSE_REPORT_ITEM_FIELDS[field] or kind != "string"
+                for name, kind in declared.items()
+            )
+        ):
+            raise ResponseReceiptError(f"RESPONSE_CONTRACT_ITEM_FIELDS_UNSUPPORTED:{field}")
+        for index, item in enumerate(report[field]):
+            if not isinstance(item, dict) or any(not isinstance(item.get(name), str) for name in declared):
+                raise ResponseReceiptError(f"RESPONSE_CONTRACT_ITEM_FIELD_MISMATCH:{field}:{index}")
     if "criteriaSatisfied" in fields or expected_ids:
         if not expected_ids:
             raise ResponseReceiptError("RESPONSE_CONTRACT_CRITERIA_REQUIRED")

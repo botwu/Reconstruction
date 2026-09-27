@@ -128,3 +128,20 @@ def test_supported_criterion_and_command_entry_shapes_remain_available():
     contract = grounded_response_contract(task)
     assert contract["checks"][0]["kind"] == "acceptance_report"
     assert contract["checks"][0]["required_fields"]["commandsRun"] == "array"
+
+
+def test_nested_contract_fields_follow_only_source_example_keys():
+    task = _task()
+    _extend_source_example(task, {
+        "criteriaSatisfied": [{"id": "criterion-1", "status": "satisfied", "evidence": "source.py:12"}],
+        "commandsRun": [{"command": "pytest", "result": "passed", "summary": "2 passed"}],
+    })
+    check = grounded_response_contract(task)["checks"][0]
+    assert check["required_item_fields"] == {
+        "criteriaSatisfied": {"id": "string", "status": "string", "evidence": "string"},
+        "commandsRun": {"command": "string", "result": "string", "summary": "string"},
+    }
+
+    _extend_source_example(task, {"commandsRun": [{"command": "pytest", "result": "passed"}]})
+    check = grounded_response_contract(task)["checks"][0]
+    assert check["required_item_fields"]["commandsRun"] == {"command": "string", "result": "string"}
