@@ -16,6 +16,7 @@ from traceforge.reconstruction.env_replay import (
     _looks_like_filename,
     _safe_relpath,
     normalize_file_ops,
+    replay_workspace_root,
 )
 
 FILE = "FILE"
@@ -31,6 +32,7 @@ _FENCED_BLOCK = re.compile(r"(?ms)^(`{3,}|~{3,})([^\n]*)\n.*?^\1[ \t]*$")
 _EXAMPLE_CONTEXT = re.compile(r"(?i)(\bexample\b|\bshape\b|\bschema\b|示例|格式如下)")
 _INLINE_EXAMPLE = re.compile(r"(?i)(?:\be\.g\.|\bfor example\b|例如|比如|示例[:：])[^\n;；。]*")
 _LISTING_TOOLS = frozenset({"ls", "list_dir", "glob", "find", "fd", "tree", "rg", "grep"})
+_ABSOLUTE_PATH = re.compile(r"(?<![\w./])(?:[A-Za-z]:/|/)[^\s`\"'<>,]+")
 _READ_CODE = re.compile(
     r"(?i)(读|讀|看懂|完全读|完全讀|read|inspect|understand).{0,24}(代码|代碼|code|codebase|注入|injector|项目|工程)"
 )
@@ -87,6 +89,78 @@ def _request_path_text(text: str) -> str:
     return _INLINE_EXAMPLE.sub("", _FENCED_BLOCK.sub(mask_example, text or ""))
 
 
+def collect_binding_path_aliases(
+    source: dict[str, Any] | None, records: list[dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    """只依据 Replay 根和明确的原始路径锚点转换坐标，不按 basename 猜测。"""
+    timeline = list((source or {}).get("tool_timeline") or [])
+    root = replay_workspace_root(timeline)
+    if not root:
+        return {}
+    candidates: dict[str, set[str]] = {}
+
+    def add(raw: str, canonical: str | None) -> None:
+        if not canonical:
+            return
+        for alias in (raw.replace("\\", "/"), normalize_binding_path(raw)):
+            if alias:
+                candidates.setdefault(alias, set()).add(canonical)
+
+    for item in timeline:
+        arguments = item.get("arguments") if isinstance(item, dict) else None
+        if not isinstance(arguments, dict):
+            continue
+        for key in ("path", "file_path", "filePath", "filename", "file"):
+            raw = arguments.get(key)
+            if isinstance(raw, str):
+                add(raw, _safe_relpath(raw, root))
+    for record in records or []:
+        text = _request_path_text(str(record.get("text") or "")).replace("\\", "/")
+        absolute = {match.group(0).rstrip(".;)]}") for match in _ABSOLUTE_PATH.finditer(text)}
+        for raw in absolute:
+            add(raw, _safe_relpath(raw, root))
+        # 至少两个同目录的绝对用户输入才足以锚定省略根的相对路径。
+        # 不把同名文件或跨目录的共同后缀视为用户工作目录证据。
+        parents = {str(PurePosixPath(path).parent) for path in absolute}
+        if len(absolute) < 2 or len(parents) != 1:
+            continue
+        parent = next(iter(parents))
+        normalized_root = root.replace("\\", "/").rstrip("/")
+        if parent != normalized_root and not parent.startswith(normalized_root + "/"):
+            continue
+        relative_root = _safe_relpath(parent, root)
+        if not relative_root:
+            continue
+        relative_text = _ABSOLUTE_PATH.sub("", text)
+        for path in _filename_tokens(relative_text):
+            canonical = normalize_binding_path(relative_root + "/" + path)
+            add(path, canonical)
+            add(parent + "/" + path, canonical)
+    return {raw: next(iter(paths)) for raw, paths in candidates.items()
+            if len(paths) == 1 and raw != next(iter(paths))}
+
+
+def _binding_context_text(text: str, aliases: dict[str, str]) -> str:
+    """仅转换派生绑定视图；原始用户记录不修改。"""
+    return _replace_binding_paths(_request_path_text(text), aliases)
+
+
+def _replace_binding_paths(text: str, aliases: dict[str, str]) -> str:
+    """按已有映射替换路径；保留 observable 的其余语义。"""
+    text = text.replace("\\", "/")
+    if not aliases:
+        return text
+    pattern = re.compile(r"(?<![\w./-])(?:" + "|".join(
+        re.escape(path) for path in sorted(aliases, key=len, reverse=True)
+    ) + r")(?![\w/-]|\.[\w])")
+    return pattern.sub(lambda match: aliases[match.group(0)], text)
+
+
+def _canonical_binding_path(raw: str, aliases: dict[str, str]) -> str | None:
+    normalized = normalize_binding_path(raw)
+    return aliases.get(normalized, normalized) if normalized else None
+
+
 def _listing_paths(item: dict[str, Any]) -> set[str]:
     """只读取 listing 的路径列，不把匹配到的源文件正文当路径证据。"""
     arguments = item.get("arguments")
@@ -130,13 +204,15 @@ def collect_allowed_paths(
     records: list[dict[str, Any]] | None = None,
     *,
     replay_files: list[str] | None = None,
+    path_aliases: dict[str, str] | None = None,
 ) -> list[str]:
     """可引用路径来自用户实际要求、工具路径参数、文件操作或 listing 路径列。"""
 
+    aliases = collect_binding_path_aliases(source, records) if path_aliases is None else path_aliases
     found: set[str] = set()
     for record in records or []:
         if isinstance(record, dict):
-            found.update(_filename_tokens(_request_path_text(str(record.get("text") or ""))))
+            found.update(_filename_tokens(_binding_context_text(str(record.get("text") or ""), aliases)))
     timeline = list((source or {}).get("tool_timeline") or [])
     for item in timeline:
         if not isinstance(item, dict):
@@ -144,10 +220,10 @@ def collect_allowed_paths(
         arguments = item.get("arguments")
         if isinstance(arguments, dict):
             for key in ("path", "file_path", "filename", "file"):
-                path = normalize_binding_path(str(arguments.get(key) or ""))
+                path = _canonical_binding_path(str(arguments.get(key) or ""), aliases)
                 if path:
                     found.add(path)
-        found.update(_listing_paths(item))
+        found.update(aliases.get(path, path) for path in _listing_paths(item))
     for op in normalize_file_ops(timeline):
         path = op.get("path")
         if isinstance(path, str) and path:
@@ -310,6 +386,7 @@ def _normalize_one_binding(
     allowed_paths: list[str],
     file_binding_paths: list[str] | None = None,
     context_text: str = "",
+    path_aliases: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     errors: list[str] = []
     oid = item.get("obligation_id") or item.get("id")
@@ -334,7 +411,7 @@ def _normalize_one_binding(
     hinted_outputs = _explicit_output_paths(context_text, allowed_paths)
     bindable = set(file_binding_paths) if file_binding_paths is not None else None
     for raw in [*raw_paths, *raw_outputs]:
-        path = normalize_binding_path(raw)
+        path = _canonical_binding_path(raw, path_aliases or {})
         if path is None:
             errors.append(f"BINDING_PATH_UNSAFE:{oid}:{raw}")
             continue
@@ -357,6 +434,7 @@ def _normalize_one_binding(
     if not isinstance(observable, str):
         errors.append(f"BINDING_OBSERVABLE_INVALID:{oid}")
         observable = ""
+    observable = _replace_binding_paths(observable, path_aliases or {})
     if kind == FILE and (not observable.strip() or observable.strip().lower() == "replayed excerpts still present"):
         errors.append(f"BINDING_TASK_OUTCOME_REQUIRED:{oid}")
     if kind == FILE and not all_paths and file_binding_paths is None:
@@ -384,6 +462,7 @@ def normalize_environment_bindings(
     *,
     user_blob: str = "",
     user_records: list[dict[str, Any]] | None = None,
+    path_aliases: dict[str, str] | None = None,
     file_binding_paths: list[str] | None = None,
     require_complete: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -396,9 +475,11 @@ def normalize_environment_bindings(
     def binding_context(obligation: dict[str, Any]) -> str:
         # 有原始记录时只使用该义务引用的消息，不能把相邻平台说明变成任务输入。
         if user_records is not None:
-            return "\n".join(records_by_id[ref] for ref in obligation.get("evidence_ref_ids") or []
+            text = "\n".join(records_by_id[ref] for ref in obligation.get("evidence_ref_ids") or []
                              if ref in records_by_id)
-        return user_blob
+        else:
+            text = user_blob
+        return _binding_context_text(text, path_aliases or {})
     raw = payload.get("environment_bindings")
     by_id: dict[str, dict[str, Any]] = {}
     if raw is None or raw == []:
@@ -416,6 +497,7 @@ def normalize_environment_bindings(
             allowed_paths=allowed_paths,
             file_binding_paths=file_binding_paths,
             context_text=binding_context(obligations_by_id.get(str(item.get("obligation_id") or item.get("id")), {})),
+            path_aliases=path_aliases,
         )
         errors.extend(item_errors)
         if normalized is None:
@@ -629,6 +711,7 @@ __all__ = [
     "NON_FILE",
     "attach_bindings_to_obligations",
     "collect_allowed_paths",
+    "collect_binding_path_aliases",
     "collect_file_binding_paths",
     "derive_binding",
     "observed_body_paths",

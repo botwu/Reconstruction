@@ -1043,6 +1043,13 @@ def _infer_workspace_root(timeline: list[dict[str, Any]]) -> str | None:
     return common.rstrip("/")
 
 
+def replay_workspace_root(
+    timeline: list[dict[str, Any]], *, workspace_root: str | None = None,
+) -> str | None:
+    """Replay 和环境绑定共用工作目录规则，避免同一文件出现两套坐标。"""
+    return _session_workdir(timeline) or workspace_root or _infer_workspace_root(timeline)
+
+
 def normalize_file_ops(
     timeline: list[dict[str, Any]], *, workspace_root: str | None = None
 ) -> list[dict[str, Any]]:
@@ -1052,11 +1059,7 @@ def normalize_file_ops(
     # event. Infer one common project root before normalising; otherwise the
     # host prefix becomes a fake workspace directory and every downstream
     # binding is wrong.
-    session_workdir = (
-        _session_workdir(timeline)
-        or workspace_root
-        or _infer_workspace_root(timeline)
-    )
+    session_workdir = replay_workspace_root(timeline, workspace_root=workspace_root)
     ops: list[dict[str, Any]] = []
     for item in timeline:
         if not isinstance(item, dict):

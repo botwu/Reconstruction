@@ -815,3 +815,59 @@ def test_listing_path_column_is_allowed_but_matched_source_text_is_not() -> None
     }]})
     assert {"src/", "src/real.py"} <= set(allowed)
     assert "src/fiction.py" not in allowed
+
+
+def test_host_and_user_relative_paths_share_replay_coordinates() -> None:
+    from traceforge.reconstruction.environment_bindings import collect_binding_path_aliases
+
+    root = "C:/Users/user/project/lua/demo"
+    timeline = [
+        {"call_id": "brief", "name": "read", "arguments": {"path": root + "/.agent/brief.md"},
+         "result_text": "Review the migration\n"},
+        {"call_id": "code", "name": "read", "arguments": {"path": root + "/src/core.rs"},
+         "result_text": "fn run() {}\n"},
+        {"call_id": "find", "name": "find", "arguments": {"path": root, "pattern": "plan.md"},
+         "result_text": "No files found"},
+    ]
+    request = (f"Read from {root}/plan.md, {root}/progress.md. "
+               "Read `.agent/brief.md`; write `reports/review.md`.")
+    records = [{"id": "user:2", "text": request}]
+    source = {"tool_timeline": timeline}
+    aliases = collect_binding_path_aliases(source, records)
+    allowed = collect_allowed_paths(source, records)
+    assert aliases[".agent/brief.md"] == "demo/.agent/brief.md"
+    assert aliases["reports/review.md"] == "demo/reports/review.md"
+    assert {"demo/plan.md", "demo/progress.md", "demo/.agent/brief.md",
+            "demo/reports/review.md"} <= set(allowed)
+    assert "Users/user/project/lua/demo/plan.md" not in allowed
+    host_paths = ["Users/user/project/lua/demo/" + path
+                  for path in ("plan.md", "progress.md", ".agent/brief.md", "reports/review.md")]
+    obligations = [{"id": "review", "text": "Write review report",
+                    "evidence_ref_ids": ["user:2"]}]
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{"obligation_id": "review", "verifier_kind": "FILE",
+                                    "required_paths": host_paths, "output_paths": [host_paths[-1]],
+                                    "observable": "报告准确描述审查结论"}]},
+        obligations, allowed, user_records=records, path_aliases=aliases,
+        file_binding_paths=collect_file_binding_paths(source),
+    )
+    assert errors == []
+    assert set(bindings[0]["initial_required_paths"]) == {
+        "demo/plan.md", "demo/progress.md", "demo/.agent/brief.md"}
+    assert bindings[0]["output_paths"] == ["demo/reports/review.md"]
+
+
+def test_path_aliases_do_not_guess_from_basename_or_conflicting_anchors() -> None:
+    from traceforge.reconstruction.environment_bindings import collect_binding_path_aliases
+
+    source = {"tool_timeline": [
+        {"call_id": "a", "name": "read", "arguments": {"path": "/home/u/project/one/src/main.py"},
+         "result_text": "print(1)\n"},
+        {"call_id": "b", "name": "read", "arguments": {"path": "/home/u/project/two/src/main.py"},
+         "result_text": "print(2)\n"},
+    ]}
+    records = [{"id": "user:1", "text": "Read /home/u/project/one/a.md and /home/u/project/one/b.md; modify main.py."},
+               {"id": "user:2", "text": "Read /home/u/project/two/a.md and /home/u/project/two/b.md; modify main.py."}]
+    aliases = collect_binding_path_aliases(source, records)
+    assert "main.py" not in aliases
+    assert not path_is_allowed("main.py", collect_file_binding_paths(source))
