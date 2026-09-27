@@ -241,7 +241,7 @@ def _parser() -> argparse.ArgumentParser:
     reconstruct_run.add_argument(
         "--execute-rollout",
         action="store_true",
-        help="READY 之后的 Hermes 解题复验，只写 SFT，不改重建完成态",
+        help="RED 后执行 Hermes 复验；完整验收才可 READY/SFT，未验证义务保留 REVIEW",
     )
     reconstruct_run.add_argument(
         "--rollout-model",

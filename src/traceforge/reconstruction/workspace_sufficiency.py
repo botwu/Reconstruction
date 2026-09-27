@@ -106,6 +106,8 @@ def run_workspace_sufficiency(
             json.dumps(integrity, ensure_ascii=False),
         ]
     )
+    if (workspace / ".traceforge/source-excerpts.json").is_file():
+        instruction += "\n请查看 .traceforge/source-excerpts.json 索引及所需原始片段；缺失区间不能作为通过证据。"
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
     ran = agent.run(

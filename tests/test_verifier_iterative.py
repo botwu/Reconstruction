@@ -1,4 +1,5 @@
 import json
+import pytest
 from traceforge.reconstruction.model_gateway import ModelRequest, ModelResponse
 from traceforge.verifier.iterative import synthesize_verifier_iterative
 class M:
@@ -11,3 +12,25 @@ class E:
 def test_loop_retries_with_feedback():
  r=synthesize_verifier_iterative(task={"acceptance_obligations":[{"id":"x","description":"x"}]},workspace_files={},model=M(),executor=E(),max_rounds=2)
  assert r.status=="READY" and len(r.attempts)==2
+
+
+def test_explicit_budget_allows_four_calibration_rounds():
+    class FourthPass(E):
+        def run(self, candidate):
+            self.n += 1
+            return {"status": "PASS" if self.n == 4 else "FAIL", "feedback": "fix"}
+    executor = FourthPass()
+    result = synthesize_verifier_iterative(
+        task={"acceptance_obligations": [{"id": "x", "description": "x"}]},
+        workspace_files={}, model=M(), executor=executor, max_rounds=4,
+    )
+    assert result.status == "READY"
+    assert executor.n == 4
+
+
+@pytest.mark.parametrize("max_rounds", [0, -1, True, 1.5, "4"])
+def test_iterative_verifier_rejects_invalid_round_budget(max_rounds):
+    with pytest.raises(ValueError, match="正整数"):
+        synthesize_verifier_iterative(
+            task={}, workspace_files={}, model=M(), executor=E(), max_rounds=max_rounds
+        )

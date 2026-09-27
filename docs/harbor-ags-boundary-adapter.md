@@ -14,7 +14,7 @@
 | --- | --- |
 | `reconstruct run` | 重建 q/E；默认不做 RED |
 | `reconstruct run --execute-red` | Verifier 编 Bundle 后，对**初始 workspace** 做 nop/oracle/mutation。通过才标重建 READY |
-| `reconstruct run --execute-rollout` | READY 之后的 Hermes 解题复验，只写 SFT，不改 READY |
+| `reconstruct run --execute-rollout` | RED 后执行 Hermes 复验；完整验收才可 READY/SFT，未验证义务保留 REVIEW |
 | `harbor-ags plan` | 对现成 Bundle 做 dry-run 边界计划，`model_status=NOT_RUN` |
 | `harbor-ags prepare-rollout` | 物化 Harbor Dataset 并生成显式 dry-run 计划 |
 | `harbor-ags execute-rollout` | 执行已审核的 rollout plan（独立于 reconstruct） |

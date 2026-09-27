@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from traceforge.harbor_ags.adapter import validate_harbor_bundle
 from traceforge.harbor_ags.rollout import (
     HarborRolloutConfig,
     HarborRolloutError,
@@ -125,7 +126,7 @@ def test_prepare_rollout_materializes_dataset_without_executing(
     assert "n_concurrent: 2" in config_text
     assert "n_concurrent: 8" not in config_text
     assert "max_iterations: 30" in config_text
-    assert "capture_timeout_sec: 900" in config_text
+    assert "capture_timeout_sec:" not in config_text
     assert f"job_name: {json.dumps(plan['job_name'])}" in config_text
     assert plan["job_name"] == plan["run_id"]
     assert 'model_name: "anthropic/claude-opus-4-8"' in config_text
@@ -465,12 +466,15 @@ def test_publish_bundle_rejects_modified_plan_input(tmp_path: Path, tampered: st
     assert not destination.exists()
 
 
-@pytest.mark.parametrize("agent_kwargs", ["", "    kwargs:\n      capture_timeout_sec: 120\n"])
-def test_capture_timeout_follows_rollout_budget(tmp_path: Path, agent_kwargs: str) -> None:
+@pytest.mark.parametrize("capture_timeout", [None, 120, 300])
+def test_capture_timeout_is_independent_of_rollout_budget(
+    tmp_path: Path, capture_timeout: int | None,
+) -> None:
     harbor = _harbor_root(tmp_path / "harbor")
     source = harbor / "configs/hermes-batch.yaml"
+    kwargs = "" if capture_timeout is None else f"    kwargs:\n      capture_timeout_sec: {capture_timeout}\n"
     source.write_text(source.read_text().replace(
-        "    kwargs:\n      expected_commit: abc\n", agent_kwargs
+        "    kwargs:\n      expected_commit: abc\n", kwargs
     ))
     plan = build_rollout_plan(HarborRolloutConfig(
         task_dir=_bundle(tmp_path / "task"), harbor_root=harbor,
@@ -478,9 +482,12 @@ def test_capture_timeout_follows_rollout_budget(tmp_path: Path, agent_kwargs: st
         timeout_seconds=14400, agent_max_iterations=500,
     ))
     rendered = (plan / "harbor-config.yaml").read_text()
-    assert rendered.count("      capture_timeout_sec: 14400") == 1
-    assert "capture_timeout_sec: 120" not in rendered
-    assert "      max_iterations: 500" in rendered
+    if capture_timeout is None:
+        assert "capture_timeout_sec:" not in rendered
+    else:
+        assert rendered.count(f"capture_timeout_sec: {capture_timeout}") == 1
+    assert "override_timeout_sec: 14400" in rendered
+    assert "max_iterations: 500" in rendered
 
 
 @pytest.mark.parametrize("outcome", ["FAILED", "TIMEOUT", "ABORTED"])
@@ -524,3 +531,34 @@ def test_execution_receipt_records_failure_without_secrets(
         assert receipt["error"].startswith("KeyboardInterrupt:")
     assert (plan / "artifact_manifest.json").read_bytes() == manifest_before
     assert (plan / "rollout_plan.json").read_bytes() == plan_before
+@pytest.mark.parametrize("filename", ["agent.py", "capture.py", "evidence.py", "validator.py"])
+@pytest.mark.parametrize("deleted", [False, True])
+def test_rollout_rejects_changed_or_missing_pinned_runtime(
+    tmp_path: Path, filename: str, deleted: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "traceforge.harbor_ags.rollout.validate_harbor_bundle",
+        lambda task_dir, **_: validate_harbor_bundle(task_dir),
+    )
+    harbor = _harbor_root(tmp_path / "harbor")
+    runtime_file = harbor / "src" / "harbor_ags" / filename
+    runtime_file.parent.mkdir(parents=True)
+    runtime_file.write_text("# reviewed runtime\n")
+    output = build_rollout_plan(
+        HarborRolloutConfig(
+            task_dir=_bundle(tmp_path / "task"),
+            harbor_root=harbor,
+            output_root=tmp_path / "plans",
+            jobs_root=tmp_path / "jobs",
+        )
+    )
+    plan = json.loads((output / "rollout_plan.json").read_text())
+    assert plan["harbor_runtime"]["files"][f"src/harbor_ags/{filename}"] == hashlib.sha256(
+        runtime_file.read_bytes()
+    ).hexdigest()
+    if deleted:
+        runtime_file.unlink()
+    else:
+        runtime_file.write_text("# unreviewed runtime\n")
+    with pytest.raises(HarborRolloutError, match="Harbor runtime changed after plan creation"):
+        execute_rollout_plan(output)

@@ -18,6 +18,7 @@ from traceforge.reconstruction.environment_bindings import (
     normalize_environment_bindings,
 )
 from traceforge.screening.task_labels import apply_task_tags, is_selected_reconstruction_task
+from traceforge.task_instruction import render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
 INTENT_PROMPT_VERSION = "intent-recovery-agent-v10-anchor-deepen"
@@ -331,6 +332,14 @@ def run_intent_recovery(
                 errors.append("AGENT_INCOMPLETE")
             status = "REVIEW"
         result_task = {"task_id": task_id, "source_task": task, "task_instruction": payload.get("task_instruction", ""), "core_objective": payload.get("core_objective", ""), "acceptance_obligations": payload.get("acceptance_obligations", []), "environment_bindings": payload.get("environment_bindings", []), "success_criteria": payload.get("success_criteria", []), "specified_output_format": payload.get("specified_output_format"), "has_examples": bool(payload.get("has_examples")), "mandatory_constraints": payload.get("mandatory_constraints", []), "prohibitions": payload.get("prohibitions", []), "evidence_refs": {"message_indices": [x["message_index"] for x in records if isinstance(x.get("message_index"), int)]}}
+        try:
+            result_task["task_instruction"] = render_task_instruction(
+                {**result_task, "source_task": {"user_texts": [x["text"] for x in records]}},
+                result_task["task_instruction"],
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
+            status = "REVIEW"
         result = {"schema_version": INTENT_SCHEMA, "prompt_version": INTENT_PROMPT_VERSION, "status": status, "task": result_task, "agent": {"role": INTENT_ROLE.name, "backend": ran.backend, "turns": len(ran.turns), "completed": ran.completed}, "errors": errors}
         (task_root / "intent.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         outputs.append(result)

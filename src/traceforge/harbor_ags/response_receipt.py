@@ -77,7 +77,9 @@ def _string_list(value: Any, field: str) -> None:
         raise ResponseReceiptError(f"INVALID_REPORT_FIELD:{field}")
 
 
-def parse_acceptance_report(response_text: str) -> tuple[dict[str, Any], str]:
+def parse_acceptance_report(
+    response_text: str, *, expected_criterion_ids: list[str] | None = None
+) -> tuple[dict[str, Any], str]:
     """Parse exactly one terminal acceptance-report fenced JSON object."""
 
     if not isinstance(response_text, str) or not response_text.strip():
@@ -116,6 +118,19 @@ def parse_acceptance_report(response_text: str) -> tuple[dict[str, Any], str]:
             raise ResponseReceiptError("INVALID_CRITERION_STATUS")
         if not isinstance(item.get("evidence"), str) or not item["evidence"].strip():
             raise ResponseReceiptError("INVALID_CRITERION_EVIDENCE")
+    if expected_criterion_ids is not None:
+        if (
+            not expected_criterion_ids
+            or len(set(expected_criterion_ids)) != len(expected_criterion_ids)
+        ):
+            raise ResponseReceiptError("ACCEPTANCE_REPORT_EXPECTED_CRITERIA_INVALID")
+        expected = set(expected_criterion_ids)
+        if criterion_ids != expected:
+            missing = ",".join(sorted(expected - criterion_ids))
+            unexpected = ",".join(sorted(criterion_ids - expected))
+            raise ResponseReceiptError(
+                f"ACCEPTANCE_REPORT_CRITERIA_MISMATCH:missing={missing}:unexpected={unexpected}"
+            )
     commands = report["commandsRun"]
     if not isinstance(commands, list) or any(not isinstance(item, dict) for item in commands):
         raise ResponseReceiptError("INVALID_REPORT_FIELD:commandsRun")
@@ -125,6 +140,8 @@ def parse_acceptance_report(response_text: str) -> tuple[dict[str, Any], str]:
             or item.get("result") not in _ALLOWED_COMMAND_RESULT
         ):
             raise ResponseReceiptError("INVALID_COMMAND_RESULT")
+        if not isinstance(item.get("summary"), str):
+            raise ResponseReceiptError("INVALID_REPORT_FIELD:commandsRun.summary")
     for field in (
         "changedFiles",
         "testsAddedOrUpdated",
@@ -137,10 +154,15 @@ def parse_acceptance_report(response_text: str) -> tuple[dict[str, Any], str]:
         raise ResponseReceiptError("INVALID_REPORT_FIELD:noStagedFiles")
     if not isinstance(report["diffSummary"], str):
         raise ResponseReceiptError("INVALID_REPORT_FIELD:diffSummary")
+    for field in ("manualNotes", "notes"):
+        if field in report and not isinstance(report[field], str):
+            raise ResponseReceiptError(f"INVALID_REPORT_FIELD:{field}")
     return report, body
 
 
-def build_response_receipt(trajectory_bytes: bytes) -> dict[str, Any]:
+def build_response_receipt(
+    trajectory_bytes: bytes, *, expected_criterion_ids: list[str] | None = None
+) -> dict[str, Any]:
     """Build a receipt from exact ``trajectory.full.json`` bytes."""
 
     try:
@@ -150,7 +172,9 @@ def build_response_receipt(trajectory_bytes: bytes) -> dict[str, Any]:
     if not isinstance(trajectory, dict):
         raise ResponseReceiptError("TRAJECTORY_MUST_BE_OBJECT")
     index, response = final_assistant_response(trajectory)
-    report, report_body = parse_acceptance_report(response)
+    report, report_body = parse_acceptance_report(
+        response, expected_criterion_ids=expected_criterion_ids
+    )
     return {
         "schema_version": RESPONSE_RECEIPT_SCHEMA,
         "trajectory_sha256": hashlib.sha256(trajectory_bytes).hexdigest(),
@@ -161,12 +185,17 @@ def build_response_receipt(trajectory_bytes: bytes) -> dict[str, Any]:
     }
 
 
-def verify_response_receipt(receipt: dict[str, Any], trajectory_bytes: bytes) -> dict[str, Any]:
+def verify_response_receipt(
+    receipt: dict[str, Any], trajectory_bytes: bytes, *,
+    expected_criterion_ids: list[str] | None = None,
+) -> dict[str, Any]:
     """Rebuild and compare a receipt; return the verified receipt."""
 
     if not isinstance(receipt, dict) or receipt.get("schema_version") != RESPONSE_RECEIPT_SCHEMA:
         raise ResponseReceiptError("RECEIPT_SCHEMA_INVALID")
-    expected = build_response_receipt(trajectory_bytes)
+    expected = build_response_receipt(
+        trajectory_bytes, expected_criterion_ids=expected_criterion_ids
+    )
     for field in (
         "trajectory_sha256",
         "assistant_message_index",
@@ -180,13 +209,15 @@ def verify_response_receipt(receipt: dict[str, Any], trajectory_bytes: bytes) ->
     return expected
 
 
-def build_response_receipt_from_path(path: str | Path) -> dict[str, Any]:
+def build_response_receipt_from_path(
+    path: str | Path, *, expected_criterion_ids: list[str] | None = None
+) -> dict[str, Any]:
     target = Path(path)
     try:
         data = target.read_bytes()
     except OSError as exc:
         raise ResponseReceiptError("TRAJECTORY_READ_FAILED") from exc
-    return build_response_receipt(data)
+    return build_response_receipt(data, expected_criterion_ids=expected_criterion_ids)
 
 
 __all__ = [

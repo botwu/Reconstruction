@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from traceforge.reconstruction import verification
 from traceforge.reconstruction.agents.runtime import AgentResult
 from traceforge.reconstruction.model_gateway import ModelRequest, ModelResponse
 import pytest
@@ -431,3 +432,153 @@ def test_response_receipt_still_rejects_invalid_successful_trial(tmp_path: Path)
     assert any(item.startswith("RESPONSE_RECEIPT_INVALID:0:") for item in result["errors"])
     assert "NON_FILE_RESPONSE_UNVERIFIED" in result["errors"]
     assert result["unverified_obligations"] == ["obl-002"]
+
+
+@pytest.mark.parametrize("trials", [1, True, None, {}, "invalid"])
+def test_response_receipt_rejects_malformed_trial_collection(trials: Any) -> None:
+    task = {
+        "acceptance_obligations": [
+            {"id": "obl-002", "text": "acceptance-report", "verifier_kind": "NON_FILE"}
+        ],
+        "environment_bindings": [{"obligation_id": "obl-002", "verifier_kind": "NON_FILE"}],
+    }
+    result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
+    _apply_response_receipts(result, {"results": {"trials": trials}}, task, expected_trials=2)
+    assert result["status"] == "REVIEW"
+    assert result["sft_eligible"] is False
+    assert "RESPONSE_RECEIPT_TRIALS_MISSING" in result["errors"]
+    assert result["unverified_obligations"] == ["obl-002"]
+
+
+def test_rollout_rejects_boolean_reward() -> None:
+    result = {
+        "status": "READY", "errors": [], "unverified_obligations": [],
+        "rollout": {
+            "execution": {"status": "COMPLETED"},
+            "results": {
+                "quality_gate": {"ok": True},
+                "trials": [{"status": "PASS", "reward": True}],
+            },
+        },
+    }
+    assert verification._set_rollout_eligibility(result, expected_trials=1) is False
+    assert result["status"] == "REVIEW"
+    assert result["sft_eligible"] is False
+
+
+@pytest.mark.parametrize("fail_write", [False, True])
+def test_persistence_failure_cannot_leave_rollout_eligible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_write: bool
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.py").write_text("print('x')\n")
+
+    def calibrate(self: HarborCalibrationExecutor, candidate: Any) -> dict[str, Any]:
+        self.bundle = tmp_path / "calibrated-task"
+        return {"status": "PASS"}
+
+    def replay(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "execution": {"status": "COMPLETED"},
+            "results": {
+                "quality_gate": {"ok": True},
+                "trials": [{"status": "PASS", "reward": 1.0}] * 2,
+            },
+        }
+
+    write = verification._write
+
+    def record(path: Path, payload: dict[str, Any]) -> None:
+        if fail_write and path.name == "model_exchange.json":
+            raise OSError("模拟模型交换记录写入失败")
+        write(path, payload)
+
+    monkeypatch.setattr(HarborCalibrationExecutor, "run", calibrate)
+    monkeypatch.setattr(HarborCalibrationExecutor, "_run_bundle", replay)
+    monkeypatch.setattr(verification, "_write", record)
+    result = run_reconstruction_verification(
+        task=_TASK, workspace_root=workspace, model=FakeVerifierModel(),
+        output_root=tmp_path / "verification",
+        config=VerificationConfig(
+            harbor_root=tmp_path / "harbor", model_name="test-verifier",
+            rollout_model="anthropic/test-rollout", execute_red=True, execute_rollout=True,
+        ),
+    )
+    assert result["status"] == ("REVIEW" if fail_write else "READY")
+    assert result["sft_eligible"] is (not fail_write)
+    assert bool(result["errors"]) is fail_write
+    manifest = json.loads((tmp_path / "verification/execution_manifest.json").read_text())
+    assert manifest["certification_closed"] is (not fail_write)
+    assert manifest["sft_eligible"] is (not fail_write)
+
+
+@pytest.mark.parametrize("max_rounds", [1, 4, 100])
+def test_verification_accepts_positive_round_budget(tmp_path: Path, max_rounds: int) -> None:
+    VerificationConfig(
+        harbor_root=tmp_path, model_name="test-verifier",
+        rollout_model="anthropic/test-rollout", max_rounds=max_rounds,
+    ).validate()
+
+
+@pytest.mark.parametrize("max_rounds", [0, -1, True, 1.5, "4"])
+def test_verification_rejects_invalid_round_budget(tmp_path: Path, max_rounds: Any) -> None:
+    with pytest.raises(ValueError, match="正整数"):
+        VerificationConfig(
+            harbor_root=tmp_path, model_name="test-verifier",
+            rollout_model="anthropic/test-rollout", max_rounds=max_rounds,
+        ).validate()
+
+
+def test_receipt_does_not_cover_verdict_merely_placed_before_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task = {
+        "acceptance_obligations": [
+            {
+                "id": "obl-002",
+                "text": "Return only verdict, finding counts, report path.",
+                "observable": "The response lists these prior to the acceptance-report block.",
+            },
+            {"id": "obl-003", "text": "Finish with the required acceptance-report JSON."},
+        ],
+        "environment_bindings": [
+            {"obligation_id": key, "verifier_kind": "NON_FILE"} for key in ("obl-002", "obl-003")
+        ],
+    }
+    assert _acceptance_report_obligation_ids(task) == ["obl-003"]
+    monkeypatch.setattr(verification, "_attach_response_receipts", lambda *args: ([], [{}, {}]))
+    result = {"unverified_obligations": ["obl-002", "obl-003"]}
+    _apply_response_receipts(result, {"results": {"trials": []}}, task, expected_trials=2)
+    assert result["unverified_obligations"] == ["obl-002", "obl-003"]
+
+
+def test_valid_receipt_does_not_certify_combined_response_obligation(tmp_path: Path) -> None:
+    report = {
+        "criteriaSatisfied": [
+            {"id": "criterion-1", "status": "satisfied", "evidence": "self-report"}
+        ],
+        "changedFiles": [], "testsAddedOrUpdated": [], "commandsRun": [],
+        "validationOutput": [], "residualRisks": [], "noStagedFiles": True,
+        "diffSummary": "", "reviewFindings": [],
+    }
+    fence = chr(96) * 3
+    block = f"{fence}acceptance-report\n{json.dumps(report)}\n{fence}"
+    task = {
+        "source_task": {"user_texts": ["## Acceptance Contract\n" + block]},
+        "acceptance_obligations": [{
+            "id": "response",
+            "text": "Return the correct verdict, finding counts and report path, then acceptance-report JSON.",
+        }],
+        "environment_bindings": [{"obligation_id": "response", "verifier_kind": "NON_FILE"}],
+    }
+    path = tmp_path / "trajectory.json"
+    path.write_text(json.dumps({"messages": [{"role": "assistant", "content": block}]}))
+    rollout = {"results": {"trials": [
+        {"status": "PASS", "trajectory_path": str(path)},
+    ]}}
+    result = {"status": "READY", "unverified_obligations": ["response"]}
+    _apply_response_receipts(result, rollout, task, expected_trials=1)
+    assert rollout["results"]["trials"][0]["response_receipt_status"] == "VERIFIED"
+    assert result["unverified_obligations"] == ["response"]
+    assert result["response_receipt_scope"] == "FORMAT_ONLY"

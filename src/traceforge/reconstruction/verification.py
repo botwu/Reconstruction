@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from traceforge.harbor_ags.response_receipt import (
-    ResponseReceiptError,
     build_response_receipt_from_path,
 )
 from traceforge.harbor_ags.results import (
@@ -30,6 +29,7 @@ from traceforge.harbor_ags.rollout import (
 )
 from traceforge.reconstruction.model_gateway import ChatModel, ModelGatewayError
 from traceforge.reconstruction.run_config import load_rollout_limits
+from traceforge.task_instruction import acceptance_report_criterion_ids
 from traceforge.reconstruction.environment_bindings import non_file_obligation_ids
 from traceforge.verifier.bundle import compile_bundle
 from traceforge.verifier.iterative import synthesize_verifier_iterative
@@ -64,8 +64,12 @@ class VerificationConfig:
             raise ValueError("真实复验要求至少两次 Hermes rollout")
         if self.execute_rollout and not self.should_run_red():
             raise ValueError("真实 rollout 要求同时执行 Harbor RED；请设置 --execute-red")
-        if not 1 <= self.max_rounds <= 3:
-            raise ValueError("Verifier 迭代次数必须在 1 到 3 之间")
+        if (
+            isinstance(self.max_rounds, bool)
+            or not isinstance(self.max_rounds, int)
+            or self.max_rounds < 1
+        ):
+            raise ValueError("Verifier 迭代次数必须是正整数")
         if not self.model_name.strip() or "/" not in self.rollout_model:
             raise ValueError("必须明确 verifier model 和 provider/model rollout 模型")
         if self.timeout_seconds < 1:
@@ -165,6 +169,7 @@ def _rollout_passed(result: dict[str, Any], expected_trials: int) -> bool:
         and all(
             isinstance(trial, dict)
             and trial.get("status") == "PASS"
+            and not isinstance(trial.get("reward"), bool)
             and trial.get("reward") == 1.0
             for trial in trials
         )
@@ -175,8 +180,10 @@ def _set_rollout_eligibility(result: dict[str, Any], expected_trials: int) -> bo
     """集中维护 rollout、NON_FILE 义务和 SFT 资格的关系。"""
     passed = _rollout_passed(result, expected_trials)
     unresolved = result.get("unverified_obligations") or []
-    eligible = passed and not unresolved
+    eligible = passed and not unresolved and not result.get("errors")
     result["sft_eligible"] = eligible
+    if not eligible:
+        result["status"] = "REVIEW"
     if passed and unresolved:
         result["errors"] = list(
             dict.fromkeys([*(result.get("errors") or []), "SFT_UNVERIFIED_OBLIGATIONS"])
@@ -246,7 +253,7 @@ def _workspace_files(root: Path) -> dict[str, str]:
 
 
 def _acceptance_report_obligation_ids(task: dict[str, Any]) -> list[str]:
-    """Return only NON_FILE obligations explicitly requiring acceptance-report."""
+    """只选择义务正文明确要求 acceptance-report 的非文件义务。"""
 
     non_file = set(non_file_obligation_ids(task))
     ids: list[str] = []
@@ -256,17 +263,14 @@ def _acceptance_report_obligation_ids(task: dict[str, Any]) -> list[str]:
         obligation_id = obligation.get("id")
         if not isinstance(obligation_id, str) or obligation_id not in non_file:
             continue
-        text = " ".join(
-            str(obligation.get(key) or "")
-            for key in ("text", "observable", "specified_output_format")
-        ).lower()
+        text = str(obligation.get("text") or "").lower()
         if "acceptance-report" in text or "acceptance report" in text:
             ids.append(obligation_id)
     return ids
 
 
 def _attach_response_receipts(
-    rollout: dict[str, Any], expected_trials: int
+    rollout: dict[str, Any], expected_trials: int, task: dict[str, Any]
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Validate terminal acceptance reports and store hash receipts only."""
 
@@ -284,6 +288,7 @@ def _attach_response_receipts(
         # Receipts are evidence for successful completed responses. Failed,
         # timed out, or infrastructure-error trials retain their own diagnosis.
         if not isinstance(trial, dict):
+            errors.append(f"RESPONSE_RECEIPT_TRIAL_INVALID:{index}")
             continue
         trial_status = trial.get("status")
         if trial_status != "PASS":
@@ -297,8 +302,10 @@ def _attach_response_receipts(
             errors.append(f"RESPONSE_RECEIPT_TRAJECTORY_MISSING:{index}")
             continue
         try:
-            receipt = build_response_receipt_from_path(path)
-        except (ResponseReceiptError, OSError) as exc:
+            receipt = build_response_receipt_from_path(
+                path, expected_criterion_ids=acceptance_report_criterion_ids(task)
+            )
+        except (ValueError, OSError) as exc:
             errors.append(f"RESPONSE_RECEIPT_INVALID:{index}:{exc}")
             continue
         summary = {
@@ -320,12 +327,12 @@ def _attach_response_receipts(
 def _apply_response_receipts(
     result: dict[str, Any], rollout: dict[str, Any], task: dict[str, Any], expected_trials: int
 ) -> None:
-    """Apply receipts without clearing unrelated NON_FILE obligations."""
+    """保存响应格式证据；格式合法不能代替义务内容的验收。"""
 
     obligation_ids = _acceptance_report_obligation_ids(task)
     if not obligation_ids:
         return
-    errors, receipts = _attach_response_receipts(rollout, expected_trials)
+    errors, receipts = _attach_response_receipts(rollout, expected_trials, task)
     result["response_receipts"] = receipts
     raw_results = rollout.get("results")
     trials = raw_results.get("trials") if isinstance(raw_results, dict) else None
@@ -335,7 +342,7 @@ def _apply_response_receipts(
             "status": trial.get("status"),
             "reason": trial.get("response_receipt_skip_reason"),
         }
-        for index, trial in enumerate(trials or [])
+        for index, trial in enumerate(trials if isinstance(trials, list) else [])
         if isinstance(trial, dict) and trial.get("response_receipt_status") == "SKIPPED"
     ]
     if skipped:
@@ -349,16 +356,12 @@ def _apply_response_receipts(
             )
         )
         return
-    # Do not clear the obligation until every trial has a successful receipt.
-    if skipped:
+    # 全部回执只证明结构与来源绑定，不能证明结论、数量或证据自述为真。
+    if skipped or len(receipts) != expected_trials:
         result["status"] = "REVIEW"
         result["sft_eligible"] = False
         return
-    result["unverified_obligations"] = [
-        item
-        for item in result.get("unverified_obligations") or []
-        if item not in set(obligation_ids)
-    ]
+    result["response_receipt_scope"] = "FORMAT_ONLY"
 
 
 class HarborCalibrationExecutor:
@@ -695,13 +698,11 @@ def _record_unverified_obligations(
     *,
     task: dict[str, Any],
     audit: dict[str, Any] | None = None,
-    block_non_file: bool = False,
 ) -> bool:
-    """Record obligations that the current verifier cannot prove.
+    """保留待验义务；非文件义务允许诊断执行，但阻止最终认证。
 
-    NON_FILE obligations may remain visible while RED-only calibration is used
-    to inspect the FILE subset. A real Hermes rollout must block on every
-    unresolved obligation because no calibrated evaluator covers it.
+    已请求的 rollout 为响应校验提供真实证据。FILE 校准覆盖缺失仍须前置拒绝，
+    不得以部分文件通过或合法 JSON 代替完整任务验收。
     """
 
     non_file = set(non_file_obligation_ids(task))
@@ -715,7 +716,7 @@ def _record_unverified_obligations(
         recorded.append("INVALID_UNVERIFIED_OBLIGATIONS")
     unresolved = list(dict.fromkeys(recorded))
     result["unverified_obligations"] = unresolved
-    blocking = unresolved if block_non_file else [item for item in unresolved if item not in non_file]
+    blocking = [item for item in unresolved if item not in non_file]
     if not blocking:
         return False
     result["status"] = "REVIEW"
@@ -735,7 +736,7 @@ def run_reconstruction_verification(
     source: dict[str, Any] | None = None,
     env_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """生成 Verifier；RED 通过即 READY。Hermes 解题只写 SFT，不改重建状态。"""
+    """RED 记录校准通过；请求 rollout 后仅完整验收可 READY，否则 REVIEW。"""
     config.validate()
     root, workspace = Path(output_root), Path(workspace_root)
     task = verifier_task(task)
@@ -755,10 +756,9 @@ def run_reconstruction_verification(
             result["errors"] = ["NON_FILE_TASK"]
             _write_verification(root, result, config)
             return result
-        # There is currently no calibrated NON_FILE evaluator. Do not spend
-        # model or sandbox calls certifying only the file subset of a task.
+        # 非文件义务留给真实响应校验；不支持的义务始终保留为未验收。
         if _record_unverified_obligations(
-            result, task=task, block_non_file=config.execute_rollout
+            result, task=task
         ):
             _write_verification(root, result, config)
             return result
@@ -785,7 +785,7 @@ def run_reconstruction_verification(
                 )
                 audit = recovered
                 if _record_unverified_obligations(
-                    result, task=task, audit=recovered, block_non_file=config.execute_rollout
+                    result, task=task, audit=recovered
                 ):
                     iterations.append({
                         "round": round_number,
@@ -866,14 +866,8 @@ def run_reconstruction_verification(
                         trials=config.rollout_trials,
                         expected_test_sha256=hashlib.sha256(candidate.test_outputs_py.encode("utf-8")).hexdigest(),
                     )
-                    results = rollout.get("results") or {}
-                    trials = results.get("trials") or []
-                    passed = (
-                        results.get("quality_gate", {}).get("ok") is True
-                        and len(trials) == config.rollout_trials
-                        and all(t.get("status") == "PASS" and t.get("reward") == 1.0 for t in trials)
-                    )
                     result["rollout"] = rollout
+                    passed = _rollout_passed(result, config.rollout_trials)
                     _apply_response_receipts(result, rollout, task, config.rollout_trials)
                     if rollout.get("harbor_bundle"):
                         result["harbor_bundle"] = rollout["harbor_bundle"]
@@ -955,14 +949,8 @@ def run_reconstruction_verification(
                         trials=config.rollout_trials,
                         expected_test_sha256=hashlib.sha256(candidate.test_outputs_py.encode("utf-8")).hexdigest(),
                     )
-                    results = rollout.get("results") or {}
-                    trials = results.get("trials") or []
-                    passed = (
-                        results.get("quality_gate", {}).get("ok") is True
-                        and len(trials) == config.rollout_trials
-                        and all(t.get("status") == "PASS" and t.get("reward") == 1.0 for t in trials)
-                    )
                     result["rollout"] = rollout
+                    passed = _rollout_passed(result, config.rollout_trials)
                     _apply_response_receipts(result, rollout, task, config.rollout_trials)
                     if rollout.get("harbor_bundle"):
                         result["harbor_bundle"] = rollout["harbor_bundle"]
@@ -993,7 +981,7 @@ def run_reconstruction_verification(
         else:
             result["errors"] = ["VERIFIER_SOURCE_MISSING"]
         if _record_unverified_obligations(
-            result, task=task, audit=audit, block_non_file=config.execute_rollout
+            result, task=task, audit=audit
         ):
             candidate = None
         if candidate is not None and result["status"] != "READY":
@@ -1027,16 +1015,8 @@ def run_reconstruction_verification(
                             trials=config.rollout_trials,
                             expected_test_sha256=hashlib.sha256(candidate.test_outputs_py.encode("utf-8")).hexdigest(),
                         )
-                        results = rollout.get("results") or {}
-                        trials = results.get("trials") or []
-                        passed = (
-                            results.get("quality_gate", {}).get("ok") is True
-                            and len(trials) == config.rollout_trials
-                            and all(
-                                t.get("status") == "PASS" and t.get("reward") == 1.0 for t in trials
-                            )
-                        )
                         result["rollout"] = rollout
+                        passed = _rollout_passed(result, config.rollout_trials)
                         _apply_response_receipts(result, rollout, task, config.rollout_trials)
                         _set_rollout_eligibility(result, config.rollout_trials)
                         if not passed:
@@ -1064,6 +1044,10 @@ def run_reconstruction_verification(
         if audit:
             _write(root / "model_exchange.json", audit)
     except (OSError, ValueError, RuntimeError, ModelGatewayError, VerifierSynthesisError) as exc:
-        result["errors"] = [getattr(exc, "code", None) or type(exc).__name__, str(exc)]
+        result.update(
+            status="REVIEW",
+            sft_eligible=False,
+            errors=[getattr(exc, "code", None) or type(exc).__name__, str(exc)],
+        )
     _write_verification(root, result, config)
     return result

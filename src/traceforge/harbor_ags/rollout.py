@@ -108,6 +108,8 @@ def _harbor_runtime_metadata(harbor_root: Path) -> dict[str, Any]:
     """Record the external Harbor evidence runtime used for this plan."""
     files: dict[str, str] = {}
     for relative in (
+        "src/harbor_ags/agent.py",
+        "src/harbor_ags/capture.py",
         "src/harbor_ags/evidence.py",
         "src/harbor_ags/validator.py",
     ):
@@ -462,23 +464,19 @@ def _bind_agent_budgets(rendered: str, iterations: int, timeout_seconds: int) ->
         body = body.rstrip() + f"\n{indent}override_timeout_sec: {timeout_seconds}\n"
     kwargs_pattern = rf"(?m)^{indent}kwargs:[ \t]*$"
     kwargs = re.search(kwargs_pattern, body)
-    limits = {"max_iterations": iterations, "capture_timeout_sec": timeout_seconds}
     if kwargs is None:
-        body = body.rstrip() + f"\n{indent}kwargs:\n" + "".join(
-            f"{indent}  {name}: {value}\n" for name, value in limits.items()
-        )
+        body = body.rstrip() + f"\n{indent}kwargs:\n{indent}  max_iterations: {iterations}\n"
     else:
         # 仅在当前 kwargs 的直属字段中改写，不能匹配 env 映射里的内容。
         tail = body[kwargs.end():]
         boundary = re.search(rf"(?m)^{indent}\S", tail)
         finish = kwargs.end() + boundary.start() if boundary else len(body)
         contents = body[kwargs.end():finish]
-        for name, value in limits.items():
-            pattern = rf"(?m)^{indent}  {name}:[^\n]*$"
-            if re.search(pattern, contents):
-                contents = re.sub(pattern, f"{indent}  {name}: {value}", contents)
-            else:
-                contents = f"\n{indent}  {name}: {value}" + contents
+        pattern = rf"(?m)^{indent}  max_iterations:[^\n]*$"
+        if re.search(pattern, contents):
+            contents = re.sub(pattern, f"{indent}  max_iterations: {iterations}", contents)
+        else:
+            contents = f"\n{indent}  max_iterations: {iterations}" + contents
         body = body[:kwargs.end()] + contents + body[finish:]
     return rendered[:block.start()] + body + rendered[block.end():]
 
@@ -1001,7 +999,7 @@ def execute_rollout_plan(
                 if not isinstance(relative, str) or not isinstance(expected_hash, str):
                     continue
                 runtime_path = harbor_root / relative
-                if runtime_path.is_file() and _sha256_file(runtime_path) != expected_hash:
+                if not runtime_path.is_file() or _sha256_file(runtime_path) != expected_hash:
                     raise HarborRolloutError(
                         f"Harbor runtime changed after plan creation: {relative}"
                     )

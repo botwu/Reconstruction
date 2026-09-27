@@ -50,7 +50,7 @@
 
 `--sandbox` 用于 AGS 沙盒路径；不能把宿主机代理或离线替身称为沙盒执行。进程启动和运行完成也是两件事，应检查真实结果与清理收据。
 
-Verifier 校准和真实解题复验分开。RED 的初态失败、oracle 成功、mutation 失败用于检验验证器；rollout 的实际任务行为与轨迹用于检验 solver。两者不能互相代替。
+Verifier 校准和真实解题复验分开。RED 的初态失败、oracle 成功、mutation 失败用于检验验证器；rollout 的实际任务行为与轨迹用于检验 solver。两者不能互相代替。显式请求 rollout 时允许执行尚未验证响应义务的诊断试跑；试跑失败或仍有未验证义务时保持 REVIEW，完整验收后才能进入 SFT。有效 acceptance-report 收据只证明格式与轨迹绑定，不能代替内容验收。
 
 ## 专题文档
 

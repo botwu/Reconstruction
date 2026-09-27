@@ -315,10 +315,11 @@ def test_pin_hermes_timeout_env_caps_stream_watchdog(
     assert "HERMES_API_CALL_STALE_TIMEOUT" not in os.environ
 
 
-def test_runtime_can_cap_role_iterations_for_bounded_live_runs(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("limit", [3, 100000])
+def test_runtime_honors_explicit_role_iteration_budget(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, limit: int
 ) -> None:
-    monkeypatch.setenv("TRACEFORGE_AGENT_MAX_ITERATIONS", "3")
+    monkeypatch.setenv("TRACEFORGE_AGENT_MAX_ITERATIONS", str(limit))
     factory = FakeHermesFactory()
     runtime = _runtime(factory)
     runtime.run(
@@ -327,7 +328,7 @@ def test_runtime_can_cap_role_iterations_for_bounded_live_runs(
         session=AgentSession(user_texts=["补齐入口上下文"]),
         output_root=tmp_path / "out",
     )
-    assert factory.last_kwargs["max_iterations"] == 3
+    assert factory.last_kwargs["max_iterations"] == limit
 
 
 def test_hermes_runtime_forces_non_stream_even_on_fake_agent(tmp_path: Path) -> None:

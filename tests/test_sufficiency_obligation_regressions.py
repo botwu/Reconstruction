@@ -1,6 +1,7 @@
 """缺失上下文与混合义务不能被文件存在性或局部校准掩盖。"""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -89,31 +90,53 @@ def _config(tmp_path: Path, *, execute_red=True):
     )
 
 
-def test_mixed_non_file_obligation_blocks_real_rollout(tmp_path: Path, monkeypatch):
+def test_mixed_non_file_diagnostic_rollout_cannot_certify_task(tmp_path: Path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "billing.py").write_text("def bill(x): return x\n", encoding="utf-8")
     task = _task()
     task["acceptance_obligations"].append({"id": "research", "text": "检索官方税率来源并引用"})
     task["environment_bindings"].append({
-        "obligation_id": "research", "verifier_kind": "NON_FILE", "required_paths": [], "observable": "",
+        "obligation_id": "research", "verifier_kind": "NON_FILE",
+        "required_paths": [], "observable": "",
     })
-
+    candidate = SimpleNamespace(
+        candidate_id="fixture", test_outputs_py="def test_bill(): pass",
+        to_dict=lambda: {"candidate_id": "fixture"},
+    )
+    calls = []
     class FakeExec:
         def __init__(self, **kwargs):
-            del kwargs
-            pytest.fail("unresolved NON_FILE obligation must block real rollout")
-
+            self.bundle = tmp_path / "bundle"
+            self.attempts = []
+        def run(self, generated):
+            assert generated is candidate
+            return {"status": "PASS"}
+        def _run_bundle(self, *args, **kwargs):
+            calls.append(kwargs["mode"])
+            return {
+                "execution": {"status": "COMPLETED"},
+                "results": {
+                    "quality_gate": {"ok": True},
+                    "trials": [{"status": "PASS", "reward": 1.0}] * 2,
+                },
+            }
     monkeypatch.setattr(verification_module, "HarborCalibrationExecutor", FakeExec)
+    monkeypatch.setattr(recovery_module, "run_verifier_recovery", lambda **kwargs: (
+        {"status": "READY", "unverified_obligations": ["research"]}, candidate,
+    ))
     result = run_reconstruction_verification(
         task=task, workspace_root=workspace, model=None,
-        agent=object(), output_root=tmp_path / "verification",
-        config=_config(tmp_path),
+        agent=object(), output_root=tmp_path / "verification", config=_config(tmp_path),
     )
+    assert calls == ["hermes"]
+    assert result["calibration"] == "PASS"
     assert result["status"] == "REVIEW"
     assert result["unverified_obligations"] == ["research"]
-    assert "UNVERIFIED_OBLIGATIONS" in result["errors"]
-    assert result["rollout"] == "NOT_RUN"
+    assert "SFT_UNVERIFIED_OBLIGATIONS" in result["errors"]
+    assert result["sft_eligible"] is False
+    manifest = json.loads((tmp_path / "verification/execution_manifest.json").read_text())
+    assert manifest["certification_closed"] is False
 
 
 @pytest.mark.parametrize("execute_red", [True, False])

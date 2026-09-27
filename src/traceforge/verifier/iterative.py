@@ -29,8 +29,8 @@ def synthesize_verifier_iterative(
     model_name: str = "claude-opus-4-8",
     max_rounds: int = 2,
 ) -> VerifierIterationResult:
-    if max_rounds < 1 or max_rounds > 3:
-        raise ValueError("max_rounds 必须在 1 到 3 之间")
+    if isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or max_rounds < 1:
+        raise ValueError("max_rounds 必须是正整数")
     working = dict(task)
     attempts: list[dict[str, Any]] = []
     candidate = None
