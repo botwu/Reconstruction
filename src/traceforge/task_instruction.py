@@ -37,6 +37,16 @@ def render_task_instruction(task: dict[str, Any]) -> str:
     for field in ("mandatory_constraints", "prohibitions"):
         for text in task.get(field) or []:
             append(text)
+    bindings = task.get("environment_bindings") or []
+    bound_paths = {path for row in bindings if isinstance(row, dict)
+                   for key in ("required_paths", "initial_required_paths", "output_paths")
+                   for path in row.get(key, []) if isinstance(path, str)}
+    aliases = task.get("environment_path_aliases") or {}
+    mappings = [f"{original} → {canonical}" for original, canonical in sorted(aliases.items())
+                if canonical in bound_paths and original != canonical]
+    if mappings:
+        append("工作区路径说明：原始请求中的路径按以下映射访问；右侧路径相对于当前工作区根目录。\n"
+               + "\n".join(mappings))
     for text in source_user_texts(task):
         # 验收 JSON 是格式示例，不能由 Intent 的一句“遵循指定 schema”替代。
         blocks = list(_REPORT_BLOCK.finditer(text))
@@ -114,6 +124,9 @@ def grounded_response_contract(task: dict[str, Any]) -> dict[str, Any] | None:
             if levels is None:
                 continue
             path = check.get("report_path")
+            if isinstance(path, str):
+                aliases = task.get("environment_path_aliases") or {}
+                path = aliases.get(path.replace("\\", "/"), path)
             if path not in output_paths or check.get("match_report") is not True:
                 continue
             checks.append({"kind": "basic_summary", "obligation_id": oid, "verdicts": verdicts,

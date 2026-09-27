@@ -59,6 +59,17 @@ def test_response_contract_cannot_claim_file_semantics_or_unknown_report():
     assert grounded_response_contract(task) is None
 
 
+def test_public_instruction_and_response_check_share_workspace_coordinates():
+    task = _task()
+    task["environment_bindings"][0]["output_paths"] = ["project/review.md"]
+    task["environment_path_aliases"] = {"review.md": "project/review.md", "unused.py": "other/unused.py"}
+    rendered = render_task_instruction(task)
+    assert "review.md → project/review.md" in rendered
+    assert "unused.py" not in rendered
+    assert render_task_instruction({**task, "task_instruction": rendered}) == rendered
+    assert grounded_response_contract(task)["checks"][1]["report_path"] == "project/review.md"
+
+
 def test_summary_levels_are_recovered_as_complete_source_group_not_model_subset():
     task = _task()
     task["response_contract"]["checks"][1]["finding_levels"] = ["Critical"]
