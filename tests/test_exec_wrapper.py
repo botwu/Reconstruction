@@ -75,3 +75,17 @@ def test_json_escaped_strings_are_not_interpreted_as_wrapper_syntax() -> None:
     assert ordered_parallel_exec_calls(
         _wrapper("tools.exec_command({cmd:" + json.dumps(command) + "})")
     ) == [{"cmd": command}]
+
+
+@pytest.mark.parametrize("arguments", [
+    '{cmd: "cat a.py", command: "cat b.py"}',
+    '{cmd: "cat a.py", command: "cat a.py"}',
+    '{cmd: ""}',
+    '{command: ""}',
+    '{cmd: "   "}',
+    '{command: "   "}',
+])
+def test_rejects_ambiguous_or_empty_commands(arguments: str) -> None:
+    assert ordered_parallel_exec_calls(
+        _wrapper("tools.exec_command(" + arguments + ")")
+    ) is None

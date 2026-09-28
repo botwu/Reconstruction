@@ -84,7 +84,10 @@ def ordered_parallel_exec_calls(source: str) -> list[dict[str, Any]] | None:
         if parsed is None:
             return None
         arguments, position = parsed
-        if not isinstance(arguments.get("cmd", arguments.get("command")), str):
+        if "cmd" in arguments and "command" in arguments:
+            return None
+        command = arguments.get("cmd", arguments.get("command"))
+        if not isinstance(command, str) or not command.strip():
             return None
         closing = re.match(r"\s*\)\s*", body[position:])
         if closing is None:
