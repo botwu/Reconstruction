@@ -4,7 +4,10 @@ import json
 
 import pytest
 
-from traceforge.reconstruction.exec_wrapper import ordered_parallel_exec_calls
+from traceforge.reconstruction.exec_wrapper import (
+    ordered_parallel_exec_calls,
+    parallel_exec_prints_stdout,
+)
 
 
 def _wrapper(calls: str, *, batch: str = "results", item: str = "r") -> str:
@@ -89,3 +92,46 @@ def test_rejects_ambiguous_or_empty_commands(arguments: str) -> None:
     assert ordered_parallel_exec_calls(
         _wrapper("tools.exec_command(" + arguments + ")")
     ) is None
+
+
+@pytest.mark.parametrize(("printed", "stdout"), [
+    ("r", False),
+    ("r.output", True),
+    ("JSON.stringify({exit_code:r.exit_code, output:r.output})", False),
+])
+def test_fixed_output_projections_preserve_call_arguments(printed: str, stdout: bool) -> None:
+    source = _wrapper('tools.exec_command({cmd: "cat app.py", workdir: "/repo"})')
+    source = source.replace("text(r)", f"text({printed})")
+    assert ordered_parallel_exec_calls(source) == [{"cmd": "cat app.py", "workdir": "/repo"}]
+    assert parallel_exec_prints_stdout(source) is stdout
+
+
+@pytest.mark.parametrize("printed", [
+    "r.output.trim()",
+    'r["output"]',
+    "other.output",
+    "JSON.stringify(r)",
+    "JSON.stringify({exit_code:r.output, output:r.exit_code})",
+    "JSON.stringify({exit_code:r.exit_code, output:other.output})",
+    "JSON.stringify({exit_code:r.exit_code, output:r.output, extra:1})",
+])
+def test_rejects_unproven_output_transformations(printed: str) -> None:
+    source = _wrapper('tools.exec_command({cmd: "cat app.py"})')
+    source = source.replace("text(r)", f"text({printed})")
+    assert ordered_parallel_exec_calls(source) is None
+    assert parallel_exec_prints_stdout(source) is False
+
+
+@pytest.mark.parametrize(("batch", "item"), [("JSON", "r"), ("results", "JSON")])
+def test_json_projection_cannot_shadow_json_binding(batch: str, item: str) -> None:
+    source = _wrapper('tools.exec_command({cmd: "cat app.py"})', batch=batch, item=item)
+    source = source.replace(
+        f"text({item})",
+        f"text(JSON.stringify({{exit_code:{item}.exit_code, output:{item}.output}}))",
+    )
+    assert ordered_parallel_exec_calls(source) is None
+
+
+def test_stdout_mode_requires_valid_literal_call_arguments() -> None:
+    source = _wrapper('tools.exec_command({cmd: command})').replace("text(r)", "text(r.output)")
+    assert parallel_exec_prints_stdout(source) is False
