@@ -4,11 +4,13 @@
 
 **当前尚无合格 Harbor bundle 和可信完整 rollout 验收结果，不能开始稳定批量交付。** 真实运行与源码修复分工独立：源码在隔离分支修复，真实运行使用冻结代码，不回写旧产物或补造通过标志。
 
-最新真实运行位于 artifacts/pipeline-debug-20260928/live-r04-2179-02/，使用源码 48b625b。Intent 经一次真实绑定反馈转为 READY，恢复的原任务和 FILE 义务保留。Completion 及两轮返修均没有改进候选文件；末轮 agent 已读取两份编码不同的原始证据，却明确按 from_replayed 保留损坏。末轮 Sufficiency 的语义 READY 不能抵消环境合同 REVIEW / UNEXECUTABLE：缺 dependency 探针，缺失诊断的分类证据引用未传通，返修以 REPAIR_LIMIT_REACHED 结束。
+最新已完成质检的真实运行位于 artifacts/pipeline-debug-20260928/live-r04-2179-02/，使用源码 48b625b。Intent 经一次真实绑定反馈转为 READY，恢复的原任务和 FILE 义务保留。Completion 及两轮返修均没有改进候选文件；末轮 agent 已读取两份编码不同的原始证据，却明确按 from_replayed 保留损坏。末轮 Sufficiency 的语义 READY 不能抵消环境合同 REVIEW / UNEXECUTABLE：缺 dependency 探针，缺失诊断的分类证据引用未传通，返修以 REPAIR_LIMIT_REACHED 结束。
 
 该运行于 2026-09-28 08:17:51 UTC 自然结束，耗时 2494.39 秒，最终 REVIEW、stopped_at=verification、rollout=NOT_RUN、sft_eligible=false。退出码 0 只代表命令正常收尾。Verifier 前三轮因空响应合同对象误报 RESPONSE_CONTRACT_UNGROUNDED，第 4–6 轮添加原任务没有要求的非空报告合同，这类拒收有依据。六轮都没有进入独立语义审查或 Harbor 校准；顶层 VERIFIER_CALIBRATION_FAILED 不能解释成已经执行校准。
 
 首轮先尝试 Workbook/aggregate_workbook 行为测试，但发生导入收集错误后改写成源码正则检查。前五轮最终 1 PASS / 2 FAIL，第六轮 2 PASS / 1 FAIL 来自放宽正则匹配，不能证明功能进展。早期失败尾部没有完整持久化，具体导入错误仍无证据确定。该版本仅保存 Verifier 初始 instruction 的哈希，静态代码能确认反馈接线，不能逐字核对实际初始请求。共记录 15 份角色 trace、58 次 API 调用、131 次工具事件；12 个 AGS 沙盒均有清理证据，受检源码、配置和输入哈希未变。详细质检以该运行的 REPORT.md 和 qc/ 为准。
+
+固定 1dd70aa 的 run03 已于 2026-09-28 08:58:46 UTC 启动，位于 artifacts/pipeline-debug-20260928/live-r04-2179-03/。该冻结版本不包含下述最新阶段职责调整，其真实运行证据独立保留，不能作为最新修改的效果证明。
 
 本轮集中修复：
 
@@ -16,8 +18,9 @@
 - Sufficiency：使用真实工具相对根坐标，向模型说明沙盒工作目录、临时目录和断言失败方式；分类引用原样传递，已知引用只来自输入任务，不替模型补造。FILE 是验收产物类别，功能任务不能被当作只读审查。
 - Completion：原始轨迹和 Replay 不变；候选可用显式 capture_repairs 纠正 PARTIAL 中的局部采集损坏，记录逐段 old_text/new_text/reason 和原始证据，继续标记 MODEL_COMPLETED。未声明部分仍须保留；完整文件、未知初态和明确缺失不因此开放。原目标功能留给 solver，独立 Sufficiency 核对是否越界。
 - Verifier：仅在原任务没有响应合同且没有 NON_FILE 义务时，将空对象视为无响应合同，不阻断文件验证器的语义审查；已有响应要求、非空未依据合同仍拒收。
-- 执行审计：在私有 trace 保留完整初始模型请求，以及历次 pytest 完整诊断和测试版本绑定；沿用凭据与私有推理过滤，哈希仍绑定过滤前的实际输入。最终验收仍只使用最终测试版本；审计信息完整不能替代真实环境/行为验证。
+- 执行审计：在私有 trace 保留实际传入的完整初始任务指令，以及历次 pytest 完整诊断和测试版本绑定；沿用凭据与私有推理过滤，哈希仍绑定过滤前的实际输入。最终验收仍只使用最终测试版本；审计信息完整不能替代真实环境/行为验证。
 - 执行控制：沙盒运行器不再吞掉 KeyboardInterrupt/SystemExit，完成既有清理后向上传播中断；普通运行异常仍形成失败结果。
+- 阶段职责：两种 Completion 与 Sufficiency 共用 terminal 初态职责，删除将依赖一概视为可再生成、把初始绑定误作环境全部范围的旧提示歧义。只读审查、目标缺陷、可再生成构建产物的边界保留；没有新增准入条件或逐 session 特例。对应提示版本为 Completion v10 / Sufficiency v11；122 项相关离线回归及 Ruff 通过，真实质量改善尚待新冻结版本验证。
 
 这些修复需要新冻结运行验证产物质量，不能用离线回归代替真实通过。当前依赖字符串尚无统一安装机制；若真实探针证实缺少可安装依赖，应由环境准备模块消费声明，不能把声明当成已安装。
 
@@ -36,7 +39,7 @@
 1. 先统一代码与检查版本，避免并发修改主目录。
 2. 对真实样本逐模块检查任务、环境和 verifier 的实际内容；缺陷只在负责模块修复，交付通过校准的 Harbor bundle。
 3. 单独启动冻结 bundle 的沙盒 rollout，核对轨迹、评分和最终响应。
-4. 单条产物合格后再批量处理 R04/R05；不同时扩散依赖安装、解析适配或自动回修框架。
+4. 用同一冻结版本核对同 domain 的不同任务及未据此修改过源码的会话，确认机制和产物质量后再批量处理 R04/R05。session 是数据实例；不得用逐条改提示、写业务路径特例或单条成功替代通用流程验收。
 
 最终需要分别证明 terminal 和 search 两个 domain 的真实合格产出。两类环境的重建方式不同；FILE/NON_FILE 是验收义务类型，不能代替 domain 分类。当前这批修复仅对应 terminal 样本；纯 retrieval 后端未就绪的支持缺口不能被写成样本质量失败，也不能用 terminal 通过代替 search 通过。
 

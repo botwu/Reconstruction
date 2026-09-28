@@ -21,6 +21,25 @@ class AgentRole:
     allow_write: bool
 
 
+TERMINAL_TASK_START_RESPONSIBILITIES = (
+    "\nTerminal 任务初态的共同职责：\n"
+    "FILE/NON_FILE 是验收产物类型，不能据此把功能实现任务解释成只读源码审查。"
+    "任务所需能力由原用户目标决定；FILE 绑定和拟修改文件列表不等于环境依赖的全部范围。\n"
+    "Completion 负责补齐这些能力所需的可信初态，包括必要的项目邻域源码、配置和数据；"
+    "Sufficiency 负责独立判断当前候选是否提供了这些初态条件。"
+    "可依据证据修复的采集损坏应在重建阶段处理，不能把 solver 将来顺带修复它作为环境充分的依据。\n"
+    "用户要新增的功能、目标产物和明确要求修复的原始缺陷仍须保留给 solver；"
+    "补全环境不能预解任务。根据具体目标选择必要能力，只读分析任务不要求全项目编译。\n"
+    "明确可再生成的构建产物无需预置；第三方依赖需要实际可用或有经过验证的准备途径。"
+    "依赖声明不是安装证据；缺失或受损的项目源码不能仅因理论上可重写就当作可再生产物。\n"
+    "判断缺口是否无关，应说明它与任务实际操作、加载和验收路径的关系，必要时用探针验证。"
+    "不在 FILE 修改列表中、不是目标功能、solver 可以修复，都不能单独证明缺口无关。"
+    "读取正文或检查符号只能证明相应的可读性，不能替代任务确实需要的加载或运行证据。\n"
+    "充分的初态可以零写入；无法有依据判断或修复的部分应明确报告不确定性，交给现有检查与反馈流程。"
+    "候选 READY 不等于环境已可执行，也不等于目标任务已完成。\n"
+)
+
+
 INTENT_ROLE = AgentRole(
     name="intent",
     identity=(
@@ -114,13 +133,13 @@ COMPLETION_REPLAYED_ROLE = AgentRole(
         "COMPLETE files are read-only. PARTIAL excerpts may be enriched, or "
         "locally corrected using explicit capture_repairs, only as pre-task context "
         "grounded in q and neighborhood "
-        "evidence. Add only missing pre-existing neighborhood files required "
-        "to understand the task. A short stub such as 'body unobserved' is not "
+        "evidence. Add only missing pre-existing neighborhood files needed "
+        "for the task's required operations. A short stub such as 'body unobserved' is not "
         "a body. Do not invent a new project if the replayed tree is empty. "
         "Do not write hidden tests, solutions, requested features, or runtime "
-        "logs. Cite hole event_id values. Only initial_required_paths must be "
-        "real pre-task bodies; output_paths are checked after execution."
-    ),
+        "logs. Cite hole event_id values. initial_required_paths identify required "
+        "pre-task inputs; output_paths are checked after execution."
+    ) + TERMINAL_TASK_START_RESPONSIBILITIES,
     toolsets=("traceforge_proxy",),
     tools=_COMPLETION_TOOLS,
     max_iterations=90,
@@ -141,7 +160,7 @@ COMPLETION_DEFAULT_EMPTY_ROLE = AgentRole(
         "bindings, or TOOL_PROCESS_SKETCH. Cite task:q or a timeline event_id. "
         "If the sketch has no process logic and q names no files, return REVIEW. "
         "Stubs must not READY. Do not write hidden tests or solutions."
-    ),
+    ) + TERMINAL_TASK_START_RESPONSIBILITIES,
     toolsets=("traceforge_proxy",),
     tools=_COMPLETION_TOOLS,
     max_iterations=90,
@@ -197,13 +216,12 @@ SUFFICIENCY_ROLE = AgentRole(
         "interfaces and context, not whether the acceptance obligations already "
         "pass. PARTIAL excerpts suffice when they expose the interfaces and "
         "structures needed to implement the task; require a missing file only "
-        "when no grounded source or structure exists to implement it. Inspect "
-        "files with tools. Do not modify or solve the workspace. Dependencies "
-        "and generated outputs that can be recreated are not required. When the "
+        "when its absence prevents the task's required operations. Inspect "
+        "files with tools. Do not modify or solve the workspace. When the "
         "workspace is sufficient, use the read-only environment probe for load, "
         "repeatable reset, and dependency checks. A task conflict requires a "
         "repeatable task_conflict probe and is distinct from timeout or API failure."
-    ),
+    ) + TERMINAL_TASK_START_RESPONSIBILITIES,
     toolsets=("traceforge_proxy",),
     tools=("list_dir", "read_file", "run_environment_probe"),
     max_iterations=16,

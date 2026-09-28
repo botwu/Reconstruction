@@ -23,7 +23,7 @@ from traceforge.reconstruction.workspace_integrity import (
 )
 
 SUFFICIENCY_SCHEMA = "traceforge.workspace-sufficiency.v1"
-SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v10-evidence-contract"
+SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v11-task-start-responsibilities"
 
 
 def run_workspace_sufficiency(
@@ -68,7 +68,7 @@ def run_workspace_sufficiency(
             "Do not require acceptance obligations to pass already; that would erase the RED baseline. Judge whether a solver can implement them from the available context.",
             "FILE initial_required_paths are task-start inputs and must be present; output_paths are post-execution targets and must not be pre-created.",
             "Partial excerpts may suffice when they expose the interfaces and structures needed to implement the task.",
-            "Return INSUFFICIENT only when required source, execution context, or domain facts are unavailable enough that implementation cannot start; missing target behavior alone is not a blocker.",
+            "Return INSUFFICIENT when missing or damaged pre-task context blocks the operations needed to implement or verify the user's goal; the ability to edit source alone is not sufficient. Missing target behavior or the defect explicitly assigned to the solver is not itself a reconstruction gap.",
             "STATIC_INTEGRITY_REPORT is a read-only syntax/token diagnostic under the stated host Python version, not a completeness proof.",
             "Inspect every issue and classify it with issue_id, exact path, classification, and a concrete task-grounded reason. "
             "Use only issue_id and path values present in STATIC_INTEGRITY_REPORT; never invent additional issue IDs.",

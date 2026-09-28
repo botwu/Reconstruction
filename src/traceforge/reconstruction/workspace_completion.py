@@ -36,7 +36,7 @@ from traceforge.reconstruction.terminal_universe_environment import (
 from traceforge.reconstruction.tool_process_sketch import build_tool_process_sketch
 
 COMPLETION_SCHEMA = "traceforge.workspace-completion.v1"
-COMPLETION_PROMPT_VERSION = "workspace-completion-agent-v9-capture-repairs"
+COMPLETION_PROMPT_VERSION = "workspace-completion-agent-v10-task-start-responsibilities"
 TASK_Q_EVIDENCE_ID = "task:q"
 ENV_REPLAYED = "REPLAYED"
 ENV_DEFAULT_EMPTY = "DEFAULT_EMPTY"
@@ -269,7 +269,7 @@ def _shared_footer(
         "Never use a host absolute path.",
         "Cite event_id as evidence_ref_ids. Do not page every evidence record.",
         "Do not write runtime logs.",
-        "decision=READY only when required initial FILE/listing/binding bodies are real",
+        "decision=READY only when required initial FILE binding bodies are real",
         "and you did not solve the task.",
         "After grounded writes, finish JSON. Do not keep exploring.",
         f"ENVIRONMENT_BINDINGS: {json.dumps(environment_bindings(task), ensure_ascii=False)}",
@@ -320,7 +320,7 @@ def _replayed_instruction(
             "COMPLETE 仍只读。不要仅为清理无关文件而改动环境。",
             "PARTIAL files may be enriched and completed; preserve observed excerpts "
             "except declared capture repairs.",
-            "Add only pre-existing neighborhood context required to understand the task, grounded in the planted tree.",
+            "Add only pre-existing neighborhood context needed for the task's required operations, grounded in the planted tree.",
             "If the replayed tree is empty, decision=REVIEW. Do not create a project.",
             "Listing-only holes are not implementation generation targets; restore them only as pre-existing tree context. FILE bindings do not authorize implementing the task.",
             "Write real pre-task file bodies grounded in q, the planted tree, and evidence.",
