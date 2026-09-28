@@ -277,6 +277,9 @@ def run_verifier_recovery(
         payload["test_outputs_py"] = session.test_outputs_py
     # 候选合同只进入本轮任务副本；通过原始要求约束和语义审查前不改 Intent。
     proposal = payload.get("response_contract", task.get("response_contract"))
+    # 没有响应要求时，空对象与未提供合同等价；不得借此清除已有响应义务。
+    if proposal == {} and task.get("response_contract") is None and not unverified:
+        proposal = None
     effective_task = {**task, "response_contract": proposal}
     response_contract = grounded_response_contract(effective_task)
     effective_task["response_contract"] = response_contract
