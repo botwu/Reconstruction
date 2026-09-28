@@ -57,3 +57,44 @@ def test_pending_call_has_no_result_slots() -> None:
     ], [])[0]
     assert event["result_blocks"] == []
     assert event["pending"] is True
+
+
+@pytest.mark.parametrize("paired", [True, False])
+@pytest.mark.parametrize(("key", "value"), [
+    ("is_error", True),
+    ("cleared", True),
+    ("status", "failed"),
+    ("result_status", "cancelled"),
+])
+def test_tool_result_rejection_state_survives_source_extraction(paired, key, value) -> None:
+    messages = []
+    if paired:
+        messages.append({
+            "role": "assistant",
+            "tool_calls": [{"id": "result", "name": "exec", "arguments": "source"}],
+        })
+    body = '  {"exit_code":0,"output":"untrusted"}\n'
+    messages.append({
+        "role": "tool", "tool_call_id": "result",
+        "content": [{"type": "text", "text": body}], key: value,
+    })
+    event = tool_timeline(messages, [])[0]
+    assert event[key] == value
+    assert event["result_blocks"] == [{"index": 0, "text": body}]
+    assert event["result_text"] == body.strip()
+    assert event["pending"] is False
+
+
+@pytest.mark.parametrize("paired", [True, False])
+def test_success_state_is_preserved_without_inventing_rejection(paired) -> None:
+    messages = []
+    if paired:
+        messages.append({
+            "role": "assistant", "tool_calls": [{"id": "result", "name": "exec"}],
+        })
+    state = {
+        "is_error": False, "cleared": False, "status": "completed", "result_status": "success",
+    }
+    messages.append({"role": "tool", "tool_call_id": "result", "content": "body", **state})
+    event = tool_timeline(messages, [])[0]
+    assert {key: event[key] for key in state} == state

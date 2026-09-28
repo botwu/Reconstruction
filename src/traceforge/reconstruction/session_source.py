@@ -62,6 +62,15 @@ def _result_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
     return result
 
 
+def _tool_result_state(message: dict[str, Any]) -> dict[str, Any]:
+    """保留原始成功或拒绝状态，由 Replay 统一判断是否可用。"""
+    return {
+        key: message[key]
+        for key in ("is_error", "cleared", "status", "result_status")
+        if key in message
+    }
+
+
 def _role(message: Any) -> str:
     return str(message.get("role", "")) if isinstance(message, dict) else ""
 
@@ -134,10 +143,12 @@ def _tool_timeline(messages: list[dict[str, Any]], spans: list[Any]) -> list[dic
                     "span_id": index_to_span.get(index),
                     "orphan_tool_result": True,
                     "tool_message_index": index,
+                    **_tool_result_state(message),
                 })
             else:
                 item["result_text"] = _message_text(message)
                 item["result_blocks"] = _result_blocks(message)
+                item.update(_tool_result_state(message))
                 item["pending"] = False
                 item["tool_message_index"] = index
     return timeline
