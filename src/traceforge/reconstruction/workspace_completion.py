@@ -44,12 +44,17 @@ STRATEGY_DEFAULT_EMPTY = "from_default_empty"
 MAX_CANDIDATES = 5
 
 
+def _nonpending_event(item: Any) -> bool:
+    """未返回调用的参数不是初态证据；未声明 pending 的旧记录保持兼容。"""
+    return isinstance(item, dict) and item.get("pending") is not True
+
+
 def timeline_evidence(timeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """为调用方过滤后的时间线建立证据索引，保留正文并区分匿名、重复 ID。"""
+    """排除未返回调用后建立证据索引，保留正文并区分匿名、重复 ID。"""
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for index, item in enumerate(timeline):
-        if not isinstance(item, dict):
+        if not _nonpending_event(item):
             continue
         ref = str(item.get("call_id") or f"timeline:{index}")
         if ref in seen:
@@ -181,7 +186,7 @@ def _excerpt_ids(path: str, replay: ReplayResult, timeline: list[dict[str, Any]]
         item.event_id for item in (getattr(replay, "withheld_changes", ()) or ())
     }
     for event in timeline:
-        if not isinstance(event, dict):
+        if not _nonpending_event(event):
             continue
         cid = str(event.get("call_id") or "")
         if not cid or cid in ids or cid in excluded:
@@ -605,13 +610,12 @@ def _run_completion(
     blocked_refs = _blocked_evidence_refs(replay) | {
         item.event_id for item in replay.withheld_changes
     }
-    ref_counts = Counter(
-        str(item.get("call_id") or "") for item in timeline if isinstance(item, dict)
-    )
+    # 先去掉未返回占位，再检查 ID 唯一性，保留同 ID 的唯一有效返回。
+    returned_timeline = [item for item in timeline if _nonpending_event(item)]
+    ref_counts = Counter(str(item.get("call_id") or "") for item in returned_timeline)
     public_timeline = [
-        item for item in timeline
-        if isinstance(item, dict)
-        and item.get("call_id")
+        item for item in returned_timeline
+        if item.get("call_id")
         and ref_counts[str(item["call_id"])] == 1
         and str(item["call_id"]) not in blocked_refs
     ]
