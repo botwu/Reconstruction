@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from hermes_fakes import FakeHermesFactory
 from traceforge.reconstruction.agents import (
@@ -15,6 +18,53 @@ from traceforge.reconstruction.agents.session import AgentSession, execute_tool
 from traceforge.reconstruction.terminal_universe_environment import validate_completion_candidate
 from traceforge.reconstruction.env_replay import replay_from_timeline
 from traceforge.reconstruction.workspace_completion import run_workspace_completion
+
+
+def test_completion_upload_is_writable_and_setup_failure_is_reported(tmp_path: Path) -> None:
+    from traceforge.reconstruction.agents.sandbox import prepare_role_sandbox, run_coro
+
+    class UploadedOwnershipRuntime(LocalExecRuntime):
+        fail_setup = False
+
+        async def exec(self, command, **kwargs):
+            if command.startswith("chown "):
+                assert kwargs["user"] == "root"
+                assert "chmod -R u+rwX /home/user/workspace" in command
+                self.execs.append(command)
+                return SimpleNamespace(return_code=int(self.fail_setup), stdout="",
+                                       stderr="chown: permission denied" if self.fail_setup else "")
+            return await super().exec(command, **kwargs)
+
+    runtime = UploadedOwnershipRuntime(tmp_path / "good")
+    run_coro(prepare_role_sandbox(role=COMPLETION_ROLE, runtime=runtime,
+             session=AgentSession(allow_write=True, replay_files={"nested/input.txt": "fact"}),
+             staging_root=tmp_path / "good-stage"))
+    assert any(command.startswith("chown ") for command in runtime.execs)
+    failed = UploadedOwnershipRuntime(tmp_path / "bad")
+    failed.fail_setup = True
+    with pytest.raises(RuntimeError, match="COMPLETION_WORKSPACE_SETUP_FAILED.*exit_code=1"):
+        run_coro(prepare_role_sandbox(role=COMPLETION_ROLE, runtime=failed,
+                 session=AgentSession(allow_write=True), staging_root=tmp_path / "bad-stage"))
+
+
+def test_sandbox_write_error_exposes_stderr_without_encoded_body() -> None:
+    import base64
+    from traceforge.reconstruction.agents.sandbox import SandboxBinding, sandbox_write_file
+
+    content = "private generated body"
+    encoded = base64.b64encode(content.encode()).decode()
+
+    class DeniedRuntime:
+        async def exec(self, command, **kwargs):
+            return SimpleNamespace(return_code=1, stdout="", stderr=(
+                "command contained " + encoded + "\n" + "x" * 2100
+                + "\nPermissionError: [Errno 13] Permission denied: nested/output.txt"))
+
+    result = sandbox_write_file(SandboxBinding(DeniedRuntime()), "nested/output.txt", content)
+    assert "exit_code=1" in result
+    assert "PermissionError" in result
+    assert encoded not in result and content not in result
+    assert len(result) < 2100
 
 
 def test_bind_skips_hermes_mcp_refresh(tmp_path: Path) -> None:
@@ -480,4 +530,3 @@ def test_local_exec_runtime_verifier_pytest_path_mapping(tmp_path: Path) -> None
     assert runs[0]["status"] == "PASS", runs
     assert (runtime.tests / "test_outputs.py").is_file()
     run_coro(runtime.stop())
-
