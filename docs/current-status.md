@@ -6,6 +6,8 @@
 
 历史整合版本 `610254b` 的全量回归：950 passed、7 skipped、5 warnings（均为已有 httpx verify 参数弃用提示），耗时 94.83 秒；Ruff E9/F63/F7/F82 与差异检查通过。真实 AGS 上传子目录写入回归另行通过；这些证据不等于 solver 端到端验收。日志与 line41 缺失输入收据见 artifacts/source-repair-audit-20260928/。
 
+整合源码 `03e865a` 的全量离线回归：**964 passed、7 skipped、5 warnings，118.30 秒**；Ruff E9/F63/F7/F82 与差异检查通过。该版本增加明确的语义审查阶段上下文：重建检查验收机制，真实最终响应留到 rollout 后验收；不能用响应机制就绪抵消 FILE 验证器缺陷。本轮没有启动新模型运行，v34 保持历史 REVIEW。
+
 ## 当前工作顺序
 
 1. 先统一代码与检查版本，避免并发修改主目录。
@@ -47,7 +49,7 @@ v34 于 **2026-09-28 05:18:28.849970 UTC** 启动（源码 `8891af3`），现已
 - 第一轮 Verifier 参考脚本有语法错误；第二轮语义审查发现引用被错误限制在 changedFiles，以及任意正文中的 APPROVED/CHANGES_REQUIRED 会被误当作结论。不能直接放行该候选。
 - 响应审查混淆了机制覆盖与执行验收：obl-002 摘要机制确实遗漏，obl-003 已有 acceptance_report 合同，却因文件 pytest 未检查最终回复而被拒。重建应准备并审查机制，实际响应留到 rollout 后验收。
 
-`be1c1e8` 的可信分段与当前候选事实传递、`cacc47d` 的 Verifier 响应合同补全已合入 `f4c495c`；保留主线 source-excerpts、修改屏障、匿名与重复证据过滤以及原始响应契约约束。整合后的 210 项相关离线回归通过，尚未真实重跑，不改写 v34 的结果。
+`be1c1e8` 的可信分段与当前候选事实传递、`cacc47d` 的 Verifier 响应合同补全已合入 `f4c495c`；保留主线 source-excerpts、修改屏障、匿名与重复证据过滤以及原始响应契约约束。整合版本的回归结果见页首；尚未真实重跑，不改写 v34 的结果。
 
 隐藏 task_acceptance、RED-only READY 与响应待验分离、独立 rollout 预算保存均已整合。待验义务不清除，未执行真实 rollout 时 sft_eligible 与 certification_closed 保持 false。独立 read-results 尚未消费响应合同，完整响应验收目前仍由内联 rollout 路径负责。
 
