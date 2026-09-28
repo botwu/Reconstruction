@@ -1,0 +1,237 @@
+"""独立 rollout 验收的合成 fixture；不执行模型、沙盒或真实 rollout。"""
+
+import hashlib
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from test_harbor_ags_rollout import _bundle, _harbor_root
+from test_harbor_rollout_results import _write, _write_ledger, _write_valid_hermes_artifacts
+from test_response_receipt import acceptance_contract, trajectory
+from traceforge.cli import main
+from traceforge.harbor_ags.rollout import HarborRolloutConfig, build_rollout_plan
+
+
+def _fixture(tmp_path, monkeypatch, *, trials=1, contract=True):
+    task = _bundle(tmp_path / "task")
+    acceptance = {
+        "task_id": "synthetic-task",
+        "acceptance_obligations": [{"id": "obl-report", "text": "返回 acceptance-report"}],
+        "environment_bindings": [{"obligation_id": "obl-report", "verifier_kind": "NON_FILE"}],
+        "response_contract": acceptance_contract() if contract else None,
+    }
+    _write(task / "tests/control/input-manifest.json", {
+        "schema_version": "traceforge.control-input-manifest.v1",
+        "task_acceptance": acceptance,
+    })
+    plan_dir = build_rollout_plan(HarborRolloutConfig(
+        task_dir=task, harbor_root=_harbor_root(tmp_path / "harbor"),
+        output_root=tmp_path / "plans", jobs_root=tmp_path / "jobs", trials=trials,
+        timeout_seconds=14400, agent_max_iterations=500,
+    ))
+    plan = json.loads((plan_dir / "rollout_plan.json").read_text())
+    receipt_path = plan_dir / "run_receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt.update(status="COMPLETED", external_execution=True, returncode=0)
+    _write(receipt_path, receipt)
+    job = tmp_path / "jobs" / plan["job_name"]
+    for index, relative in enumerate(plan["dataset"]["task_relative_paths"]):
+        trial = job / f"synthetic-trial-{index}"
+        _write(trial / "config.json", {"task": {"path": str(plan_dir / "dataset" / relative)}})
+        _write(trial / "result.json", {"verifier_result": {"rewards": {"task": 1.0}}})
+        _write(trial / "verifier/verdict.json", {"status": "TASK_PASS"})
+        _write_valid_hermes_artifacts(trial)
+        (trial / "agent/trajectory.full.json").write_bytes(trajectory())
+        (trial / "reconstruction-certification.json").unlink()
+    _write_ledger(job / "_control/ags-sandbox-ledger.jsonl")
+    import harbor_ags.artifacts
+    import harbor_ags.validator
+    calls = []
+
+    def validate(trial):
+        calls.append(trial)
+        return SimpleNamespace(certified=True, status="TASK_PASS")
+
+    monkeypatch.setattr(harbor_ags.artifacts, "build_artifact_manifest", lambda trial: None)
+    monkeypatch.setattr(harbor_ags.validator, "validate_harbor_trial", validate)
+    return plan_dir, job, calls
+
+
+def _read(plan, job):
+    from traceforge.harbor_ags.acceptance import read_rollout_acceptance
+    return read_rollout_acceptance(plan, job_dir=job)
+
+
+def test_standalone_cli_certifies_and_checks_bound_final_response(tmp_path, monkeypatch, capsys):
+    plan, job, calls = _fixture(tmp_path, monkeypatch)
+    assert main(["harbor-ags", "read-results", "--job-dir", str(job), "--plan-dir", str(plan)]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["acceptance"]["status"] == "PASS"
+    assert report["acceptance"]["unverified_obligations"] == []
+    assert len(calls) == 1
+    receipt = report["acceptance"]["response_receipts"][0]
+    raw = (calls[0] / "agent/trajectory.full.json").read_bytes()
+    response = json.loads(raw)["messages"][-1]["content"]
+    assert receipt["trajectory_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert receipt["response_sha256"] == hashlib.sha256(response.encode()).hexdigest()
+    assert receipt["assistant_message_index"] == 1
+    assert receipt["verified_obligation_ids"] == ["obl-report"]
+    assert json.loads((plan / "rollout_results.json").read_text()) == report
+    assert sorted(path.name for path in (plan / "dataset").glob("*/workspace/*")) == ["input.txt"]
+    assert report["input_binding"]["plan_sha256"] == hashlib.sha256((plan / "rollout_plan.json").read_bytes()).hexdigest()
+
+
+def test_standalone_cli_requires_plan_for_hermes(tmp_path, monkeypatch, capsys):
+    _, job, calls = _fixture(tmp_path, monkeypatch)
+    assert main(["harbor-ags", "read-results", "--job-dir", str(job)]) == 2
+    assert "--plan-dir" in capsys.readouterr().err
+    assert calls == []
+
+
+@pytest.mark.parametrize("status", ["PLAN_ONLY", "EXECUTING", "FAILED", "TIMEOUT", "ABORTED"])
+def test_incomplete_execution_never_certifies_or_accepts(tmp_path, monkeypatch, status):
+    plan, job, calls = _fixture(tmp_path, monkeypatch)
+    receipt = json.loads((plan / "run_receipt.json").read_text())
+    receipt["status"] = status
+    _write(plan / "run_receipt.json", receipt)
+    report = _read(plan, job)
+    assert report["acceptance"]["status"] == "REVIEW"
+    assert report["acceptance"]["unverified_obligations"] == ["obl-report"]
+    assert calls == []
+    assert "response_receipts" not in report["acceptance"]
+
+
+@pytest.mark.parametrize("failure", ["no_trajectory", "no_final", "wrong_contract", "uncertified", "task_failed", "infra_error", "missing_trial"])
+def test_standalone_rejects_incomplete_or_unverified_trial(tmp_path, monkeypatch, failure):
+    plan, job, _ = _fixture(tmp_path, monkeypatch, trials=2)
+    trial = job / "synthetic-trial-1"
+    if failure == "no_trajectory":
+        (trial / "agent/trajectory.full.json").unlink()
+    elif failure == "no_final":
+        _write(trial / "agent/trajectory.full.json", {
+            "schema_version": "traceforge-lossless-trajectory-v1",
+            "messages": [{"role": "user", "content": "合成输入"}],
+        })
+    elif failure == "wrong_contract":
+        (trial / "agent/trajectory.full.json").write_bytes(trajectory('```acceptance-report\n{"summary":"合成无效回复"}\n```'))
+    elif failure == "uncertified":
+        import harbor_ags.validator
+        monkeypatch.setattr(harbor_ags.validator, "validate_harbor_trial", lambda _: SimpleNamespace(certified=False, status="INFRA_CAPTURE"))
+    elif failure == "task_failed":
+        _write(trial / "result.json", {"verifier_result": {"rewards": {"task": 0.0}}})
+        _write(trial / "verifier/verdict.json", {"status": "TASK_FAIL"})
+    elif failure == "infra_error":
+        _write(trial / "result.json", {"exception_info": {"exception_type": "TrajectoryCaptureError"}})
+    else:
+        import shutil
+        shutil.rmtree(trial)
+    report = _read(plan, job)
+    assert report["acceptance"]["status"] == "REVIEW"
+    assert report["acceptance"]["unverified_obligations"] == ["obl-report"]
+
+
+def test_missing_contract_cannot_clear_non_file_obligation(tmp_path, monkeypatch):
+    plan, job, _ = _fixture(tmp_path, monkeypatch, contract=False)
+    report = _read(plan, job)
+    assert report["acceptance"]["status"] == "REVIEW"
+    assert report["acceptance"]["unverified_obligations"] == ["obl-report"]
+
+
+@pytest.mark.parametrize("failure", ["other_job", "other_task", "duplicate_task", "changed_input", "stale_receipt"])
+def test_plan_job_task_and_input_binding_fail_closed(tmp_path, monkeypatch, failure):
+    from traceforge.harbor_ags.results import HarborResultError
+    from traceforge.harbor_ags.rollout import HarborRolloutError
+    plan, job, calls = _fixture(tmp_path, monkeypatch, trials=2)
+    if failure == "other_job":
+        job = tmp_path / "other_job"
+        job.mkdir()
+    elif failure in {"other_task", "duplicate_task"}:
+        config = json.loads((job / "synthetic-trial-0/config.json").read_text())
+        if failure == "other_task":
+            config["task"]["path"] = str(tmp_path / "task")
+        _write(job / "synthetic-trial-1/config.json", config)
+    elif failure == "changed_input":
+        next((plan / "dataset").glob("*/tests/control/input-manifest.json")).write_text("{}")
+    else:
+        receipt = json.loads((plan / "run_receipt.json").read_text())
+        receipt["artifact_manifest_sha256"] = "0" * 64
+        _write(plan / "run_receipt.json", receipt)
+    with pytest.raises((HarborResultError, HarborRolloutError)):
+        _read(plan, job)
+    assert calls == []
+
+
+def test_repeated_read_recomputes_receipts_without_changing_inputs(tmp_path, monkeypatch):
+    plan, job, calls = _fixture(tmp_path, monkeypatch)
+    before = (plan / "rollout_plan.json").read_bytes()
+    first = _read(plan, job)
+    assert _read(plan, job) == first
+    assert len(calls) == 2
+    (job / "synthetic-trial-0/agent/trajectory.full.json").write_bytes(trajectory("缺少约定报告"))
+    assert _read(plan, job)["acceptance"]["status"] == "REVIEW"
+    assert (plan / "rollout_plan.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("change", ["file_only", "unsupported", "missing_acceptance"])
+def test_contract_scope_and_required_hidden_inputs(tmp_path, monkeypatch, change):
+    from traceforge.harbor_ags.results import HarborResultError
+    from traceforge.harbor_ags.rollout import HarborRolloutConfig, build_rollout_plan
+
+    old_plan, old_job, _ = _fixture(tmp_path, monkeypatch)
+    task = tmp_path / "task"
+    manifest_path = task / "tests/control/input-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    if change == "file_only":
+        manifest["task_acceptance"].update(
+            acceptance_obligations=[], environment_bindings=[], response_contract=None,
+        )
+    elif change == "unsupported":
+        manifest["task_acceptance"]["response_contract"]["checks"][0]["kind"] = "semantic_correctness"
+    else:
+        manifest.pop("task_acceptance")
+    _write(manifest_path, manifest)
+    plan = build_rollout_plan(HarborRolloutConfig(
+        task_dir=task, harbor_root=tmp_path / "harbor", output_root=tmp_path / "new-plans",
+        jobs_root=tmp_path / "new-jobs", timeout_seconds=14400, agent_max_iterations=500,
+    ))
+    payload = json.loads((plan / "rollout_plan.json").read_text())
+    receipt = json.loads((plan / "run_receipt.json").read_text())
+    receipt.update(status="COMPLETED", external_execution=True, returncode=0)
+    _write(plan / "run_receipt.json", receipt)
+    import shutil
+    job = tmp_path / "new-jobs" / payload["job_name"]
+    shutil.copytree(old_job, job)
+    trial = job / "synthetic-trial-0"
+    _write(trial / "config.json", {"task": {"path": str(plan / "dataset" / payload["dataset"]["task_relative_paths"][0])}})
+    if change == "missing_acceptance":
+        with pytest.raises(HarborResultError, match="task_acceptance"):
+            _read(plan, job)
+        return
+    (trial / "agent/trajectory.full.json").write_bytes(trajectory("合成最终回复"))
+    result = _read(plan, job)
+    if change == "file_only":
+        assert result["acceptance"]["status"] == "PASS"
+        assert result["acceptance"]["response_receipts"][0]["response_sha256"]
+        assert result["acceptance"]["response_receipts"][0]["acceptance_report_sha256"] is None
+    else:
+        assert result["acceptance"]["status"] == "REVIEW"
+        assert result["acceptance"]["unverified_obligations"] == ["obl-report"]
+
+
+@pytest.mark.parametrize("field,value", [("returncode", 1), ("returncode", False), ("external_execution", False)])
+def test_completed_label_requires_real_success_receipt(tmp_path, monkeypatch, field, value):
+    plan, job, calls = _fixture(tmp_path, monkeypatch)
+    receipt = json.loads((plan / "run_receipt.json").read_text())
+    receipt[field] = value
+    _write(plan / "run_receipt.json", receipt)
+    assert _read(plan, job)["acceptance"]["status"] == "REVIEW"
+    assert calls == []
+
+
+def test_cli_infers_job_and_refuses_mode_override(tmp_path, monkeypatch, capsys):
+    plan, _, _ = _fixture(tmp_path, monkeypatch)
+    assert main(["harbor-ags", "read-results", "--plan-dir", str(plan)]) == 0
+    capsys.readouterr()
+    assert main(["harbor-ags", "read-results", "--plan-dir", str(plan), "--agent-mode", "oracle"]) == 2
+    assert "agent-mode" in capsys.readouterr().err

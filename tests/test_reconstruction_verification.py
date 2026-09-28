@@ -3,6 +3,11 @@ import json
 from pathlib import Path
 from typing import Any
 
+from traceforge.harbor_ags import response_acceptance
+from traceforge.harbor_ags.response_acceptance import (
+    _acceptance_report_obligation_ids,
+    apply_response_receipts,
+)
 from traceforge.reconstruction import verification
 from traceforge.reconstruction.agents.runtime import AgentResult
 from traceforge.reconstruction.model_gateway import ModelRequest, ModelResponse
@@ -14,8 +19,6 @@ from traceforge.reconstruction.verification import (
     run_reconstruction_verification,
     verifier_task,
     write_execution_manifest,
-    _acceptance_report_obligation_ids,
-    _apply_response_receipts,
     _record_unverified_obligations,
 )
 from traceforge.reconstruction.verifier_recovery import run_verifier_recovery
@@ -370,7 +373,7 @@ def test_response_receipts_clear_only_explicit_acceptance_contract(tmp_path: Pat
     assert _acceptance_report_obligation_ids(task) == ["obl-002"]
     result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002", "obl-003"]}
     rollout = {"results": {"trials": []}}
-    _apply_response_receipts(result, rollout, task, expected_trials=2)
+    apply_response_receipts(result, rollout, task, expected_trials=2)
     assert result["status"] == "REVIEW"
     assert result["sft_eligible"] is False
     assert result["unverified_obligations"] == ["obl-002", "obl-003"]
@@ -400,7 +403,7 @@ def test_response_receipt_skips_failed_trials_without_masking_rollout_cause() ->
             ]
         }
     }
-    _apply_response_receipts(result, rollout, task, expected_trials=2)
+    apply_response_receipts(result, rollout, task, expected_trials=2)
     assert result["errors"] == ["HERMES_REPRODUCIBILITY_FAILED"]
     assert "RESPONSE_RECEIPT_INVALID:0" not in result["errors"]
     assert "RESPONSE_RECEIPT_INVALID:1" not in result["errors"]
@@ -433,7 +436,7 @@ def test_response_receipt_still_rejects_invalid_successful_trial(tmp_path: Path)
             ]
         }
     }
-    _apply_response_receipts(result, rollout, task, expected_trials=1)
+    apply_response_receipts(result, rollout, task, expected_trials=1)
     assert any(item.startswith("RESPONSE_RECEIPT_INVALID:0:") for item in result["errors"])
     assert "NON_FILE_RESPONSE_UNVERIFIED" in result["errors"]
     assert result["unverified_obligations"] == ["obl-002"]
@@ -448,7 +451,7 @@ def test_response_receipt_rejects_malformed_trial_collection(trials: Any) -> Non
         "environment_bindings": [{"obligation_id": "obl-002", "verifier_kind": "NON_FILE"}],
     }
     result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
-    _apply_response_receipts(result, {"results": {"trials": trials}}, task, expected_trials=2)
+    apply_response_receipts(result, {"results": {"trials": trials}}, task, expected_trials=2)
     assert result["status"] == "REVIEW"
     assert result["sft_eligible"] is False
     assert "RESPONSE_RECEIPT_TRIALS_MISSING" in result["errors"]
@@ -483,12 +486,16 @@ def test_persistence_failure_cannot_leave_rollout_eligible(
         self.bundle = tmp_path / "calibrated-task"
         return {"status": "PASS"}
 
+    # 合成轨迹只支持持久化错误的确定性回归，不代表真实 rollout。
+    trajectory = tmp_path / "synthetic-trajectory.json"
+    trajectory.write_text(json.dumps({"messages": [{"role": "assistant", "content": "完成"}]}))
+
     def replay(*args: Any, **kwargs: Any) -> dict[str, Any]:
         return {
             "execution": {"status": "COMPLETED"},
             "results": {
                 "quality_gate": {"ok": True},
-                "trials": [{"status": "PASS", "reward": 1.0}] * 2,
+                "trials": [{"status": "PASS", "reward": 1.0, "trajectory_path": str(trajectory)}] * 2,
             },
         }
 
@@ -552,11 +559,11 @@ def test_receipt_does_not_cover_verdict_merely_placed_before_report(
         ],
     }
     assert _acceptance_report_obligation_ids(task) == ["obl-003"]
-    monkeypatch.setattr(verification, "_attach_response_receipts", lambda *args: ([], [
+    monkeypatch.setattr(response_acceptance, "_attach_response_receipts", lambda *args: ([], [
         {"verified_obligation_ids": [], "contract_checks": []}
     ] * 2))
     result = {"unverified_obligations": ["obl-002", "obl-003"]}
-    _apply_response_receipts(result, {"results": {"trials": []}}, task, expected_trials=2)
+    apply_response_receipts(result, {"results": {"trials": []}}, task, expected_trials=2)
     assert result["unverified_obligations"] == ["obl-002", "obl-003"]
 
 
@@ -585,7 +592,7 @@ def test_valid_receipt_does_not_certify_combined_response_obligation(tmp_path: P
         {"status": "PASS", "trajectory_path": str(path)},
     ]}}
     result = {"status": "READY", "unverified_obligations": ["response"]}
-    _apply_response_receipts(result, rollout, task, expected_trials=1)
+    apply_response_receipts(result, rollout, task, expected_trials=1)
     assert rollout["results"]["trials"][0]["response_receipt_status"] == "VERIFIED"
     assert result["unverified_obligations"] == ["response"]
     assert result["response_receipts"][0]["verified_obligation_ids"] == []
@@ -632,7 +639,7 @@ def test_receipt_does_not_clear_obligations_without_machine_contract(tmp_path: P
         {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
     ]}}
     result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002", "obl-003"]}
-    _apply_response_receipts(result, rollout, _response_task(semantic=True), 2)
+    apply_response_receipts(result, rollout, _response_task(semantic=True), 2)
     assert result["unverified_obligations"] == ["obl-002", "obl-003"]
     assert len(result["response_receipts"]) == 2
     assert all(item["verification_scope"] == "REPORT_STRUCTURE_ONLY" for item in result["response_receipts"])
@@ -641,7 +648,7 @@ def test_receipt_does_not_clear_obligations_without_machine_contract(tmp_path: P
 
 def test_missing_trial_entry_does_not_clear_response_obligation() -> None:
     result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
-    _apply_response_receipts(result, {"results": {"trials": [None]}}, _response_task(), 1)
+    apply_response_receipts(result, {"results": {"trials": [None]}}, _response_task(), 1)
     assert result["unverified_obligations"] == ["obl-002"]
     assert result["status"] == "REVIEW"
     assert "NON_FILE_RESPONSE_UNVERIFIED" in result["errors"]
@@ -687,7 +694,7 @@ def test_machine_contract_clears_only_after_all_real_trial_receipts(tmp_path: Pa
         {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
     ]}}
     result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002", "obl-003"]}
-    _apply_response_receipts(result, rollout, task, 2)
+    apply_response_receipts(result, rollout, task, 2)
     assert result["unverified_obligations"] == ["obl-003"]
     assert result["pending_response_obligations"] == ["obl-003"]
     assert result["response_receipts"][0]["verified_obligation_ids"] == ["obl-002"]
@@ -704,7 +711,7 @@ def test_machine_contract_failure_keeps_obligation_unverified(tmp_path: Path) ->
     path = tmp_path / "trajectory.full.json"
     path.write_bytes(trajectory())
     result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
-    _apply_response_receipts(result, {"results": {"trials": [
+    apply_response_receipts(result, {"results": {"trials": [
         {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
     ]}}, task, 1)
     assert result["unverified_obligations"] == ["obl-002"]
@@ -725,7 +732,7 @@ def test_one_trial_contract_failure_prevents_clearing_for_all_trials(tmp_path: P
     fence = chr(96) * 3
     bad.write_bytes(trajectory(fence + "acceptance-report\n" + json.dumps(bad_report) + "\n" + fence))
     result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
-    _apply_response_receipts(result, {"results": {"trials": [
+    apply_response_receipts(result, {"results": {"trials": [
         {"status": "PASS", "reward": 1.0, "trajectory_path": str(good)},
         {"status": "PASS", "reward": 1.0, "trajectory_path": str(bad)},
     ]}}, task, 2)
@@ -747,7 +754,7 @@ def test_basic_summary_contract_uses_trial_snapshot_in_orchestration(tmp_path: P
     contract["checks"][0]["obligation_id"] = "obl-002"
     task["response_contract"] = contract
     result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
-    _apply_response_receipts(result, {"results": {"trials": [
+    apply_response_receipts(result, {"results": {"trials": [
         {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
     ]}}, task, 1)
     assert result["unverified_obligations"] == []
@@ -769,10 +776,44 @@ def test_explicit_report_contract_bypasses_only_unrequested_legacy_fields(tmp_pa
     path = tmp_path / "trajectory.full.json"
     path.write_bytes(trajectory(fence + 'acceptance-report\n{"summary":"finished"}\n' + fence))
     result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
-    _apply_response_receipts(result, {"results": {"trials": [
+    apply_response_receipts(result, {"results": {"trials": [
         {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
     ]}}, task, 1)
     assert result["unverified_obligations"] == []
     assert result["errors"] == []
     assert result["response_receipts"][0]["verification_scope"] == "REPORT_BINDING_ONLY"
     assert result["response_receipts"][0]["contract_checks"][0]["verification_scope"] == "REPORT_STRUCTURE_ONLY"
+
+
+
+@pytest.mark.parametrize("failure", ["execution", "certification"])
+def test_shared_receipt_cannot_clear_obligations_after_execution_or_certification_failure(tmp_path, failure):
+    from test_response_receipt import acceptance_contract, trajectory
+
+    path = tmp_path / "synthetic-trajectory.json"
+    path.write_bytes(trajectory())
+    task = _response_task()
+    task["response_contract"] = acceptance_contract()
+    task["response_contract"]["checks"][0]["obligation_id"] = "obl-002"
+    trial = {"status": "PASS", "reward": 1.0, "trajectory_path": str(path), "content_valid": failure != "certification"}
+    rollout = {"execution": {"status": "FAILED" if failure == "execution" else "COMPLETED"},
+               "results": {"trials": [trial]}}
+    result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
+    apply_response_receipts(result, rollout, task, 1)
+    assert result["status"] == "REVIEW"
+    assert result["unverified_obligations"] == ["obl-002"]
+    assert not result.get("response_receipts")
+
+
+def test_unrequested_report_does_not_inherit_legacy_required_fields(tmp_path):
+    from test_response_receipt import trajectory
+
+    path = tmp_path / "synthetic-trajectory.json"
+    path.write_bytes(trajectory('```acceptance-report\n{"summary":"合成回复"}\n```'))
+    result = {"status": "READY", "errors": [], "unverified_obligations": []}
+    rollout = {"execution": {"status": "COMPLETED"}, "results": {"trials": [
+        {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
+    ]}}
+    apply_response_receipts(result, rollout, {}, 1)
+    assert result["status"] == "READY"
+    assert result["response_receipts"][0]["verification_scope"] == "REPORT_BINDING_ONLY"

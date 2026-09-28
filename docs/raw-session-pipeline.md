@@ -76,7 +76,7 @@ Verifier 生成隐藏 pytest、oracle 和 mutation。独立审查会读取实际
 
 重建负责 task、workspace、verifier 与 RED；RED 是验证器校准，不是 solver rollout。独立重建可以仅启用 `--execute-red`，不带 `--execute-rollout`，先产出独立 Harbor bundle；这不是已有运行通过的结论。
 
-已有独立 `prepare-rollout → execute-rollout → read-results` 路径，可以读取冻结的 `harbor_bundle/task`，在沙盒中执行真实 solver 并产生 trajectory 与评分。但独立结果读取尚未接入最终 response contract 验收，相关逻辑仍在 `reconstruction.verification` 的私有函数；状态分离与验收规则持久化仍在收尾。以下描述的是现有重建内联 rollout 的验收行为，不能据此认定独立路径已经闭合。
+已有独立 `prepare-rollout → execute-rollout → read-results` 路径，可以读取冻结的 `harbor_bundle/task`，在沙盒中执行真实 solver 并产生 trajectory 与评分。独立 `read-results --plan-dir ...` 已核对冻结输入与已完成执行，并复用内联流程的认证与最终 response contract 验收。以下验收规则由两条路径共用；源码接入与合成回归不代表真实两阶段产物已经通过。
 
 真实 Hermes rollout 在 task-start 环境执行，验收读取 trial、reward、质量门禁、轨迹、输入绑定与 cleanup。待验证的最终响应不再一概阻止采集真实轨迹；它们仍留在未验证集合，不能提前获得交付资格。执行完成后，从真实最终 assistant 消息生成绑定收据，按来自用户要求的显式响应合同校验字段、数组元素、实际报告路径及支持的摘要一致性。只绑定 JSON 不等于合同通过，不支持的语义或结构继续未验证。
 

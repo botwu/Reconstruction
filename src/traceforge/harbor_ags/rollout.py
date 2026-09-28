@@ -600,13 +600,7 @@ def publish_rollout_bundle(plan_dir: Path | str, destination: Path | str) -> Pat
     destination_path = Path(destination)
     if not plan_root.is_dir():
         raise HarborRolloutError(f"rollout plan 不存在: {plan_root}")
-    try:
-        plan = json.loads((plan_root / "rollout_plan.json").read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise HarborRolloutError("rollout_plan.json 无法读取") from exc
-    if not isinstance(plan, dict) or plan.get("schema_version") != ROLLOUT_BRIDGE_SCHEMA:
-        raise HarborRolloutError("rollout plan schema 不匹配")
-    _assert_plan_integrity(plan_root, plan)
+    plan = load_verified_rollout_plan(plan_root)
     dataset = plan.get("dataset")
     paths = dataset.get("task_relative_paths") if isinstance(dataset, dict) else None
     if not isinstance(paths, list) or not paths or not all(isinstance(x, str) for x in paths):
@@ -948,6 +942,20 @@ def _assert_plan_integrity(plan_dir: Path, plan: dict[str, Any]) -> None:
         raise HarborRolloutError("rollout plan command 未绑定到本 plan 的 harbor run")
 
 
+def load_verified_rollout_plan(plan_dir: Path | str) -> dict[str, Any]:
+    """读取并核对冻结计划、配置与 dataset 内容，不执行 Harbor。"""
+
+    plan_root = Path(plan_dir).resolve()
+    try:
+        plan = json.loads((plan_root / "rollout_plan.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise HarborRolloutError("rollout_plan.json 无法读取") from exc
+    if not isinstance(plan, dict) or plan.get("schema_version") != ROLLOUT_BRIDGE_SCHEMA:
+        raise HarborRolloutError("rollout plan schema 不匹配")
+    _assert_plan_integrity(plan_root, plan)
+    return plan
+
+
 def _update_run_receipt(
     plan_dir: Path, *, status: str, returncode: int | None = None, error: str = ""
 ) -> None:
@@ -982,14 +990,7 @@ def execute_rollout_plan(
 ) -> dict[str, Any]:
     """显式执行已发布计划；执行结果只保留有界 stdout/stderr 摘要。"""
 
-    plan_path = plan_dir / "rollout_plan.json"
-    try:
-        plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise HarborRolloutError("rollout_plan.json 无法读取") from exc
-    if not isinstance(plan, dict) or plan.get("schema_version") != ROLLOUT_BRIDGE_SCHEMA:
-        raise HarborRolloutError("rollout plan schema 不匹配")
-    _assert_plan_integrity(plan_dir, plan)
+    plan = load_verified_rollout_plan(plan_dir)
     runtime = plan.get("harbor_runtime")
     if isinstance(runtime, dict):
         runtime_files = runtime.get("files")
@@ -1092,5 +1093,6 @@ __all__ = [
     "HarborRolloutError",
     "build_rollout_plan",
     "execute_rollout_plan",
+    "load_verified_rollout_plan",
     "publish_rollout_bundle",
 ]

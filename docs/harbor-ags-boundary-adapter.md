@@ -18,7 +18,7 @@
 | `harbor-ags plan` | 对现成 Bundle 做 dry-run 边界计划，`model_status=NOT_RUN` |
 | `harbor-ags prepare-rollout` | 物化 Harbor Dataset 并生成显式 dry-run 计划 |
 | `harbor-ags execute-rollout` | 执行已审核的 rollout plan（独立于 reconstruct） |
-| `harbor-ags read-results` | 读 Job 结果、算指标 |
+| `harbor-ags read-results --plan-dir ...` | 核对冻结输入与执行，认证 Hermes 轨迹并验收最终响应 |
 
 `plan` 的 `status=READY_FOR_ROLLOUT` 只表示 Harbor validator 通过，不表示 teacher 已跑、也不等于重建 READY。
 
@@ -42,6 +42,32 @@ PYTHONPATH=src python -m traceforge harbor-ags execute-rollout \
   --config config.yaml \
   --channel claude
 ```
+
+独立 Hermes 执行完成后验收：
+
+```bash
+PYTHONPATH=src python -m traceforge harbor-ags read-results \
+  --plan-dir /absolute/path/to/plan
+```
+
+Job 从冻结计划推导；可同时传 `--job-dir`，但必须与该计划一致。Hermes 只提供
+`--job-dir` 会拒绝完整验收，避免漏用响应合同。`oracle/nop` 仍可用
+`--job-dir ... --agent-mode oracle`（或 `nop`）读取校准指标。
+
+读取会校验 plan、dataset、隐藏 `tests/control/input-manifest.json` 中的
+`task_acceptance`、执行收据及 trial 的 `config.json/task.path`。仅完成且成功的
+执行进入 Hermes 认证；失败或未认证的 trial 不生成有效响应验收收据。
+最终 assistant 消息索引、响应/轨迹/合同哈希与检查结果保存在
+`rollout_results.json`。文件缺失、回复缺失、未支持的检查和未覆盖 NON_FILE
+义务不能得到 `acceptance.status=PASS`。CLI 只有完整验收 PASS 才返回 0。
+
+此命令有本地派生文件写入：既有认证器重建 trial 的 `artifacts/manifest.json`
+和 `reconstruction-certification.json`，结果读取原子替换 plan 目录下的
+`rollout_results.json`。重复读取重新校验当前字节并重算收据，不沿用过期 PASS；
+它不会启动模型、创建 AGS 沙盒、重新执行 rollout、修改 task workspace 或轨迹。
+输入绑定校验报错时不覆盖旧报告；旧报告只对应其中记录的输入哈希，不能作为本次读取通过的依据。
+`quality_gate` 继续描述原始运行证据质量；合同与任务通过情况看 `acceptance`。
+独立验收不会修改重建状态，也不会独自宣称 RED/SFT 认证完成。
 
 ## 边界映射
 

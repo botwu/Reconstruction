@@ -13,6 +13,7 @@ from traceforge.failure_analysis.model_runner import run_failure_analysis_model
 from traceforge.failure_analysis.review_batch import build_review_batch
 from traceforge.failure_analysis.trace_capabilities import aggregate_capability_runs
 from traceforge.harbor_ags.adapter import HarborAgsAdapterError, build_boundary_plan
+from traceforge.harbor_ags.acceptance import read_rollout_acceptance
 from traceforge.harbor_ags.results import HarborResultError, read_rollout_results
 from traceforge.harbor_ags.rollout import (
     DEFAULT_RUNTIME_CONFIG,
@@ -173,10 +174,11 @@ def _parser() -> argparse.ArgumentParser:
         "--channel", default="claude", help="config.yaml 中用于 Hermes 的 channel"
     )
     read_results = harbor_ags_commands.add_parser(
-        "read-results", help="读取 Harbor Job 结果并计算 rollout 指标"
+        "read-results", help="读取 Harbor Job 结果并验收独立 rollout"
     )
-    read_results.add_argument("--job-dir", type=Path, required=True)
-    read_results.add_argument("--agent-mode", choices=("hermes", "oracle", "nop"), default="hermes")
+    read_results.add_argument("--job-dir", type=Path)
+    read_results.add_argument("--plan-dir", type=Path, help="Hermes 验收必需；绑定输入、执行状态和响应合同")
+    read_results.add_argument("--agent-mode", choices=("hermes", "oracle", "nop"))
 
     reconstruct = commands.add_parser(
         "reconstruct", help="从 ELIGIBLE 原始 session 重建（官方入口：run）"
@@ -506,12 +508,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0 if result.get("status") == "COMPLETED" else 2
     if arguments.command == "harbor-ags" and arguments.harbor_ags_command == "read-results":
         try:
-            result = read_rollout_results(arguments.job_dir, agent_mode=arguments.agent_mode)
-        except HarborResultError as exc:
+            if arguments.plan_dir is not None:
+                result = read_rollout_acceptance(
+                    arguments.plan_dir, job_dir=arguments.job_dir, agent_mode=arguments.agent_mode,
+                )
+            elif arguments.agent_mode in {"oracle", "nop"} and arguments.job_dir is not None:
+                result = read_rollout_results(arguments.job_dir, agent_mode=arguments.agent_mode)
+            else:
+                raise HarborResultError("Hermes 完整验收需要 --plan-dir；oracle/nop 指标读取需要 --job-dir")
+        except (HarborResultError, HarborRolloutError, OSError) as exc:
             print(f"Harbor/AGS 结果读取失败：{exc}", file=sys.stderr)
             return 2
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0 if result["quality_gate"]["ok"] else 2
+        acceptance = result.get("acceptance")
+        passed = acceptance["status"] == "PASS" if acceptance is not None else result["quality_gate"]["ok"]
+        return 0 if passed else 2
     if arguments.command == "reconstruct" and arguments.reconstruct_command == "source":
         try:
             record = load_eligible_record(arguments.records, line_number=arguments.line_number)

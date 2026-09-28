@@ -61,7 +61,7 @@ v34 于 **2026-09-28 05:18:28.849970 UTC** 启动（源码 `8891af3`），现已
 
 `be1c1e8` 的可信分段与当前候选事实传递、`cacc47d` 的 Verifier 响应合同补全已合入 `f4c495c`；保留主线 source-excerpts、修改屏障、匿名与重复证据过滤以及原始响应契约约束。整合版本的回归结果见页首；尚未真实重跑，不改写 v34 的结果。
 
-隐藏 task_acceptance、RED-only READY 与响应待验分离、独立 rollout 预算保存均已整合。待验义务不清除，未执行真实 rollout 时 sft_eligible 与 certification_closed 保持 false。独立 read-results 尚未消费响应合同，完整响应验收目前仍由内联 rollout 路径负责。
+隐藏 task_acceptance、RED-only READY 与响应待验分离、独立 rollout 预算保存均已整合。待验义务不清除，未执行真实 rollout 时 sft_eligible 与 certification_closed 保持 false。独立 read-results 已通过 --plan-dir 绑定冻结输入与执行收据，复用内联的 Hermes 认证和响应合同验收；尚未用真实 rollout 验证本次接入。
 
 仍存在的具体能力缺口：`dependencies/runtime_constraints` 目前只作声明保存，没有统一自动安装机制。缺包必须以真实探针和后续运行说明；声明了依赖不代表依赖已安装。当前没有新增安装框架或把自由文本依赖变成新的确定性准入门禁。只读审查也不应因缺少编译入口而被自动判定不可执行。
 
@@ -71,7 +71,7 @@ v34 于 **2026-09-28 05:18:28.849970 UTC** 启动（源码 `8891af3`），现已
 
 **solver rollout 阶段**单独读取冻结的 bundle，在沙盒中真实解题，产出完整 trajectory、最终结果和评分，关联回输入 bundle。任务包存在、RED 通过或已启动 solver，均不能代替这一步的真实执行结果。
 
-已有独立 `prepare-rollout → execute-rollout → read-results` 路径，可读取 `harbor_bundle/task`。但独立结果读取尚未接入最终 response contract 验收，该逻辑仍位于 `reconstruction.verification` 的私有函数中。RED-only 与 rollout 状态分类、验收规则持久化已从源码落地，仍待真实验证；它们不能代替独立结果读取的接入，因此不能宣称两阶段的完整独立验收已经实现。
+已有独立 `prepare-rollout → execute-rollout → read-results --plan-dir ...` 路径，可读取 `harbor_bundle/task`。独立结果读取核对 plan、dataset、执行收据及每个 trial 的任务绑定，调用既有 Hermes 认证，并与内联流程共用 `harbor_ags.response_acceptance` 的最终响应验收。结果写入 plan 目录的 `rollout_results.json`，其中 `acceptance.status=PASS` 只表示本次 rollout 通过；不回写重建状态，不单独声明 RED、SFT 或完整认证关闭。本次接入仅经合成 fixture 与离线回归，真实两阶段交付仍待验证。
 
 ```text
 harbor_bundle/

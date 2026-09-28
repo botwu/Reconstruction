@@ -241,6 +241,31 @@ def certify_hermes_job(job_dir: Path | str, *, harbor_root: Path | str | None = 
         (trial_dir / "reconstruction-certification.json").write_text(json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def rollout_passed(rollout: dict[str, Any] | None, expected_trials: int) -> bool:
+    """只把完整且通过质量门的多次 Hermes 复验视为成功。"""
+    if not isinstance(rollout, dict):
+        return False
+    execution = rollout.get("execution")
+    if not isinstance(execution, dict) or execution.get("status") != "COMPLETED":
+        return False
+    results = rollout.get("results")
+    gate = results.get("quality_gate") if isinstance(results, dict) else None
+    if not isinstance(gate, dict) or gate.get("ok") is not True:
+        return False
+    trials = results.get("trials")
+    return (
+        isinstance(trials, list)
+        and len(trials) == expected_trials
+        and all(
+            isinstance(trial, dict)
+            and trial.get("status") == "PASS"
+            and not isinstance(trial.get("reward"), bool)
+            and trial.get("reward") == 1.0
+            for trial in trials
+        )
+    )
+
+
 def read_rollout_results(
     job_dir: Path | str,
     *,
@@ -399,4 +424,5 @@ __all__ = [
     "HarborResultError",
     "certify_hermes_job",
     "read_rollout_results",
+    "rollout_passed",
 ]
