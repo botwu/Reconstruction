@@ -23,7 +23,7 @@ from traceforge.reconstruction.workspace_integrity import (
 )
 
 SUFFICIENCY_SCHEMA = "traceforge.workspace-sufficiency.v1"
-SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v8-task-scoped-feedback"
+SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v9-evidence-context"
 
 
 def run_workspace_sufficiency(
@@ -34,11 +34,21 @@ def run_workspace_sufficiency(
     output_root: str | Path,
     observed_paths: Iterable[str] = (),
     repair_feedback: dict[str, Any] | None = None,
+    reconstruction_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     workspace = Path(workspace_root).resolve()
     # The role runtime deletes its sandbox before returning. Inventory is a
     # property of the immutable input, so never query session.sandbox afterwards.
     input_inventory = workspace_tree_hash(workspace)
+    context = dict(reconstruction_context or {})
+    context["replay_files"] = [
+        {
+            **row,
+            "current_sha256": input_inventory.get(row["path"]),
+            "current_matches_replay": input_inventory.get(row["path"]) == row["replay_sha256"],
+        }
+        for row in context.get("replay_files") or []
+    ]
     file_count = sum(not digest.startswith("symlink:") for digest in input_inventory.values())
     session = AgentSession(workspace=workspace, allow_write=False)
     preflight_errors: list[str] = []
@@ -110,6 +120,11 @@ def run_workspace_sufficiency(
             "ENVIRONMENT_BINDINGS:",
             json.dumps(environment_bindings(task), ensure_ascii=False),
             f"WORKSPACE_ROOT: {workspace.as_posix()}",
+            "RECONSTRUCTION_CONTEXT 中的范围和 PARTIAL 是历史回放事实，不等于当前候选仍有相同缺口。",
+            "结合 current_sha256/current_matches_replay、当前补全 provenance 和 uncertainties 读取任务相关源码。",
+            "字节改变不证明缺口已修复；独立判断当前环境。只有具体缺口影响任务时写入 missing_context，交回现有修复；无关 PARTIAL 可以 SUFFICIENT。",
+            "RECONSTRUCTION_CONTEXT:",
+            json.dumps(context, ensure_ascii=False),
             "STATIC_INTEGRITY_REPORT:",
             json.dumps(integrity, ensure_ascii=False),
         ]
@@ -228,6 +243,7 @@ def run_workspace_sufficiency(
         "warnings": warnings,
         "file_count": file_count,
         "workspace_hashes": input_inventory,
+        "reconstruction_context": context,
         "read_only_probe": session.read_only_probe,
         "sandbox_cleanup_confirmed": session.sandbox_stopped and not session.sandbox_cleanup_error,
         "agent": {

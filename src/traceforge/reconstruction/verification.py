@@ -746,6 +746,23 @@ class HarborCalibrationExecutor:
         }
 
 
+def _adopt_reviewed_response_contract(
+    task: dict[str, Any], audit: dict[str, Any], candidate: VerifierCandidate | None,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    """仅采纳有效候选同轮审查通过的合同；原始 Intent 保持不变。"""
+    contract = audit.get("response_contract")
+    review = audit.get("semantic_review")
+    if (
+        candidate is None or audit.get("status") != "READY" or audit.get("errors")
+        or not isinstance(contract, dict) or not isinstance(review, dict)
+        or review.get("status") != "ACCEPT" or review.get("errors")
+    ):
+        return task
+    result["response_contract"] = contract
+    return {**task, "response_contract": contract}
+
+
 def _is_non_file_task(source: dict[str, Any] | None, files: dict[str, str]) -> bool:
     return (
         source is not None
@@ -862,6 +879,8 @@ def run_reconstruction_verification(
                     round_number=round_number,
                 )
                 audit = recovered
+                task = _adopt_reviewed_response_contract(task, recovered, generated, result)
+                executor.task = task
                 if _record_unverified_obligations(
                     result, task=task, audit=recovered
                 ):
@@ -986,6 +1005,7 @@ def run_reconstruction_verification(
                 source=source,
             )
             audit = recovered
+            task = _adopt_reviewed_response_contract(task, recovered, candidate, result)
             if candidate is None:
                 result["errors"] = list(recovered.get("errors") or ["VERIFIER_REVIEW"])
         elif model is not None and not config.should_run_red():
