@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from traceforge.reconstruction.capture_repair import CAPTURE_REPAIRS_SCHEMA, capture_repair_error
+
 MAX_TOOL_RESULT_CHARS = 8000
 
 
@@ -24,6 +26,7 @@ class AgentSession:
     replay_files: dict[str, str] = field(default_factory=dict)
     protected_paths: set[str] = field(default_factory=set)
     partial_files: dict[str, str] = field(default_factory=dict)
+    prior_capture_repairs: dict[str, list[dict[str, str]]] = field(default_factory=dict)
     listing_names: set[str] = field(default_factory=set)
     body_paths: set[str] = field(default_factory=set)
     required_paths: set[str] = field(default_factory=set)
@@ -197,6 +200,7 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
                 "path": text,
                 "content": text,
                 "evidence_ref_ids": {"type": "array", "items": text, "minItems": 1},
+                "capture_repairs": CAPTURE_REPAIRS_SCHEMA,
             },
             ["path", "content", "evidence_ref_ids"],
         ),
@@ -445,9 +449,14 @@ def _write_file(session: AgentSession, args: dict[str, Any]) -> str:
     )
     if stub_error:
         return f"error: {stub_error}"
-    observed = session.partial_files.get(path)
-    if observed is not None and observed not in content:
-        return f"error: PARTIAL_OBSERVED_CONTENT_LOST:{path}"
+    capture_repairs = args.get("capture_repairs", session.prior_capture_repairs.get(path, []))
+    repair_error = capture_repair_error(session.partial_files.get(path), content, capture_repairs)
+    if repair_error:
+        return f"error: {repair_error}:{path}"
+    repair_metadata = (
+        {"capture_repairs": [dict(item) for item in capture_repairs]}
+        if "capture_repairs" in args or path in session.prior_capture_repairs else {}
+    )
     previous = next((item for item in reversed(session.writes) if item.get("path") == path), None)
     if previous is not None:
         if previous.get("content") != content:
@@ -475,6 +484,7 @@ def _write_file(session: AgentSession, args: dict[str, Any]) -> str:
                 "content": content,
                 "provenance": "MODEL_COMPLETED",
                 "evidence_ref_ids": list(dict.fromkeys(refs)),
+                **repair_metadata,
             }
         )
         return written
@@ -496,6 +506,7 @@ def _write_file(session: AgentSession, args: dict[str, Any]) -> str:
             "content": content,
             "provenance": "MODEL_COMPLETED",
             "evidence_ref_ids": list(dict.fromkeys(refs)),
+            **repair_metadata,
         }
     )
     return f"wrote {path}"

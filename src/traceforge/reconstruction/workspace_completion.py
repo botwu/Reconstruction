@@ -21,6 +21,7 @@ from traceforge.reconstruction.agents import (
 )
 from traceforge.reconstruction.agents.runtime import AgentResult, merge_completion_files
 from traceforge.reconstruction.agents.session import safe_relpath, workspace_tree_hash
+from traceforge.reconstruction.capture_repair import CAPTURE_REPAIR_GUIDANCE
 from traceforge.reconstruction.completion_holes import CompletionIndex, index_completion_holes
 from traceforge.reconstruction.environment_bindings import (
     environment_bindings,
@@ -35,7 +36,7 @@ from traceforge.reconstruction.terminal_universe_environment import (
 from traceforge.reconstruction.tool_process_sketch import build_tool_process_sketch
 
 COMPLETION_SCHEMA = "traceforge.workspace-completion.v1"
-COMPLETION_PROMPT_VERSION = "workspace-completion-agent-v8-evidence-context"
+COMPLETION_PROMPT_VERSION = "workspace-completion-agent-v9-capture-repairs"
 TASK_Q_EVIDENCE_ID = "task:q"
 ENV_REPLAYED = "REPLAYED"
 ENV_DEFAULT_EMPTY = "DEFAULT_EMPTY"
@@ -252,7 +253,11 @@ def _shared_footer(
         "NON_FILE bindings are context; do not invent verifier files for them.",
         "Optional web_search is for typical layout names only. Do not write web source",
         "into user paths. Do not implement the task, write target tests, or overwrite COMPLETE.",
-        "This is a pre-task snapshot: never add the requested feature, patch a requested file, or create its output.",
+        "This is a pre-task snapshot: never add the requested feature or create its output.",
+        "目标文件也可能需要补全初态上下文；禁止的是提前实现目标改动，而不是禁止补全同一文件。",
+        "FILE 是验收产物类别，不等于只读源码审查。所需上下文和依赖由原用户目标决定；功能实现任务"
+        "需要必要的可加载周边代码，但目标功能必须留给 solver。",
+        CAPTURE_REPAIR_GUIDANCE,
         "If TASK asks to add/change a node, API, config, test, or behavior, leave that change absent; Verifier must test it later.",
         "Do not treat a task acceptance path as permission to implement it. Existing PARTIAL content is pre-task context only.",
         "补全的是任务开始前的环境，不是用户要求新增的实现或测试。",
@@ -311,8 +316,10 @@ def _replayed_instruction(
             "Reconstruct the task-start Docker workspace so the given task is solvable, but NOT solved.",
             "The task request describes a future change. Do not perform any part of that change.",
             "Strategy: from_replayed. The replayed tree is the initial environment.",
-            "Leftover files and noise stay. REPLAYED bodies stay. COMPLETE is read-only.",
-            "PARTIAL files must keep every observed excerpt; you may enrich and complete them.",
+            "原始 Replay 证据不可变。候选保留观测内容，但 PARTIAL 可声明局部采集修复；"
+            "COMPLETE 仍只读。不要仅为清理无关文件而改动环境。",
+            "PARTIAL files may be enriched and completed; preserve observed excerpts "
+            "except declared capture repairs.",
             "Add only pre-existing neighborhood context required to understand the task, grounded in the planted tree.",
             "If the replayed tree is empty, decision=REVIEW. Do not create a project.",
             "Listing-only holes are not implementation generation targets; restore them only as pre-existing tree context. FILE bindings do not authorize implementing the task.",
@@ -572,6 +579,15 @@ def _merge_completion_seed(
     changed = candidate.get("files")
     if not isinstance(changed, list):
         return candidate
+    prior_repairs = {
+        item["path"]: item["capture_repairs"] for item in seed_files if "capture_repairs" in item
+    }
+    changed = [
+        {"capture_repairs": prior_repairs[item["path"]], **item}
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+        and item["path"] in prior_repairs else item
+        for item in changed
+    ]
     changed_paths = {
         item["path"] for item in changed
         if isinstance(item, dict) and isinstance(item.get("path"), str)
@@ -659,7 +675,9 @@ def _run_completion(
     if repair_feedback is not None:
         instruction += "\n" + "\n".join([
             "这是对上一轮候选的定向修复，当前工作区已保留上轮补全内容；只补任务初态的具体缺口，不要重建整个项目。",
-            "反馈是诊断，不是新的原始证据。写文件仍引用原始 evidence_ref_ids，原始 COMPLETE 和 PARTIAL 保护不变。",
+            "反馈是诊断，不是新的原始证据。写文件仍引用原始 evidence_ref_ids；"
+            "COMPLETE/UNKNOWN/ABSENT 保护不变，"
+            "PARTIAL 局部采集修复只能使用显式 capture_repairs 契约。",
             "不得为了通过探针而修改用户任务、预解任务或生成用户要求的目标产物。无法有依据修复时返回 REVIEW 并说明缺失事实。",
             "只读审查任务不要求整个项目可以编译；如果探针超出任务所需能力，保持文件不变并说明由 Sufficiency 更正探测范围。",
             "运行声明需要纠错时返回完整的 dependencies/runtime_constraints 新数组；显式空数组会清除旧声明，省略字段才继承。只修文件时保留仍需要的声明。",
@@ -667,6 +685,11 @@ def _run_completion(
             json.dumps({
                 key: (seed_candidate or {}).get(key, [])
                 for key in ("dependencies", "runtime_constraints")
+            }, ensure_ascii=False),
+            "CURRENT_CAPTURE_REPAIRS:",
+            json.dumps({
+                item["path"]: item["capture_repairs"]
+                for item in seed_files or [] if "capture_repairs" in item
             }, ensure_ascii=False),
             "REPAIR_FEEDBACK:",
             json.dumps(repair_feedback, ensure_ascii=False),
@@ -688,6 +711,10 @@ def _run_completion(
             item.path: item.content
             for item in replay.files
             if item.completeness == "PARTIAL"
+        },
+        prior_capture_repairs={
+            item["path"]: item["capture_repairs"]
+            for item in seed_files or [] if "capture_repairs" in item
         },
         listing_names=set(hole_index.listing_names),
         body_paths=set(hole_index.body_paths),
@@ -835,6 +862,8 @@ def _run_completion(
                     "path": item.get("path"),
                     "evidence_ref_ids": item.get("evidence_ref_ids", []),
                     "provenance": item.get("provenance", "MODEL_COMPLETED"),
+                    **({"capture_repairs": item["capture_repairs"]}
+                       if "capture_repairs" in item else {}),
                 }
                 for item in candidate.get("files", [])
                 if isinstance(item, dict)

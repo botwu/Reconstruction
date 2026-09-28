@@ -18,7 +18,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-TERMINAL_UNIVERSE_ENVIRONMENT_PROMPT_VERSION = "terminal-universe-b1-environment-completion-v1"
+from traceforge.reconstruction.capture_repair import CAPTURE_REPAIR_GUIDANCE, capture_repair_error
+
+TERMINAL_UNIVERSE_ENVIRONMENT_PROMPT_VERSION = (
+    "terminal-universe-b1-environment-completion-v2-capture-repairs"
+)
 TERMINAL_UNIVERSE_ENVIRONMENT_SCHEMA = "traceforge.terminal-universe-environment.v1"
 
 
@@ -325,8 +329,9 @@ Complete the workspace so the task is solvable, but NOT solved (Terminal-Univers
 Use only the supplied trajectory evidence. Create or complete only files that are
 needed as context: do not implement the requested change, modify a COMPLETE file,
 add tests, write a solution, reveal where the answer belongs, or include expected
-outputs. The project root is /app. Preserve observed content exactly. Every new
-file must cite one or more evidence_ref_ids. If evidence is insufficient, return
+outputs. The project root is /app. Preserve observed content except declared capture repairs.
+{capture_repair_guidance}
+Every new file must cite one or more evidence_ref_ids. If evidence is insufficient, return
 REVIEW with open_questions instead of guessing.
 Return JSON only: {"candidates":[{"files":[{"path":"...","content":"...",
 "provenance":"MODEL_COMPLETED","evidence_ref_ids":["..."]}],"dependencies":[],
@@ -336,6 +341,7 @@ Return JSON only: {"candidates":[{"files":[{"path":"...","content":"...",
 TASK:\n{task_json}\nREPLAYED INITIAL FILES:\n{public_json}\nEVIDENCE INDEX:\n{evidence_json}"""
     return (
         template.replace("{max_candidates}", str(max_candidates))
+        .replace("{capture_repair_guidance}", CAPTURE_REPAIR_GUIDANCE)
         .replace("{task_json}", json.dumps(task, ensure_ascii=False, sort_keys=True))
         .replace("{public_json}", json.dumps(public, ensure_ascii=False))
         .replace("{evidence_json}", json.dumps(evidence, ensure_ascii=False))
@@ -419,9 +425,13 @@ def validate_completion_candidate(
         if stub_error:
             errors.append(stub_error)
         resolved[path] = content
-        if path in replay_map and replay_map[path].completeness == "PARTIAL":
-            if replay_map[path].content not in content:
-                errors.append(f"PARTIAL_OBSERVED_CONTENT_LOST:{path}")
+        original = (
+            replay_map[path].content
+            if path in replay_map and replay_map[path].completeness == "PARTIAL" else None
+        )
+        repair_error = capture_repair_error(original, content, item.get("capture_repairs", []))
+        if repair_error:
+            errors.append(f"{repair_error}:{path}")
         refs = item.get("evidence_ref_ids")
         if (
             not isinstance(refs, list)
@@ -430,6 +440,8 @@ def validate_completion_candidate(
         ):
             errors.append(f"EVIDENCE_REF_UNKNOWN:{path}")
         provenance = item.get("provenance", "MODEL_COMPLETED")
+        if item.get("capture_repairs") and provenance != "MODEL_COMPLETED":
+            errors.append(f"CAPTURE_REPAIR_PROVENANCE_INVALID:{path}")
         if provenance not in {"MODEL_COMPLETED", "SYNTHETIC_STUB", "NEIGHBOR"}:
             errors.append(f"PROVENANCE_FORGERY:{path}")
         if provenance == "SYNTHETIC_STUB" and _needs_real_generated_body(
@@ -688,6 +700,7 @@ def materialize_environment(
             "kind": kind,
             "evidence_ref_ids": list(item.get("evidence_ref_ids", [])),
             "content_sha256": hashlib.sha256(item["content"].encode("utf-8")).hexdigest(),
+            **({"capture_repairs": item["capture_repairs"]} if "capture_repairs" in item else {}),
         }
     if excerpts["files"]:
         excerpt_texts[SOURCE_EXCERPTS_PATH] = json.dumps(excerpts, ensure_ascii=False, indent=2) + "\n"

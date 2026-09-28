@@ -1037,10 +1037,15 @@ def merge_completion_files(payload: dict[str, Any], session: AgentSession) -> di
             if existing.get("content") != item.get("content"):
                 # Sandbox write_file is the tree Sufficiency/Verifier will see.
                 existing["content"] = item.get("content")
-                if item.get("provenance"):
-                    existing["provenance"] = item.get("provenance")
-                if item.get("evidence_ref_ids"):
-                    existing["evidence_ref_ids"] = item.get("evidence_ref_ids")
+            if item.get("provenance"):
+                existing["provenance"] = item.get("provenance")
+            if item.get("evidence_ref_ids"):
+                existing["evidence_ref_ids"] = item.get("evidence_ref_ids")
+            # 采集修复声明与实际工具写入绑定，JSON 不能替换或丢弃其审计来源。
+            if "capture_repairs" in item:
+                existing["capture_repairs"] = item["capture_repairs"]
+            else:
+                existing.pop("capture_repairs", None)
             continue
         merged.append(item)
         by_path[path] = item
