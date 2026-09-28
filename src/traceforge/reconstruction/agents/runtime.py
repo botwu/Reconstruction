@@ -640,7 +640,9 @@ def write_agent_trace(
             "backend": backend,
             "model": model_name,
             "identity_sha256": hashlib.sha256(role.identity.encode("utf-8")).hexdigest(),
+            # 摘要绑定传入 Hermes 的原始字节；落盘副本才脱敏并过滤私有思考。
             "instruction_sha256": hashlib.sha256(instruction.encode("utf-8")).hexdigest(),
+            "instruction": _omit_reasoning_text(instruction),
             "turns": omit_private_reasoning(turns),
             "tool_events": omit_private_reasoning([
                 _redact_trace(event, max_chars=None if event.get("name") == "run_pytest" else 4096)
@@ -648,7 +650,10 @@ def write_agent_trace(
             ]),
             "final_text": _omit_reasoning_text(final_text) if isinstance(final_text, str) else final_text,
             "credentials_embedded": False,
-            "privacy": {"private_thinking_reasoning": "omitted"},
+            "privacy": {
+                "private_thinking_reasoning": "omitted",
+                "instruction_sha256_basis": "original_utf8_before_privacy_filtering",
+            },
         }
     )
     path = private / "agent_trace.json"

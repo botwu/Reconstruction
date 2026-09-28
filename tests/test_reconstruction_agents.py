@@ -114,7 +114,7 @@ def test_hermes_runtime_configures_model_on_agent(tmp_path: Path) -> None:
     task_id = source["tasks"][0]["task_id"]
     trace = json.loads((tmp_path / "intent/tasks" / task_id / "private/agent_trace.json").read_text(encoding="utf-8"))
     assert trace["model"] == "claude-opus-4-6"
-    assert "instruction" not in trace
+    assert isinstance(trace["instruction"], str) and trace["instruction"]
     assert trace["privacy"]["private_thinking_reasoning"] == "omitted"
     assert "Intent Recovery Agent" in INTENT_ROLE.identity
 
