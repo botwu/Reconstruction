@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import io
 import re
 import sys
@@ -265,6 +266,11 @@ def classify_integrity_issues(
             continue
         issue["classification"] = kind
         issue["classification_reason"] = reason.strip()
+        if "classification_evidence_ref_ids" in item:
+            # 原样保留供下游核验；不能过滤未知值或替模型补齐缺失引用。
+            issue["classification_evidence_ref_ids"] = copy.deepcopy(
+                item["classification_evidence_ref_ids"]
+            )
         if kind == "RECONSTRUCTION_GAP":
             reconstruction_gap = True
             errors.append(f"WORKSPACE_RECONSTRUCTION_GAP:{issue_id}")

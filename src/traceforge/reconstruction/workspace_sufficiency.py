@@ -16,14 +16,14 @@ from traceforge.reconstruction.environment_bindings import (
     missing_binding_paths,
     workspace_is_stub_ensemble,
 )
-
+from traceforge.reconstruction.reconstructability import task_evidence_ref_ids
 from traceforge.reconstruction.workspace_integrity import (
     classify_integrity_issues,
     inspect_workspace_integrity,
 )
 
 SUFFICIENCY_SCHEMA = "traceforge.workspace-sufficiency.v1"
-SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v9-evidence-context"
+SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v10-evidence-contract"
 
 
 def run_workspace_sufficiency(
@@ -37,6 +37,7 @@ def run_workspace_sufficiency(
     reconstruction_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     workspace = Path(workspace_root).resolve()
+    known_task_refs = sorted(task_evidence_ref_ids(task))
     # The role runtime deletes its sandbox before returning. Inventory is a
     # property of the immutable input, so never query session.sandbox afterwards.
     input_inventory = workspace_tree_hash(workspace)
@@ -75,6 +76,11 @@ def run_workspace_sufficiency(
             "RECONSTRUCTION_GAP: required pre-task source/context is missing or damaged independently of the requested change.",
             "IRRELEVANT: the issue is outside the task's necessary execution/analysis path, or arises solely from a supported target Python version mismatch; justify with evidence.",
             "Do not infer these categories from keywords. Explain their relationship to the actual task and inspected source.",
+            "classification_evidence_ref_ids 只能引用 TASK_EVIDENCE_REF_IDS 中的已有任务证据。"
+            "以 BASELINE_TASK_DEFECT 或 IRRELEVANT 豁免缺失或读取诊断时，"
+            "必须提供非空引用列表和具体理由；"
+            "引用缺失、未知或格式错误时保留未决，不得编造或补齐。引用存在不代表分类正确："
+            "仍须根据实际任务和源码解释关系，不能把任务无关的语法损坏归为 BASELINE_TASK_DEFECT。",
             "Every issue requires one classification. RECONSTRUCTION_GAP or unclassified issues forbid READY.",
             "After judging sufficiency, compare the recovered task with the verified workspace. "
             "Contextual sufficiency and execution readiness are separate decisions: do not "
@@ -111,15 +117,22 @@ def run_workspace_sufficiency(
             '{"label":"SUFFICIENT|INSUFFICIENT|UNKNOWN","reason":"...","missing_context":[],'
             '"confidence":0.0,"decision":"READY|REVIEW",'
             '"integrity_classifications":[{"issue_id":"integrity-001","path":"...",'
-            '"classification":"BASELINE_TASK_DEFECT|RECONSTRUCTION_GAP|IRRELEVANT","reason":"..."}],'
+            '"classification":"BASELINE_TASK_DEFECT|RECONSTRUCTION_GAP|IRRELEVANT","reason":"...",'
+            '"classification_evidence_ref_ids":[]}],'
             '"task_fit":{"decision":"READY_ORIGINAL|INCOMPATIBLE|REVIEW_TASK_FIT",'
             '"reason":"...","requirements":[]},"variant_proposal":null,',
             '"environment_checks":[{"kind":"load|reset|dependency","probe_ids":[],"reason":"..."}]}',
             "TASK:",
             json.dumps(task, ensure_ascii=False),
+            "TASK_EVIDENCE_REF_IDS:",
+            json.dumps(known_task_refs, ensure_ascii=False),
             "ENVIRONMENT_BINDINGS:",
             json.dumps(environment_bindings(task), ensure_ascii=False),
-            f"WORKSPACE_ROOT: {workspace.as_posix()}",
+            "WORKSPACE_ROOT: .",
+            "工具路径使用工作区相对路径。run_environment_probe 的当前目录就是沙盒工作区根目录；"
+            "探针可直接使用相对路径，如 Path('.')，"
+            "需要绝对路径时读取 TRACEFORGE_WORKSPACE 环境变量。"
+            "不要把宿主机路径复制到探针中，也不要猜测或硬编码沙盒绝对路径。",
             "RECONSTRUCTION_CONTEXT 中的范围和 PARTIAL 是历史回放事实，不等于当前候选仍有相同缺口。",
             "结合 current_sha256/current_matches_replay、当前补全 provenance 和 uncertainties 读取任务相关源码。",
             "字节改变不证明缺口已修复；独立判断当前环境。只有具体缺口影响任务时写入 missing_context，交回现有修复；无关 PARTIAL 可以 SUFFICIENT。",
@@ -237,6 +250,7 @@ def run_workspace_sufficiency(
         "missing_context": [str(item) for item in missing],
         "missing_binding_paths": list(missing_paths),
         "integrity_report": integrity,
+        "task_evidence_ref_ids": known_task_refs,
         "confidence": confidence,
         "errors": errors,
         "semantic_errors": semantic_errors,

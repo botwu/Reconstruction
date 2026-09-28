@@ -55,17 +55,25 @@ class ReconstructabilityAssessment(TypedDict):
     errors: list[str]
 
 
+def task_evidence_ref_ids(task: dict[str, Any]) -> set[str]:
+    """提取调用方任务已有的义务证据引用，不根据模型分类生成证据。"""
+
+    known: set[str] = set()
+    for obligation in task.get("acceptance_obligations") or []:
+        if isinstance(obligation, dict):
+            known.update(
+                ref for ref in obligation.get("evidence_ref_ids") or []
+                if isinstance(ref, str) and ref
+            )
+    return known
+
+
 def _task_evidence(sufficiency: dict[str, Any]) -> set[str]:
     refs = sufficiency.get("task_evidence_ref_ids") or []
     known = {ref for ref in refs if isinstance(ref, str) and ref}
     task = sufficiency.get("task")
     if isinstance(task, dict):
-        for obligation in task.get("acceptance_obligations") or []:
-            if isinstance(obligation, dict):
-                known.update(
-                    ref for ref in obligation.get("evidence_ref_ids") or []
-                    if isinstance(ref, str) and ref
-                )
+        known.update(task_evidence_ref_ids(task))
     return known
 
 
