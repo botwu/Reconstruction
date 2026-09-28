@@ -34,7 +34,7 @@ from traceforge.reconstruction.terminal_universe_environment import (
 from traceforge.reconstruction.tool_process_sketch import build_tool_process_sketch
 
 COMPLETION_SCHEMA = "traceforge.workspace-completion.v1"
-COMPLETION_PROMPT_VERSION = "workspace-completion-agent-v7-incremental-feedback"
+COMPLETION_PROMPT_VERSION = "workspace-completion-agent-v8-evidence-context"
 TASK_Q_EVIDENCE_ID = "task:q"
 ENV_REPLAYED = "REPLAYED"
 ENV_DEFAULT_EMPTY = "DEFAULT_EMPTY"
@@ -89,6 +89,91 @@ def _redact_value(value: Any, key: str = "") -> Any:
     return _redact_text(value) if isinstance(value, str) else value
 
 
+def _blocked_evidence_refs(replay: ReplayResult) -> set[str]:
+    """复用回放屏障，诊断或补全都不能把改动后读取升格为初态。"""
+    reasons = {
+        "unparsed_mutation_scope", "unparsed_mutation_unscoped",
+        "read_after_unparsed_mutation", "read_after_first_mutation",
+        "modified_after_observation",
+    }
+    return {
+        str(item["source_event_id"])
+        for item in (getattr(replay, "partial_evidence", ()) or ())
+        if isinstance(item, dict)
+        and item.get("reason") in reasons and item.get("source_event_id")
+    }
+
+
+def _line_ranges(numbers: list[int]) -> list[list[int]]:
+    """将已记录行号压缩为闭区间，不补造缺口。"""
+    ranges: list[list[int]] = []
+    for number in sorted(set(numbers)):
+        if ranges and number == ranges[-1][1] + 1:
+            ranges[-1][1] = number
+        else:
+            ranges.append([number, number])
+    return ranges
+
+
+def _replay_file_cards(replay: ReplayResult) -> list[dict[str, Any]]:
+    """只描述初态观察与已物化范围；不推断当前候选是否充分。"""
+    excluded = _blocked_evidence_refs(replay) | {
+        item.event_id for item in (getattr(replay, "withheld_changes", ()) or ())
+    }
+    partial = getattr(replay, "partial_evidence", ()) or ()
+    cards = []
+    for item in replay.files:
+        observations = [
+            row for row in partial
+            if row.get("path") == item.path and row.get("reason") == "read_segment"
+            and row.get("range_valid", True) and row.get("source_event_id") not in excluded
+        ]
+        segments = [
+            {
+                "evidence_ref_id": row["source_event_id"],
+                "ranges": _line_ranges(row.get("line_numbers") or []),
+                "total_lines": row.get("total_lines"),
+            }
+            for row in observations
+        ]
+        materialized = []
+        for row, segment in zip(observations, segments):
+            if row.get("content") == item.content:
+                materialized = segment["ranges"]
+                break
+        if item.completeness == "COMPLETE" and not materialized and item.content:
+            materialized = [[1, len(item.content.splitlines())]]
+        cards.append({
+            "path": item.path,
+            "replay_completeness": item.completeness,
+            "replay_sha256": hashlib.sha256(item.content.encode("utf-8")).hexdigest(),
+            "replay_materialized_ranges": materialized,
+            "observed_read_segments": segments,
+            "segment_issues": [
+                {"reason": row["reason"], "evidence_ref_id": row.get("source_event_id")}
+                for row in partial
+                if row.get("path") == item.path
+                and str(row.get("reason", "")).startswith("read_segment_")
+            ],
+        })
+    return cards
+
+
+def completion_evidence_context(
+    replay: ReplayResult, candidate: dict[str, Any],
+) -> dict[str, Any]:
+    """向独立判断传递已有事实，修复轮始终采用当前候选声明。"""
+    manifest = candidate.get("manifest") or {}
+    return {
+        "replay_files": _replay_file_cards(replay),
+        "candidate_provenance": manifest.get("provenance") or {},
+        "candidate_completed_files": candidate.get("file_provenance") or [],
+        **{key: candidate.get(key) or [] for key in (
+            "uncertainties", "dependencies", "runtime_constraints",
+        )},
+    }
+
+
 def _excerpt_ids(path: str, replay: ReplayResult, timeline: list[dict[str, Any]]) -> list[str]:
     ids: list[str] = []
     by_path = {item.path: item for item in replay.files}
@@ -96,11 +181,14 @@ def _excerpt_ids(path: str, replay: ReplayResult, timeline: list[dict[str, Any]]
     if item and item.first_observation_event_id:
         ids.append(item.first_observation_event_id)
     name = path.rsplit("/", 1)[-1]
+    excluded = _blocked_evidence_refs(replay) | {
+        item.event_id for item in (getattr(replay, "withheld_changes", ()) or ())
+    }
     for event in timeline:
         if not isinstance(event, dict):
             continue
         cid = str(event.get("call_id") or "")
-        if not cid or cid in ids:
+        if not cid or cid in ids or cid in excluded:
             continue
         arguments = event.get("arguments")
         blob = json.dumps(arguments, ensure_ascii=False) if arguments else ""
@@ -120,6 +208,7 @@ def _hole_cards(
     """给模型可引用的洞卡片：event_id 可直接当 evidence_ref，不必再翻完整 timeline。"""
 
     by_path = {item.path: item for item in replay.files}
+    replay_cards = {item["path"]: item for item in _replay_file_cards(replay)}
     cards: list[dict[str, Any]] = []
     for hole in holes:
         card: dict[str, Any] = dict(hole)
@@ -129,7 +218,15 @@ def _hole_cards(
             card["event_id"] = item.first_observation_event_id
             card["observed_chars"] = len(item.content)
             card["observed_prefix"] = item.content[:160]
-        card["excerpt_event_ids"] = _excerpt_ids(path, replay, timeline or [])
+        card.update(replay_cards.get(path, {}))
+        segments = card.get("observed_read_segments") or []
+        card["excerpt_event_ids"] = (
+            list(dict.fromkeys([
+                *([card["event_id"]] if card.get("event_id") else []),
+                *(row["evidence_ref_id"] for row in segments),
+            ]))
+            if segments else _excerpt_ids(path, replay, timeline or [])
+        )
         if not card.get("event_id") and card["excerpt_event_ids"]:
             card["event_id"] = card["excerpt_event_ids"][0]
         cards.append(card)
@@ -219,6 +316,9 @@ def _replayed_instruction(
             "SUPPORT files may be inferred from the observed project and TOPIC_CARDS.",
             "If a path has no neighborhood symbols and no evidence, omit it and return REVIEW.",
             "HOLES already lists path, kind, event_id, observed_prefix, excerpt_event_ids.",
+            "observed_read_segments 是通过初态屏障的原始读段；replay_materialized_ranges 仅说明原回放已写入的范围。",
+            "按任务需要使用 read_evidence 读取相关后段；先利用已有证据，再推断必要上下文，不把最终报告写入当作初态源码。",
+            "未使用或未补齐的任务相关范围应说明 uncertainties；无关 PARTIAL 不要求补全。修复轮以当前文件为准，历史范围不是当前缺口断言。",
             f"env_origin: {ENV_REPLAYED}",
             f"Empty replay tree: {json.dumps(not replay.files)}",
             f"Protected COMPLETE/UNKNOWN paths: {json.dumps(protected, ensure_ascii=False)}",
@@ -508,20 +608,7 @@ def _run_completion(
         # Replay barriers are private audit facts. A read after an unknown or
         # known mutation must not re-enter Completion as trusted evidence,
         # including through hole cards and listing extraction.
-        blocked_reasons = {
-            "unparsed_mutation_scope",
-            "unparsed_mutation_unscoped",
-            "read_after_unparsed_mutation",
-            "read_after_first_mutation",
-            "modified_after_observation",
-        }
-        blocked_refs = {
-            str(item.get("source_event_id"))
-            for item in (getattr(replay, "partial_evidence", ()) or ())
-            if isinstance(item, dict)
-            and item.get("reason") in blocked_reasons
-            and item.get("source_event_id")
-        }
+        blocked_refs = _blocked_evidence_refs(replay)
         evidence = [
             item for item in evidence
             if str(item.get("evidence_ref_id") or "") not in blocked_refs

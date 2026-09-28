@@ -55,6 +55,7 @@ from traceforge.reconstruction.verification import (
 from traceforge.reconstruction.workspace_completion import (
     complete_from_default_empty,
     complete_from_replayed,
+    completion_evidence_context,
     repair_workspace_completion,
 )
 from traceforge.reconstruction.workspace_sufficiency import run_workspace_sufficiency
@@ -427,7 +428,8 @@ def _judge_and_repair_candidate(
         kwargs = {"repair_feedback": feedback} if feedback is not None else {}
         judge = run_workspace_sufficiency(
             task=task, observed_paths=sorted(observed), workspace_root=candidate["workspace"],
-            agent=agent, output_root=judge_root, **kwargs,
+            agent=agent, output_root=judge_root,
+            reconstruction_context=completion_evidence_context(replay, candidate), **kwargs,
         )
         environment = build_environment_contract(
             workspace_root=candidate["workspace"], env_root=candidate.get("env_root"),
