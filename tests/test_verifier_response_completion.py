@@ -103,7 +103,8 @@ class ResponseRuntime:
     def run(self, *, role, instruction, session, output_root):
         assert self.original == self.before
         if role.result_schema == "traceforge.verifier-semantic-review.v1":
-            self.review_task = json.loads(instruction.splitlines()[-1])["task"]
+            self.review_specification = json.loads(instruction.splitlines()[-1])
+            self.review_task = self.review_specification["task"]
             ids = [
                 "obl-001",
                 *dict.fromkeys(
@@ -172,6 +173,49 @@ def test_verifier_completes_missing_summary_before_same_semantic_review(tmp_path
     assert runtime.review_task["response_contract"] == result["response_contract"]
     assert task == runtime.before
     assert len(task["response_contract"]["checks"]) == 1
+    context = runtime.review_specification["verification_context"]
+    assert context["phase"] == "RECONSTRUCTION"
+    assert context["file_verifier"] == "candidate.test_outputs_py"
+    assert context["response_verifier"] == (
+        "traceforge.harbor_ags.response_receipt.evaluate_response_contract"
+    )
+    assert context["response_execution_status"] == "NOT_RUN"
+    assert context["response_evidence"] == "真实 rollout 的 trajectory.full.json"
+    assert result["unverified_obligations"] == ["obl-002", "obl-003"]
+    assert result["semantic_review"]["prompt_version"] == (
+        "terminal-universe-verifier-semantic-review-v2-phase-boundary"
+    )
+    assert not list((tmp_path / "workspace").rglob("trajectory.full.json"))
+
+
+def test_ready_response_mechanism_does_not_hide_file_verifier_defect(tmp_path):
+    class FileRejectingRuntime(ResponseRuntime):
+        def run(self, **kwargs):
+            result = super().run(**kwargs)
+            if kwargs["role"].result_schema == "traceforge.verifier-semantic-review.v1":
+                result.payload["decision"] = "REVISE"
+                result.payload["obligation_reviews"][0].update(
+                    covered=False, reason="正确的跨文件引用被测试错误拒绝"
+                )
+                result.payload["issues"] = [{
+                    "obligation_id": "obl-001",
+                    "problem": "验证器把引用限制在之前的改动清单内",
+                    "counterexample": "正确报告引用必要但未修改的调用位置仍被拒绝",
+                    "repair": "核对实际文件和行号，不额外缩小用户允许的审查范围",
+                }]
+            return result
+
+    task = task_fixture()
+    runtime = FileRejectingRuntime(task)
+    result, candidate = run_recovery(tmp_path, task, runtime)
+    assert candidate is None
+    assert result["status"] == "REVIEW"
+    assert result["response_contract"] is None
+    assert result["errors"] == ["VERIFIER_SEMANTIC_REPAIR_REQUIRED"]
+    reviews = result["semantic_review"]["obligation_reviews"]
+    assert reviews[0]["covered"] is False
+    assert all(row["covered"] for row in reviews[1:])
+    assert result["feedback"]["semantic_review"]["issues"][0]["obligation_id"] == "obl-001"
 
 
 @pytest.mark.parametrize(

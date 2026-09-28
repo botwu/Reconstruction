@@ -22,6 +22,9 @@ from traceforge.verifier.synthesis import (
 )
 
 VERIFIER_RECOVERY_SCHEMA = "traceforge.verifier-recovery.v1"
+VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION = (
+    "terminal-universe-verifier-semantic-review-v2-phase-boundary"
+)
 
 
 def review_verifier_candidate(
@@ -50,6 +53,13 @@ def review_verifier_candidate(
         "task": task, "candidate": candidate.to_dict(),
         "file_obligation_ids": list(candidate.obligation_coverage),
         "response_obligation_ids": response_ids,
+        "verification_context": {
+            "phase": "RECONSTRUCTION",
+            "file_verifier": "candidate.test_outputs_py",
+            "response_verifier": "traceforge.harbor_ags.response_receipt.evaluate_response_contract",
+            "response_execution_status": "NOT_RUN",
+            "response_evidence": "真实 rollout 的 trajectory.full.json",
+        },
     }
     instruction = "\n".join([
         "VERIFIER_SEMANTIC_REVIEW",
@@ -62,10 +72,20 @@ def review_verifier_candidate(
         "参考解必须完成整个任务而非拼出满足测试的表面结果；禁止把未验证的历史报告当正确答案。",
         "mutation 必须在正确输出路径/接口保持合法格式、正常执行，仅破坏实质行为；",
         "写到另一个路径、漏掉整个输出、崩溃或故意去掉标题，只能证明基础格式检查，不足以校准语义。",
-        "检查 response_contract 只标注可机械验证的格式/一致性，不能覆盖真实性义务。",
+        "当前是 RECONSTRUCTION 阶段的验收机制审查，真实解题 rollout 及最终响应尚未执行。",
+        "FILE 义务由候选 test_outputs_py 验证；声明响应检查的 NON_FILE 义务由",
+        "traceforge.harbor_ags.response_receipt.evaluate_response_contract 在取得真实 rollout 的",
+        "trajectory.full.json 后验最终 assistant 响应。这里审查该机制，不执行最终响应验收。",
+        "acceptance_report 检查响应结构、编号和字段类型；basic_summary 检查摘要及其与报告的一致性。",
+        "不要求候选 pytest 检查最终 assistant 响应，也不因当前缺少 trajectory 或 acceptance-report 拒绝机制；",
+        "不得要求把最终响应写入 workspace 或生成虚构响应来完成本阶段审查。",
         "对每条 response_obligation_id，必须回到对应义务及其引用的原始用户消息核对：",
-        "该检查是否完整覆盖这条义务，是否误把事实正确、实际完成或外部操作降成了格式检查。",
-        "仅声明格式检查或哈希绑定不够；映射不完整或混入真实性要求时该义务 covered=false，给出具体反例。",
+        "response_contract 是否受原始要求支持，受支持的检查是否完整覆盖所要求的响应格式/一致性。",
+        "仅要求格式/一致性且机制完整时可以 covered=true；这只表示重建时机制足够，",
+        "不表示最终响应已产生、响应义务已通过或任何独立 rollout 入口已完成验收接线。",
+        "如果义务要求事实正确、实际完成或外部操作，不能降成格式/一致性或哈希绑定；",
+        "映射不完整、检查不受支持或不足以覆盖这些实质要求时 covered=false，给出具体反例。",
+        "响应机制完整不能抵消 FILE 验证器的漏检或误拒绝；两类义务分别审查。",
         "输出 JSON：{decision: ACCEPT|REVISE, obligation_reviews: [{obligation_id, covered: bool, reason}],",
         "issues: [{obligation_id, problem, counterexample, repair}]}。每条 FILE 和声明响应检查的义务恰好一项。",
         "发现问题时给具体错误产物/行为反例及可执行修复建议，让生成器改测试和参考解；",
@@ -97,6 +117,7 @@ def review_verifier_candidate(
         errors.append("VERIFIER_SEMANTIC_REPAIR_REQUIRED")
     result = {
         "schema_version": role.result_schema, "status": "ACCEPT" if accepted else "REVISE",
+        "prompt_version": VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION,
         "candidate_id": candidate.candidate_id,
         "test_sha256": hashlib.sha256(candidate.test_outputs_py.encode()).hexdigest(),
         "judgment_kind": "MODEL_SEMANTIC_REVIEW", "errors": errors,
