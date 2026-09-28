@@ -21,6 +21,10 @@ from collections import Counter
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from traceforge.reconstruction.exec_wrapper import (
+    ordered_parallel_exec_calls,
+    parallel_exec_prints_stdout,
+)
 from traceforge.reconstruction.terminal_universe_environment import (
     ReplayedFile,
     ReplayResult,
@@ -168,15 +172,41 @@ def _command(arguments: Any) -> str:
     return ""
 
 
+def _exec_wrapper_source(item: dict[str, Any]) -> str | None:
+    """保留完整包装用于静态配对；旧命令扫描只作保守回退。"""
+    arguments = item.get("arguments")
+    if isinstance(arguments, dict) and isinstance(arguments.get("input"), str):
+        return arguments["input"]
+    command = _command(arguments)
+    if "tools.exec_command" in command or "tools.shell_command" in command:
+        return command
+    return None
+
+
+def _parallel_workdir(calls: list[dict[str, Any]]) -> str | None:
+    """不同子目录采用共同坐标，避免同名文件互相覆盖。"""
+    directories = [call.get("workdir") for call in calls]
+    if not directories or any(not isinstance(value, str) or not value.strip() for value in directories):
+        return None
+    if len(set(directories)) == 1:
+        return directories[0].strip()
+    try:
+        common = os.path.commonpath([value.replace("\\", "/") for value in directories])
+    except ValueError:
+        return None
+    return common or None
+
+
 def _item_workdir(item: dict[str, Any]) -> str | None:
     arguments = item.get("arguments")
-    if not isinstance(arguments, dict):
-        return None
-    for key in ("workdir", "working_directory", "cwd", "workingDirectory"):
-        value = arguments.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
+    if isinstance(arguments, dict):
+        for key in ("workdir", "working_directory", "cwd", "workingDirectory"):
+            value = arguments.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    source = _exec_wrapper_source(item)
+    calls = ordered_parallel_exec_calls(source) if source is not None else None
+    return _parallel_workdir(calls) if calls else None
 
 
 def _item_commands(item: dict[str, Any]) -> list[str]:
@@ -192,17 +222,29 @@ def _item_commands(item: dict[str, Any]) -> list[str]:
     return [native] if native else []
 
 
-def _path_from_args(arguments: Any, workdir: str | None = None) -> str | None:
+def _workspace_path(value: str, workdir: str | None, workspace_root: str | None) -> str | None:
+    """所有读写共用坐标，否则同文件的修改屏障会与读取错开。"""
+    coordinate = value.replace("\\", "/")
+    if workspace_root and workdir and not re.match(r"^(?:[A-Za-z]:/|/)", coordinate):
+        coordinate = workdir.rstrip("/\\") + "/" + coordinate
+    return _safe_relpath(coordinate, workspace_root or workdir)
+
+
+def _path_from_args(
+    arguments: Any, workdir: str | None = None, workspace_root: str | None = None,
+) -> str | None:
     if not isinstance(arguments, dict):
         return None
     for key in ("path", "file_path", "filePath", "filename", "file"):
         value = arguments.get(key)
         if isinstance(value, str):
-            return _safe_relpath(value, workdir)
+            return _workspace_path(value, workdir, workspace_root)
     return None
 
 
-def _redirect_target(command: str, workdir: str | None = None) -> str | None:
+def _redirect_target(
+    command: str, workdir: str | None = None, workspace_root: str | None = None,
+) -> str | None:
     """仅识别引号外的重定向，搜索模式里的尖括号不是写操作。"""
 
     quote: str | None = None
@@ -231,7 +273,7 @@ def _redirect_target(command: str, workdir: str | None = None) -> str | None:
         except (ValueError, IndexError):
             continue
         if target.lower() not in {"/dev/null", "nul", "null"}:
-            return _safe_relpath(target, workdir)
+            return _workspace_path(target, workdir, workspace_root)
     return None
 
 
@@ -689,6 +731,20 @@ def _strip_safe_export_prefixes(command: str) -> str | None:
 
 
 
+_FIXED_PS_UTF8_PREFIX = re.compile(
+    r"\A\s*\$OutputEncoding\s*=\s*\[Console\]::OutputEncoding\s*=\s*"
+    r"\[System\.Text\.UTF8Encoding\]::new\(\s*\)\s*;\s*", re.I,
+)
+
+
+def _strip_safe_exec_prefixes(command: str) -> str | None:
+    """仅剥离已知无文件副作用的固定初始化，仍检查剩余命令。"""
+    text = _strip_safe_export_prefixes(command)
+    if text is None:
+        return None
+    return _FIXED_PS_UTF8_PREFIX.sub("", text, count=1)
+
+
 def _has_write_signal(command: str) -> bool:
     """只有重定向或明确写工具才算写；node --check / git diff 不算。"""
 
@@ -721,7 +777,7 @@ def _unknown_looks_like_mutation(command: str) -> bool:
     """只有可识别的只读命令免于屏障；任意脚本不能靠缺少写关键词获信任。"""
 
     text = command or ""
-    normalized = _strip_safe_export_prefixes(text)
+    normalized = _strip_safe_exec_prefixes(text)
     if normalized is None:
         return True
     if not normalized:
@@ -818,14 +874,16 @@ def _classify_command(
     event_id: str,
     result_text: Any,
     workdir: str | None,
+    workspace_root: str | None = None,
+    isolated_result: bool = False,
 ) -> list[dict[str, Any]]:
-    normalized = _strip_safe_export_prefixes(command)
+    normalized = _strip_safe_exec_prefixes(command)
     if normalized is None:
         return _unknown_exec_op(event_id, [command], workdir)
     if not normalized:
         return []
     command = normalized
-    redirect = _redirect_target(command, workdir)
+    redirect = _redirect_target(command, workdir, workspace_root)
     if redirect:
         return [
             {
@@ -860,13 +918,13 @@ def _classify_command(
     if _GET_CONTENT.search(command):
         sliced = bool(_LINE_RANGE.search(command) or re.search(r"\$\w+\s*\[", command))
         for path in _get_content_paths(command):
-            piped = "|" in command or "-Tail" in command or "-Head" in command
+            piped = "|" in command or bool(re.search(r"-(?:Tail|Head|TotalCount)\b", command, re.I))
             reads.append((path, piped or sliced))
 
     unique: list[tuple[str, bool]] = []
     seen: set[str] = set()
     for path, partial in reads:
-        safe = _safe_relpath(path, workdir)
+        safe = _workspace_path(path, workdir, workspace_root)
         if safe is None or safe in seen:
             continue
         seen.add(safe)
@@ -874,7 +932,8 @@ def _classify_command(
     if len(unique) == 1:
         path, partial = unique[0]
         content = result_text if isinstance(result_text, str) else ""
-        content = _isolate_single_file_content(path, content)
+        if not isolated_result:
+            content = _isolate_single_file_content(path, content)
         return [
             {
                 "kind": "read",
@@ -893,13 +952,88 @@ def _classify_command(
     return [{"kind": "unknown", "event_id": event_id, "command": command, "workdir": workdir}]
 
 
-def _normalize_exec(item: dict[str, Any], workdir: str | None = None) -> list[dict[str, Any]]:
-    event_id = str(item.get("call_id") or "unknown")
-    workdir = workdir or _item_workdir(item)
-    commands = _item_commands(item)
-    raw_result = item.get("result_text") or ""
-    if isinstance(raw_result, str):
-        raw_result = _unwrap_exec_result(raw_result)
+def _unique_result_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """重复字段的结果含歧义，不能任取其中一份正文。"""
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("重复结果字段")
+        result[key] = value
+    return result
+
+
+def _plain_file_read(command: str) -> bool:
+    """单个子调用也可能混入搜索或额外输出；只接收原行读取及显式切片。"""
+    normalized = _strip_safe_exec_prefixes(command)
+    if normalized is None:
+        return False
+    lexer = shlex.shlex(normalized, posix=False, punctuation_chars="|;&")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    if not tokens or any(token in {";", "&", "&&", "||"} for token in tokens):
+        return False
+    if tokens[0].lower() != "get-content":
+        # 通配符可能拼接多个文件；格式化的 cat 输出也不是原文。
+        path, _ = _posix_read_path(normalized)
+        path = path or _sed_path(normalized)
+        return (
+            "|" not in tokens and path is not None
+            and not any(character in path for character in "*?[]$" + chr(96))
+            and not (tokens[0] == "cat" and any(token.startswith("-") and token != "--" for token in tokens[1:]))
+        )
+    if tokens.count("|") > 1:
+        return False
+    pipe = tokens.index("|") if "|" in tokens else len(tokens)
+    options, slicing = tokens[1:pipe], tokens[pipe + 1:]
+    path = None
+    literal_path = False
+    index = 0
+    while index < len(options):
+        option = options[index].lower()
+        if option == "-raw":
+            index += 1
+            continue
+        if option in {"-literalpath", "-path", "-encoding", "-totalcount", "-head", "-tail"}:
+            if index + 1 == len(options):
+                return False
+            value = _unquote(options[index + 1])
+            if option in {"-literalpath", "-path"}:
+                if path is not None:
+                    return False
+                path = value
+                literal_path = option == "-literalpath"
+            elif option in {"-totalcount", "-head", "-tail"} and not value.isdecimal():
+                return False
+            elif option == "-encoding" and value.lower() == "byte":
+                return False
+            index += 2
+            continue
+        if option.startswith("-") or path is not None:
+            return False
+        path = _unquote(options[index])
+        index += 1
+    if not path or "$" in path or "," in path:
+        return False
+    if not literal_path and any(character in path for character in "*?[]"):
+        return False
+    if slicing:
+        if slicing[0].lower() != "select-object" or len(slicing) < 3 or len(slicing) % 2 != 1:
+            return False
+        for option, value in zip(slicing[1::2], slicing[2::2]):
+            if option.lower() not in {"-first", "-last", "-skip", "-skiplast"} or not value.isdecimal():
+                return False
+    return pipe == len(tokens) or bool(slicing)
+
+
+def _named_read_ops(
+    commands: list[str], raw_result: str, *, event_id: str,
+    workdir: str | None, workspace_root: str | None,
+) -> list[dict[str, Any]]:
+    """复用具名正文规则，每个并行结果块独立拆分。"""
     # 真写（Set-Content / 重定向）后的具名 header 不能当初始文件。
     # 同 exec 里的只读探测（dumpbin / Select-String）不毒掉另一条
     # Get-Content 已经读出的 ``--- file ---`` 正文。
@@ -912,7 +1046,7 @@ def _normalize_exec(item: dict[str, Any], workdir: str | None = None) -> list[di
     if dumps:
         named: list[dict[str, Any]] = []
         for name, content in dumps.items():
-            path = _safe_relpath(name, workdir)
+            path = _workspace_path(name, workdir, workspace_root)
             if path is None:
                 continue
             named.append(
@@ -927,6 +1061,139 @@ def _normalize_exec(item: dict[str, Any], workdir: str | None = None) -> list[di
             )
         if named:
             return named
+    return []
+
+
+def _normalize_parallel_exec(
+    item: dict[str, Any], calls: list[dict[str, Any]], workdir: str | None,
+) -> list[dict[str, Any]]:
+    """只按已证明的原块位置解包；输出顺序不当作并行执行时序。"""
+    event_id = str(item.get("call_id") or "unknown")
+    commands = [_command(call) for call in calls]
+    stdout_only = parallel_exec_prints_stdout(_exec_wrapper_source(item) or "")
+
+    def unresolved(error: str) -> list[dict[str, Any]]:
+        return [{**_unknown_exec_op(event_id, commands, workdir)[0], "result_error": error}]
+
+    segments = split_result_segments(_unwrap_exec_result(str(item.get("result_text") or "")))
+    if segments is not None:
+        blocks = [{"index": index, "text": text} for index, text in enumerate(segments)]
+    else:
+        blocks = item.get("result_blocks")
+        if not isinstance(blocks, list) or any(
+            not isinstance(block, dict) or type(block.get("index")) is not int or block["index"] != index
+            for index, block in enumerate(blocks)
+        ):
+            return unresolved("EXEC_RESULT_BLOCKS_INVALID")
+        if blocks:
+            banner = blocks[0].get("text")
+            if isinstance(banner, str) and banner.startswith("Script completed") and not _unwrap_exec_result(banner).strip():
+                blocks = blocks[1:]
+    if len(blocks) != len(calls):
+        return unresolved("EXEC_RESULT_COUNT_MISMATCH")
+    if workdir is None and len({str(call.get("workdir")) for call in calls}) > 1:
+        return unresolved("EXEC_WORKDIR_UNRESOLVED")
+
+    ops: list[dict[str, Any]] = []
+    for index, (call, block) in enumerate(zip(calls, blocks)):
+        command = commands[index]
+        child_workdir = call.get("workdir") or workdir
+        metadata = {
+            "command_index": index,
+            ("result_segment_index" if segments is not None else "result_block_index"): block["index"],
+            "shell": call.get("shell"), "workdir": child_workdir,
+        }
+        error = None
+        if segments is not None or stdout_only:
+            content = block.get("text")
+            if not isinstance(content, str):
+                error = "EXEC_RESULT_NOT_TEXT"
+            elif stdout_only and _plain_file_read(command) and (
+                _untrusted_single_read(content) or not _usable_tool_result({"result_text": content})
+            ):
+                error = "EXEC_STDOUT_NOT_PLAIN_FILE"
+        else:
+            try:
+                payload = json.loads(block["text"], object_pairs_hook=_unique_result_object)
+            except (KeyError, TypeError, ValueError):
+                payload = None
+                error = "EXEC_RESULT_INVALID_JSON"
+            if error is None and (
+                not isinstance(payload, dict)
+                or type(payload.get("exit_code")) is not int
+                or payload["exit_code"] != 0
+                or payload.get("session_id") is not None
+                or not isinstance(payload.get("output"), str)
+            ):
+                error = "EXEC_RESULT_NOT_COMPLETED"
+            content = payload["output"] if error is None else ""
+        if error:
+            ops.append({
+                **_unknown_exec_op(event_id, [command], child_workdir)[0],
+                **metadata, "result_error": error,
+            })
+            continue
+        if not _plain_file_read(command):
+            named = _named_read_ops(
+                [command], content, event_id=event_id,
+                workdir=child_workdir, workspace_root=workdir,
+            )
+            if named:
+                ops.extend({**op, **metadata} for op in named)
+                continue
+            ops.append({
+                **_unknown_exec_op(event_id, [command], child_workdir)[0],
+                **metadata, "result_error": "EXEC_STDOUT_NOT_PLAIN_FILE",
+            })
+            continue
+        classified = _classify_command(
+            command, event_id=event_id, result_text=content,
+            workdir=child_workdir, workspace_root=workdir, isolated_result=True,
+        )
+        ops.extend({**op, **metadata} for op in classified)
+    return ops
+
+
+def _normalize_exec(
+    item: dict[str, Any], workdir: str | None = None, *, workspace_root: str | None = None,
+) -> list[dict[str, Any]]:
+    event_id = str(item.get("call_id") or "unknown")
+    workdir = workdir or _item_workdir(item)
+    commands = _item_commands(item)
+    source = _exec_wrapper_source(item)
+    if source is not None and re.search(r"\bPromise\s*\.\s*all\s*\(", source):
+        calls = ordered_parallel_exec_calls(source)
+        if calls is None and "result_blocks" in item:
+            return [{
+                **_unknown_exec_op(event_id, [source], workdir)[0],
+                "result_error": "EXEC_RESULT_ALIGNMENT_UNKNOWN",
+            }]
+        if calls is not None:
+            commands = [_command(call) for call in calls]
+            error = None
+            if any(
+                value is not None and not isinstance(value, str)
+                for call in calls for value in (call.get("workdir"), call.get("shell"))
+            ):
+                error = "EXEC_CONTEXT_INVALID"
+            elif any(_unknown_looks_like_mutation(command) for command in commands):
+                # JSON 与编号文本都只有输出顺序，没有并行执行时序。
+                error = "PARALLEL_EXECUTION_ORDER_UNKNOWN"
+            elif not _usable_tool_result(item):
+                error = "EXEC_RESULT_UNUSABLE"
+            if error:
+                return [{**_unknown_exec_op(event_id, commands, workdir)[0], "result_error": error}]
+            segments = split_result_segments(_unwrap_exec_result(str(item.get("result_text") or "")))
+            if "result_blocks" in item or segments is not None:
+                return _normalize_parallel_exec(item, calls, workspace_root or workdir)
+    raw_result = item.get("result_text") or ""
+    if isinstance(raw_result, str):
+        raw_result = _unwrap_exec_result(raw_result)
+    named = _named_read_ops(
+        commands, raw_result, event_id=event_id, workdir=workdir, workspace_root=workspace_root,
+    )
+    if named:
+        return named
     if not commands:
         return [{"kind": "unknown", "event_id": event_id, "command": "", "workdir": workdir}]
     segments = split_result_segments(raw_result)
@@ -940,7 +1207,7 @@ def _normalize_exec(item: dict[str, Any], workdir: str | None = None) -> list[di
                     command,
                     event_id=event_id,
                     result_text=segment,
-                    workdir=workdir,
+                    workdir=workdir, workspace_root=workspace_root,
                 )
             )
         trusted = [
@@ -965,7 +1232,7 @@ def _normalize_exec(item: dict[str, Any], workdir: str | None = None) -> list[di
                 command,
                 event_id=event_id,
                 result_text=item.get("result_text"),
-                workdir=workdir,
+                workdir=workdir, workspace_root=workspace_root,
             )
         )
     reads = [op for op in ops if op.get("kind") == "read"]
@@ -991,12 +1258,21 @@ def _normalize_exec(item: dict[str, Any], workdir: str | None = None) -> list[di
 
 def _session_workdir(timeline: list[dict[str, Any]]) -> str | None:
     counts: Counter[str] = Counter()
+    nested_directories: list[str] = []
     for item in timeline:
         if not isinstance(item, dict):
             continue
         workdir = _item_workdir(item)
         if workdir:
             counts[workdir] += 1
+        source = _exec_wrapper_source(item)
+        calls = ordered_parallel_exec_calls(source) if source is not None else None
+        for call in calls or []:
+            directory = call.get("workdir")
+            if isinstance(directory, str) and directory.strip():
+                nested_directories.append(directory.strip())
+    if nested_directories:
+        return _parallel_workdir([{"workdir": value} for value in [*counts, *nested_directories]])
     if counts:
         return counts.most_common(1)[0][0]
     return None
@@ -1060,17 +1336,27 @@ def normalize_file_ops(
     # host prefix becomes a fake workspace directory and every downstream
     # binding is wrong.
     session_workdir = replay_workspace_root(timeline, workspace_root=workspace_root)
+    incompatible_workdirs = session_workdir is None and len({
+        directory for item in timeline if isinstance(item, dict)
+        if (directory := _item_workdir(item)) is not None
+    }) > 1
     ops: list[dict[str, Any]] = []
     for item in timeline:
         if not isinstance(item, dict):
             continue
         usable_result = _usable_tool_result(item)
         name = str(item.get("name") or "").lower()
+        if incompatible_workdirs and _exec_wrapper_source(item) is not None:
+            ops.append({
+                **_unknown_exec_op(str(item.get("call_id") or "unknown"), _item_commands(item), None)[0],
+                "result_error": "EXEC_WORKDIR_UNRESOLVED",
+            })
+            continue
         if not usable_result:
             if (name in {"read", "read_file"} and item.get("pending") is not True
                     and item.get("cleared") is not True
                     and str(item.get("result_text") or "").lstrip().lower().startswith("file not found:")):
-                path = _path_from_args(item.get("arguments"), _item_workdir(item) or session_workdir)
+                path = _path_from_args(item.get("arguments"), _item_workdir(item) or session_workdir, session_workdir)
                 if path:
                     ops.append({"kind": "absent", "path": path,
                                 "event_id": str(item.get("call_id") or "unknown")})
@@ -1078,7 +1364,7 @@ def normalize_file_ops(
             if name in {"exec", "bash", "shell", "terminal", "command", "powershell"}:
                 unknown = dict(item)
                 unknown["result_text"] = ""
-                candidates = _normalize_exec(unknown, _item_workdir(item) or session_workdir)
+                candidates = _normalize_exec(unknown, _item_workdir(item) or session_workdir, workspace_root=session_workdir)
                 ops.extend(
                     op for op in candidates
                     if op.get("kind") == "write"
@@ -1090,7 +1376,7 @@ def normalize_file_ops(
         event_id = str(item.get("call_id") or "unknown")
         workdir = _item_workdir(item) or session_workdir
         if name in {"read", "read_file"}:
-            path = _path_from_args(item.get("arguments"), workdir)
+            path = _path_from_args(item.get("arguments"), workdir, session_workdir)
             if path is None:
                 continue
             args = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
@@ -1118,7 +1404,7 @@ def normalize_file_ops(
             ops.append(
                 {
                     "kind": "write",
-                    "path": _path_from_args(args, workdir),
+                    "path": _path_from_args(args, workdir, session_workdir),
                     "event_id": event_id,
                     "final_content": content,
                 }
@@ -1128,13 +1414,13 @@ def normalize_file_ops(
             ops.append(
                 {
                     "kind": "write",
-                    "path": _path_from_args(item.get("arguments"), workdir),
+                    "path": _path_from_args(item.get("arguments"), workdir, session_workdir),
                     "event_id": event_id,
                 }
             )
             continue
         if name in {"exec", "bash", "shell", "terminal", "command", "powershell"}:
-            ops.extend(_normalize_exec(item, workdir))
+            ops.extend(_normalize_exec(item, workdir, workspace_root=session_workdir))
             continue
         if name in {"wait"}:
             continue
@@ -1315,6 +1601,10 @@ def replay_from_timeline(
         kind = op["kind"]
         event_id = str(op.get("event_id") or "unknown")
         workdir = op.get("workdir") if isinstance(op.get("workdir"), str) else None
+        result_metadata = {
+            key: op[key] for key in ("command_index", "result_block_index", "result_segment_index", "shell", "workdir", "result_error")
+            if key in op
+        } if "command_index" in op or "result_error" in op else {}
         if kind == "unknown":
             barriers.append(event_id)
             command = str(op.get("command") or "")
@@ -1324,6 +1614,7 @@ def replay_from_timeline(
                         "path": None,
                         "reason": "unparsed_readonly",
                         "source_event_id": event_id,
+                        **result_metadata,
                     }
                 )
                 continue
@@ -1338,6 +1629,7 @@ def replay_from_timeline(
                             "path": path,
                             "reason": "unparsed_mutation_scope",
                             "source_event_id": event_id,
+                            **result_metadata,
                         }
                     )
             else:
@@ -1346,6 +1638,7 @@ def replay_from_timeline(
                         "path": None,
                         "reason": "unparsed_mutation_unscoped",
                         "source_event_id": event_id,
+                        **result_metadata,
                     }
                 )
             continue
@@ -1353,6 +1646,11 @@ def replay_from_timeline(
         if not isinstance(path, str) or not path:
             barriers.append(event_id)
             continue
+        if kind == "read" and "command_index" in op:
+            partial.append({
+                "path": path, "reason": "exec_result_observation",
+                "source_event_id": event_id, **result_metadata,
+            })
         if kind == "write":
             existed = path in observed
             mutations.append(
@@ -1461,7 +1759,7 @@ def replay_from_timeline(
         tuple(mutations),
         tuple(partial),
         tuple(barriers),
-        _infer_workspace_root(timeline),
+        replay_workspace_root(timeline),
     )
     if destination is not None:
         root = Path(destination)
