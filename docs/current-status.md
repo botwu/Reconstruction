@@ -1,8 +1,14 @@
 # 当前状态与交付标准
 
-更新日期：2026-09-28；当前源码 `54a7cfe` 已整合终端读取行段传递、Completion 未返回调用过滤及独立 rollout 认证与响应验收。v34（运行源码 `8891af3`）已自然结束于 Verification REVIEW，不能代表本次整合版本的运行结果。2026-09-24 的 `90212de` 审计及运行记录保留为历史基线。流程与源码导航分别见 [原始会话流程](raw-session-pipeline.md)、[阅读地图](rebuild-live-map.md)。
+更新日期：2026-09-28；本轮基于 5f3dc84 整合真实首跑发现的 Intent 路径候选、绑定反馈和角色说明修复；完整离线回归对应源码 0d88df1。重建和 solver rollout 保持分离。v34（运行源码 8891af3）及更早运行均为历史记录，不能代表最新修复版本的交付结果。流程与源码导航分别见 [原始会话流程](raw-session-pipeline.md)、[阅读地图](rebuild-live-map.md)。
 
-本次补充独立 rollout 验收前的 runtime 核对：`execute-rollout` 与 `read-results` 认证前共用已有哈希检查，仅核对计划记录的 `agent.py`、`capture.py`、`evidence.py`、`validator.py` 四个文件。记录文件修改或缺失时，在认证和派生产物写入前拒绝；没有 runtime metadata 的旧计划与只导出冻结输入的 `publish_rollout_bundle` 保持原行为。此项来自静态缺口，未发生真实篡改或验收失败。相关确定性回归 **72 passed（0.99 秒）**，Ruff E9/F63/F7/F82 和差异检查通过；本轮未运行模型或 AGS，真实端到端验收仍未完成。
+本次补充独立 rollout 验收前的 runtime 核对：`execute-rollout` 与 `read-results` 认证前共用已有哈希检查，仅核对计划记录的 `agent.py`、`capture.py`、`evidence.py`、`validator.py` 四个文件。记录文件修改或缺失时，在认证和派生产物写入前拒绝；没有 runtime metadata 的旧计划与只导出冻结输入的 `publish_rollout_bundle` 保持原行为。此项来自静态缺口，未观察到真实运行因该缺口发生误验收。相关确定性回归 **72 passed（0.99 秒）**，Ruff E9/F63/F7/F82 和差异检查通过；该项源码验证未运行模型或 AGS，真实端到端验收仍未完成。
+
+最新真实首跑使用 5f3dc84，位于 artifacts/pipeline-debug-20260928/live-r04-2179-01/：Session 与 Intent 各完成一次模型调用，但 Intent 因 BINDING_FILE_PATHS_REQUIRED:obl-001 返回 REVIEW。进程退出码 0 只表示正常结束，Completion/Sufficiency/Verifier/RED 均未运行，AGS 调用为 0。真实任务目标恢复正确；用户未直接点名文件，关键初态源码为 PARTIAL，却被调用方的 COMPLETE-only 候选过滤排除，模型原答复的文件绑定也为空。校验失败也没有反馈给 Intent，Verifier 的轮次预算不能修复此上游缺口。
+
+对应源码修复让已有可信初态 PARTIAL 正文的路径参与任务绑定，保留原完整度和 Replay 修改屏障；只对已完成结果中的绑定合同错误反馈一次，不重写任务、不删义务、不降级已有 FILE。首轮和纠正轮的请求/轨迹分别保存在原 private/ 与 binding-repair/private/，agent.attempts 记录各轮状态、错误和目录。上下文工具说明与只读权限已统一。最新修复仍需同一条真实会话重新运行确认，不能回写首跑结果或把离线测试当作端到端通过。
+
+整合源码 0d88df1 的完整非 live 回归：1140 passed、5 skipped、2 deselected，103.91 秒；5 项 warning 为既有 httpx verify 参数弃用提示。Ruff E9/F63/F7/F82 与差异检查通过。后续提示措辞补充明确：可用观察到的路径定位原任务对象，但不能把原 agent 操作扩写成用户新要求；不改变 Replay/绑定校验规则。最终提示补充的相关回归另有 90 passed（0.60 秒），限定 Ruff 与差异检查通过。
 
 **当前没有一条经过可信完整验收的端到端结果，尚不具备稳定批量交付的证据。** 下述六类问题已落实对应源码修复；修复后的真实产物质量仍待新运行确认。历史任务包、RED 或真实轨迹不能代替新代码的完整验收。
 

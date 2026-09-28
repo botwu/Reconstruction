@@ -189,3 +189,9 @@ def test_correction_can_remove_binding_with_no_corresponding_obligation(tmp_path
     assert len(runtime.calls) == 2
     assert outcome["status"] == "READY"
     assert len(outcome["task"]["environment_bindings"]) == 1
+
+
+def test_intent_identity_allows_grounding_without_inventing_requirements():
+    assert "Do not inject paths" not in INTENT_ROLE.identity
+    assert "Observed paths may identify the object of the existing user request" in INTENT_ROLE.identity
+    assert "Do not turn agent actions into new user requirements" in INTENT_ROLE.identity
