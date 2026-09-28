@@ -265,12 +265,11 @@ def collect_file_binding_paths(
     *,
     replay_files: list[str] | None = None,
 ) -> list[str]:
-    """FILE required_paths: observed bodies and their parent directories."""
+    """可绑定路径来自可信初态正文及父目录，正文可以尚未完整。"""
 
     del records
-    # Once Replay has run, its COMPLETE first-observation files are the sole
-    # initial-body authority. Falling back to the raw timeline here would let a
-    # post-write read masquerade as task-start evidence.
+    # 已有 Replay 时，以其屏障前初态路径为唯一依据，包含有正文的 PARTIAL。
+    # 这里接纳路径不宣称文件已补全；回退原始 timeline 会把修改后的读取混入初态。
     if replay_files is None:
         bodies = set(observed_body_paths(source))
     else:

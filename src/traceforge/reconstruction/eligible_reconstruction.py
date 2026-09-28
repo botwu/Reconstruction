@@ -892,11 +892,14 @@ def run_eligible_reconstruction(
         intent_task = copy.deepcopy(screening)
         intent_task["relations"] = _task_relations(source, screening)
         intent_source["tasks"].append(intent_task)
+    # Replay.files 已排除修改后才观察到的正文；PARTIAL 初态片段也能定位任务，
+    # 完整性仍由后续 Completion/Sufficiency 处理，不回退到未经屏障过滤的原始读取。
     replay_files_by_task = {
         str(screening.get("task_id")): [
             str(item.path)
             for item in replay.files
-            if getattr(item, "completeness", "COMPLETE") == "COMPLETE"
+            if item.completeness == "COMPLETE"
+            or (item.completeness == "PARTIAL" and item.content)
         ]
         for screening, _task_source_value, replay, _support in routed
     }
