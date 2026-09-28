@@ -91,6 +91,9 @@ def run_workspace_sufficiency(
             "conflict. Include any returned "
             "probe_id in environment_checks; later Verifier/Harbor execution decides whether "
             "the candidate is runnable.",
+            "FILE 是验收产物类别，不代表任务是只读源码审查。按原用户目标判断必要能力；"
+            "实现功能的任务需要相关周边源码与依赖可加载，不能只读源码就认定执行环境已就绪。"
+            "目标功能尚未实现则属于正常初态，留给 solver 实现。",
             "根据用户任务选择必要的探测能力。只读源码审查、分析或报告任务应验证必要源码可读、所需分析工具可用、"
             "以及独立临时目录中的报告写入可重复；不应因没有 Cargo.toml 等构建入口而强求整个项目可以编译。"
             "只有任务确实依赖构建、导入或程序运行时才检查相应依赖。每个探针必须说明它与任务的关系。",
@@ -135,6 +138,9 @@ def run_workspace_sufficiency(
             "不要把宿主机路径复制到探针中，也不要猜测或硬编码沙盒绝对路径。",
             "RECONSTRUCTION_CONTEXT 中的范围和 PARTIAL 是历史回放事实，不等于当前候选仍有相同缺口。",
             "结合 current_sha256/current_matches_replay、当前补全 provenance 和 uncertainties 读取任务相关源码。",
+            "candidate_completed_files 的 capture_repairs 记录对原始采集损坏的候选修复，不是已证明的历史原文。"
+            "结合原片段、修复理由和当前源码独立检查：修复应仅恢复任务必要初态，不得提前实现用户目标。"
+            "仍影响任务的采集损坏属于 RECONSTRUCTION_GAP，不能因为不属于用户目标就归为 BASELINE_TASK_DEFECT。",
             "字节改变不证明缺口已修复；独立判断当前环境。只有具体缺口影响任务时写入 missing_context，交回现有修复；无关 PARTIAL 可以 SUFFICIENT。",
             "RECONSTRUCTION_CONTEXT:",
             json.dumps(context, ensure_ascii=False),
