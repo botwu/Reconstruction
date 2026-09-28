@@ -942,6 +942,24 @@ def _assert_plan_integrity(plan_dir: Path, plan: dict[str, Any]) -> None:
         raise HarborRolloutError("rollout plan command 未绑定到本 plan 的 harbor run")
 
 
+def validate_rollout_runtime(plan: dict[str, Any]) -> None:
+    """执行或认证前核对计划已记录的 runtime；旧计划不补加 metadata 门禁。"""
+
+    runtime = plan.get("harbor_runtime")
+    if isinstance(runtime, dict):
+        runtime_files = runtime.get("files")
+        if isinstance(runtime_files, dict):
+            harbor_root = Path(str(plan.get("harbor_root"))).resolve()
+            for relative, expected_hash in runtime_files.items():
+                if not isinstance(relative, str) or not isinstance(expected_hash, str):
+                    continue
+                runtime_path = harbor_root / relative
+                if not runtime_path.is_file() or _sha256_file(runtime_path) != expected_hash:
+                    raise HarborRolloutError(
+                        f"Harbor runtime changed after plan creation: {relative}"
+                    )
+
+
 def load_verified_rollout_plan(plan_dir: Path | str) -> dict[str, Any]:
     """读取并核对冻结计划、配置与 dataset 内容，不执行 Harbor。"""
 
@@ -991,19 +1009,7 @@ def execute_rollout_plan(
     """显式执行已发布计划；执行结果只保留有界 stdout/stderr 摘要。"""
 
     plan = load_verified_rollout_plan(plan_dir)
-    runtime = plan.get("harbor_runtime")
-    if isinstance(runtime, dict):
-        runtime_files = runtime.get("files")
-        if isinstance(runtime_files, dict):
-            harbor_root = Path(str(plan.get("harbor_root"))).resolve()
-            for relative, expected_hash in runtime_files.items():
-                if not isinstance(relative, str) or not isinstance(expected_hash, str):
-                    continue
-                runtime_path = harbor_root / relative
-                if not runtime_path.is_file() or _sha256_file(runtime_path) != expected_hash:
-                    raise HarborRolloutError(
-                        f"Harbor runtime changed after plan creation: {relative}"
-                    )
+    validate_rollout_runtime(plan)
     command = plan["command"]
     if timeout_seconds is None:
         timeouts = plan.get("timeouts")
@@ -1094,5 +1100,6 @@ __all__ = [
     "build_rollout_plan",
     "execute_rollout_plan",
     "load_verified_rollout_plan",
+    "validate_rollout_runtime",
     "publish_rollout_bundle",
 ]

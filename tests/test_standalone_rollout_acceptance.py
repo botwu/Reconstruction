@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +14,7 @@ from traceforge.cli import main
 from traceforge.harbor_ags.rollout import HarborRolloutConfig, build_rollout_plan
 
 
-def _fixture(tmp_path, monkeypatch, *, trials=1, contract=True):
+def _fixture(tmp_path, monkeypatch, *, trials=1, contract=True, runtime=False):
     task = _bundle(tmp_path / "task")
     acceptance = {
         "task_id": "synthetic-task",
@@ -25,8 +26,20 @@ def _fixture(tmp_path, monkeypatch, *, trials=1, contract=True):
         "schema_version": "traceforge.control-input-manifest.v1",
         "task_acceptance": acceptance,
     })
+    harbor = _harbor_root(tmp_path / "harbor")
+    if runtime:
+        from traceforge.harbor_ags.adapter import validate_harbor_bundle
+
+        monkeypatch.setattr(
+            "traceforge.harbor_ags.rollout.validate_harbor_bundle",
+            lambda task_dir, **_: validate_harbor_bundle(task_dir),
+        )
+        runtime_root = harbor / "src/harbor_ags"
+        runtime_root.mkdir(parents=True)
+        for filename in ("agent.py", "capture.py", "evidence.py", "validator.py"):
+            (runtime_root / filename).write_text("# 合成 runtime fixture，不执行\n", encoding="utf-8")
     plan_dir = build_rollout_plan(HarborRolloutConfig(
-        task_dir=task, harbor_root=_harbor_root(tmp_path / "harbor"),
+        task_dir=task, harbor_root=harbor,
         output_root=tmp_path / "plans", jobs_root=tmp_path / "jobs", trials=trials,
         timeout_seconds=14400, agent_max_iterations=500,
     ))
@@ -235,3 +248,99 @@ def test_cli_infers_job_and_refuses_mode_override(tmp_path, monkeypatch, capsys)
     capsys.readouterr()
     assert main(["harbor-ags", "read-results", "--plan-dir", str(plan), "--agent-mode", "oracle"]) == 2
     assert "agent-mode" in capsys.readouterr().err
+
+
+
+def test_standalone_accepts_unchanged_pinned_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    plan, job, calls = _fixture(tmp_path, monkeypatch, runtime=True)
+    payload = json.loads((plan / "rollout_plan.json").read_text())
+    assert len(payload["harbor_runtime"]["files"]) == 4
+    assert _read(plan, job)["acceptance"]["status"] == "PASS"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("filename", ["agent.py", "capture.py", "evidence.py", "validator.py"])
+@pytest.mark.parametrize("deleted", [False, True])
+def test_standalone_rejects_runtime_change_before_certification_or_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, filename: str, deleted: bool,
+) -> None:
+    from traceforge.harbor_ags import acceptance
+    from traceforge.harbor_ags.rollout import HarborRolloutError
+
+    plan, job, calls = _fixture(tmp_path, monkeypatch, runtime=True)
+    assert _read(plan, job)["acceptance"]["status"] == "PASS"
+    before = {path: path.read_bytes() for root in (plan, job) for path in root.rglob("*") if path.is_file()}
+    runtime = tmp_path / "harbor/src/harbor_ags" / filename
+    if deleted:
+        runtime.unlink()
+    else:
+        runtime.write_text("# 已修改的合成 runtime fixture\n", encoding="utf-8")
+
+    def unexpected_certification(*args: object, **kwargs: object) -> None:
+        pytest.fail("runtime 校验失败前不得进入认证")
+
+    monkeypatch.setattr(acceptance, "certify_hermes_job", unexpected_certification)
+    with pytest.raises(HarborRolloutError, match="Harbor runtime changed after plan creation"):
+        _read(plan, job)
+    after = {path: path.read_bytes() for root in (plan, job) for path in root.rglob("*") if path.is_file()}
+    assert after == before
+    assert len(calls) == 1
+
+
+def test_legacy_plan_without_runtime_metadata_keeps_read_and_execute_behavior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+    from traceforge.harbor_ags.rollout import execute_rollout_plan
+
+    plan, job, calls = _fixture(tmp_path, monkeypatch, runtime=True)
+    # 合成旧计划重新绑定其元数据；不修改任何真实执行记录。
+    plan_path = plan / "rollout_plan.json"
+    payload = json.loads(plan_path.read_text())
+    payload.pop("harbor_runtime")
+    _write(plan_path, payload)
+    manifest_path = plan / "artifact_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    for entry in manifest["files"]:
+        if entry["relative_path"] == "rollout_plan.json":
+            entry["sha256"] = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    _write(manifest_path, manifest)
+    receipt_path = plan / "run_receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["artifact_manifest_sha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    _write(receipt_path, receipt)
+    (tmp_path / "harbor/src/harbor_ags/validator.py").unlink()
+    monkeypatch.setenv("AGS_API_KEY", "synthetic-key")
+    monkeypatch.setenv("TOKENHUB_KEY", "synthetic-key")
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert execute_rollout_plan(plan)["status"] == "COMPLETED"
+    assert _read(plan, job)["acceptance"]["status"] == "PASS"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("deleted", [False, True])
+def test_bundle_export_remains_independent_of_current_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, deleted: bool,
+) -> None:
+    from traceforge.harbor_ags.rollout import publish_rollout_bundle
+
+    plan, _, calls = _fixture(tmp_path, monkeypatch, runtime=True)
+    runtime = tmp_path / "harbor/src/harbor_ags/validator.py"
+    if deleted:
+        runtime.unlink()
+    else:
+        runtime.write_text("# 已修改的合成 runtime fixture\n", encoding="utf-8")
+    destination = publish_rollout_bundle(plan, tmp_path / "exported_bundle")
+    payload = json.loads((plan / "rollout_plan.json").read_text())
+    task = plan / "dataset" / payload["dataset"]["task_relative_paths"][0]
+    expected = {path.relative_to(task): path.read_bytes() for path in task.rglob("*") if path.is_file()}
+    actual = {path.relative_to(destination / "task"): path.read_bytes()
+              for path in (destination / "task").rglob("*") if path.is_file()}
+    assert actual == expected
+    manifest = json.loads((destination / "artifact_manifest.json").read_text())
+    assert manifest["execution_status"] == "NOT_ASSERTED"
+    assert calls == []

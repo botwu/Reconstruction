@@ -15,7 +15,11 @@ from traceforge.harbor_ags.results import (
     read_rollout_results,
     rollout_passed,
 )
-from traceforge.harbor_ags.rollout import ROLLOUT_RECEIPT_SCHEMA, load_verified_rollout_plan
+from traceforge.harbor_ags.rollout import (
+    ROLLOUT_RECEIPT_SCHEMA,
+    load_verified_rollout_plan,
+    validate_rollout_runtime,
+)
 from traceforge.reconstruction.environment_bindings import non_file_obligation_ids
 
 
@@ -130,6 +134,7 @@ def read_rollout_acceptance(
     )
     bindings = _bind_trial_tasks(job, task_paths) if completed else {}
     if completed:
+        validate_rollout_runtime(plan)
         certify_hermes_job(job, harbor_root=plan["harbor_root"])
     report = read_rollout_results(job, agent_mode="hermes", expected_trial_count=expected_trials)
     errors = list(report["quality_gate"]["reasons"])

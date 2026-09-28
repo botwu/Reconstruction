@@ -2,6 +2,8 @@
 
 更新日期：2026-09-28；当前源码 `54a7cfe` 已整合终端读取行段传递、Completion 未返回调用过滤及独立 rollout 认证与响应验收。v34（运行源码 `8891af3`）已自然结束于 Verification REVIEW，不能代表本次整合版本的运行结果。2026-09-24 的 `90212de` 审计及运行记录保留为历史基线。流程与源码导航分别见 [原始会话流程](raw-session-pipeline.md)、[阅读地图](rebuild-live-map.md)。
 
+本次补充独立 rollout 验收前的 runtime 核对：`execute-rollout` 与 `read-results` 认证前共用已有哈希检查，仅核对计划记录的 `agent.py`、`capture.py`、`evidence.py`、`validator.py` 四个文件。记录文件修改或缺失时，在认证和派生产物写入前拒绝；没有 runtime metadata 的旧计划与只导出冻结输入的 `publish_rollout_bundle` 保持原行为。此项来自静态缺口，未发生真实篡改或验收失败。相关确定性回归 **72 passed（0.99 秒）**，Ruff E9/F63/F7/F82 和差异检查通过；本轮未运行模型或 AGS，真实端到端验收仍未完成。
+
 **当前没有一条经过可信完整验收的端到端结果，尚不具备稳定批量交付的证据。** 下述六类问题已落实对应源码修复；修复后的真实产物质量仍待新运行确认。历史任务包、RED 或真实轨迹不能代替新代码的完整验收。
 
 历史整合版本 `610254b` 的全量回归：950 passed、7 skipped、5 warnings（均为已有 httpx verify 参数弃用提示），耗时 94.83 秒；Ruff E9/F63/F7/F82 与差异检查通过。真实 AGS 上传子目录写入回归另行通过；这些证据不等于 solver 端到端验收。日志与 line41 缺失输入收据见 artifacts/source-repair-audit-20260928/。

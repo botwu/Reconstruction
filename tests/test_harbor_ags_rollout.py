@@ -560,5 +560,12 @@ def test_rollout_rejects_changed_or_missing_pinned_runtime(
         runtime_file.unlink()
     else:
         runtime_file.write_text("# unreviewed runtime\n")
+    receipt_before = (output / "run_receipt.json").read_bytes()
+
+    def unexpected_run(*args: object, **kwargs: object) -> None:
+        pytest.fail("runtime 校验失败前不得启动执行")
+
+    monkeypatch.setattr(subprocess, "run", unexpected_run)
     with pytest.raises(HarborRolloutError, match="Harbor runtime changed after plan creation"):
         execute_rollout_plan(output)
+    assert (output / "run_receipt.json").read_bytes() == receipt_before
