@@ -1,16 +1,20 @@
 # 当前状态与交付标准
 
-更新日期：2026-09-28。本轮根据冻结版本 48b625b 的真实 R04 第 2179 条运行修复模块接口和候选质量；重建和 solver rollout 保持分离。旧运行不能代表本轮修复版本已通过。流程与源码导航见 [原始会话流程](raw-session-pipeline.md)、[阅读地图](rebuild-live-map.md)。
+更新日期：2026-09-28。本轮根据真实 terminal 运行修复通用模块职责、接口和候选质量；重建和 solver rollout 保持分离。旧运行不能代表本轮修复版本已通过。流程与源码导航见 [原始会话流程](raw-session-pipeline.md)、[阅读地图](rebuild-live-map.md)。
 
 **当前尚无合格 Harbor bundle 和可信完整 rollout 验收结果，不能开始稳定批量交付。** 真实运行与源码修复分工独立：源码在隔离分支修复，真实运行使用冻结代码，不回写旧产物或补造通过标志。
 
-最新已完成质检的真实运行位于 artifacts/pipeline-debug-20260928/live-r04-2179-02/，使用源码 48b625b。Intent 经一次真实绑定反馈转为 READY，恢复的原任务和 FILE 义务保留。Completion 及两轮返修均没有改进候选文件；末轮 agent 已读取两份编码不同的原始证据，却明确按 from_replayed 保留损坏。末轮 Sufficiency 的语义 READY 不能抵消环境合同 REVIEW / UNEXECUTABLE：缺 dependency 探针，缺失诊断的分类证据引用未传通，返修以 REPAIR_LIMIT_REACHED 结束。
+最新已完成质检的真实运行是 artifacts/pipeline-debug-20260928/live-r04-2179-03/，固定源码 1dd70aa，于 2026-09-28 09:32:06 UTC 自然结束，耗时 1999.53 秒。最终 REVIEW、stopped_at=sufficiency、NO_SUFFICIENT_CANDIDATE；返修循环准确停止原因为 NO_PROGRESS。退出码 0 仅表示正常收尾；TaskFit、Verifier、RED 和 solver rollout 均未运行。
+
+run03 的 Session / Intent 保留了真实功能目标。初次 Completion 和两次返修都未改动六个原始文件；三轮继续存在两个 PARTIAL 源码的 RECONSTRUCTION_GAP。两次返修实际收到完整反馈，没有写入尝试或写保护拒绝；模型仍将 FILE 理解为可只验源码改动，或将采集损坏留给 solver。这些公开决定证明职责理解仍有问题，但不能据此把某条提示词认定为唯一根因，或宣布原始数据必然不可重建。
+
+三次 load 探针只检查文本存在和标记，没有 import、compile、dependency 或 reset 执行证据。8 次角色调用记录 23 次 API、37 次工具事件，6 个沙盒清理账本全部闭合；199/199 个固定源码基线文件、配置、原始行及冻结 HEAD 一致。实际产物与逐阶段质检见该运行 REPORT.md 和 qc/。本轮不包含源码 98844d3 的最新职责调整，后者的真实效果仍待验证。
+
+上一轮已完成质检的真实运行位于 artifacts/pipeline-debug-20260928/live-r04-2179-02/，使用源码 48b625b。Intent 经一次真实绑定反馈转为 READY，恢复的原任务和 FILE 义务保留。Completion 及两轮返修均没有改进候选文件；末轮 agent 已读取两份编码不同的原始证据，却明确按 from_replayed 保留损坏。末轮 Sufficiency 的语义 READY 不能抵消环境合同 REVIEW / UNEXECUTABLE：缺 dependency 探针，缺失诊断的分类证据引用未传通，返修以 REPAIR_LIMIT_REACHED 结束。
 
 该运行于 2026-09-28 08:17:51 UTC 自然结束，耗时 2494.39 秒，最终 REVIEW、stopped_at=verification、rollout=NOT_RUN、sft_eligible=false。退出码 0 只代表命令正常收尾。Verifier 前三轮因空响应合同对象误报 RESPONSE_CONTRACT_UNGROUNDED，第 4–6 轮添加原任务没有要求的非空报告合同，这类拒收有依据。六轮都没有进入独立语义审查或 Harbor 校准；顶层 VERIFIER_CALIBRATION_FAILED 不能解释成已经执行校准。
 
 首轮先尝试 Workbook/aggregate_workbook 行为测试，但发生导入收集错误后改写成源码正则检查。前五轮最终 1 PASS / 2 FAIL，第六轮 2 PASS / 1 FAIL 来自放宽正则匹配，不能证明功能进展。早期失败尾部没有完整持久化，具体导入错误仍无证据确定。该版本仅保存 Verifier 初始 instruction 的哈希，静态代码能确认反馈接线，不能逐字核对实际初始请求。共记录 15 份角色 trace、58 次 API 调用、131 次工具事件；12 个 AGS 沙盒均有清理证据，受检源码、配置和输入哈希未变。详细质检以该运行的 REPORT.md 和 qc/ 为准。
-
-固定 1dd70aa 的 run03 已于 2026-09-28 08:58:46 UTC 启动，位于 artifacts/pipeline-debug-20260928/live-r04-2179-03/。该冻结版本不包含下述最新阶段职责调整，其真实运行证据独立保留，不能作为最新修改的效果证明。
 
 本轮集中修复：
 
