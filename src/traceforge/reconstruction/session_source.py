@@ -53,7 +53,7 @@ def _result_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for index, block in enumerate(blocks):
         text = block if isinstance(block, str) else None
-        if isinstance(block, dict) and block.get("type") in (None, "text", "output_text"):
+        if isinstance(block, dict) and block.get("type") in (None, "text", "input_text", "output_text"):
             for field in ("text", "value"):
                 if isinstance(block.get(field), str):
                     text = block[field]

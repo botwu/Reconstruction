@@ -98,3 +98,29 @@ def test_success_state_is_preserved_without_inventing_rejection(paired) -> None:
     messages.append({"role": "tool", "tool_call_id": "result", "content": "body", **state})
     event = tool_timeline(messages, [])[0]
     assert {key: event[key] for key in state} == state
+
+
+def test_input_text_preserves_banner_and_stdout_in_original_slots() -> None:
+    banner = "Script completed\nWall time 0.7 seconds\nOutput:\n"
+    stdout = "\r\n--- sample.py ---\r\n  17: body\r\n "
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "parallel", "name": "exec", "arguments": "source"}],
+        },
+        {
+            "role": "tool", "tool_call_id": "parallel",
+            "content": [
+                {"type": "input_text", "text": banner},
+                {"type": "image", "data": "ignored"},
+                {"type": "input_text", "text": stdout},
+            ],
+        },
+    ]
+    event = tool_timeline(messages, [])[0]
+    assert event["result_blocks"] == [
+        {"index": 0, "text": banner},
+        {"index": 1, "text": None},
+        {"index": 2, "text": stdout},
+    ]
+    assert event["result_text"] == (banner + stdout).strip()
