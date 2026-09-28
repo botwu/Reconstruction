@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from traceforge.harbor_ags.response_receipt import (
-    build_response_receipt_from_path,
+    ResponseReceiptError,
+    build_response_receipt,
+    evaluate_response_contract,
 )
 from traceforge.harbor_ags.results import (
     HarborResultError,
@@ -29,7 +31,6 @@ from traceforge.harbor_ags.rollout import (
 )
 from traceforge.reconstruction.model_gateway import ChatModel, ModelGatewayError
 from traceforge.reconstruction.run_config import load_rollout_limits
-from traceforge.task_instruction import acceptance_report_criterion_ids
 from traceforge.reconstruction.environment_bindings import non_file_obligation_ids
 from traceforge.verifier.bundle import compile_bundle
 from traceforge.verifier.iterative import synthesize_verifier_iterative
@@ -180,11 +181,14 @@ def _set_rollout_eligibility(result: dict[str, Any], expected_trials: int) -> bo
     """集中维护 rollout、NON_FILE 义务和 SFT 资格的关系。"""
     passed = _rollout_passed(result, expected_trials)
     unresolved = result.get("unverified_obligations") or []
-    eligible = passed and not unresolved and not result.get("errors")
+    eligible = (
+        passed and not unresolved and result.get("status") == "READY"
+        and not (result.get("errors") or [])
+    )
     result["sft_eligible"] = eligible
     if not eligible:
         result["status"] = "REVIEW"
-    if passed and unresolved:
+    if unresolved:
         result["errors"] = list(
             dict.fromkeys([*(result.get("errors") or []), "SFT_UNVERIFIED_OBLIGATIONS"])
         )
@@ -231,6 +235,12 @@ def write_execution_manifest(
 def _write_verification(
     root: Path, result: dict[str, Any], config: VerificationConfig
 ) -> None:
+    if result.get("unverified_obligations"):
+        result["status"] = "REVIEW"
+        result["sft_eligible"] = False
+        result["errors"] = list(dict.fromkeys([
+            *(result.get("errors") or []), "UNVERIFIED_OBLIGATIONS"
+        ]))
     _write(root / "verification.json", result)
     write_execution_manifest(root, result, config)
 
@@ -253,7 +263,7 @@ def _workspace_files(root: Path) -> dict[str, str]:
 
 
 def _acceptance_report_obligation_ids(task: dict[str, Any]) -> list[str]:
-    """只选择义务正文明确要求 acceptance-report 的非文件义务。"""
+    """识别需采集报告的义务；关键字命中不代表语义已验证。"""
 
     non_file = set(non_file_obligation_ids(task))
     ids: list[str] = []
@@ -270,7 +280,7 @@ def _acceptance_report_obligation_ids(task: dict[str, Any]) -> list[str]:
 
 
 def _attach_response_receipts(
-    rollout: dict[str, Any], expected_trials: int, task: dict[str, Any]
+    rollout: dict[str, Any], expected_trials: int, response_contract: dict[str, Any] | None = None
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Validate terminal acceptance reports and store hash receipts only."""
 
@@ -302,10 +312,22 @@ def _attach_response_receipts(
             errors.append(f"RESPONSE_RECEIPT_TRAJECTORY_MISSING:{index}")
             continue
         try:
-            receipt = build_response_receipt_from_path(
-                path, expected_criterion_ids=acceptance_report_criterion_ids(task)
+            raw = Path(path).read_bytes()
+            checks = response_contract.get("checks", []) if isinstance(response_contract, dict) else []
+            require_report = response_contract is None or any(
+                isinstance(check, dict) and check.get("kind") == "acceptance_report"
+                for check in (checks if isinstance(checks, list) else [])
             )
-        except (ValueError, OSError) as exc:
+            receipt = build_response_receipt(
+                raw, require_acceptance_report=require_report,
+                validate_report_schema=response_contract is None,
+            )
+            trial_root = Path(path).parent.parent if Path(path).parent.name == "agent" else None
+            evaluation = (
+                evaluate_response_contract(raw, response_contract, trial_root=trial_root)
+                if response_contract is not None else None
+            )
+        except (ResponseReceiptError, OSError) as exc:
             errors.append(f"RESPONSE_RECEIPT_INVALID:{index}:{exc}")
             continue
         summary = {
@@ -316,8 +338,15 @@ def _attach_response_receipts(
                 "assistant_message_index",
                 "response_sha256",
                 "acceptance_report_sha256",
+                "verification_scope",
+                "semantic_verified",
             )
         }
+        summary["verified_obligation_ids"] = (
+            evaluation["verified_obligation_ids"] if evaluation is not None else []
+        )
+        summary["contract_checks"] = evaluation["checks"] if evaluation is not None else []
+        summary["contract_sha256"] = evaluation["contract_sha256"] if evaluation is not None else None
         trial["response_receipt"] = summary
         trial["response_receipt_status"] = "VERIFIED"
         receipts.append(summary)
@@ -330,9 +359,10 @@ def _apply_response_receipts(
     """保存响应格式证据；格式合法不能代替义务内容的验收。"""
 
     obligation_ids = _acceptance_report_obligation_ids(task)
-    if not obligation_ids:
+    response_contract = task.get("response_contract")
+    if not obligation_ids and response_contract is None:
         return
-    errors, receipts = _attach_response_receipts(rollout, expected_trials, task)
+    errors, receipts = _attach_response_receipts(rollout, expected_trials, response_contract)
     result["response_receipts"] = receipts
     raw_results = rollout.get("results")
     trials = raw_results.get("trials") if isinstance(raw_results, dict) else None
@@ -356,12 +386,35 @@ def _apply_response_receipts(
             )
         )
         return
-    # 全部回执只证明结构与来源绑定，不能证明结论、数量或证据自述为真。
-    if skipped or len(receipts) != expected_trials:
+    # 回执证明原始响应与报告结构，不能用自报成功清除义务。
+    if skipped:
         result["status"] = "REVIEW"
         result["sft_eligible"] = False
         return
-    result["response_receipt_scope"] = "FORMAT_ONLY"
+    if len(receipts) != expected_trials:
+        result["status"] = "REVIEW"
+        result["sft_eligible"] = False
+        result["errors"] = [*(result.get("errors") or []), "NON_FILE_RESPONSE_UNVERIFIED"]
+        return
+    verified = set(non_file_obligation_ids(task))
+    for receipt in receipts:
+        verified.intersection_update(receipt["verified_obligation_ids"])
+    result["unverified_obligations"] = [
+        item for item in result.get("unverified_obligations") or [] if item not in verified
+    ]
+    result["pending_response_obligations"] = [
+        item for item in result["unverified_obligations"] if item in set(non_file_obligation_ids(task))
+    ]
+    contract_errors = [
+        f"RESPONSE_CONTRACT_UNVERIFIED:{index}:{check['obligation_id']}:{error}"
+        for index, receipt in enumerate(receipts)
+        for check in receipt["contract_checks"]
+        for error in check.get("errors") or []
+    ]
+    if contract_errors:
+        result["status"] = "REVIEW"
+        result["sft_eligible"] = False
+        result["errors"] = list(dict.fromkeys([*(result.get("errors") or []), *contract_errors]))
 
 
 class HarborCalibrationExecutor:
@@ -699,11 +752,7 @@ def _record_unverified_obligations(
     task: dict[str, Any],
     audit: dict[str, Any] | None = None,
 ) -> bool:
-    """保留待验义务；非文件义务允许诊断执行，但阻止最终认证。
-
-    已请求的 rollout 为响应校验提供真实证据。FILE 校准覆盖缺失仍须前置拒绝，
-    不得以部分文件通过或合法 JSON 代替完整任务验收。
-    """
+    """记录后验义务；NON_FILE 未验证阻止最终认证，不阻止采集真实响应。"""
 
     non_file = set(non_file_obligation_ids(task))
     recorded = list(result.get("unverified_obligations") or [])
@@ -716,6 +765,9 @@ def _record_unverified_obligations(
         recorded.append("INVALID_UNVERIFIED_OBLIGATIONS")
     unresolved = list(dict.fromkeys(recorded))
     result["unverified_obligations"] = unresolved
+    result["pending_response_obligations"] = [
+        item for item in unresolved if item in non_file
+    ]
     blocking = [item for item in unresolved if item not in non_file]
     if not blocking:
         return False
@@ -756,7 +808,7 @@ def run_reconstruction_verification(
             result["errors"] = ["NON_FILE_TASK"]
             _write_verification(root, result, config)
             return result
-        # 非文件义务留给真实响应校验；不支持的义务始终保留为未验收。
+        # 响应结构必须在真实 rollout 产生后验收；未支持的语义义务不能被跳过。
         if _record_unverified_obligations(
             result, task=task
         ):

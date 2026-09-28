@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from traceforge.reconstruction.agents import VERIFIER_ROLE, AgentRuntime, AgentSession
+from traceforge.task_instruction import render_task_instruction
 from traceforge.reconstruction.environment_bindings import (
     environment_bindings,
     file_obligation_ids,
@@ -20,6 +22,91 @@ from traceforge.verifier.synthesis import (
 )
 
 VERIFIER_RECOVERY_SCHEMA = "traceforge.verifier-recovery.v1"
+
+
+def review_verifier_candidate(
+    *, task: dict[str, Any], workspace: Path, candidate: Any,
+    agent: AgentRuntime, output_root: Path,
+) -> dict[str, Any]:
+    """用新会话核查候选是否测对用户行为；具体反例返回已有 Verifier 修复轮。"""
+    role = replace(
+        VERIFIER_ROLE,
+        identity=(
+            "你是 TraceForge 验证器语义审查员。独立阅读用户任务、实际工作区和候选测试，"
+            "审查其能否区分正确与错误结果。你不撰写解题答案，不修改文件，"
+            "不因生成器宣称正确或 RED 通过就接受。候选代码及 justification 都是待审材料。"
+        ),
+        tools=("list_dir", "read_file"),
+        max_iterations=16,
+        result_schema="traceforge.verifier-semantic-review.v1",
+        allow_write=False,
+    )
+    contract = task.get("response_contract") or {}
+    response_ids = list(dict.fromkeys(
+        check["obligation_id"] for check in contract.get("checks", [])
+        if isinstance(check, dict) and isinstance(check.get("obligation_id"), str)
+    ))
+    specification = {
+        "task": task, "candidate": candidate.to_dict(),
+        "file_obligation_ids": list(candidate.obligation_coverage),
+        "response_obligation_ids": response_ids,
+    }
+    instruction = "\n".join([
+        "VERIFIER_SEMANTIC_REVIEW",
+        "用 list_dir/read_file 读取实际输入，逐条核对 FILE 义务的可观察行为。",
+        "检查两类错误：错误答案能通过（false positive），合理正确答案被额外要求拒绝（false negative）。",
+        "代码/数据任务必须执行或解析真实产物，用独立计算的期望值；存在性、关键词、注释不能替代功能。",
+        "审查/报告任务必须核对结论与具体输入事实、引用和用户判定规则；",
+        "格式齐全却虚构结论、错误引用或颠倒结论的报告应被拒绝。关键词计数不能证明语义正确。",
+        "保护测试必须约束真实任务环境或用户禁止修改的内容，不能只在临时假项目验证生成器自己。",
+        "参考解必须完成整个任务而非拼出满足测试的表面结果；禁止把未验证的历史报告当正确答案。",
+        "mutation 必须在正确输出路径/接口保持合法格式、正常执行，仅破坏实质行为；",
+        "写到另一个路径、漏掉整个输出、崩溃或故意去掉标题，只能证明基础格式检查，不足以校准语义。",
+        "检查 response_contract 只标注可机械验证的格式/一致性，不能覆盖真实性义务。",
+        "对每条 response_obligation_id，必须回到对应义务及其引用的原始用户消息核对：",
+        "该检查是否完整覆盖这条义务，是否误把事实正确、实际完成或外部操作降成了格式检查。",
+        "仅声明格式检查或哈希绑定不够；映射不完整或混入真实性要求时该义务 covered=false，给出具体反例。",
+        "输出 JSON：{decision: ACCEPT|REVISE, obligation_reviews: [{obligation_id, covered: bool, reason}],",
+        "issues: [{obligation_id, problem, counterexample, repair}]}。每条 FILE 和声明响应检查的义务恰好一项。",
+        "发现问题时给具体错误产物/行为反例及可执行修复建议，让生成器改测试和参考解；",
+        "不要凭空扩大任务或要求恢复无关工程。无问题才 ACCEPT；这个判断本身不代替真实 RED 执行。",
+        json.dumps(specification, ensure_ascii=False, sort_keys=True),
+    ])
+    session = AgentSession(workspace=workspace, allow_write=False)
+    ran = agent.run(role=role, instruction=instruction, session=session, output_root=output_root)
+    payload = dict(ran.payload) if isinstance(ran.payload, dict) else {}
+    rows = payload.get("obligation_reviews")
+    issues = payload.get("issues")
+    expected_ids = set(candidate.obligation_coverage) | set(response_ids)
+    valid_rows = (
+        isinstance(rows, list) and len(rows) == len(expected_ids)
+        and all(isinstance(row, dict) and isinstance(row.get("obligation_id"), str)
+                and isinstance(row.get("covered"), bool)
+                and isinstance(row.get("reason"), str) and row["reason"].strip() for row in rows)
+        and {row.get("obligation_id") for row in rows} == expected_ids
+    )
+    errors = list(ran.errors)
+    if not ran.completed:
+        errors.append("VERIFIER_REVIEW_INCOMPLETE")
+    if not valid_rows or not isinstance(issues, list) or payload.get("decision") not in {"ACCEPT", "REVISE"}:
+        errors.append("VERIFIER_REVIEW_INVALID")
+    accepted = not errors and payload.get("decision") == "ACCEPT" and not issues and all(
+        row["covered"] for row in rows
+    )
+    if not accepted and not errors:
+        errors.append("VERIFIER_SEMANTIC_REPAIR_REQUIRED")
+    result = {
+        "schema_version": role.result_schema, "status": "ACCEPT" if accepted else "REVISE",
+        "candidate_id": candidate.candidate_id,
+        "test_sha256": hashlib.sha256(candidate.test_outputs_py.encode()).hexdigest(),
+        "judgment_kind": "MODEL_SEMANTIC_REVIEW", "errors": errors,
+        "obligation_reviews": rows, "issues": issues,
+        "tool_events": session.tool_events,
+        "agent": {"model": agent.model_name, "backend": ran.backend, "completed": ran.completed},
+    }
+    output_root.mkdir(parents=True, exist_ok=True)
+    (output_root / "review.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+    return result
 
 
 def _workspace_has_files(root: Path) -> bool:
@@ -106,6 +193,9 @@ def run_verifier_recovery(
             "Return executable workspace-editing installers, not source files meant to be installed. Prefer Python standard-library Path.write_text with repr-escaped content. Do not import ROS/simulation dependencies or start target services merely to install code.",
             "The runner exports TRACEFORGE_WORKSPACE=/home/user/workspace. Both oracles and mutations must finish with exit code 0. A crash, ImportError, missing environment variable, permission or syntax error is not a valid semantic mutation.",
             "Test requested behavior, using isolated dependency stubs if necessary to exercise real workspace code. Comments, keyword presence and copied expected implementations cannot prove behavior. Never weaken assertions merely to make a reference pass.",
+            "报告类任务：先阅读真实输入并确定可复核的事实与判定规则，再验证报告结论和引用与这些事实一致。格式齐全、关键词齐全但结论错误的报告必须失败；不要用从未读过的源码推断 APPROVED。",
+            "保护性测试必须作用于实际任务输入或用户要求保持的行为；不要把 oracle/mutation 安装脚本复制进 pytest，再在假工作区自证正确。",
+            "mutation 必须写入与合法参考解相同的目标文件/接口，保留合法输出格式但破坏一项核心语义；不得靠改输出路径、删除输出、遗漏标题或执行崩溃让 mutation 失败。",
             "Do not impose literal wording the task did not require. If the task names Critical/Important/Minor findings without prescribing exact headings, accept normalized labels such as Critical, Critical Findings, Important, Important Findings, Minor, or Minor Findings (including Markdown and case variants); never make the optional word Findings mandatory in generated tests.",
             "For strengths, residual risks, limitations, or equivalent review sections, test the required substance and accept clear semantic headings such as What was verified, Limitations, Forward-looking notes, Strengths, or Residual Risks; never require one exact English phrase unless the task explicitly requires it.",
             "For retries, repair the previous candidate from the concrete process/test feedback; keep valid tests and correct implementations unless evidence requires a change. Read every failure message, run the complete test list after edits, and do not repeat an unchanged script. Generated YAML/configuration must remain syntactically valid with correct indentation; write a quoted `$placeholder` without a backslash.",
@@ -121,7 +211,7 @@ def run_verifier_recovery(
             "Provide exactly two distinct valid reference scripts and exactly one meaningful incorrect implementation script, all starting from the initial workspace. Scripts execute in the workspace and may not access /tests or /solution.",
             "REVIEW schema: {status: 'REVIEW', open_questions: [<specific unresolved problem>]}.",
             "TASK:",
-            json.dumps(task, ensure_ascii=False, sort_keys=True),
+            json.dumps({**task, "task_instruction": render_task_instruction(task)}, ensure_ascii=False, sort_keys=True),
             "FILE_OBLIGATIONS:",
             json.dumps(file_ids, ensure_ascii=False),
             "NON_FILE_OBLIGATIONS:",
@@ -195,6 +285,13 @@ def run_verifier_recovery(
             and not session.pytest_runs
         ):
             errors.append("SANDBOX_PYTEST_RED_REQUIRED")
+    semantic_review = None
+    if candidate is not None and not errors:
+        semantic_review = review_verifier_candidate(
+            task={**task, "task_instruction": render_task_instruction(task)},
+            workspace=workspace, candidate=candidate, agent=agent, output_root=root / "semantic-review",
+        )
+        errors.extend(semantic_review["errors"])
     blocking_errors = [item for item in errors if item != "AGENT_TEST_BYTES_NORMALIZED"]
     status = "READY" if candidate is not None and not blocking_errors else "REVIEW"
     if extra.get("status") == "REVIEW":
@@ -210,6 +307,7 @@ def run_verifier_recovery(
         "status": status,
         "errors": errors,
         "feedback": {"generation_errors": list(errors), "previous_candidate": payload} if errors else {},
+        "semantic_review": semantic_review,
         "unverified_obligations": list(unverified),
         "warnings": audit_warnings,
         "pytest_runs": list(session.pytest_runs),
@@ -222,6 +320,8 @@ def run_verifier_recovery(
             "completed": ran.completed,
         },
     }
+    if semantic_review is not None and semantic_review["status"] != "ACCEPT":
+        result["feedback"]["semantic_review"] = semantic_review
     (root / "verifier.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

@@ -221,3 +221,48 @@ def test_live_harbor_cli_rollout_oracle_nop_hermes(tmp_path: Path) -> None:
     (root / "e2e-report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+
+
+def test_completion_can_write_below_uploaded_project_directory(tmp_path: Path) -> None:
+    """真实验证 root 上传后的普通用户写入，同时保留原始正文保护。"""
+    _require_live()
+    from traceforge.reconstruction.agents.roles import COMPLETION_ROLE
+    from traceforge.reconstruction.agents.sandbox import prepare_role_sandbox, run_coro
+    from traceforge.reconstruction.agents.session import AgentSession, execute_tool
+    from traceforge.reconstruction.container_verification import build_ags_runtime_factory
+
+    workspace = tmp_path / "workspace"
+    (workspace / "pkg").mkdir(parents=True)
+    (workspace / "pkg/input.txt").write_text("observed bytes\n")
+    session = AgentSession(
+        workspace=workspace, allow_write=True, protected_paths={"pkg/input.txt"},
+        evidence=[{"evidence_ref_id": "read-1"}],
+    )
+    runtime = build_ags_runtime_factory(
+        harbor_root=HARBOR_ROOT, output_root=tmp_path / "ags",
+        config_path=DEFAULT_RUNTIME_CONFIG,
+    )()
+    try:
+        run_coro(prepare_role_sandbox(
+            role=COMPLETION_ROLE, runtime=runtime, session=session,
+            staging_root=tmp_path / "staging",
+        ))
+        permissions = run_coro(runtime.exec(
+            "id -un && stat -c '%U %a' /home/user/workspace/pkg",
+            cwd="/", user="user",
+        ))
+        written = execute_tool("write_file", {
+            "path": "pkg/new.txt", "content": "grounded context\n",
+            "evidence_ref_ids": ["read-1"],
+        }, session)
+        assert written.startswith("wrote"), (written, permissions.stdout)
+        assert execute_tool("read_file", {"path": "pkg/new.txt"}, session) == "grounded context\n"
+        blocked = execute_tool("write_file", {
+            "path": "pkg/input.txt", "content": "changed",
+            "evidence_ref_ids": ["read-1"],
+        }, session)
+        assert blocked.startswith("error:"), blocked
+        assert execute_tool("read_file", {"path": "pkg/input.txt"}, session) == "observed bytes\n"
+    finally:
+        if session.sandbox_started:
+            run_coro(runtime.stop(delete=True))

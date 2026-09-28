@@ -530,6 +530,13 @@ def test_verifier_sandbox_requires_red_then_accepts_matching_runs(tmp_path: Path
             self.pytest_runs = pytest_runs or []
 
         def run(self, *, role, instruction, session, output_root):
+            if role.result_schema == "traceforge.verifier-semantic-review.v1":
+                return AgentResult(
+                    role=role.name, backend="fixture", completed=True,
+                    payload={"decision": "ACCEPT", "issues": [], "obligation_reviews": [
+                        {"obligation_id": "obl-001", "covered": True, "reason": "固定审查结果"},
+                    ]},
+                )
             session.sandbox = object()
             session.test_outputs_py = self.payload["test_outputs_py"]
             session.pytest_runs.extend(self.pytest_runs)

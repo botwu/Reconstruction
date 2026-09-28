@@ -16,7 +16,7 @@ from traceforge.reconstruction.model_gateway import (
     parse_json_object,
 )
 
-VERIFIER_PROMPT_VERSION = "terminal-universe-verifier-adaptation-v3"
+VERIFIER_PROMPT_VERSION = "terminal-universe-verifier-adaptation-v4-semantic-review"
 VERIFIER_SYSTEM = """你是独立的 code/file 任务验证器构建者。参照 Terminal-Universe 附录 D：
 只测试用户明确规定的接口和功能。期望值必须在测试中独立计算；不得运行待测实现
 来产生 gold。至少一个 missing-capability 测试必须在当前完成态 workspace（bE）上失败；
@@ -30,6 +30,9 @@ TRACEFORGE_WORKSPACE 获取。测试文件只在独立 verifier 中可见。
 repr 字符串写入文件；安装时不要导入目标程序的 ROS/仿真依赖或启动服务。
 错误实现程序也必须正常执行并退出 0；语法、导入、权限、环境变量错误不是语义错误。
 测试必须观察用户所要求的行为；禁止仅靠注释、关键词存在判定实现正确，或为了参考解通过而放宽断言。
+报告类任务应依据实际输入核对结论、引用和用户判定规则，不能用关键词数量证明报告正确。
+错误实现必须在合法输出路径保留合法格式，只破坏核心行为或事实；写错路径、漏标题和缺文件不能替代语义校准。
+保护测试针对实际工作区与用户约束；不要在测试内嵌入参考安装器并用假项目自证正确。
 每个 Python 参考解或错误实现都必须是独立文件可解析的合法 Python；返回前应按
 `python -m py_compile` 检查，不能在引号内嵌入原始换行。
 脚本在 /home/user/workspace 中执行且不得访问 /tests 或其他隐藏文件。

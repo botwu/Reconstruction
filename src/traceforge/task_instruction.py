@@ -1,87 +1,226 @@
-"""把用户原始验收约定和公开要求保留到执行指令中。"""
+"""保留公开任务约束和用户提供的响应格式，不从隐藏答案推断要求。"""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from collections import Counter
 from typing import Any
 
-_CONTRACT_HEADING = re.compile(r"(?m)^##[ \t]+Acceptance Contract[ \t]*$")
-_REPORT_FENCE = re.compile(r"(?m)^```acceptance-report[ \t]*$")
-_REPORT_BLOCK = re.compile(r"(?ms)^```acceptance-report[ \t]*\n(.*?)^```[ \t]*$")
+_REPORT_BLOCK = re.compile(r"(?ms)^```acceptance-report[^\S\n]*\n(.*?)^```[^\S\n]*$")
+_CONTRACT = re.compile(r"(?mi)^(?:#{1,6}\s+)?Acceptance Contract\s*$")
 
 
-def render_task_instruction(task: dict[str, Any], instruction: str) -> str:
-    """只展开公开任务要求；不从隐藏测试推断规则，也不生成替代 schema。"""
-    parts = [instruction]
+# 契约生成与后验检查共享同一组已支持嵌套字段。
+RESPONSE_REPORT_ITEM_FIELDS = {
+    "criteriaSatisfied": frozenset({"id", "status", "evidence"}),
+    "commandsRun": frozenset({"command", "result", "summary"}),
+}
+
+
+def source_user_texts(task: dict[str, Any]) -> list[str]:
+    """仅使用所属任务的用户消息；工具输出不能新增公开验收要求。"""
+    source = task.get("source_task") or {}
+    return [text for text in source.get("user_texts", []) if isinstance(text, str)]
+
+
+def render_task_instruction(task: dict[str, Any]) -> str:
+    """把容易被摘要遗漏的约束与原始格式交给解题者，不新增格式缺失门禁。"""
+    instruction = task.get("task_instruction") or task.get("core_objective") or ""
+    parts = [instruction] if isinstance(instruction, str) else []
 
     def append(text: Any) -> None:
         if isinstance(text, str) and text.strip() and text.strip() not in "\n\n".join(parts):
             parts.append(text.strip())
 
-    source = task.get("source_task") or {}
-    contracts = []
-    for text in source.get("user_texts") or ():
-        if not isinstance(text, str):
-            continue
-        if (heading := _CONTRACT_HEADING.search(text)) or _REPORT_FENCE.search(text):
-            # 原文结构标记才声明 schema 契约，模型摘要与普通提及不作此推断。
-            append(text)
-            contract = text[heading.start():] if heading else text
-            if "acceptance-report" in contract.lower():
-                contracts.append(contract)
     append(task.get("specified_output_format"))
-    for item in task.get("acceptance_obligations") or ():
+    for item in task.get("acceptance_obligations") or []:
         if isinstance(item, dict):
             append(item.get("text"))
             append(item.get("observable"))
     for field in ("mandatory_constraints", "prohibitions"):
-        for text in task.get(field) or ():
+        for text in task.get(field) or []:
             append(text)
-
-    rendered = "\n\n".join(parts)
-    if contracts:
-        _acceptance_report_shape("\n\n".join(contracts))
-    return rendered
-
-
-def _acceptance_report_shape(text: str) -> dict[str, Any]:
-    blocks = _REPORT_BLOCK.findall(text)
-    if not blocks:
-        raise ValueError("ACCEPTANCE_REPORT_SCHEMA_MISSING: 公开任务要求缺少原始 JSON 格式")
-    shapes = []
-    for block in blocks:
-        try:
-            shape = json.loads(block)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                "ACCEPTANCE_REPORT_SCHEMA_INVALID: 原始 JSON 格式无法解析"
-            ) from exc
-        if not isinstance(shape, dict) or not shape:
-            raise ValueError("ACCEPTANCE_REPORT_SCHEMA_INVALID: 原始 JSON 格式必须是非空对象")
-        shapes.append(shape)
-    if any(shape != shapes[0] for shape in shapes[1:]):
-        raise ValueError("ACCEPTANCE_REPORT_SCHEMA_CONFLICT: 公开任务中有冲突的 JSON 格式")
-    return shapes[0]
+    bindings = task.get("environment_bindings") or []
+    bound_paths = {path for row in bindings if isinstance(row, dict)
+                   for key in ("required_paths", "initial_required_paths", "output_paths")
+                   for path in row.get(key, []) if isinstance(path, str)}
+    aliases = task.get("environment_path_aliases") or {}
+    mappings = [f"{original} → {canonical}" for original, canonical in sorted(aliases.items())
+                if canonical in bound_paths and original != canonical]
+    if mappings:
+        append("工作区路径说明：原始请求中的路径按以下映射访问；右侧路径相对于当前工作区根目录。\n"
+               + "\n".join(mappings))
+    for text in source_user_texts(task):
+        # 保留契约所在整条原始请求，模型摘要不能替代正文中的验收门槛。
+        if _CONTRACT.search(text) or _REPORT_BLOCK.search(text):
+            append(text)
+    return "\n\n".join(parts)
 
 
-def acceptance_report_criterion_ids(task: dict[str, Any]) -> list[str]:
-    """只以原始用户契约中的条目 ID 约束回执，不能由模型输出自行定义。"""
-    source = task.get("source_task") or {}
-    contracts = [
-        text[heading.start():]
-        for text in source.get("user_texts") or ()
-        if isinstance(text, str) and (heading := _CONTRACT_HEADING.search(text))
-    ]
-    shape = _acceptance_report_shape("\n\n".join(contracts))
-    criteria = shape.get("criteriaSatisfied")
-    if not isinstance(criteria, list) or not criteria:
-        raise ValueError("ACCEPTANCE_REPORT_SCHEMA_INVALID_CRITERIA")
-    ids = [item.get("id") for item in criteria if isinstance(item, dict)]
-    if (
-        len(ids) != len(criteria)
-        or any(not isinstance(item, str) or not item.strip() for item in ids)
-        or len(set(ids)) != len(ids)
-    ):
-        raise ValueError("ACCEPTANCE_REPORT_SCHEMA_INVALID_CRITERIA")
-    return ids
+def grounded_response_contract(task: dict[str, Any]) -> dict[str, Any] | None:
+    """将模型标注的机械检查绑定到公开示例；无法确认的检查留给后验未覆盖处理。"""
+    declared = task.get("response_contract")
+    if not isinstance(declared, dict) or declared.get("schema_version") != "traceforge.response-contract.v1":
+        return None
+    texts = source_user_texts(task)
+    source = "\n\n".join(texts)
+    prose = _REPORT_BLOCK.sub("", source)
+    examples: list[dict[str, Any]] = []
+    for text in texts:
+        for block in _REPORT_BLOCK.findall(text):
+            try:
+                example = json.loads(block)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(example, dict) and example:
+                examples.append(example)
+    bindings = task.get("environment_bindings") or []
+    non_file_ids = {row.get("obligation_id") for row in bindings
+                    if isinstance(row, dict) and row.get("verifier_kind") == "NON_FILE"}
+    output_paths = {path for row in bindings if isinstance(row, dict)
+                    for path in row.get("output_paths", []) if isinstance(path, str) and not path.endswith("/")}
+    checks: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    declared_counts: Counter[str] = Counter()
+    for check in declared.get("checks", []) if isinstance(declared.get("checks"), list) else []:
+        if not isinstance(check, dict):
+            continue
+        oid = check.get("obligation_id")
+        if not isinstance(oid, str) or oid not in non_file_ids:
+            continue
+        declared_counts[oid] += 1
+        kind = check.get("kind")
+        if not isinstance(kind, str) or (oid, kind) in seen:
+            continue
+        if kind == "acceptance_report" and len(examples) == 1:
+            example = examples[0]
+            if not _supported_report_shape(example):
+                continue
+            types = {key: _json_type(value) for key, value in example.items()}
+            optional_fields: dict[str, str] = {}
+            unsupported = False
+            # 可选只改变必填性，不能丢失原文声明的类型。
+            for key in list(types):
+                if re.search(rf"(?i)`?{re.escape(key)}`?[^\n]{{0,70}}\boptional\b", prose):
+                    optional_fields[key] = types.pop(key)
+            for match in re.finditer(
+                r"(`\w+`(?:\s+and\s+`\w+`)*)\s+(?:is|are)\s+optional strings?\b", prose
+            ):
+                for key in re.findall(r"`(\w+)`", match[1]):
+                    if optional_fields.get(key, types.get(key, "string")) != "string":
+                        unsupported = True
+                    optional_fields[key] = "string"
+                    types.pop(key, None)
+            item_enums: dict[str, dict[str, list[str]]] = {}
+            for match in re.finditer(
+                r"`?(\w+)\[\]\.(\w+)`?\s+must be exactly one of:\s*([^\n]+)", prose
+            ):
+                field, name, declaration = match.groups()
+                values = [value.strip() for value in declaration.rstrip(". ").split(",")]
+                prior = item_enums.get(field, {}).get(name)
+                if (
+                    name not in RESPONSE_REPORT_ITEM_FIELDS.get(field, ())
+                    or types.get(field) != "array"
+                    or any(re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", value) is None for value in values)
+                    or (prior is not None and set(prior) != set(values))
+                ):
+                    unsupported = True
+                    break
+                item_enums.setdefault(field, {})[name] = values
+            if unsupported:
+                continue
+            criteria = example.get("criteriaSatisfied")
+            ids = [row.get("id") for row in criteria if isinstance(row, dict)] if isinstance(criteria, list) else []
+            if (not ids or any(not isinstance(value, str) or not value for value in ids)
+                    or len(set(ids)) != len(ids)):
+                continue
+            item_fields = {
+                key: {name: _json_type(value) for row in example[key] for name, value in row.items()}
+                for key in RESPONSE_REPORT_ITEM_FIELDS if types.get(key) == "array" and example[key]
+            }
+            checks.append({"kind": "acceptance_report", "obligation_id": oid,
+                           "required_fields": types, "criterion_ids": ids,
+                           "required_item_fields": item_fields,
+                           "required_item_enums": item_enums, "optional_fields": optional_fields})
+        elif check.get("kind") == "basic_summary":
+            verdicts, levels = check.get("verdicts"), check.get("finding_levels")
+            if not (isinstance(verdicts, list) and verdicts and isinstance(levels, list) and levels):
+                continue
+            if any(not isinstance(value, str) or not value or value.lower() not in source.lower()
+                   for value in [*verdicts, *levels]):
+                continue
+            levels = _grounded_finding_levels(prose, levels)
+            if levels is None:
+                continue
+            path = check.get("report_path")
+            if isinstance(path, str):
+                aliases = task.get("environment_path_aliases") or {}
+                path = aliases.get(path.replace("\\", "/"), path)
+            if path not in output_paths or check.get("match_report") is not True:
+                continue
+            checks.append({"kind": "basic_summary", "obligation_id": oid, "verdicts": verdicts,
+                           "finding_levels": levels, "report_path": path, "match_report": True})
+        else:
+            continue
+        seen.add((oid, kind))
+    # 合并义务不能在部分检查无法落地时退化为“只验通过的半条”。
+    grounded_counts = Counter(check["obligation_id"] for check in checks)
+    checks = [check for check in checks
+              if grounded_counts[check["obligation_id"]] == declared_counts[check["obligation_id"]]]
+    if not checks:
+        return None
+    return {"schema_version": "traceforge.response-contract.v1", "checks": checks,
+            "source_sha256": hashlib.sha256(source.encode()).hexdigest()}
+
+
+def _grounded_finding_levels(prose: str, declared: list[str]) -> list[str] | None:
+    """用模型标注定位原文的完整枚举；多个不同集合不能推断为同一要求。"""
+    token = r"[A-Za-z][A-Za-z0-9_-]*"
+    separator = r"(?:\s*/\s*|\s*,\s*(?:and\s+)?)"
+    groups: dict[tuple[str, ...], list[str]] = {}
+    required = {value.casefold() for value in declared}
+    for match in re.finditer(rf"(?<![\w-]){token}(?:{separator}{token})+(?![\w-])", prose):
+        values = re.split(separator, match.group())
+        key = tuple(value.casefold() for value in values)
+        if required.issubset(key) and len(set(key)) == len(key):
+            groups[key] = values
+    return next(iter(groups.values())) if len(groups) == 1 else None
+
+
+def _supported_report_shape(example: dict[str, Any]) -> bool:
+    """仅声明后验检查器能完整校验的嵌套结构，避免把 object 类型当作字段覆盖。"""
+    string_arrays = {
+        "changedFiles", "testsAddedOrUpdated", "validationOutput", "residualRisks", "reviewFindings",
+    }
+    for key, value in example.items():
+        if isinstance(value, dict):
+            return False
+        if not isinstance(value, list):
+            continue
+        if key in RESPONSE_REPORT_ITEM_FIELDS:
+            if any(
+                not isinstance(row, dict)
+                or not set(row).issubset(RESPONSE_REPORT_ITEM_FIELDS[key])
+                or any(not isinstance(item, str) for item in row.values())
+                for row in value
+            ):
+                return False
+        elif key not in string_arrays or any(not isinstance(item, str) for item in value):
+            return False
+    return True
+
+
+def _json_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return "number"

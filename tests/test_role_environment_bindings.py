@@ -731,159 +731,229 @@ def test_mixed_required_and_explicit_output_paths_are_preserved() -> None:
     assert bindings[0]["output_paths"] == ["report.md"]
 
 
-def test_file_binding_fallback_uses_only_cited_user_request() -> None:
+def test_review_contract_examples_are_not_workspace_evidence() -> None:
+    """真实只读审查合同中的分类词和 JSON 格式示例不能变成环境输入。"""
+    request = (
+        "Read `brief.md` and inspect `src/core.rs`. Review panic/cancellation/shutdown "
+        "behavior and lock/lifetime safety. Return Critical/Important/Minor findings. "
+        "Write the full report to `reports/review.md`.\n"
+        "Finish with a fenced JSON block in this shape:\n"
+        "```acceptance-report\n"
+        '{"changedFiles": ["src/file.ts"], "testsAdded": ["test/file.test.ts"]}\n'
+        "```\n"
+    )
     records = [
-        {"id": "user:1", "text": "Bootstrap: read AGENTS.md and references/tools.md."},
-        {"id": "user:2", "text": (
-            "Read from C:\\Users\\reviewer\\project\\app\\plan.md, "
-            "C:\\Users\\reviewer\\project\\app\\progress.md.\n"
-            "Inspect src/core.rs for panic/cancellation/shutdown and lock/lifetime safety. "
-            "Report Critical/Important/Minor findings. Write review.md.\n"
-            "```acceptance-report\n"
-            '{"changedFiles":["src/example.ts"],"reviewFindings":["example.ts:12 - finding"]}\n'
-            "```"
-        )},
+        {"id": "user:1", "text": "Platform instructions: load references/tools.md and AGENTS.md"},
+        {"id": "user:2", "text": request},
     ]
-    allowed = collect_allowed_paths(None, records, replay_files=["src/core.rs"])
+    source = {"tool_timeline": [{
+        "name": "read_file", "arguments": {"path": "src/core.rs"},
+        "result_text": '// Example: src/from_comment.ts\nfn run() {}\n',
+    }]}
+    allowed = collect_allowed_paths(source, records)
+    assert {"brief.md", "src/core.rs", "reports/review.md"} <= set(allowed)
+    assert not ({"Critical/", "Critical/Important/", "panic/", "panic/cancellation/",
+                 "lock/", "src/file.ts", "test/file.test.ts", "src/from_comment.ts"}
+                & set(allowed))
+    obligations = [{"id": "review", "text": "Write reports/review.md with findings",
+                    "evidence_ref_ids": ["user:2"]}]
     bindings, errors = normalize_environment_bindings(
-        {"environment_bindings": [{
-            "obligation_id": "o1", "verifier_kind": "FILE", "required_paths": [],
-            "observable": "审查报告包含文件行号和结论",
-        }]},
-        [{"id": "o1", "text": "写入审查报告", "evidence_ref_ids": ["user:2"]}],
-        allowed, user_blob="\n".join(item["text"] for item in records),
-        user_text_by_id={item["id"]: item["text"] for item in records},
-        file_binding_paths=["src/core.rs"],
+        {"environment_bindings": [{"obligation_id": "review", "verifier_kind": "FILE",
+                                    "required_paths": [], "observable": "报告提供准确的审查发现"}]},
+        obligations, allowed, user_blob="\n".join(row["text"] for row in records),
+        user_records=records, file_binding_paths=["src/core.rs", "src/"],
+    )
+    assert errors == []
+    assert set(bindings[0]["initial_required_paths"]) == {"brief.md", "src/core.rs"}
+    assert bindings[0]["output_paths"] == ["reports/review.md"]
+    assert "AGENTS.md" not in bindings[0]["required_paths"]
+    assert "references/tools.md" not in bindings[0]["required_paths"]
+
+
+def test_real_directories_are_kept_without_promoting_parent_prefixes() -> None:
+    request = "Inspect `src/` and assets/. Create reports/result.md."
+    allowed = collect_allowed_paths({}, [{"id": "user:0", "text": request}])
+    assert {"src/", "assets/", "reports/result.md"} <= set(allowed)
+    from traceforge.reconstruction.environment_bindings import derive_binding
+
+    binding = derive_binding({"id": "o1", "text": request}, allowed, request,
+                             file_binding_paths=[])
+    assert set(binding["initial_required_paths"]) == {"src/", "assets/"}
+    assert binding["output_paths"] == ["reports/result.md"]
+    assert "reports/" not in binding["required_paths"]
+
+
+def test_new_test_file_is_an_output_while_explicit_missing_input_stays_input() -> None:
+    request = "Modify src/parser.py and add tests/test_parser.py."
+    allowed = collect_allowed_paths({}, [{"id": "user:0", "text": request}])
+    obligations = [{"id": "o1", "text": request, "evidence_ref_ids": ["user:0"]}]
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{"obligation_id": "o1", "verifier_kind": "FILE",
+                                    "required_paths": ["src/parser.py", "tests/test_parser.py"],
+                                    "observable": "解析器修复且新测试覆盖回归"}]},
+        obligations, allowed, user_blob=request, file_binding_paths=[],
+    )
+    assert errors == []
+    assert bindings[0]["initial_required_paths"] == ["src/parser.py"]
+    assert bindings[0]["output_paths"] == ["tests/test_parser.py"]
+
+
+def test_inline_example_is_context_but_observed_same_path_remains_bindable() -> None:
+    request = "Inspect src/real.py; output examples, e.g. src/example.py:12."
+    records = [{"id": "user:0", "text": request}]
+    assert "src/example.py" not in collect_allowed_paths({}, records)
+    source = {"tool_timeline": [{"name": "read_file",
+                                "arguments": {"path": "src/example.py"},
+                                "result_text": "def run(): return 1\n"}]}
+    assert "src/example.py" in collect_allowed_paths(source, records)
+
+
+def test_listing_path_column_is_allowed_but_matched_source_text_is_not() -> None:
+    allowed = collect_allowed_paths({"tool_timeline": [{
+        "name": "exec", "arguments": {"command": "rg example src/"},
+        "result_text": 'src/real.py:12:# example src/fiction.py\n',
+    }]})
+    assert {"src/", "src/real.py"} <= set(allowed)
+    assert "src/fiction.py" not in allowed
+
+
+def test_host_and_user_relative_paths_share_replay_coordinates() -> None:
+    from traceforge.reconstruction.environment_bindings import collect_binding_path_aliases
+
+    root = "C:/Users/user/project/lua/demo"
+    timeline = [
+        {"call_id": "brief", "name": "read", "arguments": {"path": root + "/.agent/brief.md"},
+         "result_text": "Review the migration\n"},
+        {"call_id": "code", "name": "read", "arguments": {"path": root + "/src/core.rs"},
+         "result_text": "fn run() {}\n"},
+        {"call_id": "find", "name": "find", "arguments": {"path": root, "pattern": "plan.md"},
+         "result_text": "No files found"},
+    ]
+    request = (f"Read from {root}/plan.md, {root}/progress.md. "
+               "Read `.agent/brief.md`; write `reports/review.md`.")
+    records = [{"id": "user:2", "text": request}]
+    source = {"tool_timeline": timeline}
+    aliases = collect_binding_path_aliases(source, records)
+    allowed = collect_allowed_paths(source, records)
+    assert aliases[".agent/brief.md"] == "demo/.agent/brief.md"
+    assert aliases["reports/review.md"] == "demo/reports/review.md"
+    assert {"demo/plan.md", "demo/progress.md", "demo/.agent/brief.md",
+            "demo/reports/review.md"} <= set(allowed)
+    assert "Users/user/project/lua/demo/plan.md" not in allowed
+    host_paths = ["Users/user/project/lua/demo/" + path
+                  for path in ("plan.md", "progress.md", ".agent/brief.md", "reports/review.md")]
+    obligations = [{"id": "review", "text": "Write review report",
+                    "evidence_ref_ids": ["user:2"]}]
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{"obligation_id": "review", "verifier_kind": "FILE",
+                                    "required_paths": host_paths, "output_paths": [host_paths[-1]],
+                                    "observable": "报告准确描述审查结论"}]},
+        obligations, allowed, user_records=records, path_aliases=aliases,
+        file_binding_paths=collect_file_binding_paths(source),
     )
     assert errors == []
     assert set(bindings[0]["initial_required_paths"]) == {
-        "Users/reviewer/project/app/plan.md", "Users/reviewer/project/app/progress.md",
-        "src/core.rs",
-    }
-    assert bindings[0]["output_paths"] == ["review.md"]
-    assert bindings[0]["observable"] == "审查报告包含文件行号和结论"
-    assert "Critical/" not in allowed
-    assert "panic/" not in allowed
-    assert "src/example.ts" not in allowed
+        "demo/plan.md", "demo/progress.md", "demo/.agent/brief.md"}
+    assert bindings[0]["output_paths"] == ["demo/reports/review.md"]
 
 
-def test_explicit_missing_input_survives_the_normal_binding_path() -> None:
+def test_path_aliases_do_not_guess_from_basename_or_conflicting_anchors() -> None:
+    from traceforge.reconstruction.environment_bindings import collect_binding_path_aliases
+
+    source = {"tool_timeline": [
+        {"call_id": "a", "name": "read", "arguments": {"path": "/home/u/project/one/src/main.py"},
+         "result_text": "print(1)\n"},
+        {"call_id": "b", "name": "read", "arguments": {"path": "/home/u/project/two/src/main.py"},
+         "result_text": "print(2)\n"},
+    ]}
+    records = [{"id": "user:1", "text": "Read /home/u/project/one/a.md and /home/u/project/one/b.md; modify main.py."},
+               {"id": "user:2", "text": "Read /home/u/project/two/a.md and /home/u/project/two/b.md; modify main.py."}]
+    aliases = collect_binding_path_aliases(source, records)
+    assert "main.py" not in aliases
+    assert not path_is_allowed("main.py", collect_file_binding_paths(source))
+
+
+def test_path_mapping_preserves_non_path_escape_sequences() -> None:
+    observable = r"修复 src/parser.py，使正则 \d+ 匹配数字并正确处理 \n"
     bindings, errors = normalize_environment_bindings(
-        {"environment_bindings": [{
-            "obligation_id": "o1", "verifier_kind": "FILE",
-            "required_paths": ["missing.py"], "observable": "修复明确指定的输入",
-        }]},
-        [{"id": "o1", "text": "修复 missing.py", "evidence_ref_ids": ["user:2"]}],
-        ["missing.py"], user_blob="修复 missing.py", file_binding_paths=[],
+        {"environment_bindings": [{"obligation_id": "o1", "verifier_kind": "FILE",
+                                    "required_paths": ["src/parser.py"],
+                                    "observable": observable}]},
+        [{"id": "o1", "text": "修复 src/parser.py"}], ["repo/src/parser.py"],
+        user_blob="修复 src/parser.py", file_binding_paths=["repo/src/parser.py"],
+        path_aliases={"src/parser.py": "repo/src/parser.py"},
+    )
+    assert errors == []
+    assert bindings[0]["observable"] == observable.replace("src/parser.py", "repo/src/parser.py")
+
+
+@pytest.mark.parametrize("prefix", [
+    "The response schema is specified elsewhere.\nRead the input below:\n",
+    "Read src/schema.py:\n",
+])
+def test_unrelated_schema_text_does_not_hide_real_fenced_input(prefix: str) -> None:
+    request = prefix + "```bash\ncat src/input.py\n```"
+    allowed = collect_allowed_paths({}, [{"id": "user:1", "text": request}])
+    assert "src/input.py" in allowed
+
+
+def test_explicit_absolute_missing_input_survives_without_replay_root() -> None:
+    request = r"Read C:\work\app\missing.md."
+    allowed = collect_allowed_paths({}, [{"id": "user:1", "text": request}])
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{"obligation_id": "o1", "verifier_kind": "FILE",
+                                   "required_paths": [], "observable": "输入已审查"}]},
+        [{"id": "o1", "text": "审查缺失输入", "evidence_ref_ids": ["user:1"]}],
+        allowed, user_records=[{"id": "user:1", "text": request}], file_binding_paths=[],
+    )
+    assert errors == []
+    assert bindings[0]["initial_required_paths"] == ["work/app/missing.md"]
+
+
+def test_existing_replay_coordinate_is_not_prefixed_again() -> None:
+    from traceforge.reconstruction.environment_bindings import collect_binding_path_aliases
+
+    source = {"tool_timeline": [{
+        "call_id": "read", "name": "read",
+        "arguments": {"path": "C:/work/app/src/core.py", "cwd": "C:/work"},
+        "result_text": "print(1)",
+    }]}
+    records = [{"id": "user:1", "text":
+                "Read C:/work/app/plan.md and C:/work/app/progress.md and app/src/core.py. "
+                "Write app/reports/review.md."}]
+    aliases = collect_binding_path_aliases(source, records)
+    allowed = collect_allowed_paths(source, records, path_aliases=aliases)
+    assert "app/src/core.py" not in aliases
+    assert "app/reports/review.md" not in aliases
+    assert "app/src/core.py" in allowed
+    assert "app/app/src/core.py" not in allowed
+    assert "app/app/reports/review.md" not in allowed
+
+
+def test_partial_binding_recovers_explicit_output_without_losing_observable() -> None:
+    request = "Read missing.py. Write reports/review.md."
+    allowed = collect_allowed_paths({}, [{"id": "user:1", "text": request}])
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{"obligation_id": "o1", "verifier_kind": "FILE",
+                                   "required_paths": ["missing.py"], "observable": "报告包含逐行证据"}]},
+        [{"id": "o1", "text": "审查后报告", "evidence_ref_ids": ["user:1"]}],
+        allowed, user_records=[{"id": "user:1", "text": request}], file_binding_paths=[],
     )
     assert errors == []
     assert bindings[0]["initial_required_paths"] == ["missing.py"]
+    assert bindings[0]["output_paths"] == ["reports/review.md"]
+    assert bindings[0]["observable"] == "报告包含逐行证据"
+
+
+def test_undeclared_output_is_reported_instead_of_becoming_input() -> None:
+    request = "Read src/input.py."
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{"obligation_id": "o1", "verifier_kind": "FILE",
+                                   "required_paths": ["src/input.py"], "output_paths": ["src/input.py"],
+                                   "observable": "输入已审查"}]},
+        [{"id": "o1", "text": "审查", "evidence_ref_ids": ["user:1"]}],
+        ["src/input.py"], user_records=[{"id": "user:1", "text": request}],
+        file_binding_paths=["src/input.py"],
+    )
+    assert "BINDING_OUTPUT_PATH_NOT_EXPLICIT:o1:src/input.py" in errors
     assert bindings[0]["output_paths"] == []
-
-
-def test_file_binding_keeps_task_paths_inside_bash_fence() -> None:
-    text = "请修复下面读取的文件：\n```bash\ncat src/input.py\n```"
-    allowed = collect_allowed_paths(None, [{"id": "user:2", "text": text}])
-    bindings, errors = normalize_environment_bindings(
-        {"environment_bindings": [{
-            "obligation_id": "o1", "verifier_kind": "FILE",
-            "required_paths": [], "observable": "输入文件缺陷修复",
-        }]},
-        [{"id": "o1", "text": "修复输入", "evidence_ref_ids": ["user:2"]}],
-        allowed, user_blob=text, file_binding_paths=[],
-    )
-    assert errors == []
-    assert bindings[0]["initial_required_paths"] == ["src/input.py"]
-
-
-def test_directory_tokens_must_end_at_a_path_boundary() -> None:
-    allowed = collect_allowed_paths(None, [{
-        "text": "检查 modules/ 和 src/nested/；评审 panic/cancellation/shutdown 与 Critical/Important。",
-    }])
-    assert "modules/" in allowed
-    assert "src/nested/" in allowed
-    assert "panic/" not in allowed
-    assert "Critical/" not in allowed
-
-
-def test_binding_paths_share_replay_root_and_two_relative_input_anchors() -> None:
-    from traceforge.reconstruction.env_replay import normalize_file_ops, replay_workspace_root
-
-    timeline = [
-        {"call_id": "brief", "name": "read",
-         "arguments": {"path": "C:/work/app/.config/brief.md", "cwd": "C:/work"},
-         "result_text": "brief"},
-        {"call_id": "report", "name": "read",
-         "arguments": {"path": "C:/work/app/.reports/previous.md"}, "result_text": "report"},
-        {"call_id": "neighbor", "name": "read",
-         "arguments": {"path": "C:/work/neighbor/settings.md"}, "result_text": "settings"},
-    ]
-    text = (
-        "Read C:\\work\\app\\plan.md and C:\\work\\app\\progress.md. "
-        "Read .config/brief.md and .reports/previous.md. Write .reports/final.md."
-    )
-    paths = [item["path"] for item in normalize_file_ops(timeline)]
-    source = {"tool_timeline": timeline}
-    allowed = collect_allowed_paths(source, [{"id": "user:2", "text": text}], replay_files=paths)
-    assert "app/.reports/final.md" in allowed
-    bindings, errors = normalize_environment_bindings(
-        {"environment_bindings": [{
-            "obligation_id": "o1", "verifier_kind": "FILE",
-            "required_paths": [
-                "C:/work/app/plan.md", "C:/work/app/progress.md",
-                "C:/work/app/.config/brief.md", "C:/work/app/.reports/previous.md",
-            ],
-            "output_paths": ["C:/work/app/.reports/final.md"],
-            "observable": "报告存在且包含审查证据",
-        }]},
-        [{"id": "o1", "text": "审查并写入报告", "evidence_ref_ids": ["user:2"]}],
-        allowed, user_blob=text, file_binding_paths=paths,
-        workspace_root=replay_workspace_root(timeline),
-    )
-    assert errors == []
-    assert set(bindings[0]["initial_required_paths"]) == {
-        "app/plan.md", "app/progress.md", "app/.config/brief.md", "app/.reports/previous.md",
-    }
-    assert bindings[0]["output_paths"] == ["app/.reports/final.md"]
-
-
-def test_ambiguous_relative_root_preserves_explicit_output_and_reports_error() -> None:
-    text = "Read .config/brief.md and .reports/previous.md. Write .reports/final.md."
-    paths = [
-        f"{root}/{path}" for root in ("first", "second")
-        for path in (".config/brief.md", ".reports/previous.md")
-    ]
-    bindings, errors = normalize_environment_bindings(
-        {"environment_bindings": [{
-            "obligation_id": "o1", "verifier_kind": "FILE",
-            "required_paths": [".config/brief.md"],
-            "output_paths": ["first/.reports/final.md"], "observable": "报告生成",
-        }]},
-        [{"id": "o1", "text": "生成报告", "evidence_ref_ids": ["user:2"]}],
-        paths + [".config/brief.md", ".reports/previous.md",
-                 ".reports/final.md", "first/.reports/final.md"],
-        user_blob=text, file_binding_paths=paths,
-    )
-    assert "BINDING_PATH_ROOT_AMBIGUOUS:o1" in errors
-    assert any(error.startswith("BINDING_OUTPUT_PATH_NOT_EXPLICIT") for error in errors)
-    assert bindings[0]["output_paths"] == [".reports/final.md"]
-
-
-def test_conflicting_absolute_root_is_never_prefixed_with_relative_root() -> None:
-    text = (
-        "Read .config/brief.md and .reports/previous.md and C:/work/other/input.md. "
-        "Write .reports/final.md."
-    )
-    bindings, errors = normalize_environment_bindings(
-        {"environment_bindings": [{
-            "obligation_id": "o1", "verifier_kind": "FILE",
-            "required_paths": ["C:/work/other/input.md"], "observable": "完成审查",
-        }]},
-        [{"id": "o1", "text": "审查", "evidence_ref_ids": ["user:2"]}],
-        ["other/input.md", "app/.config/brief.md", "app/.reports/previous.md"],
-        user_blob=text, workspace_root="C:/work",
-        file_binding_paths=["app/.config/brief.md", "app/.reports/previous.md"],
-    )
-    assert "BINDING_PATH_ROOT_CONFLICT:o1" in errors
-    assert bindings[0]["initial_required_paths"] == ["other/input.md"]
-    assert bindings[0]["output_paths"] == [".reports/final.md"]

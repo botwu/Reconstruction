@@ -132,6 +132,15 @@ class ReplayResult:
     unknown_mutation_barriers: tuple[str, ...]
     workspace_root: str | None = None
 
+    @property
+    def initially_absent_paths(self) -> frozenset[str]:
+        """明确的初态缺失是只读事实，不能当成未捕获正文补造。"""
+        return frozenset(
+            item["path"] for item in self.partial_evidence
+            if item.get("reason") == "initial_read_not_found"
+            and isinstance(item.get("path"), str)
+        ) - {item.path for item in self.files}
+
     def to_dict(self) -> dict[str, Any]:
         # Replay artifacts may be published for debugging.  Never put withheld
         # solution bytes in that public artifact; the full value is retained
@@ -390,7 +399,8 @@ def validate_completion_candidate(
             errors.append(f"DUPLICATE_FILE_PATH:{path}")
             continue
         seen_paths.add(path)
-        if path in replay_map and replay_map[path].completeness in {"COMPLETE", "UNKNOWN"}:
+        if (path in replay.initially_absent_paths
+                or path in replay_map and replay_map[path].completeness in {"COMPLETE", "UNKNOWN"}):
             errors.append(f"PROTECTED_FILE_OVERWRITE:{path}")
         if is_runtime_log(path):
             errors.append(f"RUNTIME_LOG_NOT_WRITABLE:{path}")

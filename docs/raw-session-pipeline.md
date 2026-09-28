@@ -1,6 +1,6 @@
 # 原始会话重建流程
 
-本页说明调用关系与阶段职责。运行结论和未解决问题统一维护在 [当前状态](current-status.md)，模块文件见 [阅读地图](rebuild-live-map.md)。
+本页说明截至 2026-09-28 的调用关系与阶段职责，源码版本以当前 Git 提交为准。运行结论和未解决问题统一维护在 [当前状态](current-status.md)，模块文件见 [阅读地图](rebuild-live-map.md)。
 
 R04/R05 按条重建使用 `reconstruct raw-run`，不读取筛选结论。已有筛选记录使用 `reconstruct run --records`，两者共享后续主链；原始 intake 不会被改写为筛选 ELIGIBLE。
 
@@ -16,9 +16,9 @@ R04/R05 按条重建使用 `reconstruct raw-run`，不读取筛选结论。已�
 原始 JSONL 行
 → Session Task Agent → RAW_SESSION source
 → Intent → Replay / Route
-→ Completion 候选 → Sufficiency
+→ Completion 候选 ↔ Sufficiency（最多追加两轮定向修复）
 → Environment Contract / TaskFit / 可选变体
-→ 执行门禁 → Verifier / RED
+→ 执行门禁 → Verifier 生成与独立语义审查 / RED
 → Harbor bundle → 可选真实 Hermes rollout → 完整验收
 ```
 
@@ -26,11 +26,13 @@ R04/R05 按条重建使用 `reconstruct raw-run`，不读取筛选结论。已�
 
 `raw_session.build_raw_session_source` 将 user span 分为 task 或 context，并校验覆盖、重叠和用户消息引用。失败保留分段收据；成功只证明任务边界协议完整。
 
-`intent_recovery.run_intent_recovery` 恢复原始目标、验收义务和环境绑定，每项义务引用真实用户消息。初始必要路径与最终输出路径必须区分：用户要求新增的文件不应被当成必须预先存在的输入。Intent 产物是拟合任务，仍需审查路径与义务是否符合原意。
+`intent_recovery.run_intent_recovery` 恢复原始目标、验收义务和环境绑定，每项义务引用真实用户消息。初始必要路径与最终输出路径必须区分：用户要求新增的文件不应被当成必须预先存在的输入。提取时区分真实用户要求、示例与说明文字，并依据回放根及用户绝对路径统一 workspace 坐标；公开任务与响应验收使用同一映射。原始用户文本、指定输出格式及结构化响应合同保留来源。Intent 产物仍需通过实际环境和验收核对是否符合原意。
 
 ### Replay 与路由
 
-`env_replay.replay_from_timeline` 恢复首次可信文件内容，区分完整文件、片段、未知修改和 withheld changes；不执行原始 shell。当前任务使用完整 session 工具时间线，提供跨 turn 上下文，但不等价于每个任务起点的独立快照。
+`env_replay.replay_from_timeline` 恢复首次可信文件内容，区分完整文件、片段、未知修改和 withheld changes；不执行原始 shell。read 输出的 hash 行号包装被解包，显式 raw 内容保持原样，缺失文件错误不作为源码。当前任务使用完整 session 工具时间线，提供跨 turn 上下文，但不等价于每个任务起点的独立快照。
+
+回放中可核验的源码片段另存为公开的 `.traceforge/source-excerpts.json` 和带行号片段文件，解题者可据此引用未连续物化的原始行；片段索引不补造未观察到的正文。
 
 Intent 后重新计算 `execution_support_route`：有回放文件走 TERMINAL_FILE；无回放文件而有 FILE 义务可以走 DEFAULT_EMPTY。没有受支持的文件验收时保留 REVIEW，而不生成虚假的文件验收结论。
 
@@ -38,7 +40,13 @@ Intent 后重新计算 `execution_support_route`：有回放文件走 TERMINAL_F
 
 `complete_from_replayed` 或 `complete_from_default_empty` 生成 task-start 环境候选，补全相关上下文与依赖，记录事实来源和不确定性。不得提前解题或把参考答案、隐藏验证测试交给 agent。
 
-候选通过结构、引用、写入边界和泄漏检查后物化 workspace。Completion READY 不代表依赖可用、源码正确或任务可解。当前是一次生成后逐个候选判断，没有基于后续结果自动返回 Completion 修复的跨阶段循环。
+首次补全和后续修复都只接收允许公开的原始证据：隐藏写入、修改屏障后的事件、匿名或重复事件编号不能进入可读取证据索引。Completion 沙盒上传后修正工作区目录所有权，使普通用户能写入子目录；完整原始正文仍由工具和候选校验共同保护，写入失败保留退出码和错误详情。
+
+候选通过结构、引用、写入边界和泄漏检查后物化 workspace。工具调用缺少证据编号时拒绝该次写入，允许 agent 补正参数；不得因此允许无证据写入。Completion READY 不代表依赖可用、源码正确或任务可解。
+
+编排层对有效候选运行 Sufficiency，最多追加两轮反馈：具体上下文缺口或真实探针失败返回 Completion 增量修复；仅缺探针收据时只重评。每轮独立物化、复核和记录，无进展、基础设施故障、模型拒绝或轮次耗尽均保留真实原因。原 Replay 的完整文件与部分片段保护不变，不通过修改任务或预解任务使环境过关。见 [环境反馈闭环](environment-repair.md)。
+
+运行声明省略时继承，显式新数组替换旧值；它们目前没有统一自动安装机制。缺包仍须由真实探针揭示，不能把声明写入 manifest 当作已完成安装。
 
 ### Sufficiency、环境合同与 TaskFit
 
@@ -52,9 +60,13 @@ TaskFit 衡量环境能否支持完成和验证原任务；目标功能未实现
 
 有 FILE 验收义务才调用现有文件 Verifier。真实 rollout 请求还会在 Verifier 之前检查环境执行收据；不满足时写 `verification/execution_gate.json` 并停止。RED-only 路径与此不同。
 
-Verifier 生成隐藏 pytest、oracle 和 mutation；RED 要求初始缺失能力检查失败、保护性检查通过、oracle 通过、mutation 失败。Verifier 内有有限轮反馈修复。校准成功可发布 Harbor bundle，`verification.status=READY` 不证明真实 agent 已解题。
+Verifier 生成隐藏 pytest、oracle 和 mutation。独立审查会读取实际 workspace，检查错误结果能否蒙混过关、合理结果是否被额外要求拒绝，以及响应格式检查是否被误当成语义义务覆盖；具体反例返回现有的有限修复轮。RED 要求初始缺失能力检查失败、保护性检查通过、oracle 通过、mutation 失败。独立审查与 RED 数值均不单独证明任务语义正确。校准成功可发布 Harbor bundle，`verification.status=READY` 不证明真实 agent 已解题。
 
-真实 Hermes rollout 在 task-start 环境执行，验收读取 trial、reward、质量门禁、轨迹、输入绑定与 cleanup。只有这些结果和义务覆盖都完整才可能关闭认证。显式请求的诊断 rollout 允许 NON_FILE 响应义务暂未验证，但未覆盖的 FILE 义务仍会前置阻断。rollout 后的 response receipt 只证明响应格式和来源绑定；结论、数量、证据等内容义务未验时仍为 REVIEW，不能宣称最终响应验收完整。
+真实 Hermes rollout 在 task-start 环境执行，验收读取 trial、reward、质量门禁、轨迹、输入绑定与 cleanup。待验证的最终响应不再一概阻止采集真实轨迹；它们仍留在未验证集合，不能提前获得交付资格。执行完成后，从真实最终 assistant 消息生成绑定收据，按来自用户要求的显式响应合同校验字段、数组元素、实际报告路径及支持的摘要一致性。只绑定 JSON 不等于合同通过，不支持的语义或结构继续未验证。
+
+当前修复闭环覆盖环境充分性与 Verifier/RED；真实 rollout 位于校准循环之外。最终响应 receipt 拒收会返回 REVIEW 并保存失败证据，不会自动重新解题或修改验收规则。
+
+公开 instruction 保留用户规定的验收格式，不向其追加未声明的旧报告字段；路径转换保持非路径转义语义。只有真实执行、义务覆盖和各项验收证据完整才可能关闭认证。新代码的实际通过情况以 [当前状态](current-status.md) 所列运行记录为准，不能由流程描述推断已经端到端通过。
 
 ## 产物边界
 

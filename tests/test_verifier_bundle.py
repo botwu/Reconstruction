@@ -119,27 +119,6 @@ def test_bundle_preserves_original_user_contract(tmp_path, shape, heading):
         assert instruction.count(criterion["id"]) == 1
 
 
-@pytest.mark.parametrize("contract, error", [
-    ("指定 schema 另见缺失附件。", "ACCEPTANCE_REPORT_SCHEMA_MISSING"),
-    ("```acceptance-report\n{invalid}\n```", "ACCEPTANCE_REPORT_SCHEMA_INVALID"),
-])
-def test_bundle_rejects_unavailable_acceptance_schema(tmp_path, contract, error):
-    root = tmp_path / "workspace"
-    root.mkdir()
-    with pytest.raises(ValueError, match=error):
-        compile_bundle(
-            task={
-                "task_instruction": "最后返回 acceptance-report。",
-                "source_task": {"user_texts": [
-                    "## Acceptance Contract\n最后返回 acceptance-report。\n" + contract
-                ]},
-            },
-            workspace_root=root,
-            verifier=_verifier(),
-            output_root=tmp_path / "out",
-        )
-
-
 @pytest.mark.parametrize("instruction", [
     "Describe the acceptance-report feature in README.",
     "返回指定格式的 acceptance-report。",
@@ -159,24 +138,6 @@ def test_bundle_does_not_infer_schema_from_mentions_or_model_summary(tmp_path, i
         output_root=tmp_path / "out",
     )
     assert (output / "task/instruction.md").read_text() == instruction + "\n"
-
-
-def test_bundle_does_not_replace_missing_original_schema_with_model_schema(tmp_path):
-    root = tmp_path / "workspace"
-    root.mkdir()
-    with pytest.raises(ValueError, match="ACCEPTANCE_REPORT_SCHEMA_MISSING"):
-        compile_bundle(
-            task={
-                "task_instruction": '最后返回 acceptance-report。\n'
-                '```acceptance-report\n{"modelInvented": true}\n```',
-                "source_task": {"user_texts": [
-                    "## Acceptance Contract\n最后返回 acceptance-report，指定 schema 另见缺失附件。"
-                ]},
-            },
-            workspace_root=root,
-            verifier=_verifier(),
-            output_root=tmp_path / "out",
-        )
 
 
 def test_bundle_keeps_contract_for_plain_report_without_json_schema(tmp_path):
@@ -374,7 +335,7 @@ def test_bundle_digest_includes_compiler_contract(tmp_path):
     manifest = __import__("json").loads(
         (output / "compile_manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v4-user-contract"
+    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v5-grounded-instruction"
     assert manifest["entrypoint_contract"] == {
         "workspace_mount": "/home/user/workspace",
         "solution_mount": "/solution",

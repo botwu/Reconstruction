@@ -20,6 +20,7 @@ from traceforge.reconstruction.agents import (
     AgentSession,
 )
 from traceforge.reconstruction.agents.runtime import AgentResult, merge_completion_files
+from traceforge.reconstruction.agents.session import safe_relpath, workspace_tree_hash
 from traceforge.reconstruction.completion_holes import CompletionIndex, index_completion_holes
 from traceforge.reconstruction.environment_bindings import (
     environment_bindings,
@@ -34,7 +35,7 @@ from traceforge.reconstruction.terminal_universe_environment import (
 from traceforge.reconstruction.tool_process_sketch import build_tool_process_sketch
 
 COMPLETION_SCHEMA = "traceforge.workspace-completion.v1"
-COMPLETION_PROMPT_VERSION = "workspace-completion-agent-v6-pre-task-state"
+COMPLETION_PROMPT_VERSION = "workspace-completion-agent-v7-incremental-feedback"
 TASK_Q_EVIDENCE_ID = "task:q"
 ENV_REPLAYED = "REPLAYED"
 ENV_DEFAULT_EMPTY = "DEFAULT_EMPTY"
@@ -144,6 +145,7 @@ def _shared_footer(
     ]
     return [
         "A short stub such as 'body unobserved' is not a body; those paths must not READY.",
+        "ABSENT 表示原始读取明确不存在，必须保留缺失；不能从其他材料推断正文或计划来填补。",
         "FILE environment_bindings initial_required_paths must exist as real bodies; output_paths are created by the solver and must not be pre-created.",
         "NON_FILE bindings are context; do not invent verifier files for them.",
         "Optional web_search is for typical layout names only. Do not write web source",
@@ -199,7 +201,9 @@ def _replayed_instruction(
         }
         for item in replay.files
     ]
-    protected = [item["path"] for item in public if item["completeness"] in {"COMPLETE", "UNKNOWN"}]
+    protected = sorted(replay.initially_absent_paths | {
+        item["path"] for item in public if item["completeness"] in {"COMPLETE", "UNKNOWN"}
+    })
     return "\n".join(
         [
             "Reconstruct the task-start Docker workspace so the given task is solvable, but NOT solved.",
@@ -216,7 +220,7 @@ def _replayed_instruction(
             "HOLES already lists path, kind, event_id, observed_prefix, excerpt_event_ids.",
             f"env_origin: {ENV_REPLAYED}",
             f"Empty replay tree: {json.dumps(not replay.files)}",
-            f"Protected COMPLETE/UNKNOWN paths: {json.dumps(protected, ensure_ascii=False)}",
+            f"Protected COMPLETE/UNKNOWN/ABSENT paths: {json.dumps(protected, ensure_ascii=False)}",
             f"TOPIC_CARDS: {json.dumps(topic_card or {}, ensure_ascii=False)}",
             f"HOLES: {json.dumps(_hole_cards(replay, holes, timeline), ensure_ascii=False)}",
             "REPLAYED FILE INDEX:",
@@ -409,6 +413,74 @@ def run_workspace_completion(
     )
 
 
+def _completion_seed(candidate: dict[str, Any]) -> list[dict[str, Any]]:
+    """只复用经过校验的候选快照，模型补全内容继续保留模型来源。"""
+    workspace = Path(candidate["workspace"])
+    provenance = (candidate.get("manifest") or {}).get("provenance") or {}
+    expected = {path: item.get("content_sha256") for path, item in provenance.items()}
+    if not workspace.is_dir() or workspace_tree_hash(workspace) != expected:
+        raise ValueError("COMPLETION_SEED_CHANGED")
+    files = []
+    for item in candidate.get("file_provenance") or []:
+        path = item.get("path")
+        if not isinstance(path, str) or safe_relpath(path) != path or path not in provenance:
+            raise ValueError("COMPLETION_SEED_PROVENANCE_INVALID")
+        files.append({
+            **item,
+            "content": (workspace / path).read_text(encoding="utf-8"),
+        })
+    return files
+
+
+def repair_workspace_completion(
+    *, task: dict[str, Any], replay: ReplayResult, timeline: list[dict[str, Any]],
+    agent: AgentRuntime, output_root: str | Path, candidate: dict[str, Any],
+    feedback: dict[str, Any], env_origin: str = ENV_REPLAYED,
+    source: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """在既有候选上定向修复；反馈不是新增事实或覆盖原始观测的许可。"""
+    root = Path(output_root)
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        seed_files = _completion_seed(candidate)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        result = {
+            "schema_version": COMPLETION_SCHEMA, "status": "REVIEW",
+            "errors": [f"COMPLETION_SEED_CHANGED:{exc}"], "candidates": [],
+        }
+        (root / "completion.json").write_text(
+            json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        return result
+    return _run_completion(
+        task=task, replay=replay, timeline=timeline, agent=agent,
+        output_root=root, max_candidates=1, workspace_root=candidate["workspace"],
+        source=source, env_origin=env_origin, seed_files=seed_files,
+        seed_candidate=candidate, repair_feedback=feedback,
+    )
+
+
+def _merge_completion_seed(
+    candidate: dict[str, Any], seed_files: list[dict[str, Any]], seed_candidate: dict[str, Any],
+) -> dict[str, Any]:
+    """文件按路径增量合并；运行声明省略时继承，显式值用于纠正旧声明。"""
+    changed = candidate.get("files")
+    if not isinstance(changed, list):
+        return candidate
+    changed_paths = {
+        item["path"] for item in changed
+        if isinstance(item, dict) and isinstance(item.get("path"), str)
+    }
+    merged = {
+        **candidate,
+        "files": [item for item in seed_files if item["path"] not in changed_paths] + changed,
+    }
+    for key in ("dependencies", "runtime_constraints"):
+        if key not in candidate:
+            merged[key] = list(seed_candidate.get(key) or [])
+    return merged
+
+
 def _run_completion(
     *,
     task: dict[str, Any],
@@ -420,6 +492,9 @@ def _run_completion(
     workspace_root: str | Path | None,
     source: dict[str, Any] | None,
     env_origin: str,
+    seed_files: list[dict[str, Any]] | None = None,
+    seed_candidate: dict[str, Any] | None = None,
+    repair_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Completion 共用物化与门禁；prompt 和跳过策略按 origin 分开。"""
 
@@ -489,17 +564,34 @@ def _run_completion(
         env_origin=origin,
         sketch=sketch,
     )
+    if repair_feedback is not None:
+        instruction += "\n" + "\n".join([
+            "这是对上一轮候选的定向修复，当前工作区已保留上轮补全内容；只补任务初态的具体缺口，不要重建整个项目。",
+            "反馈是诊断，不是新的原始证据。写文件仍引用原始 evidence_ref_ids，原始 COMPLETE 和 PARTIAL 保护不变。",
+            "不得为了通过探针而修改用户任务、预解任务或生成用户要求的目标产物。无法有依据修复时返回 REVIEW 并说明缺失事实。",
+            "只读审查任务不要求整个项目可以编译；如果探针超出任务所需能力，保持文件不变并说明由 Sufficiency 更正探测范围。",
+            "运行声明需要纠错时返回完整的 dependencies/runtime_constraints 新数组；显式空数组会清除旧声明，省略字段才继承。只修文件时保留仍需要的声明。",
+            "CURRENT_RUNTIME_DECLARATIONS:",
+            json.dumps({
+                key: (seed_candidate or {}).get(key, [])
+                for key in ("dependencies", "runtime_constraints")
+            }, ensure_ascii=False),
+            "REPAIR_FEEDBACK:",
+            json.dumps(repair_feedback, ensure_ascii=False),
+        ])
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
+    planted_files = {item.path: item.content for item in replay.files}
+    planted_files.update({item["path"]: item["content"] for item in seed_files or []})
     session = AgentSession(
         workspace=Path(workspace_root) if workspace_root else None,
         evidence=evidence,
-        replay_files={item.path: item.content for item in replay.files},
+        replay_files=planted_files,
         protected_paths={
             item.path
             for item in replay.files
             if item.completeness in {"COMPLETE", "UNKNOWN"}
-        },
+        } | set(replay.initially_absent_paths),
         partial_files={
             item.path: item.content
             for item in replay.files
@@ -518,7 +610,10 @@ def _run_completion(
         and not hole_index.holes
         and not missing_bindings
     )
-    if not replay.files and origin != ENV_DEFAULT_EMPTY:
+    absent_required = sorted(replay.initially_absent_paths & set(file_required_paths(task)))
+    if absent_required:
+        skip_reason = "INITIAL_REQUIRED_PATH_ABSENT"
+    elif not replay.files and origin != ENV_DEFAULT_EMPTY:
         skip_reason = "EMPTY_REPLAY_TREE"
     elif origin == ENV_DEFAULT_EMPTY and sketch is not None and not sketch.get("sufficient"):
         skip_reason = "TOOL_PROCESS_INSUFFICIENT"
@@ -569,6 +664,8 @@ def _run_completion(
     objective = task.get("core_objective") or task.get("task_instruction")
     if not isinstance(objective, str) or not objective.strip():
         errors.append("TASK_NOT_EXECUTABLE")
+    if skip_reason == "INITIAL_REQUIRED_PATH_ABSENT":
+        errors.extend(f"INITIAL_REQUIRED_PATH_ABSENT:{path}" for path in absent_required)
     if skip_reason == "EMPTY_REPLAY_TREE":
         errors.append("EMPTY_REPLAY_TREE")
     if skip_reason == "TOOL_PROCESS_INSUFFICIENT":
@@ -606,6 +703,8 @@ def _run_completion(
     records: list[dict[str, Any]] = []
     candidate_gate_errors: list[str] = []
     for index, candidate in enumerate(raw_candidates):
+        if seed_candidate is not None:
+            candidate = _merge_completion_seed(candidate, seed_files or [], seed_candidate)
         ok, candidate_errors = validate_completion_candidate(
             candidate, replay, refs, **_validate_kwargs(hole_index, task, origin)
         )
@@ -615,6 +714,11 @@ def _run_completion(
             if not isinstance(candidate.get(key), list)
             or any(not isinstance(value, str) for value in candidate.get(key, []))
         ]
+        if isinstance(candidate.get("files"), list) and any(
+            isinstance(item, dict) and not isinstance(item.get("path"), str)
+            for item in candidate["files"]
+        ):
+            schema_errors.append("INVALID_FILE_PATH")
         candidate_errors = (*candidate_errors, *schema_errors)
         ok = ok and not schema_errors
         # A protected overwrite is a hard candidate failure.  Never silently
@@ -678,6 +782,7 @@ def _run_completion(
         skip_reason is None
         and origin == ENV_REPLAYED
         and replay_only_ok
+        and seed_candidate is None
         and not ready
         and not sandbox_init
         and ran.completed
@@ -719,6 +824,8 @@ def _run_completion(
         "prompt_version": COMPLETION_PROMPT_VERSION,
         "env_origin": origin,
         "completion_strategy": strategy,
+        "repair_from_workspace": seed_candidate.get("workspace") if seed_candidate else None,
+        "repair_feedback": repair_feedback,
         "tool_process_sketch": sketch,
         "status": status,
         "errors": errors,

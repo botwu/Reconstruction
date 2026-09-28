@@ -75,7 +75,16 @@ class FakeHermesAgent:
         self.kwargs = kwargs
 
     def run_conversation(self, instruction: str, system_message=None, task_id=None):
-        if task_id == "intent":
+        if instruction.startswith("VERIFIER_SEMANTIC_REVIEW\n"):
+            specification = json.loads(instruction.splitlines()[-1])
+            payload = {
+                "decision": "ACCEPT", "issues": [],
+                "obligation_reviews": [{"obligation_id": oid, "covered": True,
+                                        "reason": "固定 fixture 模拟语义审查通过"}
+                                       for oid in [*specification["file_obligation_ids"],
+                                                   *specification.get("response_obligation_ids", [])]],
+            }
+        elif task_id == "intent":
             records = []
             tag = {}
             for line in instruction.splitlines():

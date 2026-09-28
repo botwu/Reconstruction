@@ -100,6 +100,8 @@ LISTING_COMMANDS = frozenset(
 )
 _FILENAME = re.compile(
     r"(?:^|[\s'\"`=:,(\[])((?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.[A-Za-z0-9]{1,8})"
+    # 不截断 lock_task 等标识符，也不把 self.state.lock() 调用当作文件引用。
+    r"(?![A-Za-z0-9._-]|\s*\()"
 )
 _PATH_LIKE_SUFFIXES = frozenset(
     {
@@ -514,6 +516,8 @@ def index_completion_holes(
         if path in seen or path.endswith("/"):
             return
         seen.add(path)
+        if path in replay.initially_absent_paths:
+            kind, reason = "ABSENT", "initial_read_not_found"
         holes.append({"path": path, "kind": kind, "reason": reason})
 
     for item in replay.files:

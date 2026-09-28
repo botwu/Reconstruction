@@ -391,4 +391,42 @@ def test_pi_missing_file_does_not_shadow_later_successful_read() -> None:
         {**_read("real source\n", raw=True), "call_id": "later"},
     ])
     assert replay.files[0].content == "real source\n"
+    assert not replay.initially_absent_paths
     assert replay.files[0].first_observation_event_id == "later"
+
+
+
+def test_explicit_missing_read_preserves_initial_absence_without_file_body() -> None:
+    timeline = [{"call_id": "absent", "name": "read",
+        "arguments": {"path": "plan.md"}, "result_text": "File not found: plan.md"}]
+    replay = replay_from_timeline(timeline)
+    assert replay.files == ()
+    assert replay.initially_absent_paths == {"plan.md"}
+    assert {"path": "plan.md", "reason": "initial_read_not_found",
+            "source_event_id": "absent"} in replay.partial_evidence
+
+
+def test_later_missing_read_cannot_erase_an_observed_initial_body() -> None:
+    replay = replay_from_timeline([
+        {"call_id": "before", "name": "read", "arguments": {"path": "plan.md"},
+         "result_text": "Original plan."},
+        {"call_id": "absent", "name": "read", "arguments": {"path": "plan.md"},
+         "result_text": "File not found: plan.md"},
+    ])
+    assert [(item.path, item.content) for item in replay.files] == [("plan.md", "Original plan.")]
+    assert not replay.initially_absent_paths
+
+
+def test_missing_read_after_mutation_is_not_initial_absence() -> None:
+    for mutation in (
+        {"call_id": "write", "name": "write", "arguments": {"path": "plan.md", "content": "later"}},
+        {"call_id": "unknown", "name": "exec", "arguments": {"command": "python mutate.py"}},
+    ):
+        replay = replay_from_timeline([mutation, {
+            "call_id": "absent", "name": "read", "arguments": {"path": "plan.md"},
+            "result_text": "File not found: plan.md",
+        }])
+        assert not replay.initially_absent_paths
+        assert replay.files == ()
+        assert any(row["reason"] in {"read_after_first_mutation", "read_after_unparsed_mutation"}
+                   for row in replay.partial_evidence)

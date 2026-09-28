@@ -971,3 +971,121 @@ def test_skipped_constant_assert_is_not_a_real_test_body(body: str, rejected: bo
         required_paths=["test/test_flowprobe.py"],
     )
     assert (error == "BINDING_PATH_TEST_SKELETON:test/test_flowprobe.py") is rejected
+
+
+def test_support_holes_exclude_method_calls_and_identifier_prefixes() -> None:
+    timeline = [
+        *_read_foo(),
+        {
+            "call_id": "source",
+            "name": "read_file",
+            "arguments": {"path": "engine.rs"},
+            "result_text": (
+                "let first = self.state.lock().unwrap();\n"
+                "let second = engine.inner.tasks.lock ().unwrap();\n"
+                "let guard = self.engine.lock_task_admission();\n"
+                'let files = ["Cargo.lock", "package-lock.json", "pnpm-lock.yaml", "custom.guard.lock"];\n'
+            ),
+        },
+    ]
+    index = index_completion_holes(replay_from_timeline(timeline), timeline)
+    support = {item["path"] for item in index.holes if item["kind"] == "SUPPORT"}
+    assert {"self.state.lock", "engine.inner.tasks.lock", "self.engine.lock"}.isdisjoint(support)
+    assert {"Cargo.lock", "package-lock.json", "pnpm-lock.yaml", "custom.guard.lock"} <= support
+
+
+@pytest.mark.parametrize("repair", [False, True])
+def test_initial_absence_blocks_tool_and_json_completion(tmp_path: Path, repair: bool) -> None:
+    from traceforge.reconstruction.agents.runtime import AgentResult
+    from traceforge.reconstruction.agents.session import execute_tool
+    from traceforge.reconstruction.workspace_completion import repair_workspace_completion
+
+    timeline = [*_read_foo(), {"call_id": "absent", "name": "read_file",
+        "arguments": {"path": "plan.md"}, "result_text": "File not found: plan.md"}]
+    replay = replay_from_timeline(timeline)
+    task = {"task_instruction": "Read plan.md", "environment_bindings": [{
+        "obligation_id": "o1", "verifier_kind": "FILE",
+        "required_paths": ["plan.md"], "initial_required_paths": ["plan.md"],
+        "output_paths": [], "observable": "计划已审查",
+    }]}
+    index = index_completion_holes(replay, timeline, task)
+    assert {"path": "plan.md", "kind": "ABSENT", "reason": "initial_read_not_found"} in index.holes
+    # 可选的已知缺失路径也受保护，测试模型工具写和最终JSON不能绕过。
+    task["environment_bindings"][0]["initial_required_paths"] = ["foo.py"]
+    task["environment_bindings"][0]["required_paths"] = ["foo.py"]
+
+    class FabricatingRuntime(RecordingRuntime):
+        def run(self, *, role, instruction, session, output_root):
+            assert "plan.md" in session.protected_paths
+            assert "ABSENT" in instruction
+            assert any(row["evidence_ref_id"] == "absent" for row in session.evidence)
+            item = {"path": "plan.md", "content": "# Plan\nA reconstructed plan from the brief.",
+                    "evidence_ref_ids": ["absent"]}
+            assert "PROTECTED_FILE_OVERWRITE:plan.md" in execute_tool("write_file", item, session)
+            return AgentResult(role="completion", backend=self.backend, completed=True,
+                final_text="{}", payload={"candidates": [{
+                    "files": [item], "dependencies": [], "runtime_constraints": [],
+                    "uncertainties": [], "decision": "READY",
+                }]})
+
+    runtime = FabricatingRuntime()
+    if repair:
+        seed = run_workspace_completion(task={"task_instruction": "Review foo.py"},
+            replay=replay, timeline=timeline, agent=RecordingRuntime(), output_root=tmp_path / "seed")
+        result = repair_workspace_completion(task=task, replay=replay, timeline=timeline,
+            agent=runtime, candidate=seed["candidates"][0], feedback={"missing": ["plan.md"]},
+            output_root=tmp_path / "repair")
+    else:
+        result = run_workspace_completion(task=task, replay=replay, timeline=timeline,
+            agent=runtime, output_root=tmp_path / "first")
+    rejected = result["candidates"][0]
+    assert rejected["valid"] is False
+    assert "PROTECTED_FILE_OVERWRITE:plan.md" in rejected["errors"]
+    assert rejected["workspace"] is None
+    for candidate in result["candidates"]:
+        if candidate["workspace"]:
+            assert not (Path(candidate["workspace"]) / "plan.md").exists()
+
+
+def test_unknown_body_is_not_misclassified_as_observed_absence() -> None:
+    timeline = [*_read_foo(), {"call_id": "missing_result", "name": "read_file",
+        "arguments": {"path": "plan.md"}, "result_text": None}]
+    replay = replay_from_timeline(timeline)
+    assert not replay.initially_absent_paths
+    candidate = {"decision": "READY", "files": [{
+        "path": "plan.md", "content": "# Plan\nThe migration steps follow the recorded brief.",
+        "provenance": "MODEL_COMPLETED", "evidence_ref_ids": ["missing_result"],
+    }]}
+    ok, errors = validate_completion_candidate(candidate, replay, {"missing_result"},
+                                               required_paths=["plan.md"])
+    assert ok, errors
+
+
+@pytest.mark.parametrize("repair", [False, True])
+def test_required_initial_absence_skips_model_and_keeps_review(tmp_path: Path, repair: bool) -> None:
+    from traceforge.reconstruction.workspace_completion import repair_workspace_completion
+
+    timeline = [*_read_foo(), {"call_id": "absent", "name": "read_file",
+        "arguments": {"path": "plan.md"}, "result_text": "File not found: plan.md"}]
+    replay = replay_from_timeline(timeline)
+    task = {"task_instruction": "Read plan.md", "environment_bindings": [{
+        "obligation_id": "o1", "verifier_kind": "FILE",
+        "required_paths": ["plan.md"], "initial_required_paths": ["plan.md"],
+        "output_paths": [], "observable": "计划已审查",
+    }]}
+    runtime = RecordingRuntime()
+    if repair:
+        seed = run_workspace_completion(task={"task_instruction": "Review foo.py"},
+            replay=replay, timeline=timeline, agent=RecordingRuntime(), output_root=tmp_path / "seed")
+        result = repair_workspace_completion(task=task, replay=replay, timeline=timeline,
+            agent=runtime, candidate=seed["candidates"][0], feedback={"missing": ["plan.md"]},
+            output_root=tmp_path / "repair")
+    else:
+        result = run_workspace_completion(task=task, replay=replay, timeline=timeline,
+            agent=runtime, output_root=tmp_path / "first")
+    assert runtime.calls == 0
+    assert result["status"] == "REVIEW"
+    assert result["agent"]["skip_reason"] == "INITIAL_REQUIRED_PATH_ABSENT"
+    assert "INITIAL_REQUIRED_PATH_ABSENT:plan.md" in result["errors"]
+    assert any("BINDING_PATH_MISSING:plan.md" in error for error in result["errors"])
+    assert all(candidate["workspace"] is None for candidate in result["candidates"])

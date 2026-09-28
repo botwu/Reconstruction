@@ -7,8 +7,8 @@ Verifier read the same normalized list.
 
 from __future__ import annotations
 
-import json
 import re
+import shlex
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -28,12 +28,13 @@ _FILENAME = re.compile(
     r"[A-Za-z0-9._-]+\.[A-Za-z0-9]{1,8})(?![A-Za-z0-9_/\\-])"
 )
 _DIR = re.compile(
-    r"(?:^|[\s'\"`=:,(\[])((?:[A-Za-z0-9._-]+/){1,6})(?![A-Za-z0-9_./-])"
+    r"(?:^|[\s'\"`=:,(\[])((?:[A-Za-z0-9._-]+/){1,6})(?![A-Za-z0-9_/-]|\.[A-Za-z0-9_])"
 )
-_ACCEPTANCE_EXAMPLE = re.compile(
-    r"(?ms)^[ \t]*```(?:json[ \t]+)?acceptance-report[ \t]*\r?\n"
-    r".*?^[ \t]*```[ \t]*(?=\r?\n|\Z)"
-)
+_FENCED_BLOCK = re.compile(r"(?ms)^(`{3,}|~{3,})([^\n]*)\n.*?^\1[ \t]*$")
+_EXAMPLE_CONTEXT = re.compile(r"(?i)(?:\b(?:example|shape|schema)\s*[:：]\s*$|(?:示例|格式如下)\s*[:：]?\s*$)")
+_INLINE_EXAMPLE = re.compile(r"(?i)(?:\be\.g\.|\bfor example\b|例如|比如|示例[:：])[^\n;；。]*")
+_LISTING_TOOLS = frozenset({"ls", "list_dir", "glob", "find", "fd", "tree", "rg", "grep"})
+_ABSOLUTE_PATH = re.compile(r"(?<![\w./])(?:[A-Za-z]:/|/)[^\s`\"'<>,]+")
 _READ_CODE = re.compile(
     r"(?i)(读|讀|看懂|完全读|完全讀|read|inspect|understand).{0,24}(代码|代碼|code|codebase|注入|injector|项目|工程)"
 )
@@ -49,7 +50,7 @@ _INPUT_ACTION = re.compile(
 _STUB_MARKERS = ("body unobserved", "observed name", "unobserved body")
 
 
-def normalize_binding_path(raw: str, workspace_root: str | None = None) -> str | None:
+def normalize_binding_path(raw: str) -> str | None:
     text = str(raw or "").replace("\\", "/").strip()
     # Models often copy a path from a prose list with a trailing semicolon or
     # comma. Remove only punctuation outside the path; keep filename dots.
@@ -57,7 +58,7 @@ def normalize_binding_path(raw: str, workspace_root: str | None = None) -> str |
     if not text:
         return None
     directory = text.endswith("/")
-    path = _safe_relpath(text.rstrip("/"), workspace_root)
+    path = _safe_relpath(text.rstrip("/"))
     if path is None:
         return None
     return path + "/" if directory else path
@@ -65,7 +66,6 @@ def normalize_binding_path(raw: str, workspace_root: str | None = None) -> str |
 
 def _filename_tokens(text: str) -> set[str]:
     names: set[str] = set()
-    text = _ACCEPTANCE_EXAMPLE.sub("", text or "")
     for raw in _FILENAME.findall(text or ""):
         if not _looks_like_filename(raw):
             continue
@@ -79,46 +79,120 @@ def _filename_tokens(text: str) -> set[str]:
     return names
 
 
-def _binding_context(
-    text: str, file_paths: list[str], workspace_root: str | None,
-) -> tuple[str, dict[str, str], list[str]]:
-    """用多个完整相对路径的共同根对齐坐标；不按 basename 猜文件。"""
-    text = _ACCEPTANCE_EXAMPLE.sub("", text)
-    tokens = _filename_tokens(text)
-    aliases = {path: normalize_binding_path(path, workspace_root) or path for path in tokens}
-    bodies = {path for path in file_paths if not path.endswith("/")}
-    anchors = [
-        {body[:-len(path) - 1] for body in bodies if body.endswith("/" + path)}
-        for path in aliases.values() if "/" in path and path not in bodies
-    ]
-    anchors = [roots for roots in anchors if roots]
-    errors: list[str] = []
-    prefix = None
-    if anchors:
-        common = set.intersection(*anchors)
-        if len(anchors) >= 2 and len(common) == 1:
-            prefix = common.pop()
-            absolute = {
-                normalize_binding_path(raw, workspace_root)
-                for raw in _FILENAME.findall(text)
-                if re.match(r"^(?:[A-Za-z]:)?[/\\]", raw)
-            }
-            if any(path and not path.startswith(prefix + "/") for path in absolute):
-                errors.append("BINDING_PATH_ROOT_CONFLICT")
-                prefix = None
-        else:
-            errors.append("BINDING_PATH_ROOT_AMBIGUOUS")
-    if prefix:
-        aliases = {
-            raw: path if path in bodies or path.startswith(prefix + "/") else prefix + "/" + path
-            for raw, path in aliases.items()
-        }
+def _request_path_text(text: str) -> str:
+    """格式示例是指令上下文，不是工作区路径的存在声明。"""
+    def mask_example(match: re.Match[str]) -> str:
+        prefix = text[:match.start()].rstrip().rsplit("\n", 1)[-1]
+        tag = match.group(2).strip().lower()
+        if tag in {"acceptance-report", "json acceptance-report"} or _EXAMPLE_CONTEXT.search(prefix):
+            return "\n"
+        return match.group(0)
 
-    def replace(match: re.Match[str]) -> str:
-        raw = match.group(1)
-        return match.group(0).replace(raw, aliases.get(normalize_binding_path(raw), raw), 1)
+    return _INLINE_EXAMPLE.sub("", _FENCED_BLOCK.sub(mask_example, text or ""))
 
-    return _DIR.sub(replace, _FILENAME.sub(replace, text)), aliases, errors
+
+def collect_binding_path_aliases(
+    source: dict[str, Any] | None, records: list[dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    """只依据 Replay 根和明确的原始路径锚点转换坐标，不按 basename 猜测。"""
+    timeline = list((source or {}).get("tool_timeline") or [])
+    root = replay_workspace_root(timeline)
+    if not root:
+        return {}
+    candidates: dict[str, set[str]] = {}
+    canonical_paths = {op["path"] for op in normalize_file_ops(timeline) if op.get("path")}
+
+    def add(raw: str, canonical: str | None) -> None:
+        if not canonical:
+            return
+        for alias in (raw.replace("\\", "/"), normalize_binding_path(raw)):
+            if alias:
+                candidates.setdefault(alias, set()).add(canonical)
+
+    for item in timeline:
+        arguments = item.get("arguments") if isinstance(item, dict) else None
+        if not isinstance(arguments, dict):
+            continue
+        for key in ("path", "file_path", "filePath", "filename", "file"):
+            raw = arguments.get(key)
+            if isinstance(raw, str):
+                add(raw, _safe_relpath(raw, root))
+    for record in records or []:
+        text = _request_path_text(str(record.get("text") or "")).replace("\\", "/")
+        absolute = {match.group(0).rstrip(".;)]}") for match in _ABSOLUTE_PATH.finditer(text)}
+        for raw in absolute:
+            add(raw, _safe_relpath(raw, root))
+        # 至少两个同目录的绝对用户输入才足以锚定省略根的相对路径。
+        # 不把同名文件或跨目录的共同后缀视为用户工作目录证据。
+        parents = {str(PurePosixPath(path).parent) for path in absolute}
+        if len(absolute) < 2 or len(parents) != 1:
+            continue
+        parent = next(iter(parents))
+        normalized_root = root.replace("\\", "/").rstrip("/")
+        if parent != normalized_root and not parent.startswith(normalized_root + "/"):
+            continue
+        relative_root = _safe_relpath(parent, root)
+        if not relative_root:
+            continue
+        relative_text = _ABSOLUTE_PATH.sub("", text)
+        for path in _filename_tokens(relative_text):
+            if path in canonical_paths or path.startswith(relative_root + "/"):
+                continue
+            canonical = normalize_binding_path(relative_root + "/" + path)
+            add(path, canonical)
+            add(parent + "/" + path, canonical)
+    return {raw: next(iter(paths)) for raw, paths in candidates.items()
+            if len(paths) == 1 and raw != next(iter(paths))}
+
+
+def _binding_context_text(text: str, aliases: dict[str, str]) -> str:
+    """仅转换派生绑定视图；原始用户记录不修改。"""
+    return _replace_binding_paths(_request_path_text(text), aliases)
+
+
+def _replace_binding_paths(text: str, aliases: dict[str, str]) -> str:
+    """按已有映射替换路径；保留 observable 的其余语义。"""
+    if not aliases:
+        return text
+    replacements = dict(aliases)
+    replacements.update({path.replace("/", "\\"): target for path, target in aliases.items()})
+    pattern = re.compile(r"(?<![\w./\\-])(?:" + "|".join(
+        re.escape(path) for path in sorted(replacements, key=len, reverse=True)
+    ) + r")(?![\w/\\-]|\.[\w])")
+    return pattern.sub(lambda match: replacements[match.group(0)], text)
+
+
+def _canonical_binding_path(raw: str, aliases: dict[str, str]) -> str | None:
+    normalized = normalize_binding_path(raw)
+    return aliases.get(normalized, normalized) if normalized else None
+
+
+def _listing_paths(item: dict[str, Any]) -> set[str]:
+    """只读取 listing 的路径列，不把匹配到的源文件正文当路径证据。"""
+    arguments = item.get("arguments")
+    if isinstance(arguments, dict):
+        command = next((arguments[key] for key in ("command", "cmd", "cmd_string", "input")
+                        if isinstance(arguments.get(key), str)), "")
+    else:
+        command = str(arguments or "")
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        words = []
+    executable = PurePosixPath(words[0]).name.lower() if words else ""
+    if str(item.get("name") or "").lower() not in _LISTING_TOOLS and executable not in _LISTING_TOOLS:
+        return set()
+    found: set[str] = set()
+    for word in words[1:]:
+        if word.startswith("-"):
+            continue
+        found.update(_filename_tokens(word))
+    for line in str(item.get("result_text") or "").splitlines():
+        path_column = re.split(r":\d+:", line.strip(), maxsplit=1)[0]
+        # 一行一个路径或 rg/grep 路径列；其余正文继续留在原始证据中。
+        if re.fullmatch(r"[A-Za-z0-9._/-]+", path_column):
+            found.update(_filename_tokens(path_column))
+    return found
 
 
 def _directory_prefixes(paths: set[str]) -> set[str]:
@@ -136,13 +210,15 @@ def collect_allowed_paths(
     records: list[dict[str, Any]] | None = None,
     *,
     replay_files: list[str] | None = None,
+    path_aliases: dict[str, str] | None = None,
 ) -> list[str]:
-    """Paths the Intent agent may bind: user text + already-observed timeline/replay."""
+    """可引用路径来自用户实际要求、工具路径参数、文件操作或 listing 路径列。"""
 
+    aliases = collect_binding_path_aliases(source, records) if path_aliases is None else path_aliases
     found: set[str] = set()
     for record in records or []:
         if isinstance(record, dict):
-            found.update(_filename_tokens(str(record.get("text") or "")))
+            found.update(_filename_tokens(_binding_context_text(str(record.get("text") or ""), aliases)))
     timeline = list((source or {}).get("tool_timeline") or [])
     for item in timeline:
         if not isinstance(item, dict):
@@ -150,14 +226,10 @@ def collect_allowed_paths(
         arguments = item.get("arguments")
         if isinstance(arguments, dict):
             for key in ("path", "file_path", "filename", "file"):
-                path = normalize_binding_path(str(arguments.get(key) or ""))
+                path = _canonical_binding_path(str(arguments.get(key) or ""), aliases)
                 if path:
                     found.add(path)
-            blob = json.dumps(arguments, ensure_ascii=False)
-        else:
-            blob = str(arguments or "")
-        found.update(_filename_tokens(blob))
-        found.update(_filename_tokens(str(item.get("result_text") or "")))
+        found.update(aliases.get(path, path) for path in _listing_paths(item))
     for op in normalize_file_ops(timeline):
         path = op.get("path")
         if isinstance(path, str) and path:
@@ -166,15 +238,6 @@ def collect_allowed_paths(
         normalized = normalize_binding_path(path)
         if normalized:
             found.add(normalized)
-    workspace_root = replay_workspace_root(timeline)
-    found = {normalize_binding_path(path, workspace_root) or path for path in found}
-    bindable = collect_file_binding_paths(source, replay_files=replay_files)
-    for record in records or []:
-        context, aliases, _ = _binding_context(
-            str(record.get("text") or ""), bindable, workspace_root
-        )
-        found = {aliases.get(path, path) for path in found}
-        found.update(_filename_tokens(context))
     found.update(_directory_prefixes(found))
     return sorted(found)
 
@@ -234,10 +297,10 @@ def path_is_allowed(path: str, allowed: set[str] | list[str]) -> bool:
 
 
 def mentioned_allowed_paths(text: str, allowed: list[str] | set[str]) -> list[str]:
-    tokens = _filename_tokens(text or "")
+    tokens = _filename_tokens(_request_path_text(text or ""))
     ordered: list[str] = []
     for path in sorted(allowed):
-        if path in tokens or path_is_allowed(path, tokens):
+        if path in tokens:
             if path not in ordered:
                 ordered.append(path)
     return ordered
@@ -263,9 +326,7 @@ def _explicit_output_paths(text: str, allowed_paths: list[str]) -> set[str]:
     # source input in "modify src/a.py and add tests/test_a.py" to inherit the
     # action for the later output. Output status is a semantic property of the
     # user request, not of a nearby filename anywhere in the paragraph.
-    clauses = re.split(
-        r"[\n\u3002\uFF1B;,\uFF0C]", _ACCEPTANCE_EXAMPLE.sub("", text or "")
-    )
+    clauses = re.split(r"[\n\u3002\uFF1B;,\uFF0C]", _request_path_text(text or ""))
     for clause in clauses:
         paths = mentioned_allowed_paths(clause, allowed_paths)
         actions = sorted(
@@ -298,8 +359,7 @@ def derive_binding(
     """Derive initial inputs and explicit final outputs from user evidence."""
     oid = str(obligation.get("id") or "")
     text = user_blob or ""
-    explicit = _filename_tokens(text)
-    mentioned = sorted(path for path in explicit if path_is_allowed(path, allowed_paths))
+    mentioned = mentioned_allowed_paths(text, allowed_paths)
     if not mentioned and _READ_CODE.search(text):
         # A generic code-review request needs observed source context. When
         # replay is available, listing-only names are excluded here.
@@ -332,7 +392,6 @@ def _normalize_one_binding(
     allowed_paths: list[str],
     file_binding_paths: list[str] | None = None,
     context_text: str = "",
-    workspace_root: str | None = None,
     path_aliases: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     errors: list[str] = []
@@ -355,25 +414,21 @@ def _normalize_one_binding(
         return None, [f"BINDING_PATHS_INVALID:{oid}"]
     declared_outputs: set[str] = set()
     all_paths: list[str] = []
-    explicit_paths = _filename_tokens(context_text)
-    hinted_outputs = _explicit_output_paths(context_text, allowed_paths) & explicit_paths
+    hinted_outputs = _explicit_output_paths(context_text, allowed_paths)
     bindable = set(file_binding_paths) if file_binding_paths is not None else None
-    for raw in dict.fromkeys([*raw_paths, *raw_outputs]):
-        path = normalize_binding_path(raw, workspace_root)
-        path = (path_aliases or {}).get(path, path)
+    for raw in [*raw_paths, *raw_outputs]:
+        path = _canonical_binding_path(raw, path_aliases or {})
         if path is None:
             errors.append(f"BINDING_PATH_UNSAFE:{oid}:{raw}")
             continue
         if not path_is_allowed(path, allowed_paths):
             errors.append(f"BINDING_PATH_NOT_ALLOWED:{oid}:{path}")
             continue
-        # 用户明确点名的缺失输入仍是缺口；仅在 listing 出现的路径不能升级为输入。
         if raw in raw_outputs and path not in hinted_outputs:
             errors.append(f"BINDING_OUTPUT_PATH_NOT_EXPLICIT:{oid}:{path}")
-        if (
-            kind == FILE and bindable is not None
-            and path not in bindable and path not in explicit_paths
-        ):
+        # 明确要求修改或读取的缺失输入仍是输入；仅 listing 的名字不能冒充正文。
+        if (kind == FILE and bindable is not None and path not in bindable
+                and path not in mentioned_allowed_paths(context_text, allowed_paths)):
             continue
         if path not in all_paths:
             all_paths.append(path)
@@ -387,6 +442,7 @@ def _normalize_one_binding(
     if not isinstance(observable, str):
         errors.append(f"BINDING_OBSERVABLE_INVALID:{oid}")
         observable = ""
+    observable = _replace_binding_paths(observable, path_aliases or {})
     if kind == FILE and (not observable.strip() or observable.strip().lower() == "replayed excerpts still present"):
         errors.append(f"BINDING_TASK_OUTCOME_REQUIRED:{oid}")
     if kind == FILE and not all_paths and file_binding_paths is None:
@@ -413,32 +469,25 @@ def normalize_environment_bindings(
     allowed_paths: list[str],
     *,
     user_blob: str = "",
+    user_records: list[dict[str, Any]] | None = None,
+    path_aliases: dict[str, str] | None = None,
     file_binding_paths: list[str] | None = None,
-    user_text_by_id: dict[str, str] | None = None,
-    workspace_root: str | None = None,
     require_complete: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     errors: list[str] = []
     known_ids = {str(item.get("id")) for item in obligations if isinstance(item, dict) and item.get("id")}
-    contexts = {
-        str(item["id"]): (
-            "\n".join(
-                user_text_by_id[ref] for ref in item.get("evidence_ref_ids", [])
-                if ref in user_text_by_id
-            )
-            if user_text_by_id is not None else user_blob
-        )
-        for item in obligations if isinstance(item, dict) and item.get("id")
-    }
-    aliases_by_id = {}
-    for oid, text in contexts.items():
-        contexts[oid], aliases_by_id[oid], context_errors = _binding_context(
-            text, file_binding_paths or [], workspace_root
-        )
-        errors.extend(f"{error}:{oid}" for error in context_errors)
-    allowed_paths = sorted({
-        normalize_binding_path(path, workspace_root) or path for path in allowed_paths
-    } | {path for text in contexts.values() for path in _filename_tokens(text)})
+    obligations_by_id = {str(item.get("id")): item for item in obligations if isinstance(item, dict)}
+    records_by_id = {str(item.get("id")): str(item.get("text") or "")
+                     for item in user_records or [] if isinstance(item, dict)}
+
+    def binding_context(obligation: dict[str, Any]) -> str:
+        # 有原始记录时只使用该义务引用的消息，不能把相邻平台说明变成任务输入。
+        if user_records is not None:
+            text = "\n".join(records_by_id[ref] for ref in obligation.get("evidence_ref_ids") or []
+                             if ref in records_by_id)
+        else:
+            text = user_blob
+        return _binding_context_text(text, path_aliases or {})
     raw = payload.get("environment_bindings")
     by_id: dict[str, dict[str, Any]] = {}
     if raw is None or raw == []:
@@ -455,9 +504,8 @@ def normalize_environment_bindings(
             known_ids=known_ids,
             allowed_paths=allowed_paths,
             file_binding_paths=file_binding_paths,
-            context_text=contexts.get(str(item.get("obligation_id") or item.get("id")), ""),
-            workspace_root=workspace_root,
-            path_aliases=aliases_by_id.get(str(item.get("obligation_id") or item.get("id"))),
+            context_text=binding_context(obligations_by_id.get(str(item.get("obligation_id") or item.get("id")), {})),
+            path_aliases=path_aliases,
         )
         errors.extend(item_errors)
         if normalized is None:
@@ -472,32 +520,28 @@ def normalize_environment_bindings(
         if not isinstance(obligation, dict) or not obligation.get("id"):
             continue
         oid = str(obligation["id"])
+        context_text = binding_context(obligation)
         if oid in by_id:
             current = by_id[oid]
-            if current.get("verifier_kind") == FILE and not current.get("required_paths"):
-                # The model has already declared this obligation as FILE. It may
-                # omit a path when the deliverable is a new output file; derive
-                # only the path from explicit user/evidence text. This does not
-                # infer a missing obligation (the require_complete gate below
-                # still rejects an absent binding entry).
-                derived = derive_binding(
-                    obligation, allowed_paths, contexts[oid], file_binding_paths=file_binding_paths
-                )
-                if derived.get("required_paths"):
-                    for key in ("required_paths", "initial_required_paths", "output_paths"):
-                        current[key] = derived[key]
-                    result.append(current)
-                    continue
-                errors.append(f"BINDING_FILE_PATHS_REQUIRED:{oid}")
             if current.get("verifier_kind") == FILE:
                 derived = derive_binding(
-                    obligation, allowed_paths, contexts[oid], file_binding_paths=file_binding_paths
+                    obligation, allowed_paths, context_text, file_binding_paths=file_binding_paths
                 )
+                if not current["required_paths"]:
+                    for key in ("required_paths", "initial_required_paths", "output_paths"):
+                        current[key] = derived[key]
+                    if not current["required_paths"]:
+                        errors.append(f"BINDING_FILE_PATHS_REQUIRED:{oid}")
+                # 模型漏列新产物不能使原文明示输出消失；保留原 observable。
                 for path in derived["output_paths"]:
                     if path not in current["output_paths"]:
                         current["output_paths"].append(path)
                     if path not in current["required_paths"]:
                         current["required_paths"].append(path)
+                current["initial_required_paths"] = [
+                    path for path in current["initial_required_paths"]
+                    if path not in current["output_paths"]
+                ]
             result.append(current)
         elif require_complete:
             # 模型显式返回 binding 列表时，它就是完整协议声明；
@@ -506,7 +550,7 @@ def normalize_environment_bindings(
         else:
             result.append(
                 derive_binding(
-                    obligation, allowed_paths, contexts[oid], file_binding_paths=file_binding_paths
+                    obligation, allowed_paths, context_text, file_binding_paths=file_binding_paths
                 )
             )
     return result, errors
@@ -681,6 +725,7 @@ __all__ = [
     "NON_FILE",
     "attach_bindings_to_obligations",
     "collect_allowed_paths",
+    "collect_binding_path_aliases",
     "collect_file_binding_paths",
     "derive_binding",
     "observed_body_paths",

@@ -16,6 +16,7 @@ from traceforge.reconstruction.verification import (
     write_execution_manifest,
     _acceptance_report_obligation_ids,
     _apply_response_receipts,
+    _record_unverified_obligations,
 )
 from traceforge.reconstruction.verifier_recovery import run_verifier_recovery
 
@@ -86,6 +87,10 @@ class VerifierRuntime:
 
     def run(self, *, role, instruction, session, output_root):
         self.called = True
+        if role.result_schema == "traceforge.verifier-semantic-review.v1":
+            return AgentResult(role=role.name, backend="test", completed=True, payload={
+                "decision": "ACCEPT", "issues": [], "obligation_reviews": [
+                    {"obligation_id": "obl-001", "covered": True, "reason": "编排单测审查替身"}]})
         if self.sandbox:
             session.sandbox = object()
             digest = hashlib.sha256(_VERIFIER_PAYLOAD["test_outputs_py"].encode("utf-8")).hexdigest()
@@ -547,7 +552,9 @@ def test_receipt_does_not_cover_verdict_merely_placed_before_report(
         ],
     }
     assert _acceptance_report_obligation_ids(task) == ["obl-003"]
-    monkeypatch.setattr(verification, "_attach_response_receipts", lambda *args: ([], [{}, {}]))
+    monkeypatch.setattr(verification, "_attach_response_receipts", lambda *args: ([], [
+        {"verified_obligation_ids": [], "contract_checks": []}
+    ] * 2))
     result = {"unverified_obligations": ["obl-002", "obl-003"]}
     _apply_response_receipts(result, {"results": {"trials": []}}, task, expected_trials=2)
     assert result["unverified_obligations"] == ["obl-002", "obl-003"]
@@ -581,4 +588,191 @@ def test_valid_receipt_does_not_certify_combined_response_obligation(tmp_path: P
     _apply_response_receipts(result, rollout, task, expected_trials=1)
     assert rollout["results"]["trials"][0]["response_receipt_status"] == "VERIFIED"
     assert result["unverified_obligations"] == ["response"]
-    assert result["response_receipt_scope"] == "FORMAT_ONLY"
+    assert result["response_receipts"][0]["verified_obligation_ids"] == []
+
+
+def _response_task(*, semantic: bool = False) -> dict:
+    obligations = [
+        {"id": "obl-001", "text": "output exists"},
+        {"id": "obl-002", "text": "finish with acceptance-report JSON"},
+    ]
+    if semantic:
+        obligations.append({"id": "obl-003", "text": "the acceptance-report correctly reviews every code change"})
+    return {
+        **_TASK, "acceptance_obligations": obligations,
+        "environment_bindings": [
+            {"obligation_id": item["id"], "verifier_kind": "FILE" if item["id"] == "obl-001" else "NON_FILE"}
+            for item in obligations
+        ],
+    }
+
+
+def test_response_structure_obligation_is_pending_until_rollout_not_a_precondition() -> None:
+    result = {"errors": [], "unverified_obligations": []}
+    assert not _record_unverified_obligations(result, task=_response_task())
+    assert result["unverified_obligations"] == ["obl-002"]
+    assert result["pending_response_obligations"] == ["obl-002"]
+    assert result["errors"] == []
+
+
+def test_unknown_semantic_response_obligation_remains_visible_without_blocking_attempt() -> None:
+    result = {"errors": [], "unverified_obligations": []}
+    assert not _record_unverified_obligations(result, task=_response_task(semantic=True))
+    assert result["unverified_obligations"] == ["obl-002", "obl-003"]
+    assert result["pending_response_obligations"] == ["obl-002", "obl-003"]
+
+
+def test_receipt_does_not_clear_obligations_without_machine_contract(tmp_path: Path) -> None:
+    from test_response_receipt import trajectory
+
+    path = tmp_path / "trajectory.full.json"
+    path.write_bytes(trajectory())
+    rollout = {"results": {"trials": [
+        {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
+        {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
+    ]}}
+    result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002", "obl-003"]}
+    _apply_response_receipts(result, rollout, _response_task(semantic=True), 2)
+    assert result["unverified_obligations"] == ["obl-002", "obl-003"]
+    assert len(result["response_receipts"]) == 2
+    assert all(item["verification_scope"] == "REPORT_STRUCTURE_ONLY" for item in result["response_receipts"])
+    assert all(item["semantic_verified"] is False for item in result["response_receipts"])
+
+
+def test_missing_trial_entry_does_not_clear_response_obligation() -> None:
+    result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
+    _apply_response_receipts(result, {"results": {"trials": [None]}}, _response_task(), 1)
+    assert result["unverified_obligations"] == ["obl-002"]
+    assert result["status"] == "REVIEW"
+    assert "NON_FILE_RESPONSE_UNVERIFIED" in result["errors"]
+
+
+def test_report_structure_path_reaches_verifier_before_response_exists(tmp_path: Path, monkeypatch) -> None:
+    from traceforge.reconstruction import verifier_recovery
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.py").write_text("print(1)\n")
+    calls = []
+
+    def stop_at_verifier(**kwargs):
+        calls.append(kwargs["task"])
+        return {"errors": ["FIXTURE_STOP_AFTER_GATE"]}, None
+
+    monkeypatch.setattr(verifier_recovery, "run_verifier_recovery", stop_at_verifier)
+    result = run_reconstruction_verification(
+        task=_response_task(), workspace_root=workspace, model=None, agent=object(),
+        output_root=tmp_path / "verification",
+        config=VerificationConfig(
+            harbor_root=tmp_path, model_name="test", rollout_model="test/test",
+            execute_red=True, execute_rollout=True, max_rounds=1,
+        ),
+    )
+    assert len(calls) == 1
+    assert result["unverified_obligations"] == ["obl-002"]
+    assert result["pending_response_obligations"] == ["obl-002"]
+    assert result["rollout"] == "NOT_RUN"
+
+
+def test_machine_contract_clears_only_after_all_real_trial_receipts(tmp_path: Path) -> None:
+    from test_response_receipt import acceptance_contract, trajectory
+
+    task = _response_task(semantic=True)
+    task["response_contract"] = acceptance_contract()
+    task["response_contract"]["checks"][0]["obligation_id"] = "obl-002"
+    path = tmp_path / "trajectory.full.json"
+    path.write_bytes(trajectory())
+    rollout = {"results": {"trials": [
+        {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
+        {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
+    ]}}
+    result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002", "obl-003"]}
+    _apply_response_receipts(result, rollout, task, 2)
+    assert result["unverified_obligations"] == ["obl-003"]
+    assert result["pending_response_obligations"] == ["obl-003"]
+    assert result["response_receipts"][0]["verified_obligation_ids"] == ["obl-002"]
+
+
+def test_machine_contract_failure_keeps_obligation_unverified(tmp_path: Path) -> None:
+    from test_response_receipt import acceptance_contract, trajectory
+
+    task = _response_task()
+    task["response_contract"] = acceptance_contract()
+    task["response_contract"]["checks"][0].update(
+        obligation_id="obl-002", criterion_ids=["different-criterion"]
+    )
+    path = tmp_path / "trajectory.full.json"
+    path.write_bytes(trajectory())
+    result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
+    _apply_response_receipts(result, {"results": {"trials": [
+        {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
+    ]}}, task, 1)
+    assert result["unverified_obligations"] == ["obl-002"]
+    assert result["status"] == "REVIEW"
+
+
+def test_one_trial_contract_failure_prevents_clearing_for_all_trials(tmp_path: Path) -> None:
+    from test_response_receipt import acceptance_contract, report, trajectory
+
+    task = _response_task()
+    task["response_contract"] = acceptance_contract()
+    task["response_contract"]["checks"][0]["obligation_id"] = "obl-002"
+    good = tmp_path / "good.json"
+    good.write_bytes(trajectory())
+    bad_report = report()
+    bad_report["criteriaSatisfied"][0]["id"] = "different-criterion"
+    bad = tmp_path / "bad.json"
+    fence = chr(96) * 3
+    bad.write_bytes(trajectory(fence + "acceptance-report\n" + json.dumps(bad_report) + "\n" + fence))
+    result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
+    _apply_response_receipts(result, {"results": {"trials": [
+        {"status": "PASS", "reward": 1.0, "trajectory_path": str(good)},
+        {"status": "PASS", "reward": 1.0, "trajectory_path": str(bad)},
+    ]}}, task, 2)
+    assert result["unverified_obligations"] == ["obl-002"]
+    assert result["status"] == "REVIEW"
+    assert result["sft_eligible"] is False
+
+
+def test_basic_summary_contract_uses_trial_snapshot_in_orchestration(tmp_path: Path) -> None:
+    from test_response_receipt import _summary_fixture
+
+    trial_root = tmp_path / "trial"
+    data, contract, _ = _summary_fixture(trial_root)
+    path = trial_root / "agent/trajectory.full.json"
+    path.parent.mkdir()
+    path.write_bytes(data)
+    task = _response_task()
+    task["acceptance_obligations"][1]["text"] = "Return only the verdict, finding counts and report path."
+    contract["checks"][0]["obligation_id"] = "obl-002"
+    task["response_contract"] = contract
+    result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
+    _apply_response_receipts(result, {"results": {"trials": [
+        {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
+    ]}}, task, 1)
+    assert result["unverified_obligations"] == []
+    assert result["errors"] == []
+    check = result["response_receipts"][0]["contract_checks"][0]
+    assert check["verification_scope"] == "REPORT_CONSISTENCY_ONLY"
+    assert check["report_sha256"]
+
+
+def test_explicit_report_contract_bypasses_only_unrequested_legacy_fields(tmp_path: Path) -> None:
+    from test_response_receipt import acceptance_contract, trajectory
+
+    task = _response_task()
+    task["response_contract"] = acceptance_contract()
+    task["response_contract"]["checks"][0].update(
+        obligation_id="obl-002", criterion_ids=[], required_fields={"summary": "string"}
+    )
+    fence = chr(96) * 3
+    path = tmp_path / "trajectory.full.json"
+    path.write_bytes(trajectory(fence + 'acceptance-report\n{"summary":"finished"}\n' + fence))
+    result = {"status": "READY", "errors": [], "unverified_obligations": ["obl-002"]}
+    _apply_response_receipts(result, {"results": {"trials": [
+        {"status": "PASS", "reward": 1.0, "trajectory_path": str(path)},
+    ]}}, task, 1)
+    assert result["unverified_obligations"] == []
+    assert result["errors"] == []
+    assert result["response_receipts"][0]["verification_scope"] == "REPORT_BINDING_ONLY"
+    assert result["response_receipts"][0]["contract_checks"][0]["verification_scope"] == "REPORT_STRUCTURE_ONLY"

@@ -46,6 +46,26 @@ class _CaptureRuntime:
         )
 
 
+@pytest.mark.parametrize("contract", [{"schema_version": "traceforge.response-contract.v1",
+                                       "checks": []}, None, "invalid"])
+def test_intent_ignores_empty_or_invalid_response_contract(tmp_path: Path, contract) -> None:
+    source = _padded_source(user_index=1, text="解释超时日志，按指定结构回答")
+    task_id = source["tasks"][0]["task_id"]
+    runtime = _CaptureRuntime({
+        "task_id": task_id, "task_instruction": "解释超时日志，按指定结构回答",
+        "core_objective": "解释日志", "response_contract": contract,
+        "acceptance_obligations": [{"id": "o1", "text": "解释超时日志",
+                                     "evidence_ref_ids": ["user:1"]}],
+        "environment_bindings": [{"obligation_id": "o1", "verifier_kind": "NON_FILE",
+                                   "required_paths": [], "observable": "解释已返回"}],
+    })
+    result = run_intent_recovery(source=source, agent=runtime, output_root=tmp_path)
+    assert result["status"] == "READY"
+    assert "response_contract" not in result["task"]
+    assert "traceforge.response-contract.v1" in runtime.instruction
+    assert "不得把事实正确性或行为已完成声明成格式检查" in runtime.instruction
+
+
 def _padded_source(*, user_index: int, text: str, extra_task: bool = False) -> dict:
     messages: list[dict] = [{"role": "assistant", "content": f"pad-{i}"} for i in range(user_index)]
     messages.append({"role": "user", "content": text})
@@ -258,6 +278,67 @@ def test_intent_prompt_previews_context_without_changing_raw_session():
     assert json.dumps(source, ensure_ascii=False) == before
 
 
+def test_intent_delivers_original_format_and_grounds_declared_response_check(tmp_path):
+    example = {"criteriaSatisfied": [{"id": "criterion-1", "status": "satisfied"}],
+               "changedFiles": [], "noStagedFiles": True}
+    text = "回答完成情况，最后附上以下格式。\n```acceptance-report\n" + json.dumps(example) + "\n```"
+    source = _padded_source(user_index=3, text=text)
+    payload = {
+        "task_id": source["tasks"][0]["task_id"], "task_instruction": "回答完成情况，遵循指定格式。",
+        "core_objective": "回答完成情况", "success_criteria": ["按原始格式回应"],
+        "acceptance_obligations": [{"id": "format", "text": "按原始格式回应", "evidence_ref_ids": ["user:3"]}],
+        "environment_bindings": [{"obligation_id": "format", "verifier_kind": "NON_FILE",
+                                  "required_paths": [], "observable": "响应包含指定 JSON 格式"}],
+        "response_contract": {"schema_version": "traceforge.response-contract.v1", "checks": [
+            {"kind": "acceptance_report", "obligation_id": "format",
+             "criterion_ids": ["invented"], "required_fields": {"invented": "string"}}]},
+    }
+    result = run_intent_recovery(source=source, agent=_CaptureRuntime(payload), output_root=tmp_path)
+    assert result["status"] == "READY"
+    task = result["task"]
+    assert "```acceptance-report\n" + json.dumps(example) in task["task_instruction"]
+    assert task["response_contract"]["checks"][0]["criterion_ids"] == ["criterion-1"]
+    assert "invented" not in task["response_contract"]["checks"][0]["required_fields"]
+
+
+def test_unsupported_response_contract_stays_unverified_without_blocking_intent(tmp_path):
+    source = _padded_source(user_index=3, text="请用一句话概括工作。")
+    payload = {
+        "task_id": source["tasks"][0]["task_id"], "task_instruction": "请用一句话概括工作。",
+        "core_objective": "概括工作", "success_criteria": ["简明准确"],
+        "acceptance_obligations": [{"id": "summary", "text": "概括工作", "evidence_ref_ids": ["user:3"]}],
+        "environment_bindings": [{"obligation_id": "summary", "verifier_kind": "NON_FILE",
+                                  "required_paths": [], "observable": "准确概括工作"}],
+        "response_contract": {"schema_version": "traceforge.response-contract.v1", "checks": [
+            {"kind": "unknown", "obligation_id": "summary"}]},
+    }
+    result = run_intent_recovery(source=source, agent=_CaptureRuntime(payload), output_root=tmp_path)
+    assert result["status"] == "READY"
+    assert "response_contract" not in result["task"]
+    assert result["task"]["acceptance_obligations"][0]["id"] == "summary"
+
+
+def test_intent_missing_response_contract_stays_runnable_but_template_requests_it(tmp_path: Path) -> None:
+    text = ("Return only the verdict, finding counts, and report path, and finish with "
+            "a fenced JSON block tagged acceptance-report conforming to the specified schema.")
+    source = _padded_source(user_index=2, text=text)
+    task_id = source["tasks"][0]["task_id"]
+    runtime = _CaptureRuntime({
+        "task_id": task_id, "task_instruction": text, "core_objective": "返回评审摘要和验收报告",
+        "acceptance_obligations": [{"id": "obl-002", "text": text, "evidence_ref_ids": ["user:2"]}],
+        "environment_bindings": [{"obligation_id": "obl-002", "verifier_kind": "NON_FILE",
+                                  "required_paths": [], "observable": text}],
+    })
+    result = run_intent_recovery(source=source, agent=runtime, output_root=tmp_path)
+    assert result["status"] == "READY", result["errors"]
+    assert "response_contract" not in result["task"]
+    assert result["task"]["acceptance_obligations"][0]["id"] == "obl-002"
+    template = next(line for line in runtime.instruction.splitlines() if line.startswith('{"task_id":"same tag"'))
+    assert "response_contract" in json.loads(template)
+    assert "同一义务" in runtime.instruction
+    assert "全部通过" in runtime.instruction
+
+
 def test_intent_preserves_contract_and_original_review_gate(tmp_path: Path) -> None:
     contract = (
         "## Acceptance Contract\n"
@@ -288,22 +369,3 @@ def test_intent_preserves_contract_and_original_review_gate(tmp_path: Path) -> N
     assert "只读，不执行 Git 命令。" in instruction
     assert "customEvidence" in instruction
     assert instruction.count("```acceptance-report") == 1
-
-
-def test_intent_reviews_missing_acceptance_schema(tmp_path: Path) -> None:
-    source = _padded_source(
-        user_index=2, text="## Acceptance Contract\n返回指定格式的 acceptance-report。"
-    )
-    task = source["tasks"][0]
-    runtime = _CaptureRuntime({
-        "task_id": task["task_id"],
-        "task_instruction": "返回指定格式的 acceptance-report。",
-        "core_objective": "审查变更",
-        "acceptance_obligations": [{
-            "id": "obl-001", "text": "返回 acceptance-report。", "evidence_ref_ids": ["user:2"],
-        }],
-    })
-    result = run_intent_recovery(source=source, agent=runtime, output_root=tmp_path)
-    assert result["status"] == "REVIEW"
-    assert any(code.startswith("ACCEPTANCE_REPORT_SCHEMA_MISSING") for code in result["errors"])
-    assert "criteriaSatisfied" not in result["task"]["task_instruction"]

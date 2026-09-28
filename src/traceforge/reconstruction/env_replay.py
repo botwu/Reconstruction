@@ -1044,9 +1044,9 @@ def _infer_workspace_root(timeline: list[dict[str, Any]]) -> str | None:
 
 
 def replay_workspace_root(
-    timeline: list[dict[str, Any]], workspace_root: str | None = None,
+    timeline: list[dict[str, Any]], *, workspace_root: str | None = None,
 ) -> str | None:
-    """Replay 与用户路径绑定共用同一工作根。"""
+    """Replay 和环境绑定共用工作目录规则，避免同一文件出现两套坐标。"""
     return _session_workdir(timeline) or workspace_root or _infer_workspace_root(timeline)
 
 
@@ -1059,7 +1059,7 @@ def normalize_file_ops(
     # event. Infer one common project root before normalising; otherwise the
     # host prefix becomes a fake workspace directory and every downstream
     # binding is wrong.
-    session_workdir = replay_workspace_root(timeline, workspace_root)
+    session_workdir = replay_workspace_root(timeline, workspace_root=workspace_root)
     ops: list[dict[str, Any]] = []
     for item in timeline:
         if not isinstance(item, dict):
@@ -1067,6 +1067,14 @@ def normalize_file_ops(
         usable_result = _usable_tool_result(item)
         name = str(item.get("name") or "").lower()
         if not usable_result:
+            if (name in {"read", "read_file"} and item.get("pending") is not True
+                    and item.get("cleared") is not True
+                    and str(item.get("result_text") or "").lstrip().lower().startswith("file not found:")):
+                path = _path_from_args(item.get("arguments"), _item_workdir(item) or session_workdir)
+                if path:
+                    ops.append({"kind": "absent", "path": path,
+                                "event_id": str(item.get("call_id") or "unknown")})
+                continue
             if name in {"exec", "bash", "shell", "terminal", "command", "powershell"}:
                 unknown = dict(item)
                 unknown["result_text"] = ""
@@ -1393,6 +1401,11 @@ def replay_from_timeline(
                 evidence["observed_chars"] = len(text)
                 evidence["content"] = text
             partial.append(evidence)
+            continue
+        if kind == "absent":
+            if path not in observed:
+                partial.append({"path": path, "reason": "initial_read_not_found",
+                                "source_event_id": event_id})
             continue
         if isinstance(op.get("content"), str) and isinstance(op.get("line_numbers"), list):
             segment = {

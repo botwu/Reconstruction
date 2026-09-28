@@ -95,7 +95,7 @@ def test_mixed_non_file_diagnostic_rollout_cannot_certify_task(tmp_path: Path, m
     workspace.mkdir()
     (workspace / "billing.py").write_text("def bill(x): return x\n", encoding="utf-8")
     task = _task()
-    task["acceptance_obligations"].append({"id": "research", "text": "检索官方税率来源并引用"})
+    task["acceptance_obligations"].append({"id": "research", "text": "research official rates"})
     task["environment_bindings"].append({
         "obligation_id": "research", "verifier_kind": "NON_FILE",
         "required_paths": [], "observable": "",

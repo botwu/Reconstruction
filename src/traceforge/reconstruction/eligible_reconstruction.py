@@ -55,6 +55,7 @@ from traceforge.reconstruction.verification import (
 from traceforge.reconstruction.workspace_completion import (
     complete_from_default_empty,
     complete_from_replayed,
+    repair_workspace_completion,
 )
 from traceforge.reconstruction.workspace_sufficiency import run_workspace_sufficiency
 
@@ -359,6 +360,147 @@ def _support_route_result(
     }
 
 
+MAX_ENVIRONMENT_REPAIR_ROUNDS = 2
+
+
+def _environment_feedback(
+    judge: dict[str, Any], environment: dict[str, Any],
+) -> dict[str, Any]:
+    """反馈只传诊断与真实探针，不将判断文本加入原始证据集合。"""
+    return {
+        "reason": judge.get("reason"),
+        "missing_context": list(judge.get("missing_context") or []),
+        "missing_binding_paths": list(judge.get("missing_binding_paths") or []),
+        "integrity_report": judge.get("integrity_report") or {},
+        "semantic_errors": list(judge.get("semantic_errors", judge.get("errors")) or []),
+        "context_status": environment.get("status"),
+        "blockers": list(environment.get("blockers") or []),
+        "execution_readiness": environment.get("execution_readiness"),
+        "execution_errors": list(environment.get("execution_errors") or []),
+        "failed_probes": [
+            probe for probe in judge.get("environment_probes") or []
+            if isinstance(probe, dict) and probe.get("status") != "PASS"
+        ],
+    }
+
+
+def _repair_state(environment: dict[str, Any], feedback: dict[str, Any]) -> str:
+    """忽略随机探针编号和说明文案，识别工作区与诊断均无变化的重复尝试。"""
+    issues = (feedback.get("integrity_report") or {}).get("issues") or []
+    return json.dumps({
+        "workspace": environment.get("workspace_sha256"),
+        "context_status": feedback["context_status"],
+        "missing": sorted(feedback["missing_context"] + feedback["missing_binding_paths"]),
+        "integrity": [
+            {key: issue.get(key) for key in ("code", "path", "classification")}
+            for issue in issues if isinstance(issue, dict)
+        ],
+        "execution_errors": sorted(feedback["execution_errors"]),
+        "failed_probes": [
+            {key: probe.get(key) for key in ("purpose", "code_sha256", "status", "error_code")}
+            for probe in feedback["failed_probes"]
+        ],
+    }, ensure_ascii=False, sort_keys=True)
+
+
+def _judge_and_repair_candidate(
+    *, task: dict[str, Any], candidate: dict[str, Any], replay: Any,
+    timeline: list[dict[str, Any]], task_source: dict[str, Any], agent: AgentRuntime,
+    task_root: Path, index: int, origin: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """有界反馈闭环；先评估，定向补全或补探针，然后独立复核。"""
+    observed = {str(item.path) for item in replay.files if getattr(item, "path", None)}
+    observed.update(observed_body_paths(task_source))
+    audit: dict[str, Any] = {
+        "candidate_index": index, "max_repair_rounds": MAX_ENVIRONMENT_REPAIR_ROUNDS,
+        "rounds": [], "stop_reason": None,
+    }
+    feedback = None
+    previous_state = None
+    action = "INITIAL"
+    for round_index in range(MAX_ENVIRONMENT_REPAIR_ROUNDS + 1):
+        round_root = task_root / "environment_repairs" / f"{index:03d}" / f"{round_index:03d}"
+        judge_root = (
+            task_root / "sufficiency" / f"{index:03d}" if round_index == 0
+            else round_root / "sufficiency"
+        )
+        kwargs = {"repair_feedback": feedback} if feedback is not None else {}
+        judge = run_workspace_sufficiency(
+            task=task, observed_paths=sorted(observed), workspace_root=candidate["workspace"],
+            agent=agent, output_root=judge_root, **kwargs,
+        )
+        environment = build_environment_contract(
+            workspace_root=candidate["workspace"], env_root=candidate.get("env_root"),
+            sufficiency=judge, replay=replay,
+        )
+        _write_stage_json(judge_root, "environment_contract.json", environment)
+        audit["rounds"].append({
+            "round": round_index, "action": action, "workspace": candidate["workspace"],
+            "sufficiency_path": str(judge_root / "sufficiency.json"),
+            "context_status": environment.get("status"),
+            "execution_readiness": environment.get("execution_readiness"),
+        })
+        if round_index:
+            audit["rounds"][-1]["feedback_path"] = str(round_root / "feedback.json")
+            if action == "REPAIR":
+                audit["rounds"][-1]["completion_path"] = str(
+                    round_root / "completion" / "completion.json"
+                )
+        feedback = _environment_feedback(judge, environment)
+        if environment.get("status") in {"INFRA_ERROR", "PIPELINE_ERROR"}:
+            audit["stop_reason"] = environment["status"]
+            break
+        if any(probe.get("status") == "INFRA_ERROR" for probe in feedback["failed_probes"]):
+            audit["stop_reason"] = "PROBE_INFRA_ERROR"
+            break
+        if (
+            judge.get("status") == "READY" and environment.get("status") == "READY"
+            and environment.get("execution_readiness") == "PROBED"
+        ):
+            audit["stop_reason"] = "READY"
+            break
+        state = _repair_state(environment, feedback)
+        if state == previous_state:
+            audit["stop_reason"] = "NO_PROGRESS"
+            break
+        previous_state = state
+        if round_index == MAX_ENVIRONMENT_REPAIR_ROUNDS:
+            audit["stop_reason"] = "REPAIR_LIMIT_REACHED"
+            break
+        next_root = task_root / "environment_repairs" / f"{index:03d}" / f"{round_index + 1:03d}"
+        _write_stage_json(next_root, "feedback.json", feedback)
+        # 只有收据缺失时让只读评审补探针，不要求 Completion 凭空改文件。
+        if (
+            judge.get("status") == "READY" and environment.get("status") == "READY"
+            and not feedback["failed_probes"]
+        ):
+            action = "RECHECK"
+            continue
+        action = "REPAIR"
+        repaired = repair_workspace_completion(
+            task=task, candidate=candidate, replay=replay, timeline=timeline,
+            source=task_source, agent=agent, output_root=next_root / "completion",
+            feedback=feedback, env_origin=origin,
+        )
+        replacement = next((
+            item for item in repaired.get("candidates") or []
+            if item.get("decision") == "READY" and item.get("workspace")
+        ), None)
+        if repaired.get("status") != "READY" or replacement is None:
+            audit["rounds"].append({
+                "round": round_index + 1, "action": action,
+                "completion_path": str(next_root / "completion" / "completion.json"),
+                "completion_errors": list(repaired.get("errors") or []),
+                "open_questions": list(repaired.get("open_questions") or []),
+            })
+            audit["stop_reason"] = "COMPLETION_REVIEW"
+            break
+        candidate = {**replacement, "index": index}
+    audit["last_feedback"] = feedback
+    _write_stage_json(task_root / "environment_repairs" / f"{index:03d}", "repair_audit.json", audit)
+    return candidate, judge, environment, audit
+
+
 def _task_result(
     *,
     task: dict[str, Any],
@@ -428,7 +570,8 @@ def _task_result(
     judges: list[dict[str, Any]] = []
     rows: list[dict[str, Any]] = []
     environment_contracts: dict[int, dict[str, Any]] = {}
-    for candidate in completion.get("candidates") or []:
+    repair_audits = []
+    for candidate_index, candidate in enumerate(completion.get("candidates") or []):
         if (
             not isinstance(candidate, dict)
             or candidate.get("decision") != "READY"
@@ -437,15 +580,14 @@ def _task_result(
             judges.append({"label": "UNKNOWN", "decision": "REVIEW"})
             rows.append({"decision": "REVIEW"})
             continue
-        replay_observed = {str(item.path) for item in replay.files if getattr(item, "path", None)}
-        body_observed = set(observed_body_paths(task_source))
-        judge = run_workspace_sufficiency(
-            task=task,
-            observed_paths=sorted(replay_observed | body_observed),
-            workspace_root=candidate["workspace"],
-            agent=agent,
-            output_root=task_root / "sufficiency" / f"{int(candidate.get('index', len(rows))):03d}",
+        candidate, judge, environment, repair_audit = _judge_and_repair_candidate(
+            task=task, candidate=candidate, replay=replay, timeline=timeline,
+            task_source=task_source, agent=agent, task_root=task_root,
+            index=candidate_index, origin=origin,
         )
+        completion["candidates"][candidate_index] = candidate
+        repair_audits.append(repair_audit)
+        result["environment_repair_audit"] = repair_audits
         sandbox_errors = _sandbox_init_errors(judge.get("errors"))
         if sandbox_errors:
             result["sufficiency"] = judge
@@ -454,12 +596,6 @@ def _task_result(
             return result
         judges.append(judge)
         index = len(rows)
-        environment = build_environment_contract(
-            workspace_root=candidate["workspace"],
-            env_root=candidate.get("env_root"),
-            sufficiency=judge,
-            replay=replay,
-        )
         environment_contracts[index] = environment
         _write_stage_json(
             task_root / "environment" / f"{index:03d}",
@@ -495,6 +631,7 @@ def _task_result(
                 }
             )
     selected, audit = select_sufficient_candidate(rows, judges)
+    audit["environment_repairs"] = repair_audits
     result["sufficiency_audit"] = audit
     if selected is None:
         result["stopped_at"] = "sufficiency"

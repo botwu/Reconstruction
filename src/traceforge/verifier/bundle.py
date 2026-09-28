@@ -18,7 +18,7 @@ from traceforge.trajectory.artifacts import (
 
 from .synthesis import VerifierCandidate, is_python_solution, validate_solution_scripts
 
-_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v4-user-contract"
+_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v5-grounded-instruction"
 
 
 def _make_workspace_solver_writable(workspace: Path) -> None:
@@ -44,10 +44,9 @@ def compile_bundle(
     env_root: Path | None = None,
 ) -> Path:
     """生成带 hash 的 bundle；参考解只写入 solution，测试只写入 tests。"""
-    instruction = task.get("task_instruction") or task.get("core_objective")
+    instruction = render_task_instruction(task)
     if not isinstance(instruction, str) or not instruction.strip():
         raise ValueError("缺少自足的任务指令")
-    instruction = render_task_instruction(task, instruction)
     if (workspace_root / ".traceforge/source-excerpts.json").is_file():
         instruction += (
             "\n\n请查看 .traceforge/source-excerpts.json 中的部分原始源码观察及未恢复区间；"

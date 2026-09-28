@@ -65,6 +65,14 @@ def _code(result: Any) -> int:
         return 1
 
 
+def _failure_detail(result: Any, *, encoded_content: str = "") -> str:
+    """暴露可修复的运行错误，不把命令中的文件正文回显到日志。"""
+    stderr = str(getattr(result, "stderr", "") or "").strip()
+    if encoded_content:
+        stderr = stderr.replace(encoded_content, "<文件内容已省略>")
+    return f"exit_code={_code(result)}; stderr={stderr[-2000:] or '<空>'}"
+
+
 def sandbox_list_paths(binding: SandboxBinding, raw: str) -> list[str]:
     prefix = safe_relpath(raw) if raw not in {"", "."} else ""
     script = (
@@ -118,7 +126,7 @@ def sandbox_write_file(binding: SandboxBinding, path: str, content: str) -> str:
     )
     result = _exec(binding, f"python3 -c {shlex.quote(script)}")
     if _code(result) != 0:
-        return "error: sandbox write failed"
+        return "error: sandbox write failed; " + _failure_detail(result, encoded_content=encoded)
     return f"wrote {path}"
 
 
@@ -252,6 +260,15 @@ async def prepare_role_sandbox(
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         await runtime.upload_dir(upload_root, WORKSPACE_REMOTE)
+    if role.name == "completion":
+        # AGS 上传保留 root 所有权；仅顶层可写仍无法补全已上传子目录。
+        # 正文证据锁定继续由 session 的 write_file 策略执行。
+        writable = await runtime.exec(
+            "chown -R user:user /home/user/workspace && chmod -R u+rwX /home/user/workspace",
+            cwd="/", timeout_sec=30, user="root",
+        )
+        if _code(writable) != 0:
+            raise RuntimeError("COMPLETION_WORKSPACE_SETUP_FAILED: " + _failure_detail(writable))
     if role.name == "sufficiency":
         chmod = await runtime.exec(
             "chmod -R a-w /home/user/workspace && find /home/user/workspace -type f -exec chmod a+r {} +",
@@ -357,7 +374,7 @@ class LocalExecRuntime:
         self.execs.append(command)
         if self.read_only and command.strip().startswith("touch "):
             return _ExecResult(1, "", "read-only")
-        if command.startswith("chmod "):
+        if command.startswith(("chmod ", "chown ")):
             return _ExecResult(0, "", "")
         # Replace remote paths through placeholders. A direct sequential
         # replacement is unsafe when a local staging directory itself contains

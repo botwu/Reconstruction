@@ -8,21 +8,21 @@ from pathlib import Path
 from typing import Any
 
 from traceforge.reconstruction.agents import INTENT_ROLE, AgentRuntime, AgentSession
-from traceforge.reconstruction.env_replay import replay_workspace_root
 from traceforge.reconstruction.environment_bindings import (
     FILE,
     _READ_CODE,
     attach_bindings_to_obligations,
     collect_allowed_paths,
+    collect_binding_path_aliases,
     collect_file_binding_paths,
     mentioned_allowed_paths,
     normalize_environment_bindings,
 )
 from traceforge.screening.task_labels import apply_task_tags, is_selected_reconstruction_task
-from traceforge.task_instruction import render_task_instruction
+from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v10-anchor-deepen"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v12-explicit-response-contract"
 _STUB_OBSERVABLE = "replayed excerpts still present"
 _REVIEW_ONLY = re.compile(
     r"(?i)(只读(?:代码)?(?:评审|审查)|只审查(?:并)?不修改|只查看.*不修改|"
@@ -165,6 +165,7 @@ def _prompt(
     records: list[dict[str, Any]],
     allowed_paths: list[str],
     file_binding_paths: list[str] | None = None,
+    path_aliases: dict[str, str] | None = None,
 ) -> str:
     bindable = list(file_binding_paths or [])
     # 只预览相邻文本以消解省略；完整原始 session 仍可由只读工具逐条访问。
@@ -197,11 +198,14 @@ def _prompt(
         "Use only explicit user intent and evidence refs; never turn assistant/tool actions into requirements.",
         "Do not merge another tagged task. A clarification/correction belongs here only when its message is in this task tag.",
         "Do not web-search or invent workspace paths. Bind only paths listed in ALLOWED_OBSERVED_PATHS.",
+        "路径按证据角色绑定：引用用户消息中实际要求读取/修改的路径是初始输入；明确新增/生成的路径是执行输出，不要求 task-start 已存在。格式示例、分类词、工具正文中的字符串不是环境依赖。每条义务只使用其 evidence_ref_ids 引用的用户要求，不能把其他消息的平台说明转成依赖。",
+        "PATH_ALIASES 是由原始路径和 Replay 工作目录确定的坐标转换；task_instruction、environment_bindings 和 response_contract 中的路径统一使用右侧工作区路径。不能按 basename 猜测路径。",
         "initial_required_paths are task-start inputs; they may name an explicitly referenced but currently missing input and must remain a blocker. output_paths are only explicit new/generated final files. required_paths is their union. Listing-only names are not bindings. When FILE_BINDING_PATHS is empty, do not invent a project.",
         "Classify every acceptance obligation exactly once in environment_bindings. Do not omit an obligation or infer a missing binding from shared context; missing bindings are a REVIEW error.",
         "FILE 表示该义务的完成状态可以从沙盒文件或本地程序行为中完整验证。observable 必须描述用户要求的最终状态，不能仅检查初始文件仍然存在。",
+        '必须返回 response_contract 字段；原用户要求包含下列已支持响应结构时，声明完整检查，否则返回 null 并保留原义务未验证。契约为 response_contract={"schema_version":"traceforge.response-contract.v1","checks":[...]}。仅为纯输出结构或摘要一致性义务声明检查：{"kind":"acceptance_report","obligation_id":"...","criterion_ids":["..."],"required_fields":{"字段名":"类型"}} 或 {"kind":"basic_summary","obligation_id":"...","verdicts":["..."],"finding_levels":["..."],"report_path":"...","match_report":true}。所有字段、义务 ID、枚举和路径必须来自该义务引用的原用户要求；不得把事实正确性或行为已完成声明成格式检查。不认识的响应要求保留未验证。同一义务包含摘要和 acceptance-report 时，在 checks 中使用相同 obligation_id 分别列出 basic_summary 与 acceptance_report；该义务的检查必须全部通过，不能只声明其中一项。',
         "Return JSON only, with no Markdown or prose before/after it.",
-        "{\"task_id\":\"same tag\",\"task_instruction\":\"...\",\"core_objective\":\"...\",\"acceptance_obligations\":[{\"id\":\"obl-001\",\"text\":\"...\",\"evidence_ref_ids\":[\"user:<message_index>\"]}],\"environment_bindings\":[{\"obligation_id\":\"obl-001\",\"required_paths\":[\"input-or-output/path\"],\"initial_required_paths\":[\"existing-or-missing-input\"],\"output_paths\":[\"new/generated/output\"],\"observable\":\"任务完成后可观测、且足以证明本条义务达成的具体状态\",\"verifier_kind\":\"FILE|NON_FILE\"}],\"success_criteria\":[\"...\"],\"specified_output_format\":null,\"has_examples\":false,\"mandatory_constraints\":[],\"prohibitions\":[]}",
+        "{\"task_id\":\"same tag\",\"task_instruction\":\"...\",\"core_objective\":\"...\",\"acceptance_obligations\":[{\"id\":\"obl-001\",\"text\":\"...\",\"evidence_ref_ids\":[\"user:<message_index>\"]}],\"environment_bindings\":[{\"obligation_id\":\"obl-001\",\"required_paths\":[\"input-or-output/path\"],\"initial_required_paths\":[\"existing-or-missing-input\"],\"output_paths\":[\"new/generated/output\"],\"observable\":\"任务完成后可观测、且足以证明本条义务达成的具体状态\",\"verifier_kind\":\"FILE|NON_FILE\"}],\"success_criteria\":[\"...\"],\"specified_output_format\":null,\"has_examples\":false,\"mandatory_constraints\":[],\"prohibitions\":[],\"response_contract\":null}",
         "Cite evidence ids exactly as listed in TASK_USER_MESSAGES / list_user_texts. Obligation evidence ids must be user:<message_index>.",
         "When FILE_BINDING_PATHS is non-empty and the anchor can bind those files, at least one FILE obligation is required.",
         "read_user_text accepts id=user:<message_index> or index=<original message_index>.",
@@ -218,6 +222,7 @@ def _prompt(
         "TASK_ADJACENT_CONTEXT=" + json.dumps(context, ensure_ascii=False),
         "ALLOWED_OBSERVED_PATHS=" + json.dumps(allowed_paths[:80], ensure_ascii=False),
         "FILE_BINDING_PATHS=" + json.dumps(bindable[:80], ensure_ascii=False),
+        "PATH_ALIASES=" + json.dumps(path_aliases or {}, ensure_ascii=False),
         "TOOL_NAMES_CONTEXT_ONLY=" + json.dumps(_tool_names(source), ensure_ascii=False),
     ])
 
@@ -229,9 +234,9 @@ def _gate(
     *,
     allowed_paths: list[str],
     user_blob: str,
+    user_records: list[dict[str, Any]] | None = None,
+    path_aliases: dict[str, str] | None = None,
     file_binding_paths: list[str] | None = None,
-    user_text_by_id: dict[str, str] | None = None,
-    workspace_root: str | None = None,
 ) -> tuple[str, list[str], dict[str, Any]]:
     errors: list[str] = []
     if str(payload.get("task_id") or task.get("task_id")) != str(task.get("task_id")): errors.append("TASK_ID_MISMATCH")
@@ -253,9 +258,9 @@ def _gate(
         normalized,
         allowed_paths,
         user_blob=user_blob,
+        user_records=user_records,
+        path_aliases=path_aliases,
         file_binding_paths=file_binding_paths,
-        user_text_by_id=user_text_by_id,
-        workspace_root=workspace_root,
         # 模型返回该字段时必须覆盖全部义务；旧 fixture 未返回字段时，
         # 保留确定性的兼容推导。
         require_complete="environment_bindings" in payload,
@@ -300,13 +305,16 @@ def run_intent_recovery(
                 }
             )
             continue
+        path_aliases = collect_binding_path_aliases(source, records)
         replay_files = (replay_files_by_task or {}).get(task_id)
-        allowed_paths = collect_allowed_paths(source, records, replay_files=replay_files)
+        allowed_paths = collect_allowed_paths(
+            source, records, replay_files=replay_files, path_aliases=path_aliases
+        )
         file_binding_paths = collect_file_binding_paths(
             source, records, replay_files=replay_files
         )
         user_blob = " ".join(str(item.get("text") or "") for item in records)
-        instruction = _prompt(source, task, records, allowed_paths, file_binding_paths)
+        instruction = _prompt(source, task, records, allowed_paths, file_binding_paths, path_aliases)
         task_root = root / "tasks" / task_id; task_root.mkdir(parents=True, exist_ok=True)
         session = AgentSession(
             user_records=list(records),
@@ -326,9 +334,9 @@ def run_intent_recovery(
                 known_ids,
                 allowed_paths=allowed_paths,
                 user_blob=user_blob,
+                user_records=records,
+                path_aliases=path_aliases,
                 file_binding_paths=file_binding_paths,
-                user_text_by_id={item["id"]: item["text"] for item in records},
-                workspace_root=replay_workspace_root(source.get("tool_timeline") or []),
             )
             errors = list(ran.errors) + errors
             if errors:
@@ -339,14 +347,17 @@ def run_intent_recovery(
                 errors.append("AGENT_INCOMPLETE")
             status = "REVIEW"
         result_task = {"task_id": task_id, "source_task": task, "task_instruction": payload.get("task_instruction", ""), "core_objective": payload.get("core_objective", ""), "acceptance_obligations": payload.get("acceptance_obligations", []), "environment_bindings": payload.get("environment_bindings", []), "success_criteria": payload.get("success_criteria", []), "specified_output_format": payload.get("specified_output_format"), "has_examples": bool(payload.get("has_examples")), "mandatory_constraints": payload.get("mandatory_constraints", []), "prohibitions": payload.get("prohibitions", []), "evidence_refs": {"message_indices": [x["message_index"] for x in records if isinstance(x.get("message_index"), int)]}}
-        try:
-            result_task["task_instruction"] = render_task_instruction(
-                {**result_task, "source_task": {"user_texts": [x["text"] for x in records]}},
-                result_task["task_instruction"],
-            )
-        except ValueError as exc:
-            errors.append(str(exc))
-            status = "REVIEW"
+        if isinstance(payload.get("response_contract"), dict):
+            result_task["response_contract"] = payload["response_contract"]
+        if path_aliases:
+            result_task["environment_path_aliases"] = path_aliases
+        result_task["task_instruction"] = render_task_instruction(result_task)
+        response_contract = grounded_response_contract(result_task)
+        if response_contract is not None:
+            result_task["response_contract"] = response_contract
+        else:
+            # 不能从原文确认的检查不获验收资格；原义务继续保留，不阻断意图恢复。
+            result_task.pop("response_contract", None)
         result = {"schema_version": INTENT_SCHEMA, "prompt_version": INTENT_PROMPT_VERSION, "status": status, "task": result_task, "agent": {"role": INTENT_ROLE.name, "backend": ran.backend, "turns": len(ran.turns), "completed": ran.completed}, "errors": errors}
         (task_root / "intent.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         outputs.append(result)
