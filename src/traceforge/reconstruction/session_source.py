@@ -44,6 +44,24 @@ def _message_text(message: dict[str, Any]) -> str:
     return ""
 
 
+def _result_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """保留原始 content 槽位与文本空白，供并行结果按位置对应。"""
+    content = message.get("content")
+    if content is None:
+        return []
+    blocks = content if isinstance(content, list) else [content]
+    result: list[dict[str, Any]] = []
+    for index, block in enumerate(blocks):
+        text = block if isinstance(block, str) else None
+        if isinstance(block, dict) and block.get("type") in (None, "text", "output_text"):
+            for field in ("text", "value"):
+                if isinstance(block.get(field), str):
+                    text = block[field]
+                    break
+        result.append({"index": index, "text": text})
+    return result
+
+
 def _role(message: Any) -> str:
     return str(message.get("role", "")) if isinstance(message, dict) else ""
 
@@ -94,6 +112,7 @@ def _tool_timeline(messages: list[dict[str, Any]], spans: list[Any]) -> list[dic
                     "name": _tool_name(call),
                     "arguments": _tool_arguments(call),
                     "result_text": None,
+                    "result_blocks": [],
                     "pending": True,
                     "span_id": index_to_span.get(index),
                     "assistant_message_index": index,
@@ -110,6 +129,7 @@ def _tool_timeline(messages: list[dict[str, Any]], spans: list[Any]) -> list[dic
                     "name": str(message.get("name") or message.get("tool_name") or ""),
                     "arguments": None,
                     "result_text": _message_text(message),
+                    "result_blocks": _result_blocks(message),
                     "pending": False,
                     "span_id": index_to_span.get(index),
                     "orphan_tool_result": True,
@@ -117,6 +137,7 @@ def _tool_timeline(messages: list[dict[str, Any]], spans: list[Any]) -> list[dic
                 })
             else:
                 item["result_text"] = _message_text(message)
+                item["result_blocks"] = _result_blocks(message)
                 item["pending"] = False
                 item["tool_message_index"] = index
     return timeline
