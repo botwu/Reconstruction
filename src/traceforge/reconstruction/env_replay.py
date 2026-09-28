@@ -943,6 +943,7 @@ def _classify_command(
                 "content": content,
                 "command": command,
                 "workdir": workdir,
+                **_powershell_read_segment(command, content),
             }
         ]
     if unique:
@@ -1027,6 +1028,57 @@ def _plain_file_read(command: str) -> bool:
             if option.lower() not in {"-first", "-last", "-skip", "-skiplast"} or not value.isdecimal():
                 return False
     return pipe == len(tokens) or bool(slicing)
+
+
+def _powershell_read_segment(command: str, content: str) -> dict[str, Any]:
+    """登记静态可定位的原行读取；不猜尾部起点、复合选择顺序或文件总长度。"""
+    normalized = _strip_safe_exec_prefixes(command)
+    if normalized is None or not _plain_file_read(command):
+        return {}
+    lexer = shlex.shlex(normalized, posix=False, punctuation_chars="|")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return {}
+    if not tokens or tokens[0].lower() != "get-content":
+        return {}
+    pipe = tokens.index("|") if "|" in tokens else len(tokens)
+    reading, selection = tokens[1:pipe], tokens[pipe + 1:]
+    start = 1
+    maximum: int | None = None
+    for index, token in enumerate(reading):
+        option = token.lower()
+        if option == "-tail":
+            return {}
+        if option in {"-totalcount", "-head"}:
+            maximum = int(_unquote(reading[index + 1]))
+    if selection:
+        # 只支持原始轨迹中的单一 First/Skip/SkipLast；其余保留未定位的 PARTIAL。
+        if len(selection) != 3:
+            return {}
+        option, count = selection[1].lower(), int(selection[2])
+        if option == "-first":
+            maximum = count if maximum is None else min(maximum, count)
+        elif option == "-skip":
+            start += count
+            if maximum is not None:
+                maximum = max(0, maximum - count)
+        elif option == "-skiplast":
+            if maximum is not None:
+                maximum = max(0, maximum - count)
+        else:
+            return {}
+    lines = content.splitlines(keepends=True)
+    if not lines:
+        return {}
+    return {
+        "line_numbers": list(range(start, start + len(lines))),
+        "line_contents": [line.rstrip("\r\n") for line in lines],
+        "total_lines": None,
+        "range_valid": maximum is None or len(lines) <= maximum,
+    }
 
 
 def _named_read_ops(
@@ -1715,6 +1767,7 @@ def replay_from_timeline(
                 "line_contents": op["line_contents"],
                 "total_lines": op.get("total_lines"),
                 "range_valid": op.get("range_valid", True),
+                **result_metadata,
             }
             partial.append(segment)
             segments = segments_by_path.setdefault(path, [])
