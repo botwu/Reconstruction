@@ -642,7 +642,10 @@ def write_agent_trace(
             "identity_sha256": hashlib.sha256(role.identity.encode("utf-8")).hexdigest(),
             "instruction_sha256": hashlib.sha256(instruction.encode("utf-8")).hexdigest(),
             "turns": omit_private_reasoning(turns),
-            "tool_events": omit_private_reasoning(_redact_trace(list(tool_events or []))),
+            "tool_events": omit_private_reasoning([
+                _redact_trace(event, max_chars=None if event.get("name") == "run_pytest" else 4096)
+                for event in tool_events or []
+            ]),
             "final_text": _omit_reasoning_text(final_text) if isinstance(final_text, str) else final_text,
             "credentials_embedded": False,
             "privacy": {"private_thinking_reasoning": "omitted"},
@@ -776,21 +779,28 @@ def _bind_agent_tools(agent: Any, *, role: AgentRole, session: AgentSession) -> 
             return message
         with session.lock:
             result = execute_tool(function_name, function_args, session)
-            # Keep a private, replayable tool trace without persisting secrets or
-            # unbounded tool output. The complete evidence remains in the session
-            # source; this record proves the actual arguments/result used by the
-            # reconstruction agent.
+            # 普通工具只保留预览；pytest 历史会被测试重写清空，必须在私有轨迹中
+            # 保留完整结果及执行时源码。当前验收仍只读取 session.pytest_runs。
             safe_args = _redact_trace(function_args)
-            session.tool_events.append(
-                {
-                    "name": function_name,
-                    "tool_call_id": tool_call_id,
-                    "ok": not result.startswith("error:"),
-                    "arguments": safe_args,
-                    "result_sha256": hashlib.sha256(result.encode("utf-8")).hexdigest(),
-                    "result_preview": _redact_text(result[:512]),
-                }
-            )
+            event = {
+                "name": function_name,
+                "tool_call_id": tool_call_id,
+                "ok": not result.startswith("error:"),
+                "arguments": safe_args,
+                "result_sha256": hashlib.sha256(result.encode("utf-8")).hexdigest(),
+                "result_preview": _redact_text(result[:512]),
+            }
+            if function_name == "run_pytest":
+                source = session.test_outputs_py
+                event.update({
+                    "result": result,
+                    "test_outputs_py": source,
+                    "test_sha256": (
+                        hashlib.sha256(source.encode("utf-8")).hexdigest()
+                        if source is not None else None
+                    ),
+                })
+            session.tool_events.append(event)
             fatal = is_fatal_tool_result(function_name, result)
             if fatal:
                 session.policy_errors.append(result.removeprefix("error:").strip())
@@ -800,18 +810,24 @@ def _bind_agent_tools(agent: Any, *, role: AgentRole, session: AgentSession) -> 
     agent._traceforge_tool_names = set(role.tools)
 
 
-def _redact_trace(value: Any) -> Any:
-    """Redact credentials while retaining actual tool argument structure."""
+def _redact_trace(value: Any, *, max_chars: int | None = 4096) -> Any:
+    """保留工具结构并脱敏；完整 pytest 审计仅取消长度截断，不取消脱敏。"""
     secret = ("key", "token", "secret", "password", "authorization", "credential")
     if isinstance(value, dict):
         return {
-            str(k): ("<redacted>" if any(x in str(k).lower() for x in secret) else _redact_trace(v))
+            str(k): (
+                "<redacted>" if any(x in str(k).lower() for x in secret)
+                else _redact_trace(v, max_chars=max_chars)
+            )
             for k, v in value.items()
         }
     if isinstance(value, list):
-        return [_redact_trace(item) for item in value]
-    if isinstance(value, str) and len(value) > 4096:
-        return value[:4096] + "...[truncated]"
+        return [_redact_trace(item, max_chars=max_chars) for item in value]
+    if isinstance(value, str):
+        if max_chars is None:
+            return _redact_text(value)
+        if len(value) > max_chars:
+            return value[:max_chars] + "...[truncated]"
     return value
 
 
