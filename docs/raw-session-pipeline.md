@@ -40,6 +40,10 @@ R04/R05 按条重建使用 `reconstruct raw-run`，不读取筛选结论。已�
 
 `intent_recovery.run_intent_recovery` 恢复原始目标、验收义务和环境绑定，每项义务引用真实用户消息。初始必要路径与最终输出路径必须区分：用户要求新增的文件不应被当成必须预先存在的输入。提取时区分真实用户要求、示例与说明文字，并依据回放根及用户绝对路径统一 workspace 坐标；公开任务与响应验收使用同一映射。原始用户文本、指定输出格式及结构化响应合同保留来源。Intent 产物仍需通过实际环境和验收核对是否符合原意。
 
+绑定候选可以引用 Replay 已保存的可信初态正文，包括尚不完整的 PARTIAL 文件；这只确认任务对象，不表示该文件已经完整或可执行。仅 listing、未知初态和修改后正文不冒充初态输入，环境质量继续由 Completion/Sufficiency 负责。
+
+Intent 已完整返回且只有绑定合同错误时，将具体错误和原答复反馈一次，由同一角色根据原证据纠正绑定。不得改变原任务字段、删除义务或把已有 FILE 降为 NON_FILE；第二次仍失败则保留 REVIEW，运行时/权限/用户引用错误不走此重试。首轮请求与轨迹保留在任务根的 private/，纠正轮位于 binding-repair/private/，intent.json 的 agent.attempts 给出两轮路径、状态和错误，turns 汇总两轮；不会用新答复覆盖首轮失败证据。会话上下文工具允许只读分页，用于消解指代，不新增用户要求。
+
 Intent 后重新计算 `execution_support_route`：有回放文件走 TERMINAL_FILE；无回放文件而有 FILE 义务可以走 DEFAULT_EMPTY。没有受支持的文件验收时保留 REVIEW，而不生成虚假的文件验收结论。
 
 v33 的实际失败发生在 Intent 输出解析，尚未进入 Completion。`fd41fdc` 已修复损坏根 JSON 被内层对象冒充的问题，并允许原角色最多一次格式纠正；相关回归通过不等于真实重跑通过。

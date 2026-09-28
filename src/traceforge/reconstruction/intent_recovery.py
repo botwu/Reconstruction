@@ -1,6 +1,7 @@
 """Intent Agent：把筛选出的任务标签重建为一个或多个真实 task。"""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -22,7 +23,7 @@ from traceforge.screening.task_labels import apply_task_tags, is_selected_recons
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v12-explicit-response-contract"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v13-binding-feedback"
 _STUB_OBSERVABLE = "replayed excerpts still present"
 _REVIEW_ONLY = re.compile(
     r"(?i)(只读(?:代码)?(?:评审|审查)|只审查(?:并)?不修改|只查看.*不修改|"
@@ -282,6 +283,52 @@ def _gate(
     return ("READY" if not errors else "REVIEW"), errors, payload
 
 
+def _binding_repair_changed_task(original: dict[str, Any], corrected: dict[str, Any]) -> bool:
+    """绑定纠正不允许重写原任务或把已有 FILE 义务降级以绕过校验。"""
+
+    if {k: v for k, v in original.items() if k != "environment_bindings"} != {
+        k: v for k, v in corrected.items() if k != "environment_bindings"
+    }:
+        return True
+    original_bindings = original.get("environment_bindings")
+    corrected_bindings = corrected.get("environment_bindings")
+    if not isinstance(original_bindings, list):
+        return False
+    corrected_kinds = {
+        oid: str(item.get("verifier_kind") or "").strip().upper()
+        for item in corrected_bindings or []
+        if isinstance(item, dict)
+        and isinstance(oid := item.get("obligation_id") or item.get("id"), str)
+    } if isinstance(corrected_bindings, list) else {}
+    known_ids = {
+        item.get("id") for item in original.get("acceptance_obligations") or []
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    return any(
+        isinstance(oid := item.get("obligation_id") or item.get("id"), str)
+        and oid in known_ids
+        and str(item.get("verifier_kind") or "").strip().upper() == FILE
+        and corrected_kinds.get(oid) != FILE
+        for item in original_bindings if isinstance(item, dict)
+    )
+
+
+def _write_intent_exchange(root: Path, instruction: str, final_text: str | None) -> None:
+    """每次真实尝试保存自己的请求和答复，纠正不覆盖首轮证据。"""
+
+    private = root / "private"
+    private.mkdir(parents=True, exist_ok=True)
+    (private / "model_exchange.json").write_text(json.dumps({
+        "schema_version": "traceforge.private-model-exchange.v1",
+        "request": {
+            "prompt_version": INTENT_PROMPT_VERSION, "prompt": instruction,
+            "prompt_sha256": hashlib.sha256(instruction.encode()).hexdigest(),
+            "system": INTENT_ROLE.identity,
+        },
+        "response": {"text": final_text}, "credentials_embedded": False,
+    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def run_intent_recovery(
     *,
     source: dict[str, Any],
@@ -316,36 +363,66 @@ def run_intent_recovery(
         user_blob = " ".join(str(item.get("text") or "") for item in records)
         instruction = _prompt(source, task, records, allowed_paths, file_binding_paths, path_aliases)
         task_root = root / "tasks" / task_id; task_root.mkdir(parents=True, exist_ok=True)
-        session = AgentSession(
-            user_records=list(records),
-            user_texts=[x["text"] for x in records],
-            tool_names=_tool_names(source),
-            session_context=json.dumps(source.get("raw_session"), ensure_ascii=False, separators=(",", ":")),
-        )
-        ran = agent.run(role=INTENT_ROLE, instruction=instruction, session=session, output_root=task_root)
-        payload = dict(ran.payload or {}); known_ids = {x["id"] for x in records}
-        sandbox_init = [item for item in ran.errors if str(item).startswith("SANDBOX_INIT")]
-        if sandbox_init:
-            status, errors = "REVIEW", sandbox_init
-        elif ran.completed and payload:
-            status, errors, payload = _gate(
-                payload,
-                task,
-                known_ids,
-                allowed_paths=allowed_paths,
-                user_blob=user_blob,
-                user_records=records,
-                path_aliases=path_aliases,
-                file_binding_paths=file_binding_paths,
+        known_ids = {x["id"] for x in records}
+        attempts: list[dict[str, Any]] = []
+        repair_payload: dict[str, Any] | None = None
+        current_instruction = instruction
+        for attempt in range(2):
+            attempt_root = task_root if attempt == 0 else task_root / "binding-repair"
+            session = AgentSession(
+                user_records=list(records),
+                user_texts=[x["text"] for x in records],
+                tool_names=_tool_names(source),
+                session_context=json.dumps(source.get("raw_session"), ensure_ascii=False, separators=(",", ":")),
             )
-            errors = list(ran.errors) + errors
-            if errors:
+            ran = agent.run(
+                role=INTENT_ROLE, instruction=current_instruction,
+                session=session, output_root=attempt_root,
+            )
+            payload = copy.deepcopy(ran.payload or {})
+            raw_payload = copy.deepcopy(payload)
+            _write_intent_exchange(attempt_root, current_instruction, ran.final_text)
+            sandbox_init = [item for item in ran.errors if str(item).startswith("SANDBOX_INIT")]
+            if sandbox_init:
+                status, errors = "REVIEW", sandbox_init
+            elif ran.completed and payload:
+                status, errors, payload = _gate(
+                    payload, task, known_ids, allowed_paths=allowed_paths,
+                    user_blob=user_blob, user_records=records,
+                    path_aliases=path_aliases, file_binding_paths=file_binding_paths,
+                )
+                errors = list(ran.errors) + errors
+                if repair_payload is not None and _binding_repair_changed_task(repair_payload, raw_payload):
+                    errors.append("INTENT_BINDING_REPAIR_CHANGED_TASK")
+                if errors:
+                    status = "REVIEW"
+            else:
+                errors = list(ran.errors)
+                if not ran.completed:
+                    errors.append("AGENT_INCOMPLETE")
                 status = "REVIEW"
-        else:
-            errors = list(ran.errors)
-            if not ran.completed:
-                errors.append("AGENT_INCOMPLETE")
-            status = "REVIEW"
+            attempts.append({
+                "output_dir": attempt_root.relative_to(task_root).as_posix(),
+                "status": status, "errors": list(errors), "turns": len(ran.turns),
+                "completed": ran.completed,
+            })
+            # 仅已完整返回的绑定合同错误反馈一次；基础设施、权限与用户证据错误不重试。
+            if (attempt or not ran.completed or not raw_payload or ran.errors or not errors
+                    or not all(error.startswith("BINDING_") or error in {
+                        "ENVIRONMENT_BINDINGS_NOT_ARRAY", "FILE_OBLIGATION_REQUIRED",
+                    } for error in errors)):
+                break
+            repair_payload = raw_payload
+            current_instruction = "\n".join([
+                instruction,
+                "上一条结果的文件绑定合同未通过校验。只纠正 environment_bindings，其他字段逐项保留原值；"
+                "不得删除用户义务、替换目标、伪造路径或把已有 FILE 改为 NON_FILE 来绕过错误。"
+                "FILE_BINDING_PATHS 中的路径用于识别任务对象，不代表环境已经完整；"
+                "只读上下文工具可用于确认对应关系，环境补全仍交给后续模块。"
+                "无法从证据确认绑定时保留缺口。本次只有一次纠正机会，返回完整 JSON。",
+                "BINDING_ERRORS=" + json.dumps(errors, ensure_ascii=False),
+                "PREVIOUS_RESULT=" + json.dumps(raw_payload, ensure_ascii=False),
+            ])
         result_task = {"task_id": task_id, "source_task": task, "task_instruction": payload.get("task_instruction", ""), "core_objective": payload.get("core_objective", ""), "acceptance_obligations": payload.get("acceptance_obligations", []), "environment_bindings": payload.get("environment_bindings", []), "success_criteria": payload.get("success_criteria", []), "specified_output_format": payload.get("specified_output_format"), "has_examples": bool(payload.get("has_examples")), "mandatory_constraints": payload.get("mandatory_constraints", []), "prohibitions": payload.get("prohibitions", []), "evidence_refs": {"message_indices": [x["message_index"] for x in records if isinstance(x.get("message_index"), int)]}}
         if isinstance(payload.get("response_contract"), dict):
             result_task["response_contract"] = payload["response_contract"]
@@ -358,11 +435,9 @@ def run_intent_recovery(
         else:
             # 不能从原文确认的检查不获验收资格；原义务继续保留，不阻断意图恢复。
             result_task.pop("response_contract", None)
-        result = {"schema_version": INTENT_SCHEMA, "prompt_version": INTENT_PROMPT_VERSION, "status": status, "task": result_task, "agent": {"role": INTENT_ROLE.name, "backend": ran.backend, "turns": len(ran.turns), "completed": ran.completed}, "errors": errors}
+        result = {"schema_version": INTENT_SCHEMA, "prompt_version": INTENT_PROMPT_VERSION, "status": status, "task": result_task, "agent": {"role": INTENT_ROLE.name, "backend": ran.backend, "turns": sum(item["turns"] for item in attempts), "completed": ran.completed, "attempts": attempts}, "errors": errors}
         (task_root / "intent.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         outputs.append(result)
-        private = task_root / "private"; private.mkdir(exist_ok=True)
-        (private / "model_exchange.json").write_text(json.dumps({"schema_version": "traceforge.private-model-exchange.v1", "request": {"prompt_version": INTENT_PROMPT_VERSION, "prompt": instruction, "prompt_sha256": hashlib.sha256(instruction.encode()).hexdigest(), "system": INTENT_ROLE.identity}, "response": {"text": ran.final_text}, "credentials_embedded": False}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     ready = [x for x in outputs if x.get("status") == "READY"]
     result = {"schema_version": INTENT_SCHEMA, "prompt_version": INTENT_PROMPT_VERSION, "status": "READY" if len(ready) == len(outputs) else "REVIEW", "tasks": outputs, "errors": [e for x in outputs for e in x.get("errors", [])]}
     # Singular alias eases migration; multi-task consumers must use tasks[].

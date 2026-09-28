@@ -149,12 +149,12 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
             [],
         ),
         "read_session_context": (
-            "Optional. Disabled for Intent; tagged user texts are already in TASK_USER_MESSAGES.",
+            "按 offset/limit 只读分页查看完整会话，必要时用于消解任务指代；上下文不能新增用户义务。",
             {**page},
             [],
         ),
         "read_session_message": (
-            "Read one raw session message by original message_index. Intent may not page the session.",
+            "按原始 message_index 只读查看一条会话消息，可用 offset/limit 续读；保留当前任务边界。",
             {
                 "index": {
                     "type": "integer",
