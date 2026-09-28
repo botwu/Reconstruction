@@ -972,7 +972,7 @@ class SandboxedAgentRuntime:
                     output_root=output_root,
                 )
                 result.backend = self.backend
-            except BaseException as exc:
+            except Exception as exc:
                 result = AgentResult(
                     role=role.name,
                     backend=self.backend,
