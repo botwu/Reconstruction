@@ -100,6 +100,8 @@ LISTING_COMMANDS = frozenset(
 )
 _FILENAME = re.compile(
     r"(?:^|[\s'\"`=:,(\[])((?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+\.[A-Za-z0-9]{1,8})"
+    # 不截断 lock_task 等标识符，也不把 self.state.lock() 调用当作文件引用。
+    r"(?![A-Za-z0-9._-]|\s*\()"
 )
 _PATH_LIKE_SUFFIXES = frozenset(
     {

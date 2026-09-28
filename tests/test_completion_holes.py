@@ -971,3 +971,24 @@ def test_skipped_constant_assert_is_not_a_real_test_body(body: str, rejected: bo
         required_paths=["test/test_flowprobe.py"],
     )
     assert (error == "BINDING_PATH_TEST_SKELETON:test/test_flowprobe.py") is rejected
+
+
+def test_support_holes_exclude_method_calls_and_identifier_prefixes() -> None:
+    timeline = [
+        *_read_foo(),
+        {
+            "call_id": "source",
+            "name": "read_file",
+            "arguments": {"path": "engine.rs"},
+            "result_text": (
+                "let first = self.state.lock().unwrap();\n"
+                "let second = engine.inner.tasks.lock ().unwrap();\n"
+                "let guard = self.engine.lock_task_admission();\n"
+                'let files = ["Cargo.lock", "package-lock.json", "pnpm-lock.yaml", "custom.guard.lock"];\n'
+            ),
+        },
+    ]
+    index = index_completion_holes(replay_from_timeline(timeline), timeline)
+    support = {item["path"] for item in index.holes if item["kind"] == "SUPPORT"}
+    assert {"self.state.lock", "engine.inner.tasks.lock", "self.engine.lock"}.isdisjoint(support)
+    assert {"Cargo.lock", "package-lock.json", "pnpm-lock.yaml", "custom.guard.lock"} <= support
