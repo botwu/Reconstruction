@@ -74,9 +74,25 @@ def test_accept_label_cannot_hide_uncovered_or_incomplete_review(tmp_path, cover
 
 
 def test_file_review_cannot_certify_unreviewed_response_obligation_mapping(tmp_path):
-    result, candidate = _run(tmp_path, ReviewRuntime(), {"response_contract": {
-        "schema_version": "traceforge.response-contract.v1", "checks": [
-            {"kind": "acceptance_report", "obligation_id": "factual_correctness"}]}})
+    result, candidate = _run(tmp_path, ReviewRuntime(), {
+        "source_task": {"user_texts": [
+            "Finish with:\n" + chr(96) * 3 + "acceptance-report\n"
+            + '{"criteriaSatisfied":[{"id":"criterion-1","status":"satisfied","evidence":"proof"}]}'
+            + "\n" + chr(96) * 3,
+        ]},
+        "acceptance_obligations": [
+            {"id": "output", "text": "Write a correct review"},
+            {"id": "factual_correctness", "text": "All report statements must be true"},
+        ],
+        "environment_bindings": [
+            {"obligation_id": "output", "verifier_kind": "FILE", "output_paths": ["review.md"]},
+            {"obligation_id": "factual_correctness", "verifier_kind": "NON_FILE"},
+        ],
+        "response_contract": {
+            "schema_version": "traceforge.response-contract.v1", "checks": [
+                {"kind": "acceptance_report", "obligation_id": "factual_correctness"}],
+        },
+    })
     assert candidate is None
     assert result["status"] == "REVIEW"
     assert "VERIFIER_REVIEW_INVALID" in result["errors"]

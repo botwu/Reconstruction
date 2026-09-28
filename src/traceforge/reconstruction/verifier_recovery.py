@@ -9,16 +9,16 @@ from pathlib import Path
 from typing import Any
 
 from traceforge.reconstruction.agents import VERIFIER_ROLE, AgentRuntime, AgentSession
-from traceforge.task_instruction import render_task_instruction
 from traceforge.reconstruction.environment_bindings import (
     environment_bindings,
     file_obligation_ids,
     non_file_obligation_ids,
 )
+from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 from traceforge.verifier.synthesis import (
     VERIFIER_PROMPT_VERSION,
-    candidate_from_payload,
     VerifierSynthesisError,
+    candidate_from_payload,
 )
 
 VERIFIER_RECOVERY_SCHEMA = "traceforge.verifier-recovery.v1"
@@ -205,9 +205,16 @@ def run_verifier_recovery(
             "INFRA_ERROR, TIMEOUT, invalid selectors and collection/usage errors are not RED evidence.",
             "Do not modify the workspace or apply a solution. Reference and mutation scripts are private output only.",
             "NON_FILE obligations must not appear in obligation_coverage. Do not invent a new output file or pytest for them.",
+            "同时负责补全 NON_FILE 响应验收机制；Intent 中的 response_contract 只是初稿，可能漏项。",
+            "返回完整 response_contract，保留有效检查并补齐遗漏义务。复用 traceforge.response-contract.v1：",
+            "acceptance_report 检查使用 obligation_id、criterion_ids、required_fields；",
+            "basic_summary 检查使用 obligation_id、verdicts、finding_levels、report_path、match_report:true。",
+            "所有字段、枚举、路径与编号必须来自原始用户要求，只覆盖输出结构或摘要与报告的一致性。",
+            "不得把事实正确、真实执行或外部操作伪装为格式检查；无法提供完整机制时返回 REVIEW 和具体问题。",
+            "候选响应契约和 FILE 测试由同一轮独立语义审查；此阶段不生成或伪造解题响应。",
             "If no FILE obligation can be observed by file-based pytest, return status=REVIEW with open_questions.",
             "Finish with a JSON object only. status must be exactly READY or REVIEW.",
-            "READY schema: {status: 'READY', test_outputs_py: <exact bytes last passed to write_test>, oracle_solutions: [{name, script, justification}, {name, script, justification}], mutation_solutions: [{name, script, justification}], missing_capability_tests: [<bare test name>], protective_tests: [<bare test name>], obligation_coverage: {<each FILE obligation id>: [<test name>]}, expected_value_strategy: <independent calculation explanation>, open_questions: []}.",
+            "READY schema: {status: 'READY', test_outputs_py: <exact bytes last passed to write_test>, oracle_solutions: [{name, script, justification}, {name, script, justification}], mutation_solutions: [{name, script, justification}], missing_capability_tests: [<bare test name>], protective_tests: [<bare test name>], obligation_coverage: {<each FILE obligation id>: [<test name>]}, expected_value_strategy: <independent calculation explanation>, response_contract: <完整响应验收契约，纯FILE任务可省略>, open_questions: []}.",
             "Provide exactly two distinct valid reference scripts and exactly one meaningful incorrect implementation script, all starting from the initial workspace. Scripts execute in the workspace and may not access /tests or /solution.",
             "REVIEW schema: {status: 'REVIEW', open_questions: [<specific unresolved problem>]}.",
             "TASK:",
@@ -247,6 +254,20 @@ def run_verifier_recovery(
     declared_test_bytes = payload.get("test_outputs_py")
     if session.test_outputs_py:
         payload["test_outputs_py"] = session.test_outputs_py
+    # 候选合同只进入本轮任务副本；通过原始要求约束和语义审查前不改 Intent。
+    proposal = payload.get("response_contract", task.get("response_contract"))
+    effective_task = {**task, "response_contract": proposal}
+    response_contract = grounded_response_contract(effective_task)
+    effective_task["response_contract"] = response_contract
+    proposed_checks = proposal.get("checks") if isinstance(proposal, dict) else None
+    final_checks = response_contract["checks"] if response_contract is not None else []
+    if proposal is not None and (
+        not isinstance(proposed_checks, list) or not proposed_checks
+        or len(proposed_checks) != len(final_checks)
+    ):
+        errors.append("RESPONSE_CONTRACT_UNGROUNDED")
+    response_ids = {check["obligation_id"] for check in final_checks}
+    errors.extend(f"RESPONSE_VERIFIER_MISSING:{oid}" for oid in unverified if oid not in response_ids)
     digest = hashlib.sha256(instruction.encode("utf-8")).hexdigest()
     candidate = None
     extra: dict[str, Any] = {}
@@ -260,7 +281,7 @@ def run_verifier_recovery(
             model_name=agent.model_name,
             prompt_sha256=digest,
             response_sha256=hashlib.sha256((ran.final_text or "").encode("utf-8")).hexdigest(),
-            task=task,
+            task=effective_task,
         )
     except VerifierSynthesisError as exc:
         errors.append(str(exc))
@@ -288,7 +309,7 @@ def run_verifier_recovery(
     semantic_review = None
     if candidate is not None and not errors:
         semantic_review = review_verifier_candidate(
-            task={**task, "task_instruction": render_task_instruction(task)},
+            task={**effective_task, "task_instruction": render_task_instruction(effective_task)},
             workspace=workspace, candidate=candidate, agent=agent, output_root=root / "semantic-review",
         )
         errors.extend(semantic_review["errors"])
@@ -308,6 +329,7 @@ def run_verifier_recovery(
         "errors": errors,
         "feedback": {"generation_errors": list(errors), "previous_candidate": payload} if errors else {},
         "semantic_review": semantic_review,
+        "response_contract": response_contract if candidate is not None else None,
         "unverified_obligations": list(unverified),
         "warnings": audit_warnings,
         "pytest_runs": list(session.pytest_runs),
