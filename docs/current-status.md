@@ -4,6 +4,8 @@
 
 **当前没有一条经过可信完整验收的端到端结果，尚不具备稳定批量交付的证据。** 下述六类问题已落实对应源码修复；修复后的真实产物质量仍待新运行确认。历史任务包、RED 或真实轨迹不能代替新代码的完整验收。
 
+本次整合全量回归：950 passed、7 skipped、5 warnings（均为已有 httpx verify 参数弃用提示），耗时 94.83 秒；Ruff E9/F63/F7/F82 与差异检查通过。真实 AGS 上传子目录写入回归另行通过；这些证据不等于 solver 端到端验收。日志与 line41 缺失输入收据见 artifacts/source-repair-audit-20260928/。
+
 ## 2026-09-27 源码修复与待验证事项
 
 | 环节 | 已落地的源码行为 | 真实验证仍需确认 |
@@ -23,11 +25,23 @@
 
 两个缺失文档的原始读取均为 `File not found`。模型尝试生成的计划/进度是推断内容，不能算原始正文恢复；已知不存在与未捕获正文必须分开，不能为了满足路径门禁补造历史事实。
 
+缺失证据保护已完成：真实 line41 静态重放准确标记两个 ABSENT，Completion 返回 REVIEW、模型调用为 0；将 v32 生成内容重新送入候选校验，两份均被拒收。103 项相关回归通过、2 项跳过。可信后续正文恢复与修改屏障仍遵循既有规则。
+
+并行主线的 `artifacts/r04-line41-source-fixes-v33/` 停在 Intent 根 JSON 损坏，`fd41fdc` 已修复内层 JSON 被误认根 payload，并允许原角色单次格式补正。
+
+`artifacts/r04-line41-reconstruction-v34/` 于 2026-09-28 05:18:28 UTC 启动，源码 `8891af3`，仅启用 RED、不执行 solver rollout。检查时 Completion 和 TaskFit 已通过，Verifier 尚在生成；候选仍将 plan.md、progress.md 标为 MODEL_COMPLETED。它未包含本次已知缺失保护，不能据后续通过认定原始初态恢复正确。
+
+已整合隐藏 task_acceptance 输入、RED-only READY 与最终响应待验分离、独立 rollout 预算保存。待验义务不清除，未执行真实 rollout 时 sft_eligible 与 certification_closed 保持 false。独立 read-results 尚未消费响应合同，完整响应验收当前仍由内联 raw-run rollout 路径完成。
+
 仍存在的具体能力缺口：`dependencies/runtime_constraints` 目前只作声明保存，没有统一自动安装机制。缺包必须以真实探针和后续运行说明；声明了依赖不代表依赖已安装。当前没有新增安装框架或把自由文本依赖变成新的确定性准入门禁。只读审查也不应因缺少编译入口而被自动判定不可执行。
 
 ## 目标产物
 
-每条可交付任务应包含合理的独立任务、足够真实且可使用的 task-start 环境，以及能区分正确与错误结果的 verifier。随后真实 agent 在该环境执行，保存完整轨迹与验收证据。重建与 rollout 是两个阶段，任务包存在不表示已有合格解题轨迹。
+**重建阶段**负责从原始 session 生成合理的 task、足够真实且可使用的 task-start workspace，以及能区分正确与错误结果的 verifier，并通过 RED 校准后交付独立 Harbor bundle。RED 执行初态、参考解与 mutation 等校准，不等于 solver 真实解题；重建完成无需先产生 solver 轨迹。
+
+**solver rollout 阶段**单独读取冻结的 bundle，在沙盒中真实解题，产出完整 trajectory、最终结果和评分，关联回输入 bundle。任务包存在、RED 通过或已启动 solver，均不能代替这一步的真实执行结果。
+
+已有独立 `prepare-rollout → execute-rollout → read-results` 路径，可读取 `harbor_bundle/task`。但独立结果读取尚未接入最终 response contract 验收，该逻辑仍位于 `reconstruction.verification` 的私有函数中。RED-only 与 rollout 状态分类、验收规则持久化已从源码落地，仍待真实验证；它们不能代替独立结果读取的接入，因此不能宣称两阶段的完整独立验收已经实现。
 
 ```text
 harbor_bundle/
@@ -53,6 +67,9 @@ bundle 是交付入口；运行轨迹单独位于 Harbor job trial 的 `agent/tr
 | `artifacts/r04-line41-e2e-v28/` | 已有真实 `trajectory.full.json`。任务 `rawtask_6b7d0cf92a8e2b17` 的 `hermes-replay-v5` 两轮完成且无基础设施错误，但 reward 为 0/0；v6/v7 也为两轮 0/0，v9 已有一轮 reward 0 | `verification.json` 为 REVIEW、`sft_eligible=false`，包含 acceptance-report block count、NON_FILE 响应未验和解题复验失败。证明有真实尝试和轨迹，不证明合格交付 |
 | `artifacts/r04-line41-e2e-v30/` | Intent、Completion、Sufficiency 产物；`verification/round-01.json` 为 PASS，NOP/oracle/mutation 数值完成校准；Hermes 实际进入沙盒执行 | Verifier 的报告格式/关键词检查不足以证明评审语义。Hermes 中断后缺少 `hermes-result.json`，导致 `TrajectoryCaptureError`；已见 SIGTERM 处理记录，不能据此断定信号发送者。job 保留一轮错误、一轮待运行，非完整验收 |
 | `artifacts/r04-line41-e2e-v31/` | 已生成任务、环境合同、TaskFit；`verification/round-01.json` 为 PASS | RED 完成后由本次调试代理主动停止；不是模型自然结束或只有 NOP 结果。终止后也出现缺少 `hermes-result.json` 的 capture error，不应将主动停止后的异常另算成自然失败。环境探针、任务绑定及验证语义仍需修正 |
+| `artifacts/r04-line41-source-fixes-v32/` | 原始 session 的 segmentation、Replay、Intent 及 Completion 运行证据；真实 AGS 写入出现 `PermissionError`，另有 22 个误提取的 lock 支持文件缺口 | 自然结束于 Completion REVIEW，后续阶段未完成。对应源码修复已合入 `e6aa97a`；v33 止于 Intent，尚未完成权限修复的真实复验；不回写旧结果 |
+| `artifacts/r04-line41-source-fixes-v33/` | segmentation、Replay 及 Intent 原始输出；根 JSON 含多余引号，解析器误取内层对象后报告缺少 task | 自然结束于 Intent，无 Completion、RED 或 solver rollout。`fd41fdc` 已修复解析与一次格式纠正，尚未真实复验 |
+| `artifacts/r04-line41-reconstruction-v34/` | 2026-09-28 05:18:28.849970 UTC 启动，源码 `8891af3`，仅启用 `--execute-red` | 本次记录时尚未完成；没有请求 solver rollout，不能填写重建通过或最终验收通过 |
 
 v28 的一份可核对 job 为：
 `tasks/rawtask_6b7d0cf92a8e2b17/verification/jobs/hermes-replay-v5/29843d809d1016d25e59d0428698fc16905dbec0b11676a6711a1d95c095b879/result.json`。
@@ -80,7 +97,7 @@ line 41 的任务是只读代码审查：阅读 brief、先前报告和相关源
 - Sufficiency 的 `READY`：模型及相应结构检查认为上下文足够，执行探针另存。
 - `environment_contract.status/context_status`：上下文状态；`execution_readiness=PROBED` 才表示要求的探针收据完整。`execution_status=EXECUTABLE` 是派生标签，不是独立证明。
 - `task_fit.decision=READY_ORIGINAL`：已有环境与原任务的义务映射可支持继续验证，不表示目标已经实现。
-- `verification.status=READY`、`calibration=PASS`：重建验证器通过 RED，真实 rollout 另查。
+- `verification.status=READY`、`calibration=PASS`：重建验证器通过 RED，真实 rollout 另查。具备完整响应合同和通过语义审查的待验响应义务，可保持重建 READY，但继续留在 `unverified_obligations`，不能因此关闭认证。
 - `sft_eligible=true`、`certification_closed=true`：代码要求真实复验、质量门禁和义务覆盖都完成。仍应核对实际文件与语义，不能只读一个布尔值。
 
 环境上下文 READY 与执行 FAILED 可以同时出现，这是两种判断，不能直接视为合同自相矛盾。当前执行门禁检查的是 `execution_readiness`，而不是独立读取 `execution_status`。

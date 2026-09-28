@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import time
 import urllib.error
 import urllib.request
@@ -464,27 +463,14 @@ _ROLE_JSON_KEYS = frozenset(
 
 
 def parse_json_object(text: str) -> dict[str, Any]:
-    """解析模型 JSON object。允许 fenced block，也允许 JSON 前后有说明文字。
+    """解析完整 JSON 对象，允许外层围栏和说明，不从损坏的根对象内取片段。
 
-    说明文字里常出现 stub 示例 `{"_comment": ...}`。优先最后一个 fenced JSON，
-    否则取最后一个带角色字段的 object，避免误解析中间的示例花括号。
+    说明文字里的合法 stub 可以跳过；遇到对象语法错误必须交给模型修正，
+    不能把嵌套义务或响应检查冒充完整角色结果。
     """
 
     candidate = text.strip()
-    fence = chr(96) * 3
-    fenced = re.findall(
-        rf"{re.escape(fence)}(?:json)?\s*\n(.*?){re.escape(fence)}",
-        candidate,
-        flags=re.S | re.I,
-    )
     objects: list[dict[str, Any]] = []
-    for block in fenced:
-        try:
-            value = json.loads(block.strip())
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            objects.append(value)
     decoder = json.JSONDecoder()
     index = 0
     while True:
@@ -493,9 +479,11 @@ def parse_json_object(text: str) -> dict[str, Any]:
             break
         try:
             value, consumed = decoder.raw_decode(candidate[start:])
-        except json.JSONDecodeError:
-            index = start + 1
-            continue
+        except json.JSONDecodeError as exc:
+            raise ModelGatewayError(
+                f"模型输出的完整 JSON 对象语法错误（行 {exc.lineno}，列 {exc.colno}）",
+                code="INVALID_JSON",
+            ) from exc
         if isinstance(value, dict):
             objects.append(value)
         index = start + max(consumed, 1)

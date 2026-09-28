@@ -18,7 +18,7 @@ from traceforge.trajectory.artifacts import (
 
 from .synthesis import VerifierCandidate, is_python_solution, validate_solution_scripts
 
-_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v5-grounded-instruction"
+_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v6-grounded-task-acceptance"
 
 
 def _make_workspace_solver_writable(workspace: Path) -> None:
@@ -104,11 +104,19 @@ def compile_bundle(
         raise ValueError("参考解索引超出范围")
     variant = variants[index]
     validate_solution_scripts(verifier.oracle_solutions, verifier.mutation_solutions)
+    # 验收输入随隐藏 control 导出，独立 rollout 无需回读重建目录。
+    task_acceptance = {
+        "task_id": task.get("task_id"),
+        "acceptance_obligations": task.get("acceptance_obligations", []),
+        "environment_bindings": task.get("environment_bindings", []),
+        "response_contract": task.get("response_contract"),
+    }
     digest = hashlib.sha256(
         json.dumps(
             {
                 "compiler_version": _BUNDLE_COMPILER_VERSION,
                 "instruction": instruction,
+                "task_acceptance": task_acceptance,
                 "tree": tree,
                 "verifier": verifier.to_dict(),
                 "variant_set": "oracle" if mutation_index is None else "mutation",
@@ -152,6 +160,7 @@ def compile_bundle(
                     "schema_version": "traceforge.control-input-manifest.v1",
                     "task_id": task.get("task_id"),
                     "source_task_hash": task.get("source_task_hash"),
+                    "task_acceptance": task_acceptance,
                     "workspace_sha256": tree,
                     "environment_metadata": env_metadata,
                     "hidden_control_files": (

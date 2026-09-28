@@ -17,7 +17,7 @@ import sys
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MethodType
 from typing import Any, Protocol
@@ -191,6 +191,8 @@ class HermesNativeRuntime:
         raw: dict[str, Any] = {}
         errors: list[str] = []
         final_text = None
+        turns: list[dict[str, Any]] = []
+        payload: dict[str, Any] = {}
         try:
             os.chdir(workdir)
             auth_context = (
@@ -227,18 +229,60 @@ class HermesNativeRuntime:
                 # Hermes native dispatch must use the role-scoped proxy.
                 _bind_agent_tools(agent, role=role, session=session)
                 with _scoped_hermes_dispatch(agent, role=role):
-                    raw = agent.run_conversation(
-                        instruction, system_message=role.identity, task_id=role.name
-                    )
-            if not isinstance(raw, dict):
-                raise TypeError("Hermes result must be a dict")
-            final_text = str(raw.get("final_response") or "")
-            infra = classify_hermes_failure(final_text)
-            if infra:
-                errors.append(infra)
-                payload = {}
-            else:
-                payload = parse_json_object(final_text) if final_text.strip() else {}
+                    current_instruction = instruction
+                    history: list[dict[str, Any]] | None = None
+                    for attempt in range(2):
+                        kwargs = {"conversation_history": history} if attempt else {}
+                        raw = agent.run_conversation(
+                            current_instruction, system_message=role.identity,
+                            task_id=role.name, **kwargs,
+                        )
+                        if not isinstance(raw, dict):
+                            raise TypeError("Hermes result must be a dict")
+                        final_text = str(raw.get("final_response") or "")
+                        turn = {
+                            "messages": len(raw.get("messages") or []),
+                            "api_calls": raw.get("api_calls"),
+                            "completed": raw.get("completed"),
+                            "model": self.model_name,
+                            "provider": self.provider,
+                            "tool_events": len(session.tool_events),
+                            "policy_errors": list(session.policy_errors),
+                        }
+                        turns.append(turn)
+                        if attempt:
+                            turn["final_response"] = final_text
+                            turn["response_sha256"] = hashlib.sha256(final_text.encode()).hexdigest()
+                        infra = classify_hermes_failure(final_text)
+                        if infra:
+                            errors.append(infra)
+                            break
+                        try:
+                            payload = parse_json_object(final_text) if final_text.strip() else {}
+                            break
+                        except ModelGatewayError as exc:
+                            turn["output_error"] = exc.code
+                            turn["final_response"] = final_text
+                            turn["response_sha256"] = hashlib.sha256(final_text.encode()).hexdigest()
+                            if (
+                                exc.code != "INVALID_JSON" or attempt
+                                or not raw.get("completed") or session.policy_errors
+                            ):
+                                raise
+                            previous = raw.get("messages")
+                            history = list(previous) if isinstance(previous, list) and previous else [
+                                {"role": "user", "content": instruction},
+                                {"role": "assistant", "content": final_text},
+                            ]
+                            current_instruction = (
+                                "上一条完整角色结果存在 JSON 语法错误（INVALID_JSON）。"
+                                "请仅修正该结果的 JSON 语法，保留全部字段、义务、证据和值；"
+                                "不要重新执行任务或调用工具，不要删掉出错字段，也不要只返回嵌套片段。"
+                                "返回完整的根 JSON 对象，不加说明或 Markdown。错误位置：" + str(exc)
+                            )
+                            # 格式补正只有一次模型调用；不能重新操作环境或重跑角色任务。
+                            agent.max_iterations = 1
+                            _bind_agent_tools(agent, role=replace(role, tools=()), session=session)
         except Exception as exc:
             errors.append(getattr(exc, "code", None) or type(exc).__name__)
             payload = {}
@@ -253,17 +297,6 @@ class HermesNativeRuntime:
         if session.policy_errors:
             errors.extend(session.policy_errors)
             payload = {}
-        turns = [
-            {
-                "messages": len(raw.get("messages") or []),
-                "api_calls": raw.get("api_calls"),
-                "completed": raw.get("completed"),
-                "model": self.model_name,
-                "provider": self.provider,
-                "tool_events": len(session.tool_events),
-                "policy_errors": list(session.policy_errors),
-            }
-        ]
         write_agent_trace(
             output_root,
             role=role,

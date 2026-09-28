@@ -29,9 +29,10 @@ from traceforge.harbor_ags.rollout import (
     publish_rollout_bundle,
     redact_harbor_output,
 )
+from traceforge.reconstruction.environment_bindings import non_file_obligation_ids
 from traceforge.reconstruction.model_gateway import ChatModel, ModelGatewayError
 from traceforge.reconstruction.run_config import load_rollout_limits
-from traceforge.reconstruction.environment_bindings import non_file_obligation_ids
+from traceforge.task_instruction import grounded_response_contract
 from traceforge.verifier.bundle import compile_bundle
 from traceforge.verifier.iterative import synthesize_verifier_iterative
 from traceforge.verifier.red_check import RedCheckCase, evaluate_red_check
@@ -235,11 +236,18 @@ def write_execution_manifest(
 def _write_verification(
     root: Path, result: dict[str, Any], config: VerificationConfig
 ) -> None:
-    if result.get("unverified_obligations"):
-        result["status"] = "REVIEW"
+    unresolved = set(result.get("unverified_obligations") or [])
+    pending = set(result.get("pending_response_obligations") or [])
+    response_ready = set(result.get("response_verifier_ready_obligations") or [])
+    if unresolved:
+        # 重建 READY 表示验收机制已就绪；真实响应仍须在独立 rollout 后验收。
         result["sft_eligible"] = False
+    blocking = unresolved - (pending & response_ready)
+    if blocking:
+        result["status"] = "REVIEW"
         result["errors"] = list(dict.fromkeys([
-            *(result.get("errors") or []), "UNVERIFIED_OBLIGATIONS"
+            *(result.get("errors") or []), "UNVERIFIED_OBLIGATIONS",
+            *(f"RESPONSE_VERIFIER_MISSING:{item}" for item in sorted(blocking & pending)),
         ]))
     _write(root / "verification.json", result)
     write_execution_manifest(root, result, config)
@@ -768,6 +776,24 @@ def _record_unverified_obligations(
     result["pending_response_obligations"] = [
         item for item in unresolved if item in non_file
     ]
+    # 非文件义务不等于格式义务。只有已绑定公开要求且语义审查通过的
+    # 完整响应契约，才能标为“机制就绪、等待真实响应”，不能清除待验义务。
+    contract = grounded_response_contract(task)
+    declared = task.get("response_contract")
+    contract_ids: set[str] = set()
+    if contract and isinstance(declared, dict) and contract["checks"] == declared.get("checks"):
+        contract_ids = {check["obligation_id"] for check in contract["checks"]}
+    review = (audit or {}).get("semantic_review")
+    reviewed_ids: set[str] = set()
+    if isinstance(review, dict) and review.get("status") == "ACCEPT" and not review.get("errors"):
+        rows = review.get("obligation_reviews")
+        if isinstance(rows, list):
+            reviewed_ids = {
+                row["obligation_id"] for row in rows
+                if isinstance(row, dict) and isinstance(row.get("obligation_id"), str)
+                and row.get("covered") is True
+            }
+    result["response_verifier_ready_obligations"] = sorted(non_file & contract_ids & reviewed_ids)
     blocking = [item for item in unresolved if item not in non_file]
     if not blocking:
         return False

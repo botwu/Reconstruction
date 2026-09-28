@@ -151,7 +151,12 @@ def _parser() -> argparse.ArgumentParser:
     prepare_rollout.add_argument("--model", default="anthropic/claude-opus-4-8")
     prepare_rollout.add_argument("--trials", type=int, default=1)
     prepare_rollout.add_argument("--concurrency", type=int, default=1)
-    prepare_rollout.add_argument("--timeout-seconds", type=int, default=900)
+    prepare_rollout.add_argument(
+        "--config", type=Path, default=DEFAULT_RUNTIME_CONFIG,
+        help="读取 config.yaml 中 rollout 角色的执行预算",
+    )
+    prepare_rollout.add_argument("--timeout-seconds", type=int, default=None)
+    prepare_rollout.add_argument("--max-iterations", type=int, default=None)
     prepare_rollout.add_argument("--expected-hermes-commit")
     execute_rollout = harbor_ags_commands.add_parser(
         "execute-rollout", help="显式执行已审核的 rollout plan"
@@ -461,6 +466,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if arguments.command == "harbor-ags" and arguments.harbor_ags_command == "prepare-rollout":
         try:
+            timeout_seconds, max_iterations = load_rollout_limits(
+                arguments.config,
+                timeout_seconds=arguments.timeout_seconds,
+                max_iterations=arguments.max_iterations,
+            )
             output_path = build_rollout_plan(
                 HarborRolloutConfig(
                     task_dir=arguments.task_dir,
@@ -471,11 +481,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     model=arguments.model,
                     trials=arguments.trials,
                     concurrency=arguments.concurrency,
-                    timeout_seconds=arguments.timeout_seconds,
+                    timeout_seconds=timeout_seconds,
+                    agent_max_iterations=max_iterations,
                     expected_hermes_commit=arguments.expected_hermes_commit,
                 )
             )
-        except (HarborAgsAdapterError, HarborRolloutError, ArtifactPublishError, OSError) as exc:
+        except (HarborAgsAdapterError, HarborRolloutError, ArtifactPublishError, ModelGatewayError, OSError) as exc:
             print(f"Harbor/AGS rollout 计划构建失败：{exc}", file=sys.stderr)
             return 2
         print(output_path)
