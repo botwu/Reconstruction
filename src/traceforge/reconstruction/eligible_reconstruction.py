@@ -374,10 +374,14 @@ def _environment_feedback(
         "missing_binding_paths": list(judge.get("missing_binding_paths") or []),
         "integrity_report": judge.get("integrity_report") or {},
         "semantic_errors": list(judge.get("semantic_errors", judge.get("errors")) or []),
+        "context_errors": list(environment.get("errors") or []),
         "context_status": environment.get("status"),
         "blockers": list(environment.get("blockers") or []),
         "execution_readiness": environment.get("execution_readiness"),
         "execution_errors": list(environment.get("execution_errors") or []),
+        # PASS 只说明探针进程收据通过，stdout 与检查解释仍需供返修和复查使用。
+        "environment_probes": list(judge.get("environment_probes") or []),
+        "environment_checks": list(judge.get("environment_checks") or []),
         "failed_probes": [
             probe for probe in judge.get("environment_probes") or []
             if isinstance(probe, dict) and probe.get("status") != "PASS"
@@ -388,19 +392,25 @@ def _environment_feedback(
 def _repair_state(environment: dict[str, Any], feedback: dict[str, Any]) -> str:
     """忽略随机探针编号和说明文案，识别工作区与诊断均无变化的重复尝试。"""
     issues = (feedback.get("integrity_report") or {}).get("issues") or []
+    # 同一探针重试、更换编号或输出顺序不算进展；新增成功探针属于有效进展。
+    probes = {
+        json.dumps(
+            {key: probe.get(key) for key in ("purpose", "code_sha256", "status", "error_code")},
+            sort_keys=True,
+        )
+        for probe in feedback["environment_probes"] if isinstance(probe, dict)
+    }
     return json.dumps({
         "workspace": environment.get("workspace_sha256"),
         "context_status": feedback["context_status"],
+        "context_errors": sorted(set(feedback["context_errors"])),
         "missing": sorted(feedback["missing_context"] + feedback["missing_binding_paths"]),
         "integrity": [
             {key: issue.get(key) for key in ("code", "path", "classification")}
             for issue in issues if isinstance(issue, dict)
         ],
         "execution_errors": sorted(feedback["execution_errors"]),
-        "failed_probes": [
-            {key: probe.get(key) for key in ("purpose", "code_sha256", "status", "error_code")}
-            for probe in feedback["failed_probes"]
-        ],
+        "environment_probes": sorted(probes),
     }, ensure_ascii=False, sort_keys=True)
 
 
