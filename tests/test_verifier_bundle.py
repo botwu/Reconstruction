@@ -1,5 +1,8 @@
 """生成包的隐藏面、路径和 verifier 基础设施错误验证。"""
 
+import hashlib
+import json
+import shutil
 import subprocess
 from dataclasses import replace
 
@@ -196,7 +199,7 @@ def test_bundle_digest_includes_compiler_contract(tmp_path):
     manifest = __import__("json").loads(
         (output / "compile_manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v4-public-instruction"
+    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v5-task-acceptance"
     assert manifest["entrypoint_contract"] == {
         "workspace_mount": "/home/user/workspace",
         "solution_mount": "/solution",
@@ -233,3 +236,69 @@ def test_bundle_permissions_preserve_source_and_executable(tmp_path):
     assert source.stat().st_mode & 0o777 == 0o750
     assert workspace.stat().st_mode & 0o777 == 0o750
     assert (output / "task/workspace/run.sh").stat().st_mode & 0o777 == 0o776
+
+
+def test_bundle_carries_hidden_portable_task_acceptance(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "input.txt").write_text("input")
+    acceptance = {
+        "task_id": "task-response",
+        "acceptance_obligations": [
+            {"id": "reply", "text": "返回 acceptance-report", "observable": "最终回复"}
+        ],
+        "environment_bindings": [{"obligation_id": "reply", "verifier_kind": "NON_FILE"}],
+        "response_contract": {
+            "schema_version": "traceforge.response-contract.v1",
+            "checks": [{"obligation_id": "reply", "kind": "acceptance_report",
+                        "required_fields": {"summary": "string"}}],
+        },
+    }
+    output = compile_bundle(
+        task={"core_objective": "完成任务", **acceptance},
+        workspace_root=workspace, verifier=_verifier(), output_root=tmp_path / "out",
+    )
+    copied = tmp_path / "portable"
+    shutil.copytree(output, copied)
+    relative = "task/tests/control/input-manifest.json"
+    manifest = json.loads((copied / relative).read_text())
+    assert manifest["task_acceptance"] == acceptance
+    assert [p.name for p in (copied / "task/workspace").iterdir()] == ["input.txt"]
+    assert "response_contract" not in (copied / "task/instruction.md").read_text()
+    artifacts = json.loads((copied / "artifact_manifest.json").read_text())
+    assert artifacts["bundle_file_sha256"][relative] == hashlib.sha256(
+        (copied / relative).read_bytes()
+    ).hexdigest()
+
+
+def test_response_contract_changes_bundle_digest_without_public_instruction_change(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    task = {
+        "core_objective": "完成任务",
+        "response_contract": {"schema_version": "traceforge.response-contract.v1",
+                              "checks": [{"kind": "acceptance_report", "obligation_id": "reply",
+                                          "required_fields": {"summary": "string"}}]},
+    }
+    first = compile_bundle(task=task, workspace_root=workspace, verifier=_verifier(),
+                           output_root=tmp_path / "out")
+    task["response_contract"]["checks"][0]["required_fields"]["status"] = "string"
+    second = compile_bundle(task=task, workspace_root=workspace, verifier=_verifier(),
+                            output_root=tmp_path / "out")
+    assert first.name != second.name
+    assert (first / "task/instruction.md").read_bytes() == (second / "task/instruction.md").read_bytes()
+    before = json.loads((first / "task/tests/control/input-manifest.json").read_text())
+    after = json.loads((second / "task/tests/control/input-manifest.json").read_text())
+    assert before["task_acceptance"]["response_contract"] != after["task_acceptance"]["response_contract"]
+
+
+def test_bundle_keeps_missing_response_contract_explicit(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    output = compile_bundle(task={"core_objective": "完成任务"}, workspace_root=workspace,
+                            verifier=_verifier(), output_root=tmp_path / "out")
+    manifest = json.loads((output / "task/tests/control/input-manifest.json").read_text())
+    assert manifest["task_acceptance"] == {
+        "task_id": None, "acceptance_obligations": [], "environment_bindings": [],
+        "response_contract": None,
+    }
