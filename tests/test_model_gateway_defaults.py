@@ -53,3 +53,30 @@ def test_parse_json_object_skips_stub_example_before_role_payload():
     payload = parse_json_object(text)
     assert payload["label"] == "INSUFFICIENT"
     assert payload["missing_context"] == ["n8n"]
+
+
+def test_parse_json_object_rejects_invalid_root_instead_of_nested_contract():
+    import pytest
+
+    from traceforge.reconstruction.model_gateway import ModelGatewayError, parse_json_object
+
+    broken = (
+        '{"task_instruction":"review","core_objective":"review","response_contract":{"checks":['
+        '{"kind":"basic_summary","obligation_id":"o2","match_report":true"},'
+        '{"kind":"acceptance_report","obligation_id":"o2","criterion_ids":["criterion-1"]}]}}'
+    )
+    fence = chr(96) * 3
+    for wrapped in (broken, "结果如下:\n" + broken, fence + "json\n" + broken + "\n" + fence):
+        with pytest.raises(ModelGatewayError) as error:
+            parse_json_object(wrapped)
+        assert error.value.code == "INVALID_JSON"
+
+
+def test_parse_json_object_keeps_complete_valid_root_and_embedded_fence():
+    import json
+
+    from traceforge.reconstruction.model_gateway import parse_json_object
+
+    payload = {"task_instruction": "Follow schema: " + chr(96) * 3 + "json\n{}\n" + chr(96) * 3,
+               "response_contract": {"checks": [{"kind": "acceptance_report", "obligation_id": "o2"}]}}
+    assert parse_json_object(json.dumps(payload)) == payload
