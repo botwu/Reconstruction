@@ -218,7 +218,11 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
         ),
         "run_environment_probe": (
             "在只读工作区的沙盒中运行环境探针；reset 和 task_conflict 在独立临时目录重复运行。"
-            "只验证指定能力，不证明任务可解，也不得修复或求解任务。",
+            "Python 当前目录已是沙盒 workspace 根目录，读取文件请用相对路径，"
+            "或 os.environ['TRACEFORGE_WORKSPACE']；宿主机的产物绝对路径在沙盒中不可用。"
+            "临时写入仅使用 os.environ['TRACEFORGE_PROBE_SCRATCH']，不得修改 workspace。"
+            "必要条件不满足时必须 assert、raise 或非零退出；只打印错误或捕获异常后正常退出"
+            "无法证明能力通过。只验证指定能力，不证明任务可解，也不得修复或求解任务。",
             {
                 "python_code": text,
                 "purpose": {

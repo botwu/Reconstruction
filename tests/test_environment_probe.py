@@ -218,3 +218,13 @@ def test_probe_child_cwd_is_workspace_even_when_runtime_starts_at_root(tmp_path:
     )
     assert result["status"] == "PASS"
     assert result["executions"][0]["stdout"] == "VALUE = 42\n"
+
+
+def test_probe_tool_exposes_execution_contract_before_first_call() -> None:
+    description = tool_schemas(("run_environment_probe",))[0]["function"]["description"]
+    # 首次调用前就给出沙盒坐标、临时写入位置和失败信号，不能等回执再提示。
+    assert "TRACEFORGE_WORKSPACE" in description
+    assert "TRACEFORGE_PROBE_SCRATCH" in description
+    assert "相对路径" in description
+    assert "宿主" in description
+    assert "assert" in description
