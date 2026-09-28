@@ -1,16 +1,31 @@
 # 当前状态与交付标准
 
-更新日期：2026-09-28；本轮基于 5f3dc84 整合真实首跑发现的 Intent 路径候选、绑定反馈和角色说明修复；完整离线回归对应源码 0d88df1。重建和 solver rollout 保持分离。v34（运行源码 8891af3）及更早运行均为历史记录，不能代表最新修复版本的交付结果。流程与源码导航分别见 [原始会话流程](raw-session-pipeline.md)、[阅读地图](rebuild-live-map.md)。
+更新日期：2026-09-28。本轮根据冻结版本 48b625b 的真实 R04 第 2179 条运行修复模块接口和候选质量；重建和 solver rollout 保持分离。旧运行不能代表本轮修复版本已通过。流程与源码导航见 [原始会话流程](raw-session-pipeline.md)、[阅读地图](rebuild-live-map.md)。
 
-本次补充独立 rollout 验收前的 runtime 核对：`execute-rollout` 与 `read-results` 认证前共用已有哈希检查，仅核对计划记录的 `agent.py`、`capture.py`、`evidence.py`、`validator.py` 四个文件。记录文件修改或缺失时，在认证和派生产物写入前拒绝；没有 runtime metadata 的旧计划与只导出冻结输入的 `publish_rollout_bundle` 保持原行为。此项来自静态缺口，未观察到真实运行因该缺口发生误验收。相关确定性回归 **72 passed（0.99 秒）**，Ruff E9/F63/F7/F82 和差异检查通过；该项源码验证未运行模型或 AGS，真实端到端验收仍未完成。
+**当前尚无合格 Harbor bundle 和可信完整 rollout 验收结果，不能开始稳定批量交付。** 真实运行与源码修复分工独立：源码在隔离分支修复，真实运行使用冻结代码，不回写旧产物或补造通过标志。
 
-最新真实首跑使用 5f3dc84，位于 artifacts/pipeline-debug-20260928/live-r04-2179-01/：Session 与 Intent 各完成一次模型调用，但 Intent 因 BINDING_FILE_PATHS_REQUIRED:obl-001 返回 REVIEW。进程退出码 0 只表示正常结束，Completion/Sufficiency/Verifier/RED 均未运行，AGS 调用为 0。真实任务目标恢复正确；用户未直接点名文件，关键初态源码为 PARTIAL，却被调用方的 COMPLETE-only 候选过滤排除，模型原答复的文件绑定也为空。校验失败也没有反馈给 Intent，Verifier 的轮次预算不能修复此上游缺口。
+最新真实运行位于 artifacts/pipeline-debug-20260928/live-r04-2179-02/，使用源码 48b625b。Intent 经一次真实绑定反馈转为 READY，恢复的原任务和 FILE 义务保留。Completion 及两轮返修均没有改进候选文件；末轮 agent 已读取两份编码不同的原始证据，却明确按 from_replayed 保留损坏。末轮 Sufficiency 的语义 READY 不能抵消环境合同 REVIEW / UNEXECUTABLE：缺 dependency 探针，缺失诊断的分类证据引用未传通，返修以 REPAIR_LIMIT_REACHED 结束。
 
-对应源码修复让已有可信初态 PARTIAL 正文的路径参与任务绑定，保留原完整度和 Replay 修改屏障；只对已完成结果中的绑定合同错误反馈一次，不重写任务、不删义务、不降级已有 FILE。首轮和纠正轮的请求/轨迹分别保存在原 private/ 与 binding-repair/private/，agent.attempts 记录各轮状态、错误和目录。上下文工具说明与只读权限已统一。最新修复仍需同一条真实会话重新运行确认，不能回写首跑结果或把离线测试当作端到端通过。
+该运行于 2026-09-28 08:17:51 UTC 自然结束，耗时 2494.39 秒，最终 REVIEW、stopped_at=verification、rollout=NOT_RUN、sft_eligible=false。退出码 0 只代表命令正常收尾。Verifier 前三轮因空响应合同对象误报 RESPONSE_CONTRACT_UNGROUNDED，第 4–6 轮添加原任务没有要求的非空报告合同，这类拒收有依据。六轮都没有进入独立语义审查或 Harbor 校准；顶层 VERIFIER_CALIBRATION_FAILED 不能解释成已经执行校准。
 
-整合源码 0d88df1 的完整非 live 回归：1140 passed、5 skipped、2 deselected，103.91 秒；5 项 warning 为既有 httpx verify 参数弃用提示。Ruff E9/F63/F7/F82 与差异检查通过。后续提示措辞补充明确：可用观察到的路径定位原任务对象，但不能把原 agent 操作扩写成用户新要求；不改变 Replay/绑定校验规则。最终提示补充的相关回归另有 90 passed（0.60 秒），限定 Ruff 与差异检查通过。
+首轮先尝试 Workbook/aggregate_workbook 行为测试，但发生导入收集错误后改写成源码正则检查。前五轮最终 1 PASS / 2 FAIL，第六轮 2 PASS / 1 FAIL 来自放宽正则匹配，不能证明功能进展。早期失败尾部没有完整持久化，具体导入错误仍无证据确定。该版本仅保存 Verifier 初始 instruction 的哈希，静态代码能确认反馈接线，不能逐字核对实际初始请求。共记录 15 份角色 trace、58 次 API 调用、131 次工具事件；12 个 AGS 沙盒均有清理证据，受检源码、配置和输入哈希未变。详细质检以该运行的 REPORT.md 和 qc/ 为准。
 
-**当前没有一条经过可信完整验收的端到端结果，尚不具备稳定批量交付的证据。** 下述六类问题已落实对应源码修复；修复后的真实产物质量仍待新运行确认。历史任务包、RED 或真实轨迹不能代替新代码的完整验收。
+本轮集中修复：
+
+- 环境反馈：保留上下文合同错误、所有探针回执（包括退出码为零的诊断输出）和检查解释。新增成功探针属于进展；随机编号、顺序和重复收据不算进展，不重解释 PASS/FAIL。
+- Sufficiency：使用真实工具相对根坐标，向模型说明沙盒工作目录、临时目录和断言失败方式；分类引用原样传递，已知引用只来自输入任务，不替模型补造。FILE 是验收产物类别，功能任务不能被当作只读审查。
+- Completion：原始轨迹和 Replay 不变；候选可用显式 capture_repairs 纠正 PARTIAL 中的局部采集损坏，记录逐段 old_text/new_text/reason 和原始证据，继续标记 MODEL_COMPLETED。未声明部分仍须保留；完整文件、未知初态和明确缺失不因此开放。原目标功能留给 solver，独立 Sufficiency 核对是否越界。
+- Verifier：仅在原任务没有响应合同且没有 NON_FILE 义务时，将空对象视为无响应合同，不阻断文件验证器的语义审查；已有响应要求、非空未依据合同仍拒收。
+- 执行审计：在私有 trace 保留完整初始模型请求，以及历次 pytest 完整诊断和测试版本绑定；沿用凭据与私有推理过滤，哈希仍绑定过滤前的实际输入。最终验收仍只使用最终测试版本；审计信息完整不能替代真实环境/行为验证。
+- 执行控制：沙盒运行器不再吞掉 KeyboardInterrupt/SystemExit，完成既有清理后向上传播中断；普通运行异常仍形成失败结果。
+
+这些修复需要新冻结运行验证产物质量，不能用离线回归代替真实通过。当前依赖字符串尚无统一安装机制；若真实探针证实缺少可安装依赖，应由环境准备模块消费声明，不能把声明当成已安装。
+
+整合源码 95c0be7 的本地 Python 3.12.14 非 live 回归：**1208 passed、8 skipped、3 deselected、5 个既有 httpx 弃用警告，17.13 秒**。8 项跳过源于本地缺少历史原始数据/产物；3 项排除包括 2 项 live 测试，以及 1 项硬编码 /bin/dash、无法在 macOS 执行的进程组用例。使用部署机现有 Harbor 验收源码补齐本地导入依赖；未调用模型或 AGS。Ruff E9/F63/F7/F82 与差异检查通过。
+
+远端本轮全量验证受共享盘延迟影响，未获得完整通过结果。最先失败的进程测试要求 Python 在 2 秒内退出；新源码和未改动的 48b625b 均复现超时返回 None，相关实现与测试未在本轮修改。远端旧全量运行被终止后的失败不能作为有效回归结论。本地验证不能代替 Linux 环境复验或真实产物验收。完整本地日志保存在源码修复会话的 TraceRconstruction-source-validation-20260928/95c0be7-pytest.log。
+
+历史验证基线：0d88df1 非 live 回归 1140 passed、5 skipped、2 deselected（103.91 秒），48b625b 提示相关回归另有 90 passed。5 项 warning 均为既有 httpx verify 参数弃用提示。
 
 历史整合版本 `610254b` 的全量回归：950 passed、7 skipped、5 warnings（均为已有 httpx verify 参数弃用提示），耗时 94.83 秒；Ruff E9/F63/F7/F82 与差异检查通过。真实 AGS 上传子目录写入回归另行通过；这些证据不等于 solver 端到端验收。日志与 line41 缺失输入收据见 artifacts/source-repair-audit-20260928/。
 
@@ -22,6 +37,8 @@
 2. 对真实样本逐模块检查任务、环境和 verifier 的实际内容；缺陷只在负责模块修复，交付通过校准的 Harbor bundle。
 3. 单独启动冻结 bundle 的沙盒 rollout，核对轨迹、评分和最终响应。
 4. 单条产物合格后再批量处理 R04/R05；不同时扩散依赖安装、解析适配或自动回修框架。
+
+最终需要分别证明 terminal 和 search 两个 domain 的真实合格产出。两类环境的重建方式不同；FILE/NON_FILE 是验收义务类型，不能代替 domain 分类。当前这批修复仅对应 terminal 样本；纯 retrieval 后端未就绪的支持缺口不能被写成样本质量失败，也不能用 terminal 通过代替 search 通过。
 
 当前采用固定分工：源码修复会话负责模块修复、离线回归、整合与推送；真实调试会话负责冻结版本上的真实数据、模型、AGS 执行和逐阶段产物质检。调试发现问题后回传原始证据与预期差异，再由源码会话修复；不并发修改同一主目录。真实重建与 solver rollout 分开执行。
 

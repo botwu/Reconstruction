@@ -58,7 +58,7 @@ v33 的实际失败发生在 Intent 输出解析，尚未进入 Completion。`fd
 
 候选通过结构、引用、写入边界和泄漏检查后物化 workspace。工具调用缺少证据编号时拒绝该次写入，允许 agent 补正参数；不得因此允许无证据写入。Completion READY 不代表依赖可用、源码正确或任务可解。
 
-编排层对有效候选运行 Sufficiency，最多追加两轮反馈：具体上下文缺口或真实探针失败返回 Completion 增量修复；仅缺探针收据时只重评。每轮独立物化、复核和记录，无进展、基础设施故障、模型拒绝或轮次耗尽均保留真实原因。原 Replay 的完整文件与部分片段保护不变，不通过修改任务或预解任务使环境过关。见 [环境反馈闭环](environment-repair.md)。
+编排层对有效候选运行 Sufficiency，最多追加两轮反馈：具体上下文缺口或真实探针失败返回 Completion 增量修复；仅缺探针收据时只重评。每轮独立物化、复核和记录，无进展、基础设施故障、模型拒绝或轮次耗尽均保留真实原因。原 Replay 保持不可变，完整文件仍只读。PARTIAL 默认保留原片段；只有显式声明的局部 capture_repairs 可以修复采集损坏，其他字节继续保留，独立 Sufficiency 核对修复是否改变任务基线。不通过修改任务或预解任务使环境过关。见 [环境反馈闭环](environment-repair.md)。
 
 运行声明省略时继承，显式新数组替换旧值；它们目前没有统一自动安装机制。缺包仍须由真实探针揭示，不能把声明写入 manifest 当作已完成安装。
 
@@ -92,6 +92,6 @@ Verifier 生成隐藏 pytest、oracle 和 mutation。独立审查会读取实际
 
 - 重建：用户任务、task-start workspace、环境声明、verifier、参考校准材料及 RED 结果，交付独立 Harbor bundle。
 - solver rollout：读取冻结 bundle，真实执行并保留 `agent/trajectory.full.json`、最终输出与评分。
-- 最终验收：关联 bundle、trial、reward、response receipt、manifest 和 cleanup；独立结果读取的响应合同验收仍待接通。
+- 最终验收：关联 bundle、trial、reward、response receipt、manifest 和 cleanup；独立结果读取已接入响应合同验收，真实通过仍需执行证据。
 
 Harbor 计划在 `verification/plans/`，实际 job 在 `verification/jobs/`，交付包在 `verification/deliverables/hermes-replay/harbor_bundle/`。完整格式与核查顺序见 [当前状态](current-status.md)。日志和历史诊断不是交付资格证明，缺少实际产物不得补写成功标志。
