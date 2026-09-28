@@ -1,6 +1,6 @@
 # 当前状态与交付标准
 
-更新日期：2026-09-27；本页源码状态对应 `6b578e7`。2026-09-24 的 `90212de` 审计及运行记录保留为历史基线。流程与源码导航分别见 [原始会话流程](raw-session-pipeline.md)、[阅读地图](rebuild-live-map.md)。
+更新日期：2026-09-28；本页以 `e6aa97a` 的 v33 实际运行作为基线，另记已合入、尚未真实复验的 `fd41fdc`。2026-09-24 的 `90212de` 审计及运行记录保留为历史基线。流程与源码导航分别见 [原始会话流程](raw-session-pipeline.md)、[阅读地图](rebuild-live-map.md)。
 
 **当前没有一条经过可信完整验收的端到端结果，尚不具备稳定批量交付的证据。** 下述六类问题已落实对应源码修复；修复后的真实产物质量仍待新运行确认。历史任务包、RED 或真实轨迹不能代替新代码的完整验收。
 
@@ -15,15 +15,25 @@
 | Verifier / RED | 在现有 Verifier 修复轮内独立审查测试、参考解、mutation 及响应义务映射，将具体反例返回生成器；强调实质行为和真实输入 | 新 verifier 能拒绝格式正确但结论错误的产物，也能接受合理正确结果；独立模型审查与 RED 数值均不能单独证明语义正确 |
 | 最终响应验收 | 分离 rollout 的响应采集许可与最终验收资格；保留原始公开输出格式，在真实轨迹产生后按显式合同检查响应、实际报告、摘要和路径。不再提前要求尚未产生的响应证据，也不继承用户未声明的旧报告字段 | 真实 trial 完成后证据绑定、格式及支持的内容一致性检查闭合；不支持或未覆盖的义务继续保持未验证 |
 
-本次源码 `6b578e7` 的全量离线回归已完成：`796 passed, 6 skipped, 5 warnings in 91.43s`；`ruff check --select E9,F63,F7,F82` 与 `git diff --check` 通过。主工作目录及 GitHub/GitLab 已同步至 `805e481`（源码仍为 `6b578e7`）。这些检查不等于真实端到端验收。
+源码 `6b578e7` 的全量离线回归已完成：`796 passed, 6 skipped, 5 warnings in 91.43s`；`ruff check --select E9,F63,F7,F82` 与 `git diff --check` 通过。该数字对应 v32 启动前的源码，不能代替后续修复版本或真实端到端验收。v33 启动时，主工作目录及 GitHub/GitLab 已同步至 `e6aa97a`。
 
-冻结 R04 line 41 的 `raw-run` 已于 **2026-09-27 07:01:24 UTC** 启动，进程 PID 为 `1129699`，源码为 `6b578e7`，产物目录是部署机项目下的 `artifacts/r04-line41-source-fixes-v32/`。截至本次记录，session segmentation 与 Replay 已产出，Intent 运行中；配置为两个真实 rollout trial，每个 trial 上限 14400 秒、500 次迭代。后续阶段及最终验收尚未完成，不能填写通过结论；待实际结果补充 trial、停止原因和各阶段产物核查。
+冻结 R04 line 41 的 v32（源码 `6b578e7`，2026-09-27 07:01:24 UTC 启动）已自然结束，停在 **Completion REVIEW**，没有进入后续充分性、Verifier 或 rollout 验收。实际 AGS 中，上传目录归属 `root:root`、权限为 `775`，执行用户为 `1001`，写入出现 `PermissionError`；这是已实证的沙盒写权限问题，不能归因于原始任务不可重建。源码 `0f1b844` 已修复上传目录的可写权限，并保留失败诊断。
+
+v32 还把 `self.state.lock()` 一类源码调用以及 `lock_task_admission` 标识符片段误提取为支持文件缺口。源码 `e6aa97a` 修复了文件名提取边界；同一原始输入重算后，22 个假 lock 缺口全部消除，真实 lockfile 仍可识别。历史 v32 产物保持原状，不能据此改写为通过。
+
+v33 于 **2026-09-28 05:00:04 UTC** 启动（PID `3460183`，源码 `e6aa97a`），产物目录为 `artifacts/r04-line41-source-fixes-v33/`，现已自然结束于 Intent。模型输出包含完整任务结构，但根 JSON 在 `match_report: true` 后多出引号；解析器错误地取出内层 `acceptance_report` 作为完整 payload，继而误报缺少 task。没有进入 Completion，因此还没有真实复验 v32 的权限修复，也没有产生 solver rollout。两个 trial、每个 14400 秒和 500 次迭代只是本次配置，不能算作执行结果。
+
+源码 `fd41fdc` 已禁止从损坏的根 JSON 中取内部片段，并允许原角色最多一次格式纠正；98 项相关回归通过，尚未真实重跑。下一次计划只运行重建与 RED（`--execute-red`，不带 `--execute-rollout`），目标目录为 `artifacts/r04-line41-reconstruction-v34/`；本页不记录其已启动或通过。
 
 仍存在的具体能力缺口：`dependencies/runtime_constraints` 目前只作声明保存，没有统一自动安装机制。缺包必须以真实探针和后续运行说明；声明了依赖不代表依赖已安装。当前没有新增安装框架或把自由文本依赖变成新的确定性准入门禁。只读审查也不应因缺少编译入口而被自动判定不可执行。
 
 ## 目标产物
 
-每条可交付任务应包含合理的独立任务、足够真实且可使用的 task-start 环境，以及能区分正确与错误结果的 verifier。随后真实 agent 在该环境执行，保存完整轨迹与验收证据。重建与 rollout 是两个阶段，任务包存在不表示已有合格解题轨迹。
+**重建阶段**负责从原始 session 生成合理的 task、足够真实且可使用的 task-start workspace，以及能区分正确与错误结果的 verifier，并通过 RED 校准后交付独立 Harbor bundle。RED 执行初态、参考解与 mutation 等校准，不等于 solver 真实解题；重建完成无需先产生 solver 轨迹。
+
+**solver rollout 阶段**单独读取冻结的 bundle，在沙盒中真实解题，产出完整 trajectory、最终结果和评分，关联回输入 bundle。任务包存在、RED 通过或已启动 solver，均不能代替这一步的真实执行结果。
+
+已有独立 `prepare-rollout → execute-rollout → read-results` 路径，可读取 `harbor_bundle/task`。但独立结果读取尚未接入最终 response contract 验收，该逻辑仍位于 `reconstruction.verification` 的私有函数中；RED-only 与 rollout 状态分离、验收规则持久化正在收尾，不能宣称两阶段的完整独立验收已经实现。
 
 ```text
 harbor_bundle/
@@ -49,6 +59,8 @@ bundle 是交付入口；运行轨迹单独位于 Harbor job trial 的 `agent/tr
 | `artifacts/r04-line41-e2e-v28/` | 已有真实 `trajectory.full.json`。任务 `rawtask_6b7d0cf92a8e2b17` 的 `hermes-replay-v5` 两轮完成且无基础设施错误，但 reward 为 0/0；v6/v7 也为两轮 0/0，v9 已有一轮 reward 0 | `verification.json` 为 REVIEW、`sft_eligible=false`，包含 acceptance-report block count、NON_FILE 响应未验和解题复验失败。证明有真实尝试和轨迹，不证明合格交付 |
 | `artifacts/r04-line41-e2e-v30/` | Intent、Completion、Sufficiency 产物；`verification/round-01.json` 为 PASS，NOP/oracle/mutation 数值完成校准；Hermes 实际进入沙盒执行 | Verifier 的报告格式/关键词检查不足以证明评审语义。Hermes 中断后缺少 `hermes-result.json`，导致 `TrajectoryCaptureError`；已见 SIGTERM 处理记录，不能据此断定信号发送者。job 保留一轮错误、一轮待运行，非完整验收 |
 | `artifacts/r04-line41-e2e-v31/` | 已生成任务、环境合同、TaskFit；`verification/round-01.json` 为 PASS | RED 完成后由本次调试代理主动停止；不是模型自然结束或只有 NOP 结果。终止后也出现缺少 `hermes-result.json` 的 capture error，不应将主动停止后的异常另算成自然失败。环境探针、任务绑定及验证语义仍需修正 |
+| `artifacts/r04-line41-source-fixes-v32/` | 原始 session 的 segmentation、Replay、Intent 及 Completion 运行证据；真实 AGS 写入出现 `PermissionError`，另有 22 个误提取的 lock 支持文件缺口 | 自然结束于 Completion REVIEW，后续阶段未完成。对应源码修复已合入 `e6aa97a`；v33 止于 Intent，尚未完成权限修复的真实复验；不回写旧结果 |
+| `artifacts/r04-line41-source-fixes-v33/` | segmentation、Replay 及 Intent 原始输出；根 JSON 含多余引号，解析器误取内层对象后报告缺少 task | 自然结束于 Intent，无 Completion、RED 或 solver rollout。`fd41fdc` 已修复解析与一次格式纠正，尚未真实复验 |
 
 v28 的一份可核对 job 为：
 `tasks/rawtask_6b7d0cf92a8e2b17/verification/jobs/hermes-replay-v5/29843d809d1016d25e59d0428698fc16905dbec0b11676a6711a1d95c095b879/result.json`。
