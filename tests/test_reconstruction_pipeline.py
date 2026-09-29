@@ -17,7 +17,7 @@ from traceforge.reconstruction.pipeline import (
     run_reconstruction,
 )
 from traceforge.reconstruction.env_replay import replay_from_timeline
-from traceforge.reconstruction.intent_recovery import _substantive_text, run_intent_recovery
+from traceforge.reconstruction.intent_recovery import run_intent_recovery
 from traceforge.reconstruction.session_source import load_raw_line
 from traceforge.reconstruction.verification import VerificationConfig
 from traceforge.reconstruction.workspace_completion import run_workspace_completion
@@ -230,18 +230,6 @@ def test_multi_task_intent_to_environment_keeps_task_boundaries(tmp_path: Path) 
     assert any((workspace / "foo.py").is_file() for workspace in workspaces)
     assert any((workspace / "bar.py").is_file() for workspace in workspaces)
     assert {item["task_id"] for item in result["tasks"]} == set(record["selected_task_ids"])
-
-
-def test_intent_drops_framework_injection() -> None:
-    assert _substantive_text("<environment_context>\n<cwd>/</cwd>") is None
-    assert _substantive_text("# AGENTS.md instructions\nPrefer small diffs") is None
-    assert (
-        _substantive_text(
-            "# Files mentioned by the user:\n## x.png\n## My request for Codex:\n这个不能为null"
-        )
-        == "这个不能为null"
-    )
-    assert _substantive_text("请只读展示 P001") == "请只读展示 P001"
 
 
 def test_intent_recovery_uses_user_texts_not_task_recovery(tmp_path: Path) -> None:

@@ -281,7 +281,7 @@ def _task_source(source: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]
     """给每个 task 保留完整 session 工具上下文；task 标签只作证据锚点。"""
     anchor = task.get("source_task") if isinstance(task.get("source_task"), dict) else task
     if anchor.get("task_id") != task.get("task_id"):
-        raise ReconstructionError("Intent task_id 与筛选任务标签不一致")
+        raise ReconstructionError("Intent task_id 与会话任务分组不一致")
     spans = set(str(x) for x in anchor.get("span_ids") or [])
     if not spans:
         raise ReconstructionError("Intent 缺少原始任务的 span_ids")
@@ -1034,7 +1034,7 @@ def run_reconstruction(
                 "schema_version": RAW_SESSION_RECONSTRUCTION_SCHEMA,
                 "status": "REVIEW",
                 "stopped_at": "intent",
-                "errors": ["筛选记录没有可重建的真实任务标签"],
+                "errors": ["会话分组没有任务"],
             },
         )
     routed: list[tuple[dict[str, Any], dict[str, Any], Any, dict[str, Any]]] = []

@@ -39,6 +39,28 @@ class _CaptureRuntime:
         )
 
 
+@pytest.mark.parametrize("prefix", [
+    "<system-reminder>当前日期</system-reminder>\n",
+    "# Files mentioned by the user:\n## x.png\n## My request for Codex:\n",
+])
+def test_harness_prefix_does_not_erase_the_following_user_request(tmp_path, prefix):
+    text = prefix + "只读比较两个实现，不修改，给出证据位置。"
+    source = _padded_source(user_index=1, text=text)
+    task_id = source["tasks"][0]["task_id"]
+    runtime = _CaptureRuntime({
+        "task_id": task_id, "task_instruction": "只读比较两个实现，不修改，给出证据位置。",
+        "core_objective": "只读比较", "response_contract": None,
+        "acceptance_obligations": [{"id": "o1", "text": "比较实现",
+                                     "evidence_ref_ids": ["user:1"]}],
+        "environment_bindings": [{"obligation_id": "o1", "verifier_kind": "NON_FILE",
+                                   "required_paths": [], "observable": "对比报告"}],
+    })
+    result = run_intent_recovery(source=source, agent=runtime, output_root=tmp_path)
+    assert result["status"] == "READY"
+    assert runtime.session.user_records == [{"id": "user:1", "message_index": 1, "text": text}]
+    assert "不能丢掉其后的请求" in runtime.instruction
+
+
 @pytest.mark.parametrize("contract", [{"schema_version": "traceforge.response-contract.v1",
                                        "checks": []}, None, "invalid"])
 def test_intent_ignores_empty_or_invalid_response_contract(tmp_path: Path, contract) -> None:

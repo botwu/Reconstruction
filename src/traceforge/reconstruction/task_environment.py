@@ -45,7 +45,7 @@ def build_task_environment_pair(
         raise TaskEnvironmentPairError(f"任务 {task_id} 的 READY Intent 缺少 task")
     intent_task = intent_task or {}
     if intent_task and intent_task.get("task_id") != task_id:
-        raise TaskEnvironmentPairError("Intent 与筛选任务 ID 不一致")
+        raise TaskEnvironmentPairError("Intent 与原始任务 ID 不一致")
     # 变体由 task_fit 明确生成并由编排层放入 executed_task；交付 q 必须描述
     # 实际交给 verifier/agent 的任务，同时保留 source_* 作为原始任务证据。
     executed_task = result.get("executed_task")

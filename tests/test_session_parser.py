@@ -221,6 +221,111 @@ def test_plain_text_harness_uses_exact_partial_reference() -> None:
     assert parsed["total_lines"] is None
 
 
+def test_numbered_reference_error_identifies_file_and_return_boundary() -> None:
+    source, data = _source(), _interpretation()
+    source["tool_timeline"][1]["result_blocks"][1]["text"] = json.dumps({
+        "output": "1\tx = 1\n---next file---\n1\ty = 2\n",
+    })
+    op = data["events"][1]["operations"][0]
+    op.update(path=None, source_path="../adjacent/a.py")
+    op["content_ref"]["line_number_separator"] = "\t"
+    with pytest.raises(SessionParserError) as error:
+        materialize_interpretation(source["tool_timeline"], data)
+    message = str(error.value)
+    assert "../adjacent/a.py" in message
+    assert "block_index=1" in message and "['output']" in message
+    assert "返回第 2 行" in message and "期望显示行号 2" in message
+
+
+@pytest.mark.parametrize("native_header", [True, False])
+def test_truncated_exec_wrapper_is_indexed_and_cannot_enter_file_content(native_header: bool) -> None:
+    body = ("Chunk ID: abc\nWall time: 0.001 seconds\nProcess exited with code 0\n"
+            "Original token count: 100\nOutput:\n"
+            "Warning: truncated output (original token count: 100)\nTotal output lines: 20\n\n"
+            "first = 1\nbroken…3 tokens truncated…tail\nlast = 2\n")
+    shift = 0 if native_header else 5
+    if shift:
+        body = "\n".join(body.splitlines()[shift:]) + "\n"
+    timeline = [{"call_id": "native", "pending": False,
+                 "result_blocks": [{"index": 0, "text": body}]}]
+    assert reference_views(timeline)[0]["non_source_lines"] == [*range(1, 9 - shift), 10 - shift]
+    op = {**_read(), "partial": True,
+          "content_ref": {"block_index": 0, "json_path": [], "start_line": 9 - shift, "end_line": 9 - shift}}
+    data = {"workspace_root": "/workspace", "events": [_event(0, [op])]}
+    read = materialize_interpretation(timeline, data)[0]["session_parse"]["file_ops"][0]
+    assert read["content"] == "first = 1\n"
+    for start, end in [(6, 9), (9, 11)]:
+        op["content_ref"].update(start_line=start - shift, end_line=end - shift)
+        with pytest.raises(SessionParserError, match="包装或截断.*返回行"):
+            materialize_interpretation(timeline, data)
+    # 没有已识别的工具包装时，正文中的相同字样必须原样保留。
+    timeline[0]["result_blocks"][0]["text"] = "example = '…3 tokens truncated…'\n"
+    op["content_ref"].update(start_line=1, end_line=1)
+    read = materialize_interpretation(timeline, data)[0]["session_parse"]["file_ops"][0]
+    assert read["content"] == "example = '…3 tokens truncated…'\n"
+    assert reference_views(timeline)[0]["non_source_lines"] == []
+
+
+def test_numbered_ranges_are_format_hints_without_file_semantics() -> None:
+    timeline = [{"result_blocks": [{"index": 0, "text":
+        "head\n0\talpha\n1\tbeta\n---next---\n8: gamma\n9: delta\n12: gap\n"}]}]
+    view = reference_views(timeline)[0]
+    assert view["numbered_ranges"] == [
+        {"start_line": 2, "end_line": 3, "display_start_line": 0, "line_number_separator": "\t"},
+        {"start_line": 5, "end_line": 6, "display_start_line": 8, "line_number_separator": ": "},
+        {"start_line": 7, "end_line": 7, "display_start_line": 12, "line_number_separator": ": "},
+    ]
+    assert "path" not in view and "kind" not in view
+
+
+@pytest.mark.parametrize("partial,first", [(False, 1), (True, 18)])
+def test_zero_based_read_preserves_first_line_and_file_coordinates(tmp_path: Path, partial, first):
+    source, data = _source(), _interpretation()
+    body = f"{first - 1}\tdef f():\r\n{first}\t    return 1\r\n"
+    source["tool_timeline"][1]["result_blocks"][1]["text"] = json.dumps({"output": body})
+    op = data["events"][1]["operations"][0]
+    op.update(partial=partial, file_start_line=first)
+    op["content_ref"].update(line_number_separator="\t", line_number_base=0)
+    parsed = materialize_interpretation(source["tool_timeline"], data)
+    read = parsed[1]["session_parse"]["file_ops"][0]
+    assert read["content"] == "def f():\r\n    return 1\r\n"
+    if partial:
+        assert read["line_numbers"] == [18, 19]
+    else:
+        replay_from_timeline(parsed, tmp_path)
+        assert (tmp_path / "lib/a.py").read_bytes() == b"def f():\r\n    return 1\r\n"
+    op["content_ref"]["line_number_base"] = 1
+    with pytest.raises(SessionParserError, match="行号"):
+        materialize_interpretation(source["tool_timeline"], data)
+
+
+@pytest.mark.parametrize("source_path", ["../adjacent/a.py", "abc123^:lib/a.py"])
+def test_reference_file_is_preserved_without_workspace_materialization(tmp_path: Path, source_path: str):
+    source, data = _source(), _interpretation()
+    op = data["events"][1]["operations"][0]
+    op.update(path=None, source_path=source_path)
+    before = copy.deepcopy(source)
+    parsed = parse_session_tools(source=source, model=_Model(data), output_root=tmp_path / "parser")
+    observation = parsed["tool_timeline"][1]["session_parse"]
+    assert observation["file_ops"] == []
+    assert observation["reference_file_ops"][0]["source_path"] == source_path
+    assert observation["reference_file_ops"][0]["content"] == "x = 1\r\n"
+    assert not replay_from_timeline(parsed["tool_timeline"], tmp_path / "workspace").files
+    assert source == before
+    op.pop("source_path")
+    with pytest.raises(SessionParserError, match="source_path"):
+        materialize_interpretation(source["tool_timeline"], data)
+
+
+def test_external_clone_does_not_hide_observed_workspace_files():
+    source, data = _source(), _interpretation()
+    data["events"][0] = _event(0, [{"kind": "write", "path": None,
+                                    "source_path": "/tmp/cloned-repo"}], "mutation")
+    parsed = materialize_interpretation(source["tool_timeline"], data)
+    assert [f.path for f in replay_from_timeline(parsed).files] == ["lib/a.py"]
+    assert parsed[0]["session_parse"]["reference_file_ops"][0]["kind"] == "write"
+
+
 @pytest.mark.parametrize("first", [None, 1, 2])
 def test_complete_read_needs_no_redundant_line_origin(tmp_path: Path, first) -> None:
     source, data = _source(), _interpretation()
@@ -261,7 +366,10 @@ def test_reference_index_exposes_nested_positions_without_rewriting_or_selecting
     assert views[0] == {"event_index": 0, "block_index": 2, "json_path": [],
                         "line_count": 1, "json_container": True}
     assert views[1] == {"event_index": 0, "block_index": 2, "json_path": ["results", 0],
-                        "line_count": 4, "lines": list(enumerate(text.splitlines(keepends=True), 1))}
+                        "line_count": 4, "lines": list(enumerate(text.splitlines(keepends=True), 1)),
+                        "non_source_lines": [], "numbered_ranges": [
+                            {"start_line": 3, "end_line": 4, "display_start_line": 1,
+                             "line_number_separator": ": "}]}
     assert timeline == before
 
 

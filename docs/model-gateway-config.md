@@ -31,7 +31,7 @@ gemini:
 Agent 负责，环境补全与验收沿用各自角色。
 
 `raw-run --domain search|terminal` 直接使用数据已有的领域；R01 指定 search，R04 指定
-terminal。解析请求携带既定 `domain_route`，输出契约 v1.5 不要求模型分类，模型也不能覆盖路由。
+terminal。解析请求携带既定 `domain_route`，输出契约 v1.6 不要求模型分类，模型也不能覆盖路由。
 
 解析产物位于 `session_parser/`。默认 DeepSeek 使用模型提供的 1M 上下文能力，
 每次送入完整原始 session，不做摘要或分组替代，也不按字段名删去原数据中的
@@ -70,6 +70,9 @@ Intent 和 Completion 的提示直接携带这份解读，并可按索引读取�
 模型输出使用 `file_text` 明确表示文件原文，读取 XLSX 表头等派生观察保留在原始返回中，
 不进入文件操作列表；适配给 Replay 时才转换为其已有的 `read` 操作。
 请求全文、执行成功且无截断迹象的文件返回可标为完整；范围读取保持部分，不以输出上限代替实际行数。
+带行号返回显式声明 `line_number_base=0|1`，文件位置仍统一按 1 起始；零起始 Read 不丢第0行。
+目录外或坐标未知的读取保留 `path=null`、原始 `source_path` 和精确正文引用，物化为
+`reference_file_ops` 供参考；仅工作区内的 `file_ops` 进入 Replay，不能扩大工作目录或丢弃外部证据。
 搜索观察不会转成伪文件，也不表示已有搜索环境执行后端。底层 API 不传 `parser_model`
 只用于单独调试后续模块，会明确记录 `session_parser.status=NOT_RUN`。
 

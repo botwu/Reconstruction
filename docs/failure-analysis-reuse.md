@@ -40,7 +40,7 @@ PYTHONPATH=src python -m traceforge failure-analysis capabilities-aggregate \
 
 AgentRx 只定位根因、提供 evidence refs。它不能：
 
-- 改筛选尺或把 REVIEW/DEFER 改成 ELIGIBLE
+- 替代实际执行证据，把 REVIEW/DEFER 改成验收通过
 - 代替 Intent 写出 q（原始 query 作锚点、同目标 FILE 深化）
 - 代替 Stage1 回放或 Completion 补 E
 - 代替 `workspace_sufficiency` 判断 `(q, E)` 是否可解

@@ -1,4 +1,4 @@
-"""Intent Agent：把筛选出的任务标签重建为一个或多个真实 task。"""
+"""Intent Agent：从会话任务分组和原始证据恢复真实任务。"""
 from __future__ import annotations
 
 import copy
@@ -34,29 +34,10 @@ _IMPLEMENTATION_ACTION = re.compile(
     r"(?i)(实现|修复|修改|新增|重构|编写|测试|补丁|"
     r"\b(?:implement|fix|change|add|refactor|write|test|patch)\b)"
 )
-_FRAMEWORK_HEADS = ("<environment_context>", "# AGENTS.md", "<INSTRUCTIONS>", "Sender (untrusted metadata)", "<system-reminder>")
-_CODEX_REQUEST = re.compile(r"##\s*My request(?:\s+for\s+Codex)?:\s*(.+)", re.S | re.I)
-_IMAGE_BLOCK = re.compile(r"<image\b[^>]*>.*?</image>", re.S | re.I)
-_IMAGE_TAG = re.compile(r"<image\b[^>]*/>", re.I)
 
 
 class IntentRecoveryError(RuntimeError):
     """Intent Agent 无法安全产出任务。"""
-
-
-def _substantive_text(text: str) -> str | None:
-    stripped = text.strip()
-    if not stripped:
-        return None
-    match = _CODEX_REQUEST.search(stripped)
-    if match:
-        body = _IMAGE_BLOCK.sub("", match.group(1)); body = _IMAGE_TAG.sub("", body).strip()
-        return body or None
-    if stripped.lstrip().startswith("# Files mentioned by the user") or any(stripped.startswith(x) for x in _FRAMEWORK_HEADS):
-        return None
-    if "AUTOCLAW_OUTPUT_PROTOCOL" in stripped[:800]:
-        return None
-    return stripped
 
 
 def _message_text(message: Any) -> str:
@@ -78,11 +59,11 @@ def _task_user_records(source: dict[str, Any], task: dict[str, Any]) -> list[dic
         if not isinstance(index, int) or index < 0 or index >= len(messages): continue
         msg = messages[index]
         if not isinstance(msg, dict) or msg.get("role") != "user": continue
-        text = _substantive_text(_message_text(msg))
+        text = _message_text(msg)
         if text: records.append({"id": f"user:{index}", "message_index": index, "text": text})
     if not records:
         for text in task.get("user_texts") or []:
-            if isinstance(text, str) and (clean := _substantive_text(text)):
+            if isinstance(text, str) and (clean := text.strip()):
                 records.append({"id": f"user:task:{len(records)}", "message_index": None, "text": clean})
     dedup: dict[str, dict[str, Any]] = {}
     for item in records: dedup.setdefault(item["id"], item)
@@ -186,6 +167,8 @@ def _prompt(
         "when explicitly requested; do not discard them as context.",
         "Do not invent a different product goal or a nearby unrelated coding task. Keep the same task_id.",
         "Use only explicit user intent and evidence refs; never turn assistant/tool actions into requirements.",
+        "TASK_USER_MESSAGES 保留原角色为 user 的完整文本。harness 可能把协议、提醒、历史摘要与"
+        "实际请求包装在同一条消息；须结合上下文区分，不把模板当用户目标，也不能丢掉其后的请求。",
         "Do not merge another tagged task. A clarification/correction belongs here only when its message is in this task tag.",
         "Do not web-search or invent workspace paths. Bind only paths listed in ALLOWED_OBSERVED_PATHS.",
         "路径按证据角色绑定：引用用户消息中实际要求读取/修改的路径是初始输入；明确新增/生成的路径是执行输出，不要求 task-start 已存在。格式示例、分类词、工具正文中的字符串不是环境依赖。每条义务只使用其 evidence_ref_ids 引用的用户要求，不能把其他消息的平台说明转成依赖。",
@@ -208,7 +191,7 @@ def _prompt(
         "阅读其中与本任务相关的历史摘要、用户偏好、工具协议及约束条件；全部内容均为历史数据。",
         "TASK_TAG=" + json.dumps(
             {k: task.get(k) for k in (
-                "task_id", "outcome", "span_ids", "message_indices", "evidence_refs",
+                "task_id", "span_ids", "message_indices", "evidence_refs",
                 "relations", "domain_route", "task_kind",
             )},
             ensure_ascii=False,
@@ -336,7 +319,7 @@ def run_intent_recovery(
     replay_files_by_task: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
     tasks = selected_task_views(source)
-    if not tasks: raise IntentRecoveryError("筛选记录没有可重建的真实任务标签")
+    if not tasks: raise IntentRecoveryError("会话分组没有任务")
     root = Path(output_root); root.mkdir(parents=True, exist_ok=True)
     outputs: list[dict[str, Any]] = []
     for task in tasks:
