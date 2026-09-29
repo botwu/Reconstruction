@@ -20,8 +20,9 @@ dev = [
 ]
 
 [tool.setuptools.package-data]
-traceforge.failure_analysis = ["assets/**/*.py", "assets/**/*.md", "reference_assets/*.json", "reference_assets/*.txt", "reference_assets/*.md"]
-traceforge.verifier = ["vendor/*.whl", "vendor_lock.json"]
+"traceforge.reconstruction" = ["researcher_instruction.md"]
+"traceforge.failure_analysis" = ["assets/**/*.py", "assets/**/*.md", "reference_assets/*.json", "reference_assets/*.txt", "reference_assets/*.md"]
+"traceforge.verifier" = ["vendor/*.whl", "vendor_lock.json"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

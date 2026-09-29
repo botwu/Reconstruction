@@ -90,10 +90,12 @@ def _plan_payload(
     offset: int,
     limit: int | None,
     output_root: Path,
+    domain: str,
 ) -> dict[str, Any]:
     return {
         "schema_version": BATCH_SCHEMA,
         "status": "PLANNED",
+        "domain": domain,
         "created_at": datetime.now(UTC).isoformat(),
         "inventory_manifest": str(manifest_path),
         "inventory_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
@@ -129,16 +131,19 @@ def execute_batch(
     manifest_path: str | Path,
     output_root: str | Path,
     config: str | Path,
+    domain: str,
     offset: int = 0,
     limit: int | None = None,
     workers: int = 1,
-    sandbox: bool = False,
+    sandbox: bool = True,
     execute_red: bool = False,
     execute_rollout: bool = False,
     rollout_trials: int = 2,
     session_timeout_seconds: int = 7200,
     repo_root: str | Path | None = None,
 ) -> dict[str, Any]:
+    if domain not in {"search", "terminal"}:
+        raise BatchInputError("domain 必须由调用方指定为 search 或 terminal")
     if workers != 1:
         raise BatchInputError("当前批处理先固定 workers=1，避免共享 Hermes/AGS 资源污染")
     if session_timeout_seconds <= 0:
@@ -167,6 +172,8 @@ def execute_batch(
                 "from traceforge.cli import main; raise SystemExit(main())",
                 "reconstruct",
                 "raw-run",
+                "--domain",
+                domain,
                 "--input",
                 str(row["input"]),
                 "--line-number",
@@ -182,8 +189,7 @@ def execute_batch(
                 "--rollout-trials",
                 str(rollout_trials),
             ]
-            if sandbox:
-                command.append("--sandbox")
+            command.append("--sandbox" if sandbox else "--no-sandbox")
             if execute_red:
                 command.append("--execute-red")
             if execute_rollout:
@@ -242,6 +248,7 @@ def execute_batch(
         counts[result["status"]] = counts.get(result["status"], 0) + 1
     final = {
         "schema_version": BATCH_SCHEMA,
+        "domain": domain,
         "status": (
             "COMPLETED"
             if all(item["status"] in {"READY", "READY_VARIANT"} for item in results)
@@ -265,12 +272,13 @@ def execute_batch(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--domain", choices=("search", "terminal"), required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--workers", type=int, default=1)
-    parser.add_argument("--sandbox", action="store_true")
+    parser.add_argument("--sandbox", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--execute-red", action="store_true")
     parser.add_argument("--execute-rollout", action="store_true")
     parser.add_argument("--rollout-trials", type=int, default=2)
@@ -293,6 +301,7 @@ def main() -> int:
                     offset=args.offset,
                     limit=args.limit,
                     output_root=output,
+                    domain=args.domain,
                 ),
             )
             print(output / "batch_plan.json")
@@ -303,6 +312,7 @@ def main() -> int:
             manifest_path=args.manifest,
             output_root=args.output,
             config=args.config,
+            domain=args.domain,
             offset=args.offset,
             limit=args.limit,
             workers=args.workers,

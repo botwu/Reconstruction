@@ -491,7 +491,7 @@ def test_capture_timeout_is_independent_of_rollout_budget(
 
 
 @pytest.mark.parametrize("outcome", ["FAILED", "TIMEOUT", "ABORTED"])
-def test_execution_receipt_records_failure_without_secrets(
+def test_execution_receipt_preserves_original_failure_tail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str,
 ) -> None:
     plan = build_rollout_plan(HarborRolloutConfig(
@@ -525,13 +525,16 @@ def test_execution_receipt_records_failure_without_secrets(
     assert receipt["external_execution"] is True
     assert receipt["returncode"] == (1 if outcome == "FAILED" else None)
     assert 0 < len(receipt["error"]) <= 2000
-    assert "sk-redact-receipt-value" not in receipt["error"]
-    assert "[REDACTED]" in receipt["error"]
+    assert "api_key=sk-redact-receipt-value" in receipt["error"]
+    assert "[REDACTED]" not in receipt["error"]
     if outcome == "ABORTED":
         assert receipt["error"].startswith("KeyboardInterrupt:")
     assert (plan / "artifact_manifest.json").read_bytes() == manifest_before
     assert (plan / "rollout_plan.json").read_bytes() == plan_before
-@pytest.mark.parametrize("filename", ["agent.py", "capture.py", "evidence.py", "validator.py"])
+@pytest.mark.parametrize("filename", [
+    "src/harbor_ags/agent.py", "src/harbor_ags/capture.py", "src/harbor_ags/evidence.py",
+    "src/harbor_ags/validator.py", "src/harbor_ags/input_contract.py", "configs/runtime-appendix.md",
+])
 @pytest.mark.parametrize("deleted", [False, True])
 def test_rollout_rejects_changed_or_missing_pinned_runtime(
     tmp_path: Path, filename: str, deleted: bool, monkeypatch: pytest.MonkeyPatch
@@ -541,8 +544,8 @@ def test_rollout_rejects_changed_or_missing_pinned_runtime(
         lambda task_dir, **_: validate_harbor_bundle(task_dir),
     )
     harbor = _harbor_root(tmp_path / "harbor")
-    runtime_file = harbor / "src" / "harbor_ags" / filename
-    runtime_file.parent.mkdir(parents=True)
+    runtime_file = harbor / filename
+    runtime_file.parent.mkdir(parents=True, exist_ok=True)
     runtime_file.write_text("# reviewed runtime\n")
     output = build_rollout_plan(
         HarborRolloutConfig(
@@ -553,7 +556,7 @@ def test_rollout_rejects_changed_or_missing_pinned_runtime(
         )
     )
     plan = json.loads((output / "rollout_plan.json").read_text())
-    assert plan["harbor_runtime"]["files"][f"src/harbor_ags/{filename}"] == hashlib.sha256(
+    assert plan["harbor_runtime"]["files"][filename] == hashlib.sha256(
         runtime_file.read_bytes()
     ).hexdigest()
     if deleted:

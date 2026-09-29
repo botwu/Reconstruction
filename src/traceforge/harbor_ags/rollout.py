@@ -2,7 +2,7 @@
 
 桥接层只负责运行边界，不负责生成任务、解答或评分逻辑。默认只生成
 ``rollout_plan.json``，只有调用方显式设置 ``execute=True`` 才会启动 Harbor。
-凭据永远从当前进程环境读取，不写入命令、配置或 artifact。
+运行凭据只通过进程环境传递，不主动写入命令或配置；工具输出按原文保留。
 """
 
 from __future__ import annotations
@@ -47,9 +47,6 @@ DEFAULT_TOKENHUB_BASE_URL = "https://tokenhub.sensetime.com"
 _AGS_KEY_ENV = ("AGS_API_KEY", "E2B_API_KEY", "ROLLOUT_E2B_API_KEY")
 _MODEL_KEY_ENV = ("TOKENHUB_KEY", "ANTHROPIC_API_KEY", "ROLLOUT_LLM_API_KEY")
 _MODEL_URL_ENV = ("TOKENHUB_BASE_URL", "ANTHROPIC_BASE_URL", "ROLLOUT_LLM_BASE_URL")
-_SECRET_OUTPUT_RE = re.compile(
-    r"(?i)(?:authorization\s*:\s*bearer\s+|(?:api[_-]?key|token|secret|password)\s*[=:]\s*)([^\s,;]+)|\bsk-[A-Za-z0-9_-]{12,}\b"
-)
 
 
 class HarborRolloutError(RuntimeError):
@@ -108,10 +105,13 @@ def _harbor_runtime_metadata(harbor_root: Path) -> dict[str, Any]:
     """Record the external Harbor evidence runtime used for this plan."""
     files: dict[str, str] = {}
     for relative in (
+        "src/harbor_ags/environment.py",
         "src/harbor_ags/agent.py",
         "src/harbor_ags/capture.py",
         "src/harbor_ags/evidence.py",
         "src/harbor_ags/validator.py",
+        "src/harbor_ags/input_contract.py",
+        "configs/runtime-appendix.md",
     ):
         runtime_file = harbor_root / relative
         if runtime_file.is_file():
@@ -135,16 +135,6 @@ def _task_name(task_dir: Path) -> str:
 
 def _safe_name(value: str) -> str:
     return "".join(char if char.isalnum() or char in "-_" else "_" for char in value).strip()
-
-
-def redact_harbor_output(value: str) -> str:
-    """对有限长度 Harbor 输出做凭据脱敏；调用方负责限制总长度。"""
-    return _SECRET_OUTPUT_RE.sub("[REDACTED]", value)
-
-
-def _redact_output(value: str) -> str:
-    """Bounded Harbor logs may contain credentials; never persist them."""
-    return redact_harbor_output(value)
 
 
 def _materialize_dataset(
@@ -990,7 +980,7 @@ def _update_run_receipt(
         status=status,
         external_execution=True,
         returncode=returncode,
-        error=_redact_output(error)[-2000:],
+        error=error[-2000:],
     )
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(
@@ -1068,13 +1058,13 @@ def execute_rollout_plan(
             "status": "TIMEOUT",
             "returncode": None,
             "stdout": "",
-            "stderr": _redact_output(str(exc))[-2000:],
+            "stderr": str(exc)[-2000:],
         }
     except BaseException as exc:
         _update_run_receipt(
             plan_dir,
             status="ABORTED",
-            error=f"{type(exc).__name__}: {_redact_output(str(exc))[-1800:]}",
+            error=f"{type(exc).__name__}: {str(exc)[-1800:]}",
         )
         raise
     status = "COMPLETED" if result.returncode == 0 else "FAILED"
@@ -1087,8 +1077,8 @@ def execute_rollout_plan(
     return {
         "status": status,
         "returncode": result.returncode,
-        "stdout": _redact_output(result.stdout[-4000:]),
-        "stderr": _redact_output(result.stderr[-4000:]),
+        "stdout": result.stdout[-4000:],
+        "stderr": result.stderr[-4000:],
     }
 
 

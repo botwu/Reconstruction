@@ -10,6 +10,43 @@ import pytest
 from traceforge.cli import main
 
 
+@pytest.mark.parametrize("domain", ["search", "terminal"])
+def test_raw_run_only_requires_ags_for_terminal(tmp_path, monkeypatch, capsys, domain):
+    import traceforge.cli as cli
+
+    source = tmp_path / "session.jsonl"
+    source.write_text(json.dumps({"messages": [{"role": "user", "content": "执行任务"}]}) + "\n")
+    calls = []
+    monkeypatch.setattr(cli, "build_ags_runtime_factory", lambda **kw: calls.append(kw))
+
+    def stop_before_models(*args, **kwargs):
+        raise ValueError("模型配置待补充")
+
+    monkeypatch.setattr(cli, "resolve_role_matrix", stop_before_models)
+    assert main([
+        "reconstruct", "raw-run", "--input", str(source), "--domain", domain,
+        "--line-number", "1", "--output", str(tmp_path / "out"),
+        "--config", str(tmp_path / "config.yaml"),
+    ]) == 2
+    assert len(calls) == (1 if domain == "terminal" else 0)
+    assert "模型配置待补充" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("status,expected", [
+    ("READY", 0), ("READY_VARIANT", 0), ("COMPLETED", 0),
+    ("REVIEW", 2), ("BLOCKED", 2), ("PENDING_EXECUTION", 2), (None, 2),
+])
+def test_reconstruction_exit_reports_actual_manifest_state(tmp_path, capsys, status, expected):
+    from traceforge.cli import _reconstruction_exit_code
+
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps({"status": status, "stopped_at": "intent"}))
+    assert _reconstruction_exit_code(path) == expected
+    output = capsys.readouterr()
+    assert output.out.strip() == str(path)
+    assert ("重建未完成" in output.err) == bool(expected)
+
+
 def test_failure_analysis_review_batch_command(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     source = tmp_path / "analysis.jsonl"
     source.write_text(

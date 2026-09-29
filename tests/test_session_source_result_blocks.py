@@ -59,6 +59,37 @@ def test_pending_call_has_no_result_slots() -> None:
     assert event["pending"] is True
 
 
+def test_old_result_id_does_not_overwrite_previously_paired_result() -> None:
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "original", "name": "read"}]},
+        {"role": "tool", "tool_call_id": "original", "content": "first result"},
+        {"role": "assistant", "tool_calls": [{"id": "original_renamed", "name": "read"}]},
+        {"role": "tool", "tool_call_id": "original", "content": "later result"},
+    ]
+    first, pending, unmatched = tool_timeline(messages, [])
+    assert first["result_text"] == "first result"
+    assert first["tool_message_index"] == 1
+    assert pending["call_id"] == "original_renamed"
+    assert pending["pending"] is True
+    assert unmatched["call_id"] == "original"
+    assert unmatched["tool_message_index"] == 3
+    assert unmatched["result_text"] == "later result"
+    assert unmatched["orphan_tool_result"] is True
+
+
+def test_reused_call_id_can_pair_after_previous_call_finished() -> None:
+    messages = [
+        {"role": "assistant", "tool_calls": [{"id": "reused", "name": "read"}]},
+        {"role": "tool", "tool_call_id": "reused", "content": "first result"},
+        {"role": "assistant", "tool_calls": [{"id": "reused", "name": "read"}]},
+        {"role": "tool", "tool_call_id": "reused", "content": "second result"},
+    ]
+    timeline = tool_timeline(messages, [])
+    assert [e["tool_message_index"] for e in timeline] == [1, 3]
+    assert [e["result_text"] for e in timeline] == ["first result", "second result"]
+    assert all(not e["pending"] and not e.get("orphan_tool_result") for e in timeline)
+
+
 @pytest.mark.parametrize("paired", [True, False])
 @pytest.mark.parametrize(("key", "value"), [
     ("is_error", True),

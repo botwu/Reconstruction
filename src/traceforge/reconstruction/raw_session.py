@@ -21,7 +21,6 @@ from traceforge.reconstruction.session_source import (
     tool_timeline,
 )
 from traceforge.screening.observable import build_spans
-from traceforge.trajectory.privacy import omit_private_reasoning
 
 RAW_SOURCE_SCHEMA = "traceforge.reconstruction-source.raw-session.v1"
 SEGMENTATION_SCHEMA = "traceforge.session-task-segmentation.v1"
@@ -253,9 +252,7 @@ def build_raw_session_source(
     session = AgentSession(
         user_records=users,
         user_texts=[item["text"] for item in users],
-        session_context=json.dumps(
-            omit_private_reasoning(payload), ensure_ascii=False, separators=(",", ":")
-        ),
+        session_context=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
     )
     try:
         result = agent.run(
@@ -334,7 +331,6 @@ def build_raw_session_source(
         source_tasks.append(task)
         selected_ids.append(task_id)
     timeline = tool_timeline(raw_messages, spans)
-    persisted = omit_private_reasoning(payload)
     source = {
         "schema_version": RAW_SOURCE_SCHEMA,
         "entry_mode": "RAW_SESSION",
@@ -351,7 +347,7 @@ def build_raw_session_source(
         "tool_timeline": timeline,
         "selected_tool_timeline": timeline,
         "selected_span_has_file_ops": bool(normalize_file_ops(timeline)),
-        "raw_session": persisted,
+        "raw_session": payload,
         "session": {
             "message_count": len(raw_messages),
             "span_count": len(spans),
@@ -360,7 +356,7 @@ def build_raw_session_source(
         },
         "span_meta": span_meta,
         "segmentation_receipt": "session_task_segmentation.json",
-        "privacy": {"private_thinking_reasoning": "omitted"},
+        "privacy": {"raw_session": "verbatim"},
         "policy": {
             "compile": False,
             "evidence_join": False,

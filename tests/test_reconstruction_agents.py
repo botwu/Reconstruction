@@ -33,7 +33,6 @@ from traceforge.reconstruction.agents.runtime import (
 from traceforge.reconstruction.agents.session import execute_tool
 from traceforge.reconstruction.intent_recovery import run_intent_recovery
 from traceforge.reconstruction.session_source import build_reconstruction_source
-from traceforge.screening.observable import build_spans
 
 
 def _session() -> dict[str, object]:
@@ -76,10 +75,11 @@ def _runtime(factory: FakeHermesFactory | None = None):
 
 
 def test_unknown_evidence_reference_does_not_discard_agent_payload() -> None:
-    """A bad read reference is recoverable; policy writes remain fatal."""
+    """未落盘的内容校验错误可恢复，角色写入越权仍终止。"""
 
     assert is_fatal_tool_result("read_evidence", "error: unknown evidence_ref_id: ev-typo") is False
-    assert is_fatal_tool_result("write_file", "error: PROTECTED_FILE_OVERWRITE:foo.py") is True
+    assert is_fatal_tool_result("write_file", "error: PROTECTED_FILE_OVERWRITE:foo.py") is False
+    assert is_fatal_tool_result("write_file", "error: this agent cannot write files") is True
 
 
 def test_runtime_copies_replay_files_when_workspace_missing(tmp_path: Path) -> None:
@@ -182,6 +182,7 @@ def test_apply_anthropic_messages_client_uses_sdk_constructor(
     assert captured["base_url"] == "https://tokenhub.sensetime.com/"
     assert captured["api_key"] == "sk-test"
     assert "timeout" in captured
+    assert captured["max_retries"] == 0
     assert agent.api_key == "sk-test"
     assert agent._anthropic_api_key == "sk-test"
 
@@ -239,6 +240,8 @@ def test_apply_anthropic_messages_client_rewires_stale_cleanup(
     )
     assert agent._disable_streaming is True
     assert agent._try_refresh_anthropic_client_credentials() is False
+    assert agent._try_recover_primary_transport(RuntimeError(), retry_count=2, max_retries=2) is False
+    assert agent._api_max_retries == 2
     assert agent._compute_non_stream_stale_timeout({}) == 120.0
     assert captured[0]["api_key"] == "sk-test"
     assert captured[0]["timeout"] == 120.0
@@ -313,6 +316,16 @@ def test_pin_hermes_timeout_env_caps_stream_watchdog(
     assert os.environ["HERMES_STREAM_STALE_TIMEOUT"] == "180"
     assert os.environ["HERMES_STREAM_RETRIES"] == "2"
     assert "HERMES_API_CALL_STALE_TIMEOUT" not in os.environ
+    assert os.environ["TRACEFORGE_MODEL_TIMEOUT_SECONDS"] == "90"
+
+
+def test_role_timeout_is_used_for_client_and_watchdog_without_leaking_env(monkeypatch):
+    monkeypatch.delenv("TRACEFORGE_MODEL_TIMEOUT_SECONDS", raising=False)
+    with pin_hermes_timeout_env(600) as timeout:
+        assert timeout == 600
+        assert os.environ["TRACEFORGE_MODEL_TIMEOUT_SECONDS"] == "600.0"
+        assert os.environ["HERMES_API_CALL_STALE_TIMEOUT"] == "600"
+    assert "TRACEFORGE_MODEL_TIMEOUT_SECONDS" not in os.environ
 
 
 @pytest.mark.parametrize("limit", [3, 100000])
@@ -503,6 +516,8 @@ def test_production_runtime_binds_role_scoped_proxy_and_writes_with_provenance(
                 "read_file",
                 "list_evidence",
                 "read_evidence",
+                "read_session_message",
+                "read_session_context",
                 "write_file",
                 "web_search",
             }
@@ -615,3 +630,22 @@ def test_non_anthropic_runtime_forces_chat_completions(tmp_path: Path) -> None:
     )
     assert result.completed
     assert factory.last_kwargs["api_mode"] == "chat_completions"
+    assert factory.last_kwargs["provider"] == "custom"
+
+
+def test_failed_compression_must_not_discard_author_history(tmp_path: Path) -> None:
+    factory = FakeHermesFactory()
+    compressor = types.SimpleNamespace(abort_on_summary_failure=False)
+
+    def create(**kwargs):
+        agent = factory(**kwargs)
+        agent.context_compressor = compressor
+        return agent
+
+    runtime = build_hermes_runtime(
+        model_name="gpt-5", factory=create, base_url="https://tokenhub.example/v1",
+        api_key="fixture", provider="gpt",
+    )
+    runtime.run(role=COMPLETION_ROLE, instruction="保留已有诊断继续修复",
+                session=AgentSession(), output_root=tmp_path / "out")
+    assert compressor.abort_on_summary_failure is True

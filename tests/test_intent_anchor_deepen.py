@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from traceforge.reconstruction.agents.roles import INTENT_ROLE
@@ -379,18 +380,25 @@ def test_stub_observable_does_not_satisfy_file_gate() -> None:
 
 def test_intent_role_and_prompt_name_the_anchor() -> None:
     assert TRIAGE_PROMPT_VERSION == "reconstruction-screening-triage-v10"
-    assert INTENT_PROMPT_VERSION == "intent-recovery-agent-v13-binding-feedback"
+    assert INTENT_PROMPT_VERSION == "intent-recovery-agent-v15-user-obligations"
     assert "original user query is the anchor" in INTENT_ROLE.identity
     assert "deepen" in INTENT_ROLE.identity
     assert "Research, forum lookup, production publish" in INTENT_ROLE.identity
+    system_context = [{"message_indices": [0], "interpretation": "原环境声明只读。"}]
     text = _prompt(
-        {"tool_timeline": _l22_timeline(), "raw_session": {"messages": []}},
+        {"tool_timeline": _l22_timeline(),
+         "raw_session": {"messages": [{"role": "system", "content": "原环境声明只读。"}]},
+         "session_parser": {"system_context": system_context}},
         {"task_id": "t-l22", "domain_route": "code_file"},
         [{"id": "user:1", "message_index": 1, "text": "完全讀取代碼"}],
         ["Injector.cpp"],
         ["Injector.cpp"],
     )
     assert "The original user query is the anchor" in text
+    assert "SOURCE_SYSTEM_CONTEXT=" + json.dumps(system_context, ensure_ascii=False) in text
+    assert "SOURCE_SYSTEM_MESSAGES=" + json.dumps([
+        {"message_index": 0, "message": {"role": "system", "content": "原环境声明只读。"}},
+    ], ensure_ascii=False) in text
     assert "FILE_BINDING_PATHS" in text
     assert "Research, forum lookup, production publish" in text
     assert "at least one FILE obligation is required" in text

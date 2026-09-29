@@ -52,12 +52,22 @@ def result_row(output: Path) -> dict:
     return json.loads((output / "batch_results.jsonl").read_text(encoding="utf-8"))
 
 
-def test_session_batch_invokes_real_cli_and_records_missing_input(tmp_path: Path) -> None:
+def test_session_batch_rejects_unknown_domain(tmp_path: Path) -> None:
+    manifest, config = inventory(tmp_path)
+    with pytest.raises(batch.BatchInputError, match="domain"):
+        batch.execute_batch(
+            manifest_path=manifest, output_root=tmp_path / "batch", config=config, domain="unknown",
+        )
+    assert not (tmp_path / "batch").exists()
+
+
+@pytest.mark.parametrize("domain", ["search", "terminal"])
+def test_session_batch_invokes_real_cli_and_records_missing_input(tmp_path: Path, domain: str) -> None:
     manifest, config = inventory(tmp_path)
     output = tmp_path / "batch"
 
     report = batch.execute_batch(
-        manifest_path=manifest, output_root=output, config=config, repo_root=_REPO
+        manifest_path=manifest, output_root=output, config=config, repo_root=_REPO, domain=domain
     )
 
     row = result_row(output)
@@ -65,6 +75,7 @@ def test_session_batch_invokes_real_cli_and_records_missing_input(tmp_path: Path
     assert row["exit_code"] == 2
     assert row["manifest"] is None
     assert report["status_counts"] == {"PROCESS_ERROR": 1}
+    assert report["domain"] == domain
     stderr = (output / "runs" / "r04-one" / "batch_stderr.txt").read_text(encoding="utf-8")
     assert "原始 JSONL 不存在" in stderr
 
@@ -94,7 +105,7 @@ def test_session_batch_requires_reconstruction_manifest_for_ready(
 
     monkeypatch.setattr(batch, "run_batch_process", run)
     report = batch.execute_batch(
-        manifest_path=manifest, output_root=output, config=config, repo_root=_REPO
+        manifest_path=manifest, output_root=output, config=config, repo_root=_REPO, domain="terminal"
     )
 
     row = result_row(output)
@@ -120,6 +131,7 @@ def test_session_batch_records_timeout_and_preserves_logs(
         manifest_path=manifest,
         output_root=output,
         config=config,
+        domain="terminal",
         repo_root=_REPO,
         session_timeout_seconds=1,
     )
@@ -162,7 +174,7 @@ def test_session_batch_real_timeout_continues_to_next_session(tmp_path: Path) ->
     )
     output = tmp_path / "batch"
     report = batch.execute_batch(
-        manifest_path=manifest, output_root=output, config=config,
+        manifest_path=manifest, output_root=output, config=config, domain="terminal",
         repo_root=repo, session_timeout_seconds=2,
     )
     rows = [json.loads(line) for line in (output / "batch_results.jsonl").read_text().splitlines()]

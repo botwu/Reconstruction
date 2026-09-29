@@ -37,15 +37,6 @@ _IMPLEMENT_RE = re.compile(
     r"(?i)(实现|修复|修改|新增|生成|创建|编写|补充|增加|调整|重构|更新|"
     r"fix|implement|add|create|write|modify|change|refactor|generate|patch|test)"
 )
-_SECRET_RE = re.compile(
-    r"(?i)\b(?:api[_-]?key|token|password|secret|credential|authorization)"
-    r"(\s*[:=])\s*(?!Bearer\b)[^\s,;]+"
-)
-_AUTH_BEARER_RE = re.compile(
-    r"(?i)\bauthorization\s*[:=]\s*Bearer\s+[^\s,;]+"
-)
-_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
-_SK_RE = re.compile(r"(?i)\bsk-[A-Za-z0-9_-]{8,}")
 _PATH_RE = re.compile(
     r"(?<![A-Za-z0-9])((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}|"
     r"[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8})(?![A-Za-z0-9])"
@@ -77,19 +68,6 @@ def _message_text(message: Any) -> str:
     return ""
 
 
-def _redact(value: str) -> str:
-    def replace_secret(match: re.Match[str]) -> str:
-        raw = match.group(0)
-        delimiter = ":" if ":" in raw else "="
-        prefix = raw[: raw.find(delimiter)].rstrip()
-        return f"{prefix}{delimiter} <redacted>"
-
-    text = _AUTH_BEARER_RE.sub("Authorization: Bearer <redacted>", value)
-    text = _SECRET_RE.sub(replace_secret, text)
-    text = _BEARER_RE.sub("Bearer <redacted>", text)
-    return _SK_RE.sub("<redacted>", text)
-
-
 def _user_texts(record: dict[str, Any]) -> list[str]:
     output: list[str] = []
     messages = record.get("messages")
@@ -103,7 +81,7 @@ def _user_texts(record: dict[str, Any]) -> list[str]:
             continue
         if text.startswith("# Files mentioned by the user") or "AUTOCLAW_OUTPUT_PROTOCOL" in text[:800]:
             continue
-        output.append(_redact(text))
+        output.append(text)
     return output
 
 
@@ -261,7 +239,7 @@ def inventory_record(
         [user_blob]
         + [json.dumps(arguments, ensure_ascii=False) for _, arguments in rows]
     )
-    paths = _path_tokens(_redact(path_text))
+    paths = _path_tokens(path_text)
     risk = provenance.get("risk") if provenance else None
     rubric = provenance.get("rubric") if provenance else None
     preflight, score = _preflight(
@@ -302,7 +280,7 @@ def inventory_record(
             "read_calls": read_count,
             "retrieval_calls": len(retrieval),
         },
-        "user_summary": _redact(user_blob[:320]),
+        "user_summary": user_blob[:320],
         "path_tokens": paths[:40],
         "preflight": preflight,
         "score": score,

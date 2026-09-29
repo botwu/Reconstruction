@@ -99,15 +99,30 @@ def test_completion_review_retains_payload_diagnostics(tmp_path: Path) -> None:
     assert result["candidates"][0]["decision"] == "REVIEW"
 
 
-def test_duplicate_tool_write_is_fail_closed(tmp_path: Path) -> None:
-    from traceforge.reconstruction.agents.session import AgentSession, execute_tool
+def test_agent_can_revise_its_write_without_losing_original_evidence(tmp_path: Path) -> None:
+    from traceforge.reconstruction.agents.session import (
+        AgentSession,
+        collect_workspace_writes,
+        execute_tool,
+    )
 
     session = AgentSession(
         workspace=tmp_path / "workspace",
         evidence=[{"evidence_ref_id": "ev", "name": "evidence"}],
+        partial_files={"context.txt": "original excerpt"},
         allow_write=True,
     )
     session.workspace.mkdir()
-    args = {"path": "context.txt", "content": "from evidence", "evidence_ref_ids": ["ev"]}
+    args = {"path": "context.txt", "content": "original excerpt\nfirst completion",
+            "evidence_ref_ids": ["ev"]}
     assert execute_tool("write_file", args, session) == "wrote context.txt"
-    assert execute_tool("write_file", args, session) == "error: DUPLICATE_PATH:context.txt"
+    revised = {**args, "content": "original excerpt\nrevised completion"}
+    assert execute_tool("write_file", revised, session) == "wrote context.txt"
+    assert len(session.writes) == 2
+    assert collect_workspace_writes(session)[0]["content"] == revised["content"]
+    assert (session.workspace / "context.txt").read_text() == revised["content"]
+    assert "PARTIAL_OBSERVED_CONTENT_LOST" in execute_tool(
+        "write_file", {**revised, "content": "discarded original"}, session,
+    )
+    assert len(session.writes) == 2
+    assert session.partial_files["context.txt"] == "original excerpt"

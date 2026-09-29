@@ -5,11 +5,28 @@ from pathlib import Path
 
 from traceforge.verifier.grading import (
     PytestVendorError,
+    collect_test_results,
     grade,
     prepare_pytest_site,
     pytest_command,
     vendor_paths,
 )
+
+
+def test_failure_message_preserves_original_values(tmp_path: Path) -> None:
+    junit = tmp_path / "junit.xml"
+    message = (
+        "首次异常：测试替身连续超时\n"
+        + "调用栈\n" * 600
+        + "Authorization: Bearer sk-fixture-original-value; token=business-value"
+    )
+    junit.write_text(
+        '<testsuite><testcase name="test_failed"><failure>'
+        + message + '</failure></testcase></testsuite>', encoding="utf-8",
+    )
+    assert collect_test_results(junit) == [{
+        "name": "test_failed", "classname": "", "status": "FAIL", "message": message,
+    }]
 
 
 def test_public_workspace_cannot_shadow_pytest(tmp_path: Path) -> None:

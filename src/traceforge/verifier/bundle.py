@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from traceforge.harbor_ags.adapter import validate_bundle_layout
+from traceforge.reconstruction.python_runtime import RUNTIME_NAME, validate_python_runtime
 from traceforge.task_instruction import render_task_instruction
 from traceforge.trajectory.artifacts import (
     ArtifactWorkspace,
@@ -18,7 +19,7 @@ from traceforge.trajectory.artifacts import (
 
 from .synthesis import VerifierCandidate, is_python_solution, validate_solution_scripts
 
-_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v6-grounded-task-acceptance"
+_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v7-frozen-python-runtime"
 
 
 def _make_workspace_solver_writable(workspace: Path) -> None:
@@ -64,6 +65,11 @@ def compile_bundle(
             ).hexdigest()
     env_metadata: dict[str, Any] = {}
     hidden_source: Path | None = None
+    python_runtime = workspace_root.parent / RUNTIME_NAME
+    if python_runtime.is_dir():
+        env_metadata["python_runtime"] = validate_python_runtime(
+            python_runtime, workspace_root / "requirements.txt",
+        )
     if env_root is not None:
         env_root = Path(env_root).resolve()
         if not env_root.is_dir():
@@ -76,14 +82,14 @@ def compile_bundle(
                 raise ValueError("env_manifest.json 无法解析") from exc
             if not isinstance(raw_manifest, dict):
                 raise ValueError("env_manifest.json 必须是 object")
-            env_metadata = {
+            env_metadata.update({
                 "schema_version": raw_manifest.get("schema_version"),
                 "provenance": raw_manifest.get("provenance", {}),
                 "withheld_change_count": raw_manifest.get("withheld_change_count", 0),
                 "dependencies": raw_manifest.get("dependencies", []),
                 "runtime_constraints": raw_manifest.get("runtime_constraints", []),
                 "uncertainties": raw_manifest.get("uncertainties", []),
-            }
+            })
             for key in ("provenance", "dependencies", "runtime_constraints", "uncertainties"):
                 if key not in raw_manifest:
                     raise ValueError(f"env_manifest.json 缺少 {key}")
@@ -143,6 +149,12 @@ def compile_bundle(
         _make_workspace_solver_writable(root / "workspace")
         for name in ("environment", "solution", "tests/control"):
             (root / name).mkdir(parents=True, exist_ok=True)
+        if python_runtime.is_dir():
+            for destination in (root / "environment", root / "tests"):
+                shutil.copytree(python_runtime, destination / RUNTIME_NAME)
+                (destination / "setup.sh").write_text(
+                    '#!/bin/sh\nset -eu\nsh "$(dirname "$0")/python_runtime/install.sh"\n',
+                )
         if hidden_source is not None:
             # The control copy is verifier-only.  It is never placed under the
             # public workspace or instruction, so solver agents cannot read it.
@@ -192,7 +204,7 @@ def compile_bundle(
         )
         (root / "environment/README.md").write_text(
             "使用 harbor_ags 锁定的 AGS 预置环境；python3 来自模板，"
-            "pytest 由 tests/vendor 离线提供，verifier 无网。\n",
+            "pytest 由 tests/vendor 离线提供；项目依赖由环境中的 python_runtime 冻结并离线安装，verifier 无网。\n",
             encoding="utf-8",
         )
         if is_python_solution(variant.script):

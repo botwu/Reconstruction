@@ -260,6 +260,13 @@ async def prepare_role_sandbox(
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")
         await runtime.upload_dir(upload_root, WORKSPACE_REMOTE)
+        if role.name in {"sufficiency", "verifier"} and session.workspace is not None:
+            from traceforge.reconstruction.python_runtime import prepare_python_runtime
+
+            await prepare_python_runtime(
+                runtime, workspace=session.workspace, remote_workspace=WORKSPACE_REMOTE,
+                staging_root=staging_root,
+            )
     if role.name == "completion":
         # AGS 上传保留 root 所有权；仅顶层可写仍无法补全已上传子目录。
         # 正文证据锁定继续由 session 的 write_file 策略执行。

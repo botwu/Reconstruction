@@ -21,7 +21,7 @@ from typing import Any
 from traceforge.reconstruction.capture_repair import CAPTURE_REPAIR_GUIDANCE, capture_repair_error
 
 TERMINAL_UNIVERSE_ENVIRONMENT_PROMPT_VERSION = (
-    "terminal-universe-b1-environment-completion-v2-capture-repairs"
+    "terminal-universe-b1-environment-completion-v3-capture-coverage"
 )
 TERMINAL_UNIVERSE_ENVIRONMENT_SCHEMA = "traceforge.terminal-universe-environment.v1"
 
@@ -327,7 +327,7 @@ def build_completion_prompt(
     template = """You are reconstructing the initial Docker workspace for a coding task.
 Complete the workspace so the task is solvable, but NOT solved (Terminal-Universe B.1).
 Use only the supplied trajectory evidence. Create or complete only files that are
-needed as context: do not implement the requested change, modify a COMPLETE file,
+needed as context: do not implement the requested change, rewrite observed behavior,
 add tests, write a solution, reveal where the answer belongs, or include expected
 outputs. The project root is /app. Preserve observed content except declared capture repairs.
 {capture_repair_guidance}
@@ -406,7 +406,7 @@ def validate_completion_candidate(
             continue
         seen_paths.add(path)
         if (path in replay.initially_absent_paths
-                or path in replay_map and replay_map[path].completeness in {"COMPLETE", "UNKNOWN"}):
+                or path in replay_map and replay_map[path].completeness == "UNKNOWN"):
             errors.append(f"PROTECTED_FILE_OVERWRITE:{path}")
         if is_runtime_log(path):
             errors.append(f"RUNTIME_LOG_NOT_WRITABLE:{path}")
@@ -427,9 +427,12 @@ def validate_completion_candidate(
         resolved[path] = content
         original = (
             replay_map[path].content
-            if path in replay_map and replay_map[path].completeness == "PARTIAL" else None
+            if path in replay_map and replay_map[path].completeness in {"PARTIAL", "COMPLETE"} else None
         )
-        repair_error = capture_repair_error(original, content, item.get("capture_repairs", []))
+        repair_error = capture_repair_error(
+            original, content, item.get("capture_repairs", []),
+            complete=path in replay_map and replay_map[path].completeness == "COMPLETE",
+        )
         if repair_error:
             errors.append(f"{repair_error}:{path}")
         refs = item.get("evidence_ref_ids")

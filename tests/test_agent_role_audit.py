@@ -302,6 +302,8 @@ def test_completion_host_blocked_sandbox_materializes(tmp_path: Path) -> None:
         "read_file",
         "list_evidence",
         "read_evidence",
+        "read_session_message",
+        "read_session_context",
         "write_file",
         "web_search",
     )

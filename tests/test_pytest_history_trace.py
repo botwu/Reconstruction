@@ -80,6 +80,8 @@ def _run_versions(tmp_path, monkeypatch, *, run_b=True, valid_a=False):
     assert result.payload == {"status": "READY"}
     trace = json.loads((tmp_path / "private/agent_trace.json").read_text(encoding="utf-8"))
     history = [event for event in trace["tool_events"] if event["name"] == "run_pytest"]
+    writes = [event for event in trace["tool_events"] if event["name"] == "write_test"]
+    assert [event["arguments"]["content"] for event in writes] == [SOURCE_A, SOURCE_B]
     candidate = SimpleNamespace(
         test_outputs_py=SOURCE_B, missing_capability_tests=["test_missing"],
         protective_tests=["test_protective"],
@@ -119,7 +121,7 @@ def test_old_valid_red_history_cannot_satisfy_unexecuted_new_version(tmp_path, m
 
 
 @pytest.mark.parametrize("field", ["result", "test_outputs_py"])
-def test_complete_pytest_trace_retains_tail_and_redacts_credentials(tmp_path: Path, field: str):
+def test_complete_pytest_trace_preserves_original_diagnostic(tmp_path: Path, field: str):
     text = "审计前文\n" * 900 + "api_key=fixture-secret-value 诊断尾部"
     trace_path = write_agent_trace(
         tmp_path, role=VERIFIER_ROLE, backend="fixture", instruction="审计测试",
@@ -127,6 +129,4 @@ def test_complete_pytest_trace_retains_tail_and_redacts_credentials(tmp_path: Pa
         tool_events=[{"name": "run_pytest", field: text}],
     )
     saved = json.loads(trace_path.read_text(encoding="utf-8"))["tool_events"][0][field]
-    assert saved.endswith("api_key=<redacted> 诊断尾部")
-    assert "fixture-secret-value" not in saved
-    assert "[truncated]" not in saved
+    assert saved == text

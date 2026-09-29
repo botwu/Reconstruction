@@ -62,7 +62,8 @@ def _fixture(tmp_path, monkeypatch, *, trials=1, contract=True, runtime=False):
     import harbor_ags.validator
     calls = []
 
-    def validate(trial):
+    def validate(trial, *, preserve_source_literals):
+        assert preserve_source_literals is True
         calls.append(trial)
         return SimpleNamespace(certified=True, status="TASK_PASS")
 
@@ -130,7 +131,7 @@ def test_standalone_rejects_incomplete_or_unverified_trial(tmp_path, monkeypatch
         (trial / "agent/trajectory.full.json").write_bytes(trajectory('```acceptance-report\n{"summary":"合成无效回复"}\n```'))
     elif failure == "uncertified":
         import harbor_ags.validator
-        monkeypatch.setattr(harbor_ags.validator, "validate_harbor_trial", lambda _: SimpleNamespace(certified=False, status="INFRA_CAPTURE"))
+        monkeypatch.setattr(harbor_ags.validator, "validate_harbor_trial", lambda _, **kwargs: SimpleNamespace(certified=False, status="INFRA_CAPTURE"))
     elif failure == "task_failed":
         _write(trial / "result.json", {"verifier_result": {"rewards": {"task": 0.0}}})
         _write(trial / "verifier/verdict.json", {"status": "TASK_FAIL"})
@@ -183,6 +184,38 @@ def test_repeated_read_recomputes_receipts_without_changing_inputs(tmp_path, mon
     assert len(calls) == 2
     (job / "synthetic-trial-0/agent/trajectory.full.json").write_bytes(trajectory("缺少约定报告"))
     assert _read(plan, job)["acceptance"]["status"] == "REVIEW"
+    assert (plan / "rollout_plan.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("wrong_source", [False, True])
+def test_explicit_recertification_keeps_original_execution_runtime(tmp_path, monkeypatch, wrong_source):
+    import harbor_ags.validator
+    from traceforge.harbor_ags import acceptance
+    from traceforge.harbor_ags.results import HarborResultError
+
+    plan, job, _ = _fixture(tmp_path, monkeypatch, runtime=True)
+    before = (plan / "rollout_plan.json").read_bytes()
+    certify = acceptance.certify_hermes_job
+    selected = []
+
+    def recertify(job_dir, *, harbor_root):
+        selected.append(harbor_root)
+        certify(job_dir, harbor_root=harbor_root)
+
+    monkeypatch.setattr(acceptance, "certify_hermes_job", recertify)
+    upgraded = tmp_path / "upgraded-harbor"
+    source = upgraded / "src/harbor_ags/validator.py"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"# another validator\n" if wrong_source else Path(harbor_ags.validator.__file__).read_bytes())
+    if wrong_source:
+        with pytest.raises(HarborResultError, match="实际认证器与指定源码不一致"):
+            acceptance.read_rollout_acceptance(plan, job_dir=job, certification_harbor_root=upgraded)
+        assert (plan / "rollout_plan.json").read_bytes() == before
+        return
+    report = acceptance.read_rollout_acceptance(plan, job_dir=job, certification_harbor_root=upgraded)
+    assert report["acceptance"]["status"] == "PASS"
+    assert selected == [upgraded]
+    assert report["input_binding"]["certification_harbor_root"] == str(upgraded.resolve())
     assert (plan / "rollout_plan.json").read_bytes() == before
 
 

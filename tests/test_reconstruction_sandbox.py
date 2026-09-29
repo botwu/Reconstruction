@@ -20,6 +20,89 @@ from traceforge.reconstruction.env_replay import replay_from_timeline
 from traceforge.reconstruction.workspace_completion import run_workspace_completion
 
 
+@pytest.mark.parametrize("agent_runs_tests", [False, True])
+def test_final_verifier_executes_current_sandbox_without_reusing_old_receipts(
+    tmp_path: Path, agent_runs_tests: bool,
+) -> None:
+    from traceforge.reconstruction.agents.roles import VERIFIER_ROLE
+
+    source = (
+        "import os\nfrom pathlib import Path\n"
+        "def test_behavior():\n"
+        "    assert (Path(os.environ['TRACEFORGE_WORKSPACE']) / 'value.txt').read_text() == 'ready'\n"
+        "def test_input():\n"
+        "    assert (Path(os.environ['TRACEFORGE_WORKSPACE']) / 'value.txt').is_file()\n"
+    )
+    names = ["test_behavior", "test_input"]
+
+    class Inner:
+        model_name = "fixture"
+
+        def run(self, *, session, **kwargs):
+            if agent_runs_tests:
+                execute_tool("write_test", {"content": source}, session)
+                execute_tool("run_pytest", {"names": names}, session)
+            return AgentResult(role="verifier", backend="fixture", completed=True, payload={
+                "status": "READY", "test_outputs_py": source,
+                "missing_capability_tests": [names[0]], "protective_tests": [names[1]],
+            })
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session = AgentSession(workspace=workspace)
+    for index, (content, expected) in enumerate([("ready", "PASS"), ("changed", "FAIL")]):
+        (workspace / "value.txt").write_text(content)
+        runtime = LocalExecRuntime(tmp_path / f"sandbox-{index}")
+        agent = SandboxedAgentRuntime(Inner(), lambda: runtime)
+        result = agent.run(role=VERIFIER_ROLE, instruction="", session=session,
+                           output_root=tmp_path / f"out-{index}")
+        assert result.completed and not result.errors
+        assert [(r["name"], r["status"]) for r in session.pytest_runs] == [
+            (names[0], expected), (names[1], "PASS"),
+        ]
+        assert runtime.stopped and (workspace / "value.txt").read_text() == content
+    if not agent_runs_tests:
+        events = (tmp_path / "out-1/private/tool_events.jsonl").read_text()
+        assert "pipeline-final-run-pytest" in events
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+def test_prepare_failure_always_cleans_allocated_sandbox(
+    tmp_path: Path, error_type: type[BaseException], cleanup_fails: bool,
+) -> None:
+    class InterruptedRuntime(LocalExecRuntime):
+        stop_calls = 0
+
+        async def upload_dir(self, source_dir: Path, target_dir: str) -> None:
+            raise error_type("准备过程中断")
+
+        async def stop(self, *, delete: bool = True) -> None:
+            self.stop_calls += 1
+            if cleanup_fails:
+                raise OSError("清理失败")
+            await super().stop(delete=delete)
+
+    runtime = InterruptedRuntime(tmp_path / "ags")
+    agent = SandboxedAgentRuntime(SimpleNamespace(model_name="unused"), lambda: runtime)
+    session = AgentSession(allow_write=True)
+    kwargs = dict(role=COMPLETION_ROLE, instruction="", session=session,
+                  output_root=tmp_path / "out")
+    if error_type is KeyboardInterrupt:
+        with pytest.raises(KeyboardInterrupt, match="准备过程中断"):
+            agent.run(**kwargs)
+    else:
+        result = agent.run(**kwargs)
+        assert not result.completed
+        assert "SANDBOX_INIT:RuntimeError" in result.errors
+        if cleanup_fails:
+            assert "CONTAINER_CLEANUP_ERROR:OSError" in result.errors
+    assert runtime.started and runtime.stop_calls == 1
+    assert session.sandbox_stopped is not cleanup_fails
+    if cleanup_fails:
+        assert "CONTAINER_CLEANUP_ERROR:OSError" in session.policy_errors
+
+
 def test_completion_upload_is_writable_and_setup_failure_is_reported(tmp_path: Path) -> None:
     from traceforge.reconstruction.agents.sandbox import prepare_role_sandbox, run_coro
 
@@ -84,7 +167,8 @@ def test_bind_skips_hermes_mcp_refresh(tmp_path: Path) -> None:
         "read_evidence",
         "write_file",
         "web_search",
-        "web_search",
+        "read_session_message",
+        "read_session_context",
     }
 
 

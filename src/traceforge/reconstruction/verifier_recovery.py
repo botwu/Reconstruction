@@ -23,13 +23,18 @@ from traceforge.verifier.synthesis import (
 
 VERIFIER_RECOVERY_SCHEMA = "traceforge.verifier-recovery.v1"
 VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION = (
-    "terminal-universe-verifier-semantic-review-v2-phase-boundary"
+    "terminal-universe-verifier-semantic-review-v4-original-failure-path"
+)
+_FAILURE_REPRODUCTION_RULE = (
+    "根据原始报错和实际调用链定位失败路径，能力缺失测试须复现对应的输入或返回形态；"
+    "应用层错误响应不能用同名的网络异常替代。参考解必须处理该路径，不能只通过替身。"
 )
 
 
 def review_verifier_candidate(
     *, task: dict[str, Any], workspace: Path, candidate: Any,
     agent: AgentRuntime, output_root: Path,
+    manual_response_review: bool = False,
 ) -> dict[str, Any]:
     """用新会话核查候选是否测对用户行为；具体反例返回已有 Verifier 修复轮。"""
     role = replace(
@@ -53,6 +58,7 @@ def review_verifier_candidate(
         "task": task, "candidate": candidate.to_dict(),
         "file_obligation_ids": list(candidate.obligation_coverage),
         "response_obligation_ids": response_ids,
+        "manual_response_obligation_ids": non_file_obligation_ids(task) if manual_response_review else [],
         "verification_context": {
             "phase": "RECONSTRUCTION",
             "file_verifier": "candidate.test_outputs_py",
@@ -65,10 +71,13 @@ def review_verifier_candidate(
         "VERIFIER_SEMANTIC_REVIEW",
         "用 list_dir/read_file 读取实际输入，逐条核对 FILE 义务的可观察行为。",
         "检查两类错误：错误答案能通过（false positive），合理正确答案被额外要求拒绝（false negative）。",
+        _FAILURE_REPRODUCTION_RULE,
         "代码/数据任务必须执行或解析真实产物，用独立计算的期望值；存在性、关键词、注释不能替代功能。",
         "审查/报告任务必须核对结论与具体输入事实、引用和用户判定规则；",
         "格式齐全却虚构结论、错误引用或颠倒结论的报告应被拒绝。关键词计数不能证明语义正确。",
         "保护测试必须约束真实任务环境或用户禁止修改的内容，不能只在临时假项目验证生成器自己。",
+        "修复任务需保留与目标流程有关、已在初态正常工作的行为；保护测试须以实际源码或原会话为证据，"
+        "不能仅因用户未在本轮重述这些行为就要求删除。与修复无关的内部实现和可调整参数不应固定。",
         "参考解必须完成整个任务而非拼出满足测试的表面结果；禁止把未验证的历史报告当正确答案。",
         "mutation 必须在正确输出路径/接口保持合法格式、正常执行，仅破坏实质行为；",
         "写到另一个路径、漏掉整个输出、崩溃或故意去掉标题，只能证明基础格式检查，不足以校准语义。",
@@ -86,6 +95,9 @@ def review_verifier_candidate(
         "如果义务要求事实正确、实际完成或外部操作，不能降成格式/一致性或哈希绑定；",
         "映射不完整、检查不受支持或不足以覆盖这些实质要求时 covered=false，给出具体反例。",
         "响应机制完整不能抵消 FILE 验证器的漏检或误拒绝；两类义务分别审查。",
+        "manual_response_obligation_ids 非空时，这些响应义务由调用方明确保留为后续人工核查；"
+        "本轮不为它们生成格式检查、不认定覆盖，也不要求参考安装脚本生成聊天分析。"
+        "完整原任务仍交给 solver。独立审查必须继续严格验证所有 FILE 义务。",
         "输出 JSON：{decision: ACCEPT|REVISE, obligation_reviews: [{obligation_id, covered: bool, reason}],",
         "issues: [{obligation_id, problem, counterexample, repair}]}。每条 FILE 和声明响应检查的义务恰好一项。",
         "发现问题时给具体错误产物/行为反例及可执行修复建议，让生成器改测试和参考解；",
@@ -167,6 +179,7 @@ def run_verifier_recovery(
     source: dict[str, Any] | None = None,
     feedback: dict[str, Any] | None = None,
     round_number: int = 1,
+    manual_response_review: bool = False,
 ) -> tuple[dict[str, Any], Any]:
     obligations = task.get("acceptance_obligations")
     if not isinstance(obligations, list) or not obligations:
@@ -206,7 +219,9 @@ def run_verifier_recovery(
             "Write hidden pytest for FILE acceptance obligations only.",
             "Inspect using list_dir/read_file; their paths are relative to the workspace.",
             "Use write_test({content: <full pytest file>}) and run_pytest({names: [<bare test_function_name>]}) in the sandbox.",
+            "每轮使用新沙箱；对话历史不代表文件或执行回执仍在。工具用于试验和修正，最终候选由管线补齐本轮测试执行。",
             "Tests must resolve the workspace from os.environ['TRACEFORGE_WORKSPACE']; never use host paths.",
+            "TRACEFORGE_WORKSPACE 是只读的待测源码，仅用于导入和读取。生成的输入、输出和临时文件使用 pytest tmp_path 或 tempfile.TemporaryDirectory；不要写入该目录，也不要为绕过权限而替换 Path.mkdir、文件读写或真实业务 I/O。",
             "Iterate tests from actual tool feedback until at least one missing-capability test FAILs and every protective test PASSes on the current completed workspace (bE).",
             "Do not write existence-only missing tests; asserting that a binding file exists is not a missing capability.",
             "Reference scripts must implement only the task obligations and preserve user prohibitions.",
@@ -214,25 +229,34 @@ def run_verifier_recovery(
             "Return executable workspace-editing installers, not source files meant to be installed. Prefer Python standard-library Path.write_text with repr-escaped content. Do not import ROS/simulation dependencies or start target services merely to install code.",
             "The runner exports TRACEFORGE_WORKSPACE=/home/user/workspace. Both oracles and mutations must finish with exit code 0. A crash, ImportError, missing environment variable, permission or syntax error is not a valid semantic mutation.",
             "Test requested behavior, using isolated dependency stubs if necessary to exercise real workspace code. Comments, keyword presence and copied expected implementations cannot prove behavior. Never weaken assertions merely to make a reference pass.",
+            _FAILURE_REPRODUCTION_RULE,
+            "原任务未指定模块或函数名时，通过实际导入、调用链和输入输出识别实现，不得额外要求文件名含某个关键词。",
             "报告类任务：先阅读真实输入并确定可复核的事实与判定规则，再验证报告结论和引用与这些事实一致。格式齐全、关键词齐全但结论错误的报告必须失败；不要用从未读过的源码推断 APPROVED。",
             "保护性测试必须作用于实际任务输入或用户要求保持的行为；不要把 oracle/mutation 安装脚本复制进 pytest，再在假工作区自证正确。",
             "mutation 必须写入与合法参考解相同的目标文件/接口，保留合法输出格式但破坏一项核心语义；不得靠改输出路径、删除输出、遗漏标题或执行崩溃让 mutation 失败。",
             "Do not impose literal wording the task did not require. If the task names Critical/Important/Minor findings without prescribing exact headings, accept normalized labels such as Critical, Critical Findings, Important, Important Findings, Minor, or Minor Findings (including Markdown and case variants); never make the optional word Findings mandatory in generated tests.",
             "For strengths, residual risks, limitations, or equivalent review sections, test the required substance and accept clear semantic headings such as What was verified, Limitations, Forward-looking notes, Strengths, or Residual Risks; never require one exact English phrase unless the task explicitly requires it.",
             "For retries, repair the previous candidate from the concrete process/test feedback; keep valid tests and correct implementations unless evidence requires a change. Read every failure message, run the complete test list after edits, and do not repeat an unchanged script. Generated YAML/configuration must remain syntactically valid with correct indentation; write a quoted `$placeholder` without a backslash.",
-            "Every Python reference or mutation script must be standalone syntactically valid; "
-            "compile it mentally with ast.parse or python -m py_compile, and do not put raw newlines "
-            "inside quoted string literals.",
+            "Python 参考解和变异脚本必须能独立解析。多行替换片段优先用三引号字符串，避免在长单引号字符串中嵌入未转义的引号。"
+            "管线会实际调用 ast.parse；语法错误反馈包含编译器消息和出错附近原文，必须修正对应脚本后再提交。",
             "INFRA_ERROR, TIMEOUT, invalid selectors and collection/usage errors are not RED evidence.",
             "Do not modify the workspace or apply a solution. Reference and mutation scripts are private output only.",
             "NON_FILE obligations must not appear in obligation_coverage. Do not invent a new output file or pytest for them.",
-            "同时负责补全 NON_FILE 响应验收机制；Intent 中的 response_contract 只是初稿，可能漏项。",
-            "返回完整 response_contract，保留有效检查并补齐遗漏义务。复用 traceforge.response-contract.v1：",
-            "acceptance_report 检查使用 obligation_id、criterion_ids、required_fields；",
-            "basic_summary 检查使用 obligation_id、verdicts、finding_levels、report_path、match_report:true。",
-            "所有字段、枚举、路径与编号必须来自原始用户要求，只覆盖输出结构或摘要与报告的一致性。",
-            "不得把事实正确、真实执行或外部操作伪装为格式检查；无法提供完整机制时返回 REVIEW 和具体问题。",
-            "候选响应契约和 FILE 测试由同一轮独立语义审查；此阶段不生成或伪造解题响应。",
+            *([
+                "同时负责补全 NON_FILE 响应验收机制；Intent 中的 response_contract 只是初稿，可能漏项。",
+                "返回完整 response_contract，保留有效检查并补齐遗漏义务。复用 traceforge.response-contract.v1：",
+                "acceptance_report 检查使用 obligation_id、criterion_ids、required_fields；",
+                "basic_summary 检查使用 obligation_id、verdicts、finding_levels、report_path、match_report:true。",
+                "所有字段、枚举、路径与编号必须来自原始用户要求，只覆盖输出结构或摘要与报告的一致性。",
+                "不得把事实正确、真实执行或外部操作伪装为格式检查；无法提供完整机制时返回 REVIEW 和具体问题。",
+                "候选响应契约和 FILE 测试由同一轮独立语义审查；此阶段不生成或伪造解题响应。",
+            ] if unverified and not manual_response_review else [
+                "调用方选择了后续逐份核查 NON_FILE 响应；保留完整原任务给 solver。"
+                "本阶段仅生成 FILE 行为验证器，response_contract 必须为 null 或省略，"
+                "不得为分析内容添加固定格式，也不得声明这些响应义务已通过。"
+                if unverified else
+                "本任务只有 FILE 义务，response_contract 必须为 null 或省略。不得添加原任务未要求的响应格式、报告、结论等级或验收报文。",
+            ]),
             "If no FILE obligation can be observed by file-based pytest, return status=REVIEW with open_questions.",
             "Finish with a JSON object only. status must be exactly READY or REVIEW.",
             "READY schema: {status: 'READY', test_outputs_py: <exact bytes last passed to write_test>, oracle_solutions: [{name, script, justification}, {name, script, justification}], mutation_solutions: [{name, script, justification}], missing_capability_tests: [<bare test name>], protective_tests: [<bare test name>], obligation_coverage: {<each FILE obligation id>: [<test name>]}, expected_value_strategy: <independent calculation explanation>, response_contract: <完整响应验收契约，纯FILE任务可省略>, open_questions: []}.",
@@ -278,7 +302,7 @@ def run_verifier_recovery(
     # 候选合同只进入本轮任务副本；通过原始要求约束和语义审查前不改 Intent。
     proposal = payload.get("response_contract", task.get("response_contract"))
     # 没有响应要求时，空对象与未提供合同等价；不得借此清除已有响应义务。
-    if proposal == {} and task.get("response_contract") is None and not unverified:
+    if proposal == {} and task.get("response_contract") is None and (not unverified or manual_response_review):
         proposal = None
     effective_task = {**task, "response_contract": proposal}
     response_contract = grounded_response_contract(effective_task)
@@ -291,7 +315,8 @@ def run_verifier_recovery(
     ):
         errors.append("RESPONSE_CONTRACT_UNGROUNDED")
     response_ids = {check["obligation_id"] for check in final_checks}
-    errors.extend(f"RESPONSE_VERIFIER_MISSING:{oid}" for oid in unverified if oid not in response_ids)
+    if not manual_response_review:
+        errors.extend(f"RESPONSE_VERIFIER_MISSING:{oid}" for oid in unverified if oid not in response_ids)
     digest = hashlib.sha256(instruction.encode("utf-8")).hexdigest()
     candidate = None
     extra: dict[str, Any] = {}
@@ -335,6 +360,7 @@ def run_verifier_recovery(
         semantic_review = review_verifier_candidate(
             task={**effective_task, "task_instruction": render_task_instruction(effective_task)},
             workspace=workspace, candidate=candidate, agent=agent, output_root=root / "semantic-review",
+            manual_response_review=manual_response_review,
         )
         errors.extend(semantic_review["errors"])
     blocking_errors = [item for item in errors if item != "AGENT_TEST_BYTES_NORMALIZED"]
@@ -355,6 +381,7 @@ def run_verifier_recovery(
         "semantic_review": semantic_review,
         "response_contract": response_contract if candidate is not None else None,
         "unverified_obligations": list(unverified),
+        "manual_response_review": manual_response_review,
         "warnings": audit_warnings,
         "pytest_runs": list(session.pytest_runs),
         "sandbox": session.sandbox is not None,

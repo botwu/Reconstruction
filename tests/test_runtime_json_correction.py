@@ -36,8 +36,9 @@ class FormatAgent:
         if len(self.calls) == 2:
             assert conversation_history == self.history
             assert self.tools == []
-            assert self.max_iterations == 1
-        return {"final_response": self.outputs[len(self.calls) - 1], "completed": self.completed,
+        # Hermes 按 api_calls < max_iterations 判定正常结束。
+        completed = self.completed and 1 < self.max_iterations
+        return {"final_response": self.outputs[len(self.calls) - 1], "completed": completed,
                 "messages": self.history, "api_calls": 1}
 
 
@@ -46,6 +47,7 @@ def run_agent(tmp_path: Path, agent: FormatAgent):
 
     def factory(**kwargs):
         factories.append(kwargs)
+        agent.max_iterations = kwargs["max_iterations"]
         return agent
 
     runtime = HermesNativeRuntime(factory=factory, base_url="https://example.test", api_key="unit",

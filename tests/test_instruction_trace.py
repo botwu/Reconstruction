@@ -1,4 +1,4 @@
-"""初始模型请求完整可审计，摘要绑定原字节，私有轨迹仍过滤敏感信息。"""
+"""初始请求摘要绑定原字节；业务字段不脱敏，私有思考仍按既有视图约定过滤。"""
 
 import hashlib
 import json
@@ -6,7 +6,7 @@ import json
 import pytest
 
 from traceforge.reconstruction.agents import VERIFIER_ROLE, AgentSession
-from traceforge.reconstruction.agents.runtime import HermesNativeRuntime
+from traceforge.reconstruction.agents.runtime import HermesNativeRuntime, write_agent_trace
 
 
 @pytest.mark.parametrize("private_prefix", [
@@ -52,10 +52,25 @@ def test_initial_instruction_full_feedback_is_saved_without_changing_model_excha
     assert trace["instruction_sha256"] == hashlib.sha256(instruction.encode("utf-8")).hexdigest()
     assert trace["privacy"]["instruction_sha256_basis"] == "original_utf8_before_privacy_filtering"
     assert trace["privacy"]["private_thinking_reasoning"] == "omitted"
-    assert "fixture-secret-value" not in trace_text
     assert "fixture-private-thought" not in trace_text
     assert "fixture-unpersisted-reasoning" not in trace_text
     if private_prefix:
-        assert trace["instruction"].startswith("api_key=<redacted>\n\n")
+        assert trace["instruction"].startswith("api_key=fixture-secret-value\n\n")
     else:
         assert trace["instruction"] == instruction
+
+
+def test_tool_trace_preserves_business_keys_and_original_text(tmp_path):
+    event = {
+        "name": "read_file",
+        "arguments": {"max_output_tokens": 4096, "key_column": "name", "token": "标记"},
+        "result_preview": "api_key=fixture-original-value\n",
+    }
+    path = write_agent_trace(
+        tmp_path, role=VERIFIER_ROLE, backend="fixture", instruction="原始输入",
+        turns=[], final_text='{"token": "原始输出"}', model_name="fixture",
+        tool_events=[event],
+    )
+    saved = json.loads(path.read_text())
+    assert saved["tool_events"] == [event]
+    assert saved["final_text"] == '{"token": "原始输出"}'

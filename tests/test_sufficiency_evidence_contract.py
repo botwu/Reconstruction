@@ -102,7 +102,6 @@ def test_task_evidence_reaches_persisted_environment_contract(tmp_path: Path, ki
         tmp_path, kind, {"classification_evidence_ref_ids": refs},
     )
     assert contract["context_status"] == "READY"
-    assert result["prompt_version"] == "workspace-sufficiency-agent-v11-task-start-responsibilities"
     assert result["task_evidence_ref_ids"] == refs
     assert result["integrity_report"]["issues"][0]["classification_evidence_ref_ids"] == refs
     assert result["execution_preflight"]["status"] == "REVIEW"

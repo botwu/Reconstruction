@@ -13,7 +13,63 @@ from traceforge.reconstruction.env_replay import (
     prior_visible_files,
     replay_from_timeline,
     replay_selected_environment,
+    replay_task_workspace,
 )
+from traceforge.reconstruction.session_parser import PARSER_SCHEMA
+
+
+def _dated_event(index, kind, path="main.py", content=None, may_mutate=True):
+    op = {"kind": kind, "path": path, "event_id": str(index), "may_mutate": may_mutate}
+    if content is not None:
+        op.update(content=content, partial=False)
+    return {"call_id": str(index), "assistant_message_index": index,
+            "tool_message_index": index + 1, "pending": False, "result_text": "observed",
+            "session_parse": {"schema_version": PARSER_SCHEMA, "file_ops": [op]}}
+
+
+def test_later_task_uses_observation_after_prior_change_but_not_its_own_solution():
+    timeline = [_dated_event(1, "read", content="old\n"), _dated_event(3, "write"),
+                _dated_event(5, "read", content="task baseline\n"),
+                _dated_event(9, "write"), _dated_event(11, "read", content="solution\n")]
+    original = json.dumps(timeline)
+    replay = replay_task_workspace(timeline, task_start=8)
+    assert replay.files[0].content == "task baseline\n"
+    assert [change.event_id for change in replay.withheld_changes] == ["9"]
+    assert replay.withheld_changes[0].classification == "withheld_change"
+    assert json.dumps(timeline) == original
+    assert any(row.get("reason") == "stale_prior_observation"
+               and row["source_event_id"] == "1" for row in replay.partial_evidence)
+    first = replay_task_workspace(timeline, task_start=0)
+    assert first.files[0].content == "old\n"
+
+
+def test_prior_change_without_new_body_does_not_seed_obsolete_source():
+    timeline = [_dated_event(1, "read", content="obsolete\n"), _dated_event(3, "write"),
+                _dated_event(5, "read", path="requirements.txt", content="requests==2\n"),
+                _dated_event(9, "write")]
+    replay = replay_task_workspace(timeline, task_start=8)
+    assert [item.path for item in replay.files] == ["requirements.txt"]
+    assert replay.withheld_changes[0].classification == "withheld_change"
+    assert any(row.get("reason") == "prior_task_mutation"
+               and row["path"] == "main.py" for row in replay.partial_evidence)
+
+
+@pytest.mark.parametrize("kind", ["unknown", "absent"])
+def test_prior_unknown_change_or_absence_invalidates_older_observation(kind):
+    timeline = [_dated_event(1, "read", content="obsolete\n"), _dated_event(3, kind)]
+    replay = replay_task_workspace(timeline, task_start=8)
+    assert not replay.files
+    if kind == "absent":
+        assert replay.initially_absent_paths == {"main.py"}
+
+
+def test_cross_boundary_return_does_not_count_as_known_prior_write():
+    timeline = [_dated_event(1, "read", content="baseline\n"), _dated_event(7, "write"),
+                _dated_event(10, "read", content="after\n")]
+    timeline[1]["tool_message_index"] = 9
+    replay = replay_task_workspace(timeline, task_start=8)
+    assert replay.files[0].content == "baseline\n"
+    assert [change.event_id for change in replay.withheld_changes] == ["7"]
 
 
 def test_exec_cat_is_first_observation() -> None:

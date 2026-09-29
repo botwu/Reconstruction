@@ -84,12 +84,14 @@ def read_rollout_acceptance(
     *,
     job_dir: Path | str | None = None,
     agent_mode: str | None = None,
+    certification_harbor_root: Path | str | None = None,
 ) -> dict[str, Any]:
     """核对独立执行输入并验收结果；只更新本地派生认证和结果，不执行 rollout。
 
     每次读取均重新认证当前字节并重算响应收据，原子替换计划目录的
     rollout_results.json；不修改冻结计划、task workspace 或真实轨迹。
     PASS 仅表示本次 rollout 验收通过，不回写重建状态或声明 SFT/RED 认证。
+    可显式使用新认证器复核旧产物；执行运行时仍按原计划核验。
     """
 
     plan_root = Path(plan_dir).resolve()
@@ -135,7 +137,18 @@ def read_rollout_acceptance(
     bindings = _bind_trial_tasks(job, task_paths) if completed else {}
     if completed:
         validate_rollout_runtime(plan)
-        certify_hermes_job(job, harbor_root=plan["harbor_root"])
+        certification_sha256 = None
+        if certification_harbor_root is not None:
+            validator_path = Path(certification_harbor_root) / "src/harbor_ags/validator.py"
+            if not validator_path.is_file():
+                raise HarborResultError(f"认证器不存在：{validator_path}")
+            certification_sha256 = hashlib.sha256(validator_path.read_bytes()).hexdigest()
+        certify_hermes_job(job, harbor_root=certification_harbor_root or plan["harbor_root"])
+        if certification_sha256 is not None:
+            for trial_name in bindings:
+                certification = _read_json(job / trial_name / "reconstruction-certification.json")
+                if certification.get("validator_source_sha256") != certification_sha256:
+                    raise HarborResultError("实际认证器与指定源码不一致；请用指定 Harbor 路径启动独立复核进程")
     report = read_rollout_results(job, agent_mode="hermes", expected_trial_count=expected_trials)
     errors = list(report["quality_gate"]["reasons"])
     if not completed:
@@ -161,6 +174,7 @@ def read_rollout_acceptance(
     report["acceptance"] = acceptance
     report["execution"] = {key: execution.get(key) for key in ("status", "external_execution", "returncode")}
     report["input_binding"] = {
+        "certification_harbor_root": str(Path(certification_harbor_root or plan["harbor_root"]).resolve()),
         "plan_dir": str(plan_root),
         "plan_sha256": hashlib.sha256((plan_root / "rollout_plan.json").read_bytes()).hexdigest(),
         "run_id": plan["run_id"],

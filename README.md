@@ -15,6 +15,8 @@ TraceForge 从真实 session 中恢复用户任务、补全 task-start 环境并
 
 R04/R05 按原始 session 处理使用 `reconstruct raw-run`；`reconstruct run --records` 保留给已有筛选记录的路径。两者进入共同的重建主链。
 
+`raw-run` 的 terminal 默认在 AGS 使用连续 researcher：初态恢复、自测、验证器和参考解共享作者历史，独立检查发现的初态缺口可跨阶段返回原作者。search 保留检索专用路径。入口、反馈方向和停止条件见 [默认研究者管线](docs/researcher-pipeline.md)。
+
 ```text
 原始 session → 任务分段 → Intent → Replay/Route
 → Completion → Sufficiency → Environment Contract / TaskFit

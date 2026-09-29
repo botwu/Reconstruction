@@ -13,6 +13,20 @@ from traceforge.reconstruction.agents.session import AgentSession, execute_tool,
 from traceforge.reconstruction.environment_probe import run_environment_probe
 
 
+def test_long_probe_traceback_keeps_the_actual_error():
+    from traceforge.reconstruction.environment_probe import environment_probe_summary
+
+    error = 'Traceback (most recent call last):\n' + '  File "dependency.py", line 1\n' * 300
+    error += 'SyntaxError: source.py 第 19 行缺少引号\n'
+    result = {"probe_id": "failure", "status": "FAIL", "executions": [
+        {"index": 0, "exit_code": 1, "stdout": "", "stderr": error},
+    ]}
+    summary = environment_probe_summary(result, max_chars=1600)
+    assert len(summary) <= 1600
+    assert 'Traceback' in summary and 'SyntaxError: source.py' in summary
+    assert result["executions"][0]["stderr"] == error
+
+
 def _session(tmp_path: Path) -> tuple[AgentSession, LocalExecRuntime]:
     runtime = LocalExecRuntime(tmp_path / "sandbox")
     run_coro(runtime.start(read_only=True))
@@ -73,6 +87,26 @@ def test_reset_same_workspace_is_reproducible_without_declaring_unreconstructabl
     )
     assert result["status"] == "PASS"
     assert result["reset_reproducible"] is True
+    assert result["environment_unchanged"] is True
+
+
+@pytest.mark.parametrize("different_content", [False, True])
+def test_reset_ignores_allocated_directory_names_but_not_file_contents(
+    tmp_path: Path, different_content: bool,
+) -> None:
+    session, _ = _session(tmp_path)
+    code = (
+        "import os, json\nfrom pathlib import Path\n"
+        "root = Path(os.environ['TRACEFORGE_PROBE_SCRATCH'])\n"
+        "target = root / 'state.txt'\n"
+        f"target.write_text(str(root) if {different_content!r} else 'stable')\n"
+        "print(json.dumps({'path': str(target), 'exists': target.exists()}))\n"
+    )
+    result = run_environment_probe(session, python_code=code, purpose="reset")
+    first, second = result["executions"]
+    assert first["stdout"] != second["stdout"]
+    assert result["status"] == ("FAIL" if different_content else "PASS")
+    assert result["reset_reproducible"] is (not different_content)
     assert result["environment_unchanged"] is True
 
 

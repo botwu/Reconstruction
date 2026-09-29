@@ -59,6 +59,7 @@ class ModelResponse:
     latency_seconds: float
     input_tokens: int | None = None
     output_tokens: int | None = None
+    finish_reason: str | None = None
 
     @property
     def content_sha256(self) -> str:
@@ -311,7 +312,8 @@ class NewAPIClient:
                 finish_reason = choices[0].get("finish_reason") if choices else None
                 if finish_reason == "length":
                     raise ModelGatewayError(
-                        "模型在产出正文前耗尽输出预算（finish_reason=length，疑似推理占满 max_tokens）",
+                        "模型在产出正文前耗尽输出预算（finish_reason=length，"
+                        "疑似推理占满 max_tokens）",
                         code="RESPONSE_TRUNCATED",
                     )
                 raise ModelGatewayError("模型响应没有文本内容", code="EMPTY_RESPONSE")
@@ -325,6 +327,7 @@ class NewAPIClient:
                 latency_seconds=time.monotonic() - started,
                 input_tokens=usage.get("prompt_tokens") if isinstance(usage, dict) else None,
                 output_tokens=usage.get("completion_tokens") if isinstance(usage, dict) else None,
+                finish_reason=choices[0].get("finish_reason") if choices else None,
             )
         raise AssertionError("unreachable")
 
@@ -445,6 +448,7 @@ class OpusClient:
                 latency_seconds=time.monotonic() - started,
                 input_tokens=usage.get("input_tokens") if isinstance(usage, dict) else None,
                 output_tokens=usage.get("output_tokens") if isinstance(usage, dict) else None,
+                finish_reason=payload.get("stop_reason"),
             )
         raise AssertionError("unreachable")
 
@@ -570,6 +574,7 @@ def resolve_model_name(
 
 
 __all__ = [
+    "CHANNEL_MODEL_DEFAULTS",
     "ChatModel",
     "ModelCallReceipt",
     "ModelGatewayError",
@@ -579,7 +584,6 @@ __all__ = [
     "OpusClient",
     "Transport",
     "build_chat_model",
-    "CHANNEL_MODEL_DEFAULTS",
     "iter_config_items",
     "load_channel_connection",
     "load_channel_model",

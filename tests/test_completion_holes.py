@@ -833,7 +833,6 @@ def test_completion_prompt_requires_real_bodies(tmp_path: Path) -> None:
     assert result["prompt_version"] == COMPLETION_PROMPT_VERSION
     assert "generation targets" in runtime.instruction
     assert "body unobserved" in runtime.instruction
-    assert "must exist as real bodies" in runtime.instruction
     assert "from_replayed" in runtime.instruction
     assert "from_default_empty" not in runtime.instruction
     assert "TOOL_PROCESS_SKETCH" not in runtime.instruction

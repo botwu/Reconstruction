@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from traceforge.reconstruction.eligible_reconstruction import execution_support_route
 from traceforge.reconstruction.env_replay import replay_selected_environment
-from traceforge.reconstruction.terminal_universe_environment import ReplayedFile
+from traceforge.reconstruction.terminal_universe_environment import ReplayResult, ReplayedFile
 
 
 def _replay(*paths: str):
-    return SimpleNamespace(
-        files=tuple(ReplayedFile(path, "x", "e1") for path in paths)
-    )
+    return ReplayResult(tuple(ReplayedFile(path, "x", "e1") for path in paths), (), (), ())
 
 
 def _file_binding(path: str = "foo.py") -> dict:
@@ -47,15 +43,15 @@ def test_terminal_domain_is_canonical_for_code_file_route() -> None:
     assert result["domain_route"] == "terminal"
 
 
-def test_retrieval_with_replayed_tree_still_plants() -> None:
+def test_retrieval_with_replayed_tree_does_not_enter_terminal() -> None:
     result = execution_support_route(
         task={"domain_route": "retrieval"},
         source={"selected_span_has_file_ops": True},
         replay=_replay("notes.md"),
     )
-    assert result["route"] == "TERMINAL_FILE"
-    assert result["env_origin"] == "REPLAYED"
-    assert result["allow_completion"] is True
+    assert result["route"] == "RETRIEVAL_UNSUPPORTED"
+    assert result["env_origin"] == "NONE"
+    assert result["allow_completion"] is False
     assert result["allow_file_verifier"] is False
 
 

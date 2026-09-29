@@ -229,12 +229,12 @@ def test_completion_excludes_hidden_output_and_post_write_evidence(
     assert "HIDDEN_REVIEW_PAYLOAD" not in json.dumps(runtime.session.evidence)
     assert "review.md" not in runtime.instruction
     assert "RAW_HIDDEN_ANSWER" not in runtime.instruction
-    assert runtime.session.session_context is None
+    assert json.loads(runtime.session.session_context)["messages"][0]["content"] == "RAW_HIDDEN_ANSWER"
     assert runtime.session.user_records == []
     assert runtime.session.user_texts == []
     assert "HIDDEN_REVIEW_PAYLOAD" not in json.dumps(runtime.session.replay_files)
-    assert execute_tool("read_session_context", {}, runtime.session).startswith("error:")
-    assert execute_tool("read_session_message", {"index": 0}, runtime.session).startswith("error:")
+    assert "RAW_HIDDEN_ANSWER" in execute_tool("read_session_context", {}, runtime.session)
+    assert "RAW_HIDDEN_ANSWER" in execute_tool("read_session_message", {"index": 0}, runtime.session)
     assert execute_tool("read_file", {"path": "review.md"}, runtime.session).startswith("error:")
     for ref in (
         "hidden-write", "hidden-write@4", "unknown", "post-read",

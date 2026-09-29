@@ -225,7 +225,7 @@ def test_replay_and_completion_use_full_session_tool_timeline(tmp_path: Path, mo
         ]
         return {"status": "REVIEW", "errors": ["STOP_FOR_TEST"], "candidates": []}
 
-    monkeypatch.setattr(er, "replay_from_timeline", fake_replay)
+    monkeypatch.setattr(er, "replay_task_workspace", fake_replay)
     monkeypatch.setattr(er, "write_replay_artifacts", lambda *args, **kwargs: None)
     monkeypatch.setattr(er, "complete_from_replayed", fake_completion)
 

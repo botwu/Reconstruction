@@ -52,6 +52,18 @@ def test_synthesis_returns_unvalidated_candidate_and_private_audit():
     assert audit["raw_response"] and audit["prompt_sha256"]
 
 
+def test_ready_may_omit_questions_but_explicit_invalid_questions_are_rejected():
+    payload = _payload()
+    del payload["open_questions"]
+    candidate, _ = synthesize_verifier(task=_task(), workspace_files={}, model=FakeModel(payload))
+    assert candidate.open_questions == ()
+    payload["open_questions"] = "尚有问题"
+    with pytest.raises(VerifierSynthesisError, match="open_questions"):
+        synthesize_verifier(task=_task(), workspace_files={}, model=FakeModel(payload))
+    with pytest.raises(VerifierSynthesisError, match="open_questions"):
+        synthesize_verifier(task=_task(), workspace_files={}, model=FakeModel({"status": "REVIEW"}))
+
+
 @pytest.mark.parametrize(
     ("field", "count", "expected"),
     [

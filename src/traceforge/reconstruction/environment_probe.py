@@ -74,6 +74,7 @@ for index in range(repetitions):
             "stderr": stderr.decode("utf-8", errors="replace"),
             "exit_code": process.returncode,
             "timed_out": timed_out,
+            "scratch_root": scratch,
             "scratch_hashes": snapshot(Path(scratch)),
             "workspace_after": snapshot(workspace),
         })
@@ -91,6 +92,15 @@ print(json.dumps({
 def _store(session: AgentSession, result: dict[str, Any]) -> dict[str, Any]:
     session.environment_probes.append(result)
     return result
+
+
+def _comparison_output(execution: dict[str, Any], field: str) -> Any:
+    """比较时忽略执行器分配的目录名，原始输出与文件哈希保持不变。"""
+    value = execution[field]
+    scratch = execution.get("scratch_root")
+    if field in {"stdout", "stderr"} and isinstance(scratch, str) and scratch:
+        return value.replace(scratch, "<TRACEFORGE_PROBE_SCRATCH>")
+    return value
 
 
 def run_environment_probe(
@@ -207,7 +217,8 @@ def run_environment_probe(
     repeatable = (
         len(executions) == 2
         and all(not item["timed_out"] for item in executions)
-        and all(executions[0][field] == executions[1][field] for field in fields)
+        and all(_comparison_output(executions[0], field) == _comparison_output(executions[1], field)
+                for field in fields)
     )
     if repetitions == 2:
         result["reproducible"] = repeatable
@@ -252,9 +263,12 @@ def environment_probe_summary(result: dict[str, Any], *, max_chars: int = 8000) 
     ]
     limit = max_chars // 8
     while True:
-        for item in summary["executions"]:
+        for index, item in enumerate(summary["executions"]):
             for key in ("stdout", "stderr"):
-                item[key] = str(item[key] or "")[:limit]
+                output = str(result["executions"][index].get(key) or "")
+                # 错误类型和 pytest 结论通常在末尾，不能只留下调用栈开头。
+                head = limit // 3
+                item[key] = output if len(output) <= limit else output[:head] + "\n…\n" + output[-(limit - head):]
         text = json.dumps(summary, ensure_ascii=False)
         if len(text) <= max_chars:
             return text

@@ -4,8 +4,7 @@
 再按路径保留「被改之前最早看到的内容」。Agent 新建文件和之后的改动扣下。
 不执行历史命令。未解析的潜在写操作是信任屏障：保留屏障前的观察，屏障后的新内容仅作私有证据。
 
-真实 R01 里大量 exec 包在 JS ``tools.exec_command({cmd:...})`` / PowerShell
-``Get-Content`` / ``sed -n`` 里，本模块把这些收成同一条 read 流。
+主流程优先消费 Session Parser 校验后的文件操作。旧命令解析保留用于独立离线回放。
 
 重建主链用本模块。`trajectory_replay` / 旧 workflow 不再当入口。
 """
@@ -18,6 +17,7 @@ import re
 import shlex
 import shutil
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -25,6 +25,7 @@ from traceforge.reconstruction.exec_wrapper import (
     ordered_parallel_exec_calls,
     parallel_exec_prints_stdout,
 )
+from traceforge.reconstruction.session_parser import PARSER_SCHEMA
 from traceforge.reconstruction.terminal_universe_environment import (
     ReplayedFile,
     ReplayResult,
@@ -1375,6 +1376,10 @@ def replay_workspace_root(
     timeline: list[dict[str, Any]], *, workspace_root: str | None = None,
 ) -> str | None:
     """Replay 和环境绑定共用工作目录规则，避免同一文件出现两套坐标。"""
+    for item in timeline:
+        parsed = item.get("session_parse")
+        if isinstance(parsed, dict):
+            return parsed.get("workspace_root")
     return _session_workdir(timeline) or workspace_root or _infer_workspace_root(timeline)
 
 
@@ -1395,6 +1400,13 @@ def normalize_file_ops(
     ops: list[dict[str, Any]] = []
     for item in timeline:
         if not isinstance(item, dict):
+            continue
+        parsed = item.get("session_parse")
+        if isinstance(parsed, dict):
+            if parsed.get("schema_version") != PARSER_SCHEMA:
+                raise ValueError("会话解析版本不匹配，不能继续回放")
+            # 模型已解释工具含义并通过来源校验，不再用命令模板覆盖其解释。
+            ops.extend(parsed["file_ops"])
             continue
         usable_result = _usable_tool_result(item)
         name = str(item.get("name") or "").lower()
@@ -1561,7 +1573,7 @@ def foreign_mutation_paths(
             continue
         if op.get("kind") == "unknown":
             command = str(op.get("command") or "")
-            if not _unknown_looks_like_mutation(command):
+            if not op.get("may_mutate", _unknown_looks_like_mutation(command)):
                 continue
             workdir = op.get("workdir") if isinstance(op.get("workdir"), str) else None
             untrusted.update(_paths_from_unknown_command(command, workdir))
@@ -1628,6 +1640,62 @@ def replay_selected_environment(
     return replay_from_timeline(timeline, destination)
 
 
+def replay_task_workspace(
+    timeline: list[dict[str, Any]], destination: str | Path | None = None,
+    *, task_start: int | None = None,
+) -> ReplayResult:
+    """先前任务已改变的旧观察不能充当当前初态；缺失正文交给模型按原轨迹恢复。"""
+    if task_start is None:
+        return replay_from_timeline(timeline, destination)
+    prior, current = [], []
+    for item in timeline:
+        submitted, returned = item.get("assistant_message_index"), item.get("tool_message_index")
+        target = prior if (type(submitted) is int and type(returned) is int
+                           and submitted < task_start and returned < task_start) else current
+        target.append(item)
+    workspace = replay_workspace_root(timeline)
+    operations = [normalize_file_ops([item], workspace_root=workspace) for item in prior]
+    changed: dict[str, int] = {}
+    absent: dict[str, int] = {}
+    unknown = -1
+    facts = [{"reason": "task_start", "message_index": task_start}]
+    for index, (item, ops) in enumerate(zip(prior, operations)):
+        for op in ops:
+            if op["kind"] == "write":
+                changed[op["path"]] = index
+            elif op["kind"] == "absent":
+                absent[op["path"]] = index
+                continue
+            elif op["kind"] == "unknown" and op.get("may_mutate", True):
+                unknown = index
+            else:
+                continue
+            facts.append({"reason": "prior_task_mutation", "path": op.get("path"),
+                          "source_event_id": op.get("event_id"),
+                          "assistant_message_index": item["assistant_message_index"],
+                          "tool_message_index": item["tool_message_index"]})
+    view = []
+    for index, (item, ops) in enumerate(zip(prior, operations)):
+        reads = [op for op in ops if op["kind"] in {"read", "absent"}
+                 and index > max(unknown, changed.get(op.get("path"), -1))
+                 and (index >= absent.get(op.get("path"), -1) if op["kind"] == "absent"
+                      else index > absent.get(op.get("path"), -1))]
+        facts.extend({"reason": "stale_prior_observation", "path": op.get("path"),
+                      "source_event_id": op.get("event_id")}
+                     for op in ops if op["kind"] in {"read", "absent"} and op not in reads)
+        if reads:
+            view.append({**item, "session_parse": {
+                **(item.get("session_parse") or {}), "schema_version": PARSER_SCHEMA,
+                "workspace_root": workspace, "file_ops": reads,
+            }})
+    result = replay_from_timeline([*view, *current], destination)
+    return replace(result, partial_evidence=(*facts, *result.partial_evidence),
+                   withheld_changes=tuple(
+                       replace(change, classification="withheld_change")
+                       if change.path in changed else change for change in result.withheld_changes
+                   ))
+
+
 def replay_from_timeline(
     timeline: list[dict[str, Any]],
     destination: str | Path | None = None,
@@ -1660,7 +1728,7 @@ def replay_from_timeline(
         if kind == "unknown":
             barriers.append(event_id)
             command = str(op.get("command") or "")
-            if not _unknown_looks_like_mutation(command):
+            if not op.get("may_mutate", _unknown_looks_like_mutation(command)):
                 partial.append(
                     {
                         "path": None,

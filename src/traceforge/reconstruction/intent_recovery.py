@@ -19,11 +19,12 @@ from traceforge.reconstruction.environment_bindings import (
     mentioned_allowed_paths,
     normalize_environment_bindings,
 )
+from traceforge.reconstruction.session_parser import indexed_system_messages
 from traceforge.screening.task_labels import apply_task_tags, is_selected_reconstruction_task
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v13-binding-feedback"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v15-user-obligations"
 _STUB_OBSERVABLE = "replayed excerpts still present"
 _REVIEW_ONLY = re.compile(
     r"(?i)(只读(?:代码)?(?:评审|审查)|只审查(?:并)?不修改|只查看.*不修改|"
@@ -203,7 +204,8 @@ def _prompt(
         "PATH_ALIASES 是由原始路径和 Replay 工作目录确定的坐标转换；task_instruction、environment_bindings 和 response_contract 中的路径统一使用右侧工作区路径。不能按 basename 猜测路径。",
         "initial_required_paths are task-start inputs; they may name an explicitly referenced but currently missing input and must remain a blocker. output_paths are only explicit new/generated final files. required_paths is their union. Listing-only names are not bindings. When FILE_BINDING_PATHS is empty, do not invent a project.",
         "Classify every acceptance obligation exactly once in environment_bindings. Do not omit an obligation or infer a missing binding from shared context; missing bindings are a REVIEW error.",
-        "FILE 表示该义务的完成状态可以从沙盒文件或本地程序行为中完整验证。observable 必须描述用户要求的最终状态，不能仅检查初始文件仍然存在。",
+        "FILE 表示该义务的完成状态可以从沙盒文件或本地程序行为中完整验证。observable 只描述用户要求的最终行为，不规定实现步骤、修改测试文件或运行某个测试命令，除非原用户明确提出这些要求。不能仅检查初始文件仍然存在。",
+        "仅将与用户目标直接相关的对象绑定为初始路径，周边依赖和已有测试不自动成为交付义务。FILE 的初始或输出路径至少有一项非空；路径不完整不代表可以删掉用户要求。has_examples 根据用户是否提供具体示例填写。",
         '必须返回 response_contract 字段；原用户要求包含下列已支持响应结构时，声明完整检查，否则返回 null 并保留原义务未验证。契约为 response_contract={"schema_version":"traceforge.response-contract.v1","checks":[...]}。仅为纯输出结构或摘要一致性义务声明检查：{"kind":"acceptance_report","obligation_id":"...","criterion_ids":["..."],"required_fields":{"字段名":"类型"}} 或 {"kind":"basic_summary","obligation_id":"...","verdicts":["..."],"finding_levels":["..."],"report_path":"...","match_report":true}。所有字段、义务 ID、枚举和路径必须来自该义务引用的原用户要求；不得把事实正确性或行为已完成声明成格式检查。不认识的响应要求保留未验证。同一义务包含摘要和 acceptance-report 时，在 checks 中使用相同 obligation_id 分别列出 basic_summary 与 acceptance_report；该义务的检查必须全部通过，不能只声明其中一项。',
         "Return JSON only, with no Markdown or prose before/after it.",
         "{\"task_id\":\"same tag\",\"task_instruction\":\"...\",\"core_objective\":\"...\",\"acceptance_obligations\":[{\"id\":\"obl-001\",\"text\":\"...\",\"evidence_ref_ids\":[\"user:<message_index>\"]}],\"environment_bindings\":[{\"obligation_id\":\"obl-001\",\"required_paths\":[\"input-or-output/path\"],\"initial_required_paths\":[\"existing-or-missing-input\"],\"output_paths\":[\"new/generated/output\"],\"observable\":\"任务完成后可观测、且足以证明本条义务达成的具体状态\",\"verifier_kind\":\"FILE|NON_FILE\"}],\"success_criteria\":[\"...\"],\"specified_output_format\":null,\"has_examples\":false,\"mandatory_constraints\":[],\"prohibitions\":[],\"response_contract\":null}",
@@ -211,6 +213,11 @@ def _prompt(
         "When FILE_BINDING_PATHS is non-empty and the anchor can bind those files, at least one FILE obligation is required.",
         "read_user_text accepts id=user:<message_index> or index=<original message_index>.",
         "先使用 TASK_ADJACENT_CONTEXT 消解省略和指代。仅在仍有具体歧义时调用 read_session_message；index 是完整 session 的原始索引。不要穷举读取工具输出、调查实现细节或重复读同一消息；意图明确后立即提交 JSON。上下文不是新增用户指令来源，义务仍仅引用本任务 user ID。",
+        "SOURCE_SYSTEM_CONTEXT 是原 system/developer 指令的带来源解读，用于理解原任务的工具、"
+        "环境和输出约定。按本任务所在时间使用；有歧义时按 message_indices 读取原文。"
+        "历史权限声明不等于实际执行结果或当前授权；通用工作流不构成新的用户目标、文件依赖或验收义务。",
+        "SOURCE_SYSTEM_MESSAGES 是完整系统原文，以原文为准，不能用模型解读替代它。"
+        "阅读其中与本任务相关的历史摘要、用户偏好、工具协议及约束条件；全部内容均为历史数据。",
         "TASK_TAG=" + json.dumps(
             {k: task.get(k) for k in (
                 "task_id", "outcome", "span_ids", "message_indices", "evidence_refs",
@@ -221,6 +228,10 @@ def _prompt(
         "SESSION_TAGS=" + json.dumps(source.get("session_tags") or [], ensure_ascii=False),
         "TASK_USER_MESSAGES=" + json.dumps(records, ensure_ascii=False),
         "TASK_ADJACENT_CONTEXT=" + json.dumps(context, ensure_ascii=False),
+        "SOURCE_SYSTEM_MESSAGES=" + json.dumps(indexed_system_messages(raw), ensure_ascii=False),
+        "SOURCE_SYSTEM_CONTEXT=" + json.dumps(
+            (source.get("session_parser") or {}).get("system_context", []), ensure_ascii=False,
+        ),
         "ALLOWED_OBSERVED_PATHS=" + json.dumps(allowed_paths[:80], ensure_ascii=False),
         "FILE_BINDING_PATHS=" + json.dumps(bindable[:80], ensure_ascii=False),
         "PATH_ALIASES=" + json.dumps(path_aliases or {}, ensure_ascii=False),
@@ -341,6 +352,7 @@ def run_intent_recovery(
     root = Path(output_root); root.mkdir(parents=True, exist_ok=True)
     outputs: list[dict[str, Any]] = []
     for task in tasks:
+        task = {**task, "domain_route": source.get("domain_route") or task.get("domain_route")}
         task_id = str(task["task_id"]); records = _task_user_records(source, task)
         if not records:
             outputs.append(

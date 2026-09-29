@@ -2,6 +2,12 @@
 
 这份文档只描述如何检查执行条件，不把预检结果当作 terminal 任务端到端成功。配置文件包含模型凭据，放在部署机上，不能提交到 Git，也不要把完整配置打印到日志。
 
+当前原始 session 的入口使用 `reconstruct raw-run`，不先运行 screening 或 inventory。
+任务分组属于重建过程；domain 由调用方通过 `--domain search|terminal` 指定，模型不分类。
+R01 使用 search，R04 使用 terminal。会话未结束、工具返回缺失、内容损坏不作为初始淘汰条件。
+问题记入对应阶段的证据缺口，重建环境和任务是否合格由实际产物及执行结果判断。
+旧的 `reconstruct run --records` 仅用于已有筛选记录，不是原始数据入口的必经步骤。
+
 ## 角色 JSON
 
 在本地 `config.yaml` 的 `roles` 项中放一个 JSON 对象。每个角色至少指定 `channel` 和 `model`；模型网关仍从对应 channel 读取凭据。
@@ -15,7 +21,8 @@ roles:
 
 | 角色 | channel | model | 作用 |
 | --- | --- | --- | --- |
-| screening | deepseek | `bailian/deepseek-v4-flash-0731` | 轨迹筛选；输入最多 500,000 字符、260 条消息、20 次来源请求 |
+| screening | deepseek | `bailian/deepseek-v4-flash-0731` | 旧筛选入口使用；`raw-run` 不调用 |
+| session_parser | deepseek | `bailian/deepseek-v4-flash-0731` | Replay 前理解工具语义和返回引用；此角色有默认值，可在 roles 中覆盖 |
 | reconstruction | gpt | `gpt-5` | Intent、Completion、Sufficiency 和编排代理 |
 | verifier | gpt | `gpt-5` | 生成隐藏 pytest 和 RED 证据 |
 | rollout | claude | `anthropic/claude-opus-4-8/awsb_L/sfa` | Harbor 解题复验；必须与 reconstruction 模型不同 |
@@ -47,7 +54,7 @@ PYTHONPATH=src python scripts/preflight_terminal_environment.py \
 
 默认报告的 `scope=LOCAL_STATIC_ONLY`，只检查：
 
-- 四个角色 JSON 和 screening 预算能否解析；
+- 模型角色配置和 screening 预算能否解析；
 - channel、Hermes 根目录、Harbor 配置和可执行入口是否存在；
 - 本机 pytest 是否可用；
 - 仓库锁定的离线 pytest wheel 是否完整、哈希是否匹配。
@@ -73,9 +80,9 @@ PYTHONPATH=src python scripts/preflight_terminal_environment.py \
 
 ```bash
 export HERMES_HOME=/mnt/afs_toolcall/wujian1/Projects/tokenhub_data_model_eval/R01/hermes-agent
-PYTHONPATH=src python -m traceforge reconstruct run \
+PYTHONPATH=src python -m traceforge reconstruct raw-run \
   --input <完整 R04 或 R05 JSONL> \
-  --records <terminal records.jsonl> \
+  --domain terminal \
   --line-number <原始行号> \
   --output /tmp/traceforge-terminal-e2e-<run-id> \
   --config config.yaml \
@@ -84,7 +91,11 @@ PYTHONPATH=src python -m traceforge reconstruct run \
   --rollout-trials 2
 ```
 
-阶段顺序是 source/replay → Intent → Completion → Sufficiency → Verifier → Harbor RED → rollout。只有 manifest 为 `READY`、Verifier 具有真实 RED 证据、两次 rollout 通过质量门禁，外部 `scripts/check_reconstruct_e2e.py` 才可能给出完整通过。预检、离线测试或单个角色 `READY` 都不替代这条证据链。
+阶段顺序是原始 session → 任务分组 → 模型解析与引用校验 → Replay/domain 路由 → Intent → Completion → Sufficiency → Verifier → Harbor RED → rollout。只有 manifest 为 `READY`、Verifier 具有真实 RED 证据、两次 rollout 通过质量门禁，外部 `scripts/check_reconstruct_e2e.py` 才可能给出完整通过。预检、离线测试或单个角色 `READY` 都不替代这条证据链。
+
+Completion 证据、Agent 工具参数与轨迹、候选清单和验证诊断不再按 `token`、`key` 等字段名或正文正则替换原值。诊断摘要原有的长度上限保留。原始 JSONL 不改写；源文件已有的脱敏标记不能靠取消当前管线的脱敏恢复，必须使用未改写的来源或标为证据缺口。
+
+search 必须进入独立的检索重建策略。当前 `RETRIEVAL_UNSUPPORTED` 表示后端未实现，不表示原始样本质量不合格，也不能把它改成 terminal 文件任务来绕过。
 
 2026-09-21 的真实 R04 line 262 已完成一次可复现的 Verifier RED 校准：v13 的 NOP 中缺失能力测试全部失败、protective 测试通过，两个 oracle 进程退出码为 0，mutation 语义失败，报告为 `status=READY`、`calibration=PASS`。但当前候选测试主要是源码文本/正则断言，不足以证明 ROS 订阅、持续发布或参数写入行为；`obl-001` 和 `obl-003` 仍是 `NON_FILE`，因此 `unverified_obligations` 不为空，不能进入 SFT 或关闭认证。
 

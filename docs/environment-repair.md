@@ -43,6 +43,6 @@ tasks/<task_id>/environment_repairs/<candidate>/
 
 ## 当前依赖执行边界
 
-dependencies/runtime_constraints 目前仍是字符串声明；管线保存它们，但没有统一消费声明执行安装的机制。仅写出 requirements 或包名不能证明沙盒已具备依赖。缺包由实际执行探针反映，并进入有界反馈；安装未完成不得宣称执行已就绪，也不据此将原始证据判为不可重建。
+dependencies/runtime_constraints 保留为声明，不把自由文本转成命令。对有 requirements.txt 的 Python 初态，Sufficiency 准备阶段在目标 AGS 中下载 wheel，固定直接和间接依赖版本及 SHA256，随后离线安装并保留收据；宿主机不执行项目安装。
 
-后续若真实样本确认缺少可安装依赖，应在环境准备阶段补充可复用的沙盒安装与收据，并使重建探针、RED 和 rollout 消费同一声明。当前未新增安装命令推测、依赖语法门禁或宿主机 pip 执行。
+冻结依赖放在候选 workspace 之外的 python_runtime/。Verifier 角色、Bundle 的 agent 环境和独立无网 verifier 使用同一份锁定内容，Harbor 在角色启动前执行环境中的 setup.sh。原声明或 wheel 内容变化时拒绝复用；安装失败保留环境错误，不能算任务失败或语义不可重建。目前自动准备仅覆盖根目录 requirements.txt 且依赖有适配目标 Python 的 wheel，其他依赖方式不声称已支持。

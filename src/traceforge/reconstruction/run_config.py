@@ -24,6 +24,7 @@ DEFAULT_SCREENING_MAX_SOURCE_REQUESTS = 20
 
 ROLE_DEFAULTS: dict[str, tuple[str, str]] = {
     "screening": ("deepseek", "bailian/deepseek-v4-flash-0731"),
+    "session_parser": ("deepseek", "bailian/deepseek-v4-flash-0731"),
     "reconstruction": ("gpt", "gpt-5"),
     "verifier": ("gpt", "gpt-5"),
     "rollout": ("claude", "anthropic/claude-opus-4-8"),

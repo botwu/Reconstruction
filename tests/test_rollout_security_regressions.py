@@ -53,7 +53,7 @@ def test_rollout_run_id_binds_agent_mode(tmp_path: Path, monkeypatch):
     assert json.loads((hermes / "rollout_plan.json").read_text())["run_id"] != json.loads((oracle / "rollout_plan.json").read_text())["run_id"]
 
 
-def test_rollout_execution_redacts_secret_output(tmp_path: Path, monkeypatch):
+def test_rollout_execution_preserves_original_output(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("AGS_API_KEY", "ags")
     monkeypatch.setenv("TOKENHUB_KEY", "token")
     task = _bundle(tmp_path / "task")
@@ -65,6 +65,5 @@ def test_rollout_execution_redacts_secret_output(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     result = execute_rollout_plan(plan)
-    assert "sk-super-secret" not in result["stdout"]
-    assert "sk-another-secret" not in result["stderr"]
-    assert "REDACTED" in result["stdout"]
+    assert result["stdout"] == "Authorization: Bearer sk-super-secret-value\n"
+    assert result["stderr"] == "api_key=sk-another-secret\n"

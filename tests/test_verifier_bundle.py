@@ -81,6 +81,26 @@ def test_bundle_keeps_solution_and_verifier_outside_workspace(tmp_path):
     assert (output / "task/workspace").stat().st_mode & 0o002
 
 
+def test_bundle_carries_identical_frozen_dependencies_to_both_environments(tmp_path):
+    from test_python_runtime import frozen_runtime
+
+    runtime, requirements = frozen_runtime(tmp_path)
+    output = compile_bundle(
+        task={"core_objective": "完成任务"}, workspace_root=requirements.parent,
+        verifier=_verifier(), output_root=tmp_path / "out",
+    )
+    task = output / "task"
+    for role in ("environment", "tests"):
+        assert (task / role / "setup.sh").is_file()
+        for file in runtime.rglob("*"):
+            if file.is_file():
+                target = task / role / "python_runtime" / file.relative_to(runtime)
+                assert target.read_bytes() == file.read_bytes()
+    assert not (task / "workspace/python_runtime").exists()
+    control = json.loads((task / "tests/control/reconstruction_environment.json").read_text())
+    assert control["python_runtime"]["requirements_sha256"]
+
+
 @pytest.mark.parametrize("shape", [
     {"criteriaSatisfied": [
         {"id": "criterion-1", "status": "satisfied", "evidence": "第一条证据"},
@@ -189,12 +209,13 @@ def test_bundle_exposes_public_requirements_only(tmp_path):
     )
     instruction = (output / "task/instruction.md").read_text()
     for required in (
-        "写出审查结果。", "报告存在且覆盖两项变更。", "结论和发现数量。",
+        "写出审查结果。", "结论和发现数量。",
         "禁止重复运行已验证的测试。", "不运行 Git 命令。",
     ):
         assert required in instruction
     assert instruction.count("只读审查。") == 1
     assert "隐藏绑定元数据" not in instruction
+    assert "报告存在且覆盖两项变更。" not in instruction
     assert "user:2" not in instruction
     assert "acceptance-report" not in instruction
 
@@ -337,7 +358,7 @@ def test_bundle_digest_includes_compiler_contract(tmp_path):
     manifest = __import__("json").loads(
         (output / "compile_manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v6-grounded-task-acceptance"
+    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v7-frozen-python-runtime"
     assert manifest["entrypoint_contract"] == {
         "workspace_mount": "/home/user/workspace",
         "solution_mount": "/solution",

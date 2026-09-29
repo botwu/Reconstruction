@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from itertools import count
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -11,13 +12,14 @@ from typing import Any
 from traceforge.curation.sft import write_reconstruction_sft_curation
 from traceforge.reconstruction.agents import AgentRuntime, SandboxedAgentRuntime
 from traceforge.reconstruction.env_replay import (
-    replay_from_timeline,
+    replay_task_workspace,
     write_replay_artifacts,
 )
 from traceforge.reconstruction.environment_bindings import (
     environment_bindings,
     non_file_obligation_ids,
     observed_body_paths,
+    task_start_message_index,
 )
 from traceforge.reconstruction.intent_recovery import (
     INTENT_SCHEMA,
@@ -26,6 +28,8 @@ from traceforge.reconstruction.intent_recovery import (
     selected_task_views,
 )
 from traceforge.reconstruction.model_gateway import ChatModel
+from traceforge.reconstruction.researcher import ReconstructionRuntime
+from traceforge.reconstruction.session_parser import PARSER_MODEL, parse_session_tools
 from traceforge.reconstruction.session_source import (
     ReconstructionSourceError,
     build_reconstruction_source,
@@ -72,7 +76,7 @@ _SOURCE_SUFFIXES = frozenset(
 
 def _domain_route(task: dict[str, Any], source: dict[str, Any]) -> str:
     nested = task.get("source_task") if isinstance(task.get("source_task"), dict) else {}
-    for obj in (task, nested, source):
+    for obj in (source, task, nested):
         if not isinstance(obj, dict):
             continue
         route = obj.get("domain_route")
@@ -127,6 +131,15 @@ def execution_support_route(
     }
     if unverified:
         payload["unverified_obligations"] = unverified
+    if domain == "retrieval":
+        return {
+            **payload,
+            "route": "RETRIEVAL_UNSUPPORTED",
+            "reason_codes": ["RETRIEVAL_UNSUPPORTED"],
+            "env_origin": ENV_NONE,
+            "allow_completion": False,
+            "allow_file_verifier": False,
+        }
     if files:
         return {
             **payload,
@@ -135,15 +148,6 @@ def execution_support_route(
             "env_origin": ENV_REPLAYED,
             "allow_completion": True,
             "selected_span_has_file_ops": has_ops,
-        }
-    if domain == "retrieval" and not explicit_file:
-        return {
-            **payload,
-            "route": "RETRIEVAL_UNSUPPORTED",
-            "reason_codes": ["RETRIEVAL_UNSUPPORTED"],
-            "env_origin": ENV_NONE,
-            "allow_completion": False,
-            "allow_file_verifier": False,
         }
     return {
         **payload,
@@ -306,7 +310,7 @@ def _task_source(source: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]
     out["tool_timeline"] = copy.deepcopy(source.get("tool_timeline") or [])
     out["session_timeline_scope"] = "FULL_SESSION"
     out["selected_span_has_file_ops"] = timeline_has_file_ops(out["selected_tool_timeline"])
-    if isinstance(anchor.get("domain_route"), str) and anchor.get("domain_route"):
+    if not out.get("domain_route") and anchor.get("domain_route"):
         out["domain_route"] = anchor["domain_route"]
     return out
 
@@ -336,9 +340,10 @@ def _replay_and_route(
     task_root = root / "tasks" / task_id
     task_root.mkdir(parents=True, exist_ok=True)
     task_source = _task_source(source, task)
-    replay = replay_from_timeline(
+    replay = replay_task_workspace(
         list(task_source.get("tool_timeline") or []),
         task_root / "initial_workspace",
+        task_start=task_start_message_index(task),
     )
     write_replay_artifacts(replay, task_root)
     support = execution_support_route(task=task, source=task_source, replay=replay)
@@ -418,18 +423,19 @@ def _judge_and_repair_candidate(
     *, task: dict[str, Any], candidate: dict[str, Any], replay: Any,
     timeline: list[dict[str, Any]], task_source: dict[str, Any], agent: AgentRuntime,
     task_root: Path, index: int, origin: str,
+    max_repair_rounds: int | None = MAX_ENVIRONMENT_REPAIR_ROUNDS,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
-    """有界反馈闭环；先评估，定向补全或补探针，然后独立复核。"""
+    """评估与具体执行反馈驱动返修；可由持续研究者取消固定返修轮数。"""
     observed = {str(item.path) for item in replay.files if getattr(item, "path", None)}
     observed.update(observed_body_paths(task_source))
     audit: dict[str, Any] = {
-        "candidate_index": index, "max_repair_rounds": MAX_ENVIRONMENT_REPAIR_ROUNDS,
+        "candidate_index": index, "max_repair_rounds": max_repair_rounds,
         "rounds": [], "stop_reason": None,
     }
     feedback = None
     previous_state = None
     action = "INITIAL"
-    for round_index in range(MAX_ENVIRONMENT_REPAIR_ROUNDS + 1):
+    for round_index in count():
         round_root = task_root / "environment_repairs" / f"{index:03d}" / f"{round_index:03d}"
         judge_root = (
             task_root / "sufficiency" / f"{index:03d}" if round_index == 0
@@ -476,15 +482,17 @@ def _judge_and_repair_candidate(
             audit["stop_reason"] = "NO_PROGRESS"
             break
         previous_state = state
-        if round_index == MAX_ENVIRONMENT_REPAIR_ROUNDS:
+        if max_repair_rounds is not None and round_index >= max_repair_rounds:
             audit["stop_reason"] = "REPAIR_LIMIT_REACHED"
             break
         next_root = task_root / "environment_repairs" / f"{index:03d}" / f"{round_index + 1:03d}"
         _write_stage_json(next_root, "feedback.json", feedback)
-        # 只有收据缺失时让只读评审补探针，不要求 Completion 凭空改文件。
+        # 检查不完整或范围不当仍由检查员处理；确认初态缺口后才改源码。
         if (
-            judge.get("status") == "READY" and environment.get("status") == "READY"
-            and not feedback["failed_probes"]
+            judge.get("label") != "INSUFFICIENT"
+            and not feedback["missing_binding_paths"]
+            and not any(issue.get("classification") == "RECONSTRUCTION_GAP"
+                        for issue in feedback["integrity_report"].get("issues", []))
         ):
             action = "RECHECK"
             continue
@@ -525,6 +533,9 @@ def _task_result(
     replay: Any | None = None,
     support: dict[str, Any] | None = None,
     task_source: dict[str, Any] | None = None,
+    max_environment_repair_rounds: int | None = MAX_ENVIRONMENT_REPAIR_ROUNDS,
+    completion_seed: dict[str, Any] | None = None,
+    completion_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     task_id = str(task["task_id"])
     if replay is None or support is None or task_source is None:
@@ -539,7 +550,13 @@ def _task_result(
         return _support_route_result(task=task, support=support)
     timeline = list(task_source.get("tool_timeline") or [])
     origin = str(support.get("env_origin") or ENV_REPLAYED)
-    if origin == ENV_DEFAULT_EMPTY:
+    if completion_seed is not None:
+        completion = repair_workspace_completion(
+            task=task, candidate=completion_seed, replay=replay, timeline=timeline,
+            source=task_source, agent=agent, output_root=task_root / "completion",
+            feedback=completion_feedback or {}, env_origin=origin,
+        )
+    elif origin == ENV_DEFAULT_EMPTY:
         workspace = task_root / "initial_workspace"
         workspace.mkdir(parents=True, exist_ok=True)
         completion = complete_from_default_empty(
@@ -596,6 +613,7 @@ def _task_result(
             task=task, candidate=candidate, replay=replay, timeline=timeline,
             task_source=task_source, agent=agent, task_root=task_root,
             index=candidate_index, origin=origin,
+            max_repair_rounds=max_environment_repair_rounds,
         )
         completion["candidates"][candidate_index] = candidate
         repair_audits.append(repair_audit)
@@ -828,12 +846,159 @@ def _task_result(
     return result
 
 
+def run_prepared_task(
+    *, source: dict[str, Any], task: dict[str, Any], agent: AgentRuntime,
+    output_root: str | Path, verification_model: ChatModel | None = None,
+    verifier_agent: AgentRuntime | None = None,
+    verification_config: VerificationConfig | None = None,
+    search_rollout_agent: AgentRuntime | None = None,
+    max_environment_repair_rounds: int | None = MAX_ENVIRONMENT_REPAIR_ROUNDS,
+    completion_seed: dict[str, Any] | None = None,
+    completion_feedback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """消费已解析的真实任务；外部构建入口复用正式后续流程，不重复解析。"""
+    if (completion_seed is None) != (completion_feedback is None):
+        raise EligibleReconstructionError("恢复作者检查点必须同时提供候选与返修反馈")
+    if (source.get("session_parser") or {}).get("status") != "READY":
+        raise EligibleReconstructionError("准备输入缺少成功的 Session Parser 产物")
+    if task.get("task_id") not in {item.get("task_id") for item in source.get("tasks", [])}:
+        raise EligibleReconstructionError("任务不属于当前原始 session")
+    root = Path(output_root)
+    root.mkdir(parents=True, exist_ok=True)
+    write_reconstruction_source(source, root)
+    manifest = {"schema_version": ELIGIBLE_RECONSTRUCTION_SCHEMA, "status": "RUNNING",
+                "source_sha256": source.get("line_sha256"), "tasks": []}
+    _write_manifest(root, manifest)
+    if _domain_route(task, source) == "retrieval":
+        from traceforge.reconstruction.search_environment import run_search_task
+
+        result = run_search_task(
+            source=source, task=task, agent=agent,
+            output_root=root / "tasks" / task["task_id"],
+            rollout_agent=search_rollout_agent,
+            rollout_trials=verification_config.rollout_trials if verification_config else 2,
+            rollout_max_iterations=(
+                verification_config.rollout_max_iterations if verification_config else 80
+            ),
+        )
+    else:
+        result = _run_task_loop(
+            task=task, root=root, source=source, agent=agent,
+            verification_model=verification_model, verifier_agent=verifier_agent,
+            verification_config=verification_config,
+            max_environment_repair_rounds=max_environment_repair_rounds,
+            completion_seed=completion_seed, completion_feedback=completion_feedback,
+        )
+    _write_manifest(root, {**manifest, "status": result["status"], "tasks": [result]})
+    return result
+
+
+def _run_task_loop(
+    *, task: dict[str, Any], root: Path, source: dict[str, Any], agent: AgentRuntime,
+    verification_model: ChatModel | None, verification_config: VerificationConfig | None,
+    verifier_agent: AgentRuntime | None = None,
+    replay: Any | None = None, support: dict[str, Any] | None = None,
+    task_source: dict[str, Any] | None = None,
+    max_environment_repair_rounds: int | None = None,
+    completion_seed: dict[str, Any] | None = None,
+    completion_feedback: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """下游失败先独立复查初态，只把实证重建缺口返回原作者。"""
+    audit: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for attempt in count():
+        attempt_root = root if attempt == 0 else root / "attempts" / f"{attempt:03d}"
+        result = _task_result(
+            task=task, root=attempt_root, source=source, agent=agent,
+            verification_model=verification_model, verification_config=verification_config,
+            verifier_agent=verifier_agent, replay=replay if attempt == 0 else None,
+            support=support if attempt == 0 else None,
+            task_source=task_source if attempt == 0 else None,
+            max_environment_repair_rounds=max_environment_repair_rounds,
+            completion_seed=completion_seed, completion_feedback=completion_feedback,
+        )
+        row = {"attempt": attempt, "root": str(attempt_root), "status": result["status"],
+               "errors": result.get("errors", []), "action": "STOP"}
+        audit.append(row)
+        verification = result.get("verification") or {}
+        rollout = verification.get("rollout")
+        if (not isinstance(agent, ReconstructionRuntime)
+                or result.get("stopped_at") != "verification" or not result.get("workspace")
+                or result["status"] != "REVIEW" or verification.get("unverified_obligations")
+                or "VERIFIER_CALIBRATION_INFRA_ERROR" in verification.get("errors", [])
+                or _sandbox_init_errors(verification.get("errors"))):
+            break
+        if isinstance(rollout, dict) and (
+            (rollout.get("execution") or {}).get("status") != "COMPLETED"
+            or (rollout.get("results") or {}).get("quality_gate", {}).get("ok") is False
+        ):
+            row["stop_reason"] = "DOWNSTREAM_EXECUTION_INCOMPLETE"
+            break
+        candidate = result["completion"]["candidates"][result["selected_index"]]
+        task_root = attempt_root / "tasks" / str(task["task_id"])
+        feedback = {"stage": "verification", "verification": verification, "verdicts": []}
+        if isinstance(rollout, dict):
+            for trial in (rollout.get("results") or {}).get("trials", []):
+                if trial.get("status") == "PASS" or not trial.get("verdict_path"):
+                    continue
+                path = Path(trial["verdict_path"]).resolve()
+                if path.is_relative_to(task_root.resolve()) and path.is_file():
+                    feedback["verdicts"].append(json.loads(path.read_text()))
+        if replay is None:
+            replay = replay_task_workspace(
+                list(source.get("tool_timeline") or []), task_root / "initial_workspace",
+                task_start=task_start_message_index(task),
+            )
+        diagnosis_root = task_root / "downstream_environment_review"
+        judge = run_workspace_sufficiency(
+            task=task, workspace_root=candidate["workspace"], agent=agent,
+            output_root=diagnosis_root, observed_paths=observed_body_paths(source),
+            reconstruction_context=completion_evidence_context(replay, candidate),
+            repair_feedback={
+                "downstream_failure": feedback,
+                "instruction": "在原始初态复现下游暴露的问题，区分重建缺口、验证器问题和 solver 解题失败。"
+                "只有任务目标之外的初态缺口才返回 INSUFFICIENT；用户要求修复的原缺陷必须保留。"
+                "不要在 solver 修改后的工作区检查，不修改验收目标，不靠降低测试要求让它通过。",
+            },
+        )
+        environment = build_environment_contract(
+            workspace_root=candidate["workspace"], env_root=candidate.get("env_root"),
+            sufficiency=judge, replay=replay,
+        )
+        diagnosis = _environment_feedback(judge, environment)
+        row["diagnosis_path"] = str(diagnosis_root / "sufficiency.json")
+        if (judge.get("label") != "INSUFFICIENT"
+                or environment.get("status") in {"INFRA_ERROR", "PIPELINE_ERROR", ENVIRONMENT_UNRECONSTRUCTABLE}
+                or any(p.get("status") == "INFRA_ERROR" for p in diagnosis["failed_probes"])
+                or not (any(p.get("status") == "FAIL" for p in diagnosis["failed_probes"])
+                        or diagnosis["missing_binding_paths"]
+                        or any(i.get("classification") == "RECONSTRUCTION_GAP"
+                               for i in diagnosis["integrity_report"].get("issues", [])))):
+            row["stop_reason"] = "NO_CONFIRMED_INITIAL_ENVIRONMENT_GAP"
+            break
+        state = _repair_state(environment, diagnosis)
+        if state in seen:
+            row["stop_reason"] = "NO_PROGRESS"
+            break
+        seen.add(state)
+        row["action"] = "REPAIR_INITIAL_ENVIRONMENT"
+        completion_seed = candidate
+        completion_feedback = {**diagnosis, "downstream_failure": feedback}
+        _write_stage_json(diagnosis_root, "repair_feedback.json", completion_feedback)
+        _write_stage_json(root / "tasks" / str(task["task_id"]), "task_repair_audit.json", {"attempts": audit})
+    result["task_repair_audit"] = audit
+    _write_stage_json(root / "tasks" / str(task["task_id"]), "task_repair_audit.json", {"attempts": audit})
+    return result
+
+
 def run_eligible_reconstruction(
     *,
     raw_line: str,
     record: dict[str, Any] | None,
     agent: AgentRuntime,
     output_root: str | Path,
+    parser_model: ChatModel | None = None,
+    parser_model_name: str = PARSER_MODEL,
     verification_model: ChatModel | None = None,
     verifier_agent: AgentRuntime | None = None,
     verification_config: VerificationConfig | None = None,
@@ -842,10 +1007,6 @@ def run_eligible_reconstruction(
 ) -> Path:
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
-    if container_runtime_factory is not None:
-        agent = SandboxedAgentRuntime(agent, container_runtime_factory)
-        if verifier_agent is not None:
-            verifier_agent = SandboxedAgentRuntime(verifier_agent, container_runtime_factory)
     if source_override is not None:
         source = copy.deepcopy(source_override)
     else:
@@ -855,7 +1016,38 @@ def run_eligible_reconstruction(
             source = build_reconstruction_source(raw_line=raw_line, record=record)
         except ReconstructionSourceError as exc:
             raise EligibleReconstructionError(str(exc)) from exc
+    if parser_model is not None:
+        source = parse_session_tools(
+            source=source, model=parser_model, model_name=parser_model_name,
+            output_root=root / "session_parser",
+        )
+    else:
+        # 允许离线独立调试后续模块；正式 CLI 总是传入解析模型。
+        source["session_parser"] = {"status": "NOT_RUN", "reason": "未提供会话解析模型"}
     write_reconstruction_source(source, root)
+    if _domain_route({}, source) == "retrieval":
+        from traceforge.reconstruction.agents import build_hermes_runtime
+        from traceforge.reconstruction.search_environment import run_search_reconstruction
+
+        rollout_agent = None
+        if verification_config is not None and verification_config.execute_rollout:
+            rollout_agent = build_hermes_runtime(
+                config_path=verification_config.config_path,
+                channel=verification_config.channel,
+                model_name=verification_config.rollout_model,
+                hermes_home=verification_config.hermes_home,
+            )
+        return run_search_reconstruction(
+            source=source, agent=agent, output_root=root, rollout_agent=rollout_agent,
+            rollout_trials=verification_config.rollout_trials if verification_config else 2,
+            rollout_max_iterations=(verification_config.rollout_max_iterations
+                                    if verification_config else 80),
+        )
+    native_agent, native_verifier = agent, verifier_agent
+    if container_runtime_factory is not None:
+        agent = SandboxedAgentRuntime(agent, container_runtime_factory)
+        if verifier_agent is not None:
+            verifier_agent = SandboxedAgentRuntime(verifier_agent, container_runtime_factory)
     screening_tasks = selected_task_views(source)
     if not screening_tasks:
         return _write_manifest(
@@ -955,15 +1147,29 @@ def run_eligible_reconstruction(
             continue
         assert routed_task is not None
         _screening, task_source, replay, support = routed_task
+        task_agent, task_verifier = agent, verifier_agent
+        if container_runtime_factory is not None:
+            task_agent = ReconstructionRuntime(
+                native_agent, source=task_source, task=item["task"],
+                runtime_factory=container_runtime_factory,
+            )
+            task_verifier = task_agent
+            if native_verifier is not None and native_verifier is not native_agent:
+                task_verifier = ReconstructionRuntime(
+                    native_verifier, source=task_source, task=item["task"],
+                    runtime_factory=container_runtime_factory,
+                )
+                task_verifier.conversation = task_agent.conversation
+                task_verifier.phases = task_agent.phases
         results.append(
-            _task_result(
+            _run_task_loop(
                 task=item["task"],
                 root=root,
                 source=source,
-                agent=agent,
+                agent=task_agent,
                 verification_model=verification_model,
                 verification_config=verification_config,
-                verifier_agent=verifier_agent,
+                verifier_agent=task_verifier,
                 replay=replay,
                 support=support,
                 task_source=task_source,
@@ -977,10 +1183,13 @@ def run_eligible_reconstruction(
 def run_raw_session_reconstruction(
     *,
     raw_line: str,
+    domain: str,
     line_number: int,
     source_ref: str,
     agent: AgentRuntime,
     output_root: str | Path,
+    parser_model: ChatModel | None = None,
+    parser_model_name: str = PARSER_MODEL,
     verification_model: ChatModel | None = None,
     verifier_agent: AgentRuntime | None = None,
     verification_config: VerificationConfig | None = None,
@@ -989,6 +1198,8 @@ def run_raw_session_reconstruction(
     """对一条完整原始 session 直入重建管线，不读取 screening records。"""
     from traceforge.reconstruction.raw_session import RawSessionSourceError, build_raw_session_source
 
+    if domain not in {"search", "terminal"}:
+        raise EligibleReconstructionError("原始 session 必须显式指定 domain：search 或 terminal")
     root = Path(output_root)
     try:
         source = build_raw_session_source(
@@ -1000,10 +1211,14 @@ def run_raw_session_reconstruction(
         )
     except RawSessionSourceError as exc:
         raise EligibleReconstructionError(str(exc)) from exc
+    source["domain_route"] = "retrieval" if domain == "search" else "terminal"
+    source["input_domain"] = domain
     return run_eligible_reconstruction(
         raw_line=raw_line,
         record=None,
         source_override=source,
+        parser_model=parser_model,
+        parser_model_name=parser_model_name,
         agent=agent,
         verifier_agent=verifier_agent,
         verification_model=verification_model,

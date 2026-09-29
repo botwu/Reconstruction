@@ -129,13 +129,14 @@ class FakeVerifierModel:
 
 def test_calibration_feedback_contains_failed_test_diagnostics(tmp_path: Path) -> None:
     verdict = tmp_path / "verdict.json"
+    message = "首次异常：测试替身连续超时\n" + "调用栈\n" * 600 + "客户端最终异常"
     verdict.write_text(
         json.dumps(
             {
                 "exit_code": 1,
                 "tests": [
                     {"name": "test_missing", "status": "PASS"},
-                    {"name": "test_protective", "status": "FAIL"},
+                    {"name": "test_protective", "status": "FAIL", "message": message},
                 ],
             }
         ),
@@ -153,7 +154,7 @@ def test_calibration_feedback_contains_failed_test_diagnostics(tmp_path: Path) -
     )
     assert diagnostics["trials"][0]["tests"] == [
         {"name": "test_missing", "status": "PASS"},
-        {"name": "test_protective", "status": "FAIL"},
+        {"name": "test_protective", "status": "FAIL", "message": message},
     ]
     assert diagnostics["quality_gate"] == {"ok": False, "errors": ["TASK_FAIL"]}
 

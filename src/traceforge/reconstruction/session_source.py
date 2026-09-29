@@ -14,7 +14,6 @@ from traceforge.screening.task_labels import (
     build_session_tags,
     is_selected_reconstruction_task,
 )
-from traceforge.trajectory.privacy import omit_private_reasoning
 
 SOURCE_SCHEMA = "traceforge.reconstruction-source.v3"
 
@@ -131,7 +130,8 @@ def _tool_timeline(messages: list[dict[str, Any]], spans: list[Any]) -> list[dic
                     pending[call_id] = item
         if _role(message) == "tool":
             call_id = str(message.get("tool_call_id") or "")
-            item = pending.get(call_id)
+            # 已配对返回不可被后续旧 ID 覆盖；无法匹配的返回单独保留。
+            item = pending.pop(call_id, None)
             if item is None:
                 timeline.append({
                     "call_id": call_id,
@@ -260,7 +260,7 @@ def build_reconstruction_source(*, raw_line: str, record: dict[str, Any]) -> dic
     if not isinstance(payload, dict) or not isinstance(payload.get("messages"), list):
         raise ReconstructionSourceError("原始行缺少 messages 数组")
     raw_messages = [item if isinstance(item, dict) else {} for item in payload["messages"]]
-    # span_id 由筛选在完整原始 messages 上计算；先对齐 span，再剥 reasoning 落盘。
+    # span_id 和落盘内容均使用完整原始 messages。
     spans, span_meta = build_spans(raw_messages)
     span_map = _span_records(spans, raw_messages)
     tasks, relations, label_status = _tagged_tasks(record, span_map)
@@ -277,7 +277,6 @@ def build_reconstruction_source(*, raw_line: str, record: dict[str, Any]) -> dic
     selected = [task for task in tasks if is_selected_reconstruction_task(task)]
     selected_span_ids = [sid for task in selected for sid in task["span_ids"]]
     selected_tools = [item for item in timeline if item.get("span_id") is None or item.get("span_id") in set(selected_span_ids)]
-    persisted = omit_private_reasoning(payload)
     return {
         "schema_version": SOURCE_SCHEMA,
         "source_ref": record.get("source_ref"),
@@ -293,13 +292,13 @@ def build_reconstruction_source(*, raw_line: str, record: dict[str, Any]) -> dic
         "tool_timeline": timeline,
         "selected_tool_timeline": selected_tools,
         "selected_span_has_file_ops": timeline_has_file_ops(selected_tools),
-        "raw_session": persisted,
+        "raw_session": payload,
         "session": {
             "message_count": len(raw_messages), "span_count": len(spans),
             "tool_call_count": len(timeline), "selected_tool_call_count": len(selected_tools),
             "pending_tool_call_count": sum(1 for x in timeline if x.get("pending")),
         },
-        "privacy": {"private_thinking_reasoning": "omitted"},
+        "privacy": {"raw_session": "verbatim"},
         "policy": {"compile": False, "evidence_join": False, "unit": "eligible_raw_session", "projection": False},
     }
 
@@ -356,12 +355,7 @@ def load_raw_line(input_path: str | Path, *, line_number: int, line_sha256: str 
 def write_reconstruction_source(source: dict[str, Any], output_dir: str | Path) -> Path:
     root = Path(output_dir); root.mkdir(parents=True, exist_ok=True)
     path = root / "reconstruction_source.json"
-    persisted = omit_private_reasoning(source)
-    if isinstance(persisted, dict):
-        privacy = persisted.setdefault("privacy", {})
-        if isinstance(privacy, dict):
-            privacy["private_thinking_reasoning"] = "omitted"
-    path.write_text(json.dumps(persisted, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(source, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
 
 

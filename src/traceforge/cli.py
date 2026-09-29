@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -181,7 +182,7 @@ def _parser() -> argparse.ArgumentParser:
     read_results.add_argument("--agent-mode", choices=("hermes", "oracle", "nop"))
 
     reconstruct = commands.add_parser(
-        "reconstruct", help="从 ELIGIBLE 原始 session 重建（官方入口：run）"
+        "reconstruct", help="从原始 session 重建（默认入口：raw-run）"
     )
     reconstruct_commands = reconstruct.add_subparsers(dest="reconstruct_command", required=True)
     reconstruct_source = reconstruct_commands.add_parser(
@@ -257,6 +258,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     reconstruct_run.add_argument("--rollout-channel", default=None)
     reconstruct_run.add_argument("--rollout-trials", type=int, default=2)
+    reconstruct_run.add_argument("--manual-response-review", action="store_true",
+                                 help="文件验证通过后采集 rollout；响应内容保留人工核查，不标为完整验收或 SFT")
     reconstruct_run.add_argument("--rollout-timeout-seconds", type=int, default=None)
     reconstruct_run.add_argument("--rollout-max-iterations", type=int, default=None)
     reconstruct_run.add_argument("--verifier-rounds", type=int, default=2)
@@ -266,6 +269,8 @@ def _parser() -> argparse.ArgumentParser:
         help="不读取 screening records，按物理原始 session 逐条进入重建",
     )
     raw_run.add_argument("--input", type=Path, required=True, help="冻结的原始 session JSONL")
+    raw_run.add_argument("--domain", choices=("search", "terminal"), required=True,
+                         help="数据已知的 domain，由调用方指定，不由模型推断")
     raw_run.add_argument("--line-number", type=int, required=True)
     raw_run.add_argument("--line-sha256", default=None, help="冻结清单中的行 SHA256")
     raw_run.add_argument("--source-ref", default=None, help="冻结清单 source_ref")
@@ -281,15 +286,18 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("/mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags"),
     )
-    raw_run.add_argument("--sandbox", action="store_true")
+    raw_run.add_argument("--sandbox", action=argparse.BooleanOptionalAction, default=True,
+                         help="默认在 AGS 执行连续研究者；--no-sandbox 仅用于离线调试")
     raw_run.add_argument("--execute-red", action="store_true")
     raw_run.add_argument("--execute-rollout", action="store_true")
     raw_run.add_argument("--rollout-model", default=None)
     raw_run.add_argument("--rollout-channel", default=None)
     raw_run.add_argument("--rollout-trials", type=int, default=2)
+    raw_run.add_argument("--manual-response-review", action="store_true",
+                         help="文件验证通过后采集 rollout；响应内容保留人工核查，不标为完整验收或 SFT")
     raw_run.add_argument("--rollout-timeout-seconds", type=int, default=None)
     raw_run.add_argument("--rollout-max-iterations", type=int, default=None)
-    raw_run.add_argument("--verifier-rounds", type=int, default=2)
+    raw_run.add_argument("--verifier-rounds", type=int, default=6)
 
     screening = commands.add_parser(
         "screening", help="重建筛选：对原始 session 做规则分流，不编译轨迹"
@@ -364,6 +372,16 @@ def _parser() -> argparse.ArgumentParser:
     multi_round.add_argument("--minimum-passes", type=int, default=2)
 
     return parser
+
+
+def _reconstruction_exit_code(output_path: Path) -> int:
+    manifest = json.loads(output_path.read_text(encoding="utf-8"))
+    print(output_path)
+    if manifest.get("status") in {"READY", "READY_VARIANT", "COMPLETED"}:
+        return 0
+    print(f"重建未完成：{manifest.get('status')}；阶段：{manifest.get('stopped_at') or '见任务回执'}",
+          file=sys.stderr)
+    return 2
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -545,6 +563,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if arguments.command == "reconstruct" and arguments.reconstruct_command == "run":
         try:
+            os.environ["HERMES_REDACT_SECRETS"] = "false"
             container_runtime_factory = None
             if arguments.sandbox:
                 container_runtime_factory = build_ags_runtime_factory(
@@ -553,6 +572,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     config_path=arguments.config,
                 )
             record = load_eligible_record(arguments.records, line_number=arguments.line_number)
+            if arguments.config is None:
+                raise ValueError("会话解析需要 --config 中的 session_parser 模型连接配置")
             raw_line = load_raw_line(
                 arguments.input,
                 line_number=arguments.line_number,
@@ -608,6 +629,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raw_line=raw_line,
                 record=record,
                 agent=reconstruction_agent,
+                parser_model=build_chat_model(
+                    config_path=arguments.config, channel=matrix["session_parser"].channel
+                ),
+                parser_model_name=matrix["session_parser"].model,
                 verifier_agent=verifier_agent,
                 verification_model=verification_model,
                 verification_config=VerificationConfig(
@@ -616,9 +641,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     rollout_model=resolved_rollout,
                     execute_red=arguments.execute_red,
                     execute_rollout=arguments.execute_rollout,
+                    manual_response_review=arguments.manual_response_review,
                     rollout_trials=arguments.rollout_trials,
                     max_rounds=arguments.verifier_rounds,
                     config_path=arguments.config,
+                    hermes_home=arguments.hermes_home,
                     channel=rollout_role.channel,
                     timeout_seconds=rollout_timeout_seconds,
                     rollout_max_iterations=rollout_max_iterations,
@@ -636,22 +663,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         ) as exc:
             print(f"重建失败：{exc}", file=sys.stderr)
             return 2
-        print(output_path)
-        return 0
+        return _reconstruction_exit_code(output_path)
     if arguments.command == "reconstruct" and arguments.reconstruct_command == "raw-run":
         try:
+            os.environ["HERMES_REDACT_SECRETS"] = "false"
             container_runtime_factory = None
-            if arguments.sandbox:
-                container_runtime_factory = build_ags_runtime_factory(
-                    harbor_root=arguments.harbor_root,
-                    output_root=arguments.output,
-                    config_path=arguments.config,
-                )
+            if arguments.config is None:
+                raise ValueError("会话解析需要 --config 中的 session_parser 模型连接配置")
             raw_line = load_raw_line(
                 arguments.input,
                 line_number=arguments.line_number,
                 line_sha256=arguments.line_sha256,
             )
+            if arguments.sandbox and arguments.domain == "terminal":
+                container_runtime_factory = build_ags_runtime_factory(
+                    harbor_root=arguments.harbor_root,
+                    output_root=arguments.output,
+                    config_path=arguments.config,
+                )
             matrix = resolve_role_matrix(
                 arguments.config,
                 overrides={
@@ -699,12 +728,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             output_path = run_raw_session_reconstruction(
                 raw_line=raw_line,
+                domain=arguments.domain,
                 line_number=arguments.line_number,
                 source_ref=(
                     arguments.source_ref
                     or f"{arguments.input}:{arguments.line_number}"
                 ),
                 agent=reconstruction_agent,
+                parser_model=build_chat_model(
+                    config_path=arguments.config, channel=matrix["session_parser"].channel
+                ),
+                parser_model_name=matrix["session_parser"].model,
                 verifier_agent=verifier_agent,
                 verification_model=verification_model,
                 verification_config=VerificationConfig(
@@ -713,9 +747,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     rollout_model=resolved_rollout,
                     execute_red=arguments.execute_red,
                     execute_rollout=arguments.execute_rollout,
+                    manual_response_review=arguments.manual_response_review,
                     rollout_trials=arguments.rollout_trials,
                     max_rounds=arguments.verifier_rounds,
                     config_path=arguments.config,
+                    hermes_home=arguments.hermes_home,
                     channel=rollout_role.channel,
                     timeout_seconds=rollout_timeout_seconds,
                     rollout_max_iterations=rollout_max_iterations,
@@ -733,8 +769,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ) as exc:
             print(f"原始 session 重建失败：{exc}", file=sys.stderr)
             return 2
-        print(output_path)
-        return 0
+        return _reconstruction_exit_code(output_path)
     if arguments.command == "screening" and arguments.screening_command == "run":
         try:
             model = None

@@ -8,6 +8,7 @@ Harbor ``LosslessHermesAgent`` 仍只用于 AGS 解题。重建角色的工具�
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib
 import json
@@ -15,11 +16,12 @@ import os
 import re
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from types import MethodType
+from types import MethodType, SimpleNamespace
 from typing import Any, Protocol
 
 from traceforge.reconstruction.agents.roles import AgentRole
@@ -200,11 +202,12 @@ class HermesNativeRuntime:
                 if self.provider == "anthropic"
                 else pin_openai_channel_env(self._api_key, self.base_url)
             )
-            with auth_context, pin_hermes_timeout_env():
+            with auth_context, pin_hermes_timeout_env(role.request_timeout_seconds) as request_timeout:
                 agent = self.factory(
                     base_url=self.base_url,
                     api_key=self._api_key,
-                    provider=self.provider,
+                    # gpt 等配置通道名不是 Hermes provider；兼容 API 使用其原生 custom 路由。
+                    provider="anthropic" if self.provider == "anthropic" else "custom",
                     api_mode=(
                         "anthropic_messages"
                         if self.provider == "anthropic"
@@ -218,27 +221,35 @@ class HermesNativeRuntime:
                     save_trajectories=False,
                     skip_context_files=True,
                     skip_memory=True,
+                    **({"max_tokens": role.max_output_tokens} if role.max_output_tokens is not None else {}),
                 )
                 if self.provider == "anthropic":
                     apply_anthropic_messages_client(
                         agent, base_url=self.base_url, api_key=self._api_key
                     )
+                compressor = getattr(agent, "context_compressor", None)
+                if compressor is not None:
+                    # 摘要请求失败时保留消息，由原生有界溢出处理返回错误，不能静默丢弃历史。
+                    compressor.abort_on_summary_failure = True
                 # Conversation loop prefers SSE even in quiet mode. Reconstruction
                 # must not depend on apply() seeing `_anthropic_client`.
                 agent._disable_streaming = True
                 # Hermes native dispatch must use the role-scoped proxy.
-                _bind_agent_tools(agent, role=role, session=session)
+                trace_path = Path(output_root) / "private" / "tool_events.jsonl"
+                _bind_agent_tools(agent, role=role, session=session, trace_path=trace_path)
                 with _scoped_hermes_dispatch(agent, role=role):
                     current_instruction = instruction
-                    history: list[dict[str, Any]] | None = None
+                    history = copy.deepcopy(session.conversation.messages) if session.conversation is not None else None
                     for attempt in range(2):
-                        kwargs = {"conversation_history": history} if attempt else {}
+                        kwargs = {"conversation_history": history} if history else {}
                         raw = agent.run_conversation(
                             current_instruction, system_message=role.identity,
                             task_id=role.name, **kwargs,
                         )
                         if not isinstance(raw, dict):
                             raise TypeError("Hermes result must be a dict")
+                        if session.conversation is not None and isinstance(raw.get("messages"), list) and raw["messages"]:
+                            session.conversation.messages = copy.deepcopy(raw["messages"])
                         final_text = str(raw.get("final_response") or "")
                         turn = {
                             "messages": len(raw.get("messages") or []),
@@ -248,6 +259,9 @@ class HermesNativeRuntime:
                             "provider": self.provider,
                             "tool_events": len(session.tool_events),
                             "policy_errors": list(session.policy_errors),
+                            "request_timeout_seconds": request_timeout,
+                            "max_output_tokens": role.max_output_tokens,
+                            "continued_messages": len(history or []),
                         }
                         turns.append(turn)
                         if attempt:
@@ -256,6 +270,9 @@ class HermesNativeRuntime:
                         infra = classify_hermes_failure(final_text)
                         if infra:
                             errors.append(infra)
+                            break
+                        if role.result_schema == "text/plain":
+                            payload = {"answer": final_text} if final_text.strip() else {}
                             break
                         try:
                             payload = parse_json_object(final_text) if final_text.strip() else {}
@@ -280,14 +297,20 @@ class HermesNativeRuntime:
                                 "不要重新执行任务或调用工具，不要删掉出错字段，也不要只返回嵌套片段。"
                                 "返回完整的根 JSON 对象，不加说明或 Markdown。错误位置：" + str(exc)
                             )
-                            # 格式补正只有一次模型调用；不能重新操作环境或重跑角色任务。
-                            agent.max_iterations = 1
-                            _bind_agent_tools(agent, role=replace(role, tools=()), session=session)
+                            # Hermes 仅在 api_calls < max_iterations 时标记正常结束。
+                            # 无工具的格式补正留一个结束余量；外层仍只允许补正一次。
+                            agent.max_iterations = 2
+                            _bind_agent_tools(agent, role=replace(role, tools=()), session=session,
+                                              trace_path=trace_path)
         except Exception as exc:
             errors.append(getattr(exc, "code", None) or type(exc).__name__)
             payload = {}
         finally:
             os.chdir(cwd)
+            if session.conversation is not None:
+                history_path = Path(output_root) / "private" / "conversation.json"
+                history_path.parent.mkdir(parents=True, exist_ok=True)
+                history_path.write_text(json.dumps(session.conversation.messages, ensure_ascii=False) + "\n")
         if not sandboxed:
             after = workspace_tree_hash(workdir)
             unexpected = _unexpected_workspace_changes(session, before, after)
@@ -444,20 +467,22 @@ def pin_anthropic_channel_env(api_key: str) -> Iterator[None]:
 
 
 @contextmanager
-def pin_hermes_timeout_env() -> Iterator[float]:
+def pin_hermes_timeout_env(default_timeout: float = 120.0) -> Iterator[float]:
     """把 Hermes 流式 / 非流式 stale 钉到重建超时，避免 180s × 多次空转。
 
     TokenHub 长时间不吐 token 是模型侧；管线必须在超时后真正关掉
     Anthropic 连接，而不是去重建缺 ``OPENAI_API_KEY`` 的 OpenAI 客户端。
     """
 
-    timeout_seconds = _traceforge_model_timeout_seconds()
+    timeout_seconds = _traceforge_model_timeout_seconds(default_timeout)
     names = (
+        "TRACEFORGE_MODEL_TIMEOUT_SECONDS",
         "HERMES_STREAM_STALE_TIMEOUT",
         "HERMES_API_CALL_STALE_TIMEOUT",
         "HERMES_STREAM_RETRIES",
     )
     saved = {name: os.environ.get(name) for name in names}
+    os.environ["TRACEFORGE_MODEL_TIMEOUT_SECONDS"] = str(timeout_seconds)
     os.environ["HERMES_STREAM_STALE_TIMEOUT"] = str(int(timeout_seconds))
     os.environ["HERMES_API_CALL_STALE_TIMEOUT"] = str(int(timeout_seconds))
     os.environ["HERMES_STREAM_RETRIES"] = "0"
@@ -471,13 +496,13 @@ def pin_hermes_timeout_env() -> Iterator[float]:
                 os.environ[name] = value
 
 
-def _traceforge_model_timeout_seconds() -> float:
+def _traceforge_model_timeout_seconds(default: float = 120.0) -> float:
     """重建角色的模型窗口：默认可覆盖，且夹在 5–600s。"""
 
     try:
-        timeout_seconds = float(os.environ.get("TRACEFORGE_MODEL_TIMEOUT_SECONDS", "120"))
+        timeout_seconds = float(os.environ.get("TRACEFORGE_MODEL_TIMEOUT_SECONDS", default))
     except ValueError:
-        timeout_seconds = 120.0
+        timeout_seconds = default
     return max(5.0, min(timeout_seconds, 600.0))
 
 
@@ -542,6 +567,7 @@ def _bind_tokenhub_anthropic_client(agent: Any, *, base_url: str, api_key: str) 
         "base_url": anthropic_sdk_base_url(base_url),
         "api_key": api_key,
         "timeout": timeout_seconds,
+        "max_retries": 0,
     }
     if http_client is not None:
         kwargs["http_client"] = http_client
@@ -591,6 +617,9 @@ def _install_tokenhub_anthropic_hooks(agent: Any, *, base_url: str, api_key: str
 
     agent._replace_primary_openai_client = replace
     agent._try_refresh_anthropic_client_credentials = lambda: False
+    # 原生恢复会绕过此客户端、再完整重试一轮；只由会话循环负责一次重试。
+    agent._try_recover_primary_transport = lambda *args, **kwargs: False
+    agent._api_max_retries = 2
     original_stale = getattr(agent, "_compute_non_stream_stale_timeout", None)
 
     def compute_stale(api_kwargs: Any) -> float:
@@ -640,14 +669,11 @@ def write_agent_trace(
             "backend": backend,
             "model": model_name,
             "identity_sha256": hashlib.sha256(role.identity.encode("utf-8")).hexdigest(),
-            # 摘要绑定传入 Hermes 的原始字节；落盘副本才脱敏并过滤私有思考。
+            # 摘要绑定传入 Hermes 的原始字节；落盘副本仅过滤私有思考。
             "instruction_sha256": hashlib.sha256(instruction.encode("utf-8")).hexdigest(),
             "instruction": _omit_reasoning_text(instruction),
             "turns": omit_private_reasoning(turns),
-            "tool_events": omit_private_reasoning([
-                _redact_trace(event, max_chars=None if event.get("name") == "run_pytest" else 4096)
-                for event in tool_events or []
-            ]),
+            "tool_events": omit_private_reasoning(tool_events or []),
             "final_text": _omit_reasoning_text(final_text) if isinstance(final_text, str) else final_text,
             "credentials_embedded": False,
             "privacy": {
@@ -732,19 +758,12 @@ def _scoped_hermes_dispatch(agent: Any, *, role: AgentRole) -> Iterator[None]:
 
 
 def is_fatal_tool_result(function_name: str, result: str) -> bool:
-    """True when a tool error should wipe the Hermes JSON payload.
-
-    Rejected PARTIAL / listing / log writes stay tool errors only: the write
-    did not land, the agent may still finish, and candidate gates still apply.
-    """
+    """角色越权仍终止；写入前的内容校验失败允许纠正，最终候选继续完整校验。"""
 
     if not result.startswith("error:"):
         return False
     return (
-        "PROTECTED_FILE_OVERWRITE" in result
-        or "DUPLICATE_CONFLICTING_PATH" in result
-        or "DUPLICATE_PATH" in result
-        or "cannot write files" in result
+        "cannot write files" in result
         or (
             function_name == "write_test"
             and "unsafe path" in result
@@ -752,7 +771,9 @@ def is_fatal_tool_result(function_name: str, result: str) -> bool:
     )
 
 
-def _bind_agent_tools(agent: Any, *, role: AgentRole, session: AgentSession) -> None:
+def _bind_agent_tools(
+    agent: Any, *, role: AgentRole, session: AgentSession, trace_path: Path | None = None,
+) -> None:
     """固定角色工具 schema，并接管 Hermes 的并发调用入口。
 
     并发 worker 调用实例 ``_invoke_tool``；顺序执行器使用模块 dispatcher，
@@ -766,6 +787,12 @@ def _bind_agent_tools(agent: Any, *, role: AgentRole, session: AgentSession) -> 
     # the reconstruction proxy (list_evidence / write_file / write_test).
     agent._skip_mcp_refresh = True
     agent.enabled_toolsets = []
+
+    def record(event: dict[str, Any]) -> None:
+        if trace_path is not None:
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            with trace_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"time": time.time(), **event}, ensure_ascii=False) + "\n")
 
     def invoke(
         _agent: Any,
@@ -783,17 +810,18 @@ def _bind_agent_tools(agent: Any, *, role: AgentRole, session: AgentSession) -> 
             session.policy_errors.append("TOOL_NOT_ALLOWED:" + function_name)
             return message
         with session.lock:
+            record({"status": "STARTED", "name": function_name,
+                    "tool_call_id": tool_call_id, "arguments": function_args})
             result = execute_tool(function_name, function_args, session)
             # 普通工具只保留预览；pytest 历史会被测试重写清空，必须在私有轨迹中
             # 保留完整结果及执行时源码。当前验收仍只读取 session.pytest_runs。
-            safe_args = _redact_trace(function_args)
             event = {
                 "name": function_name,
                 "tool_call_id": tool_call_id,
                 "ok": not result.startswith("error:"),
-                "arguments": safe_args,
+                "arguments": copy.deepcopy(function_args),
                 "result_sha256": hashlib.sha256(result.encode("utf-8")).hexdigest(),
-                "result_preview": _redact_text(result[:512]),
+                "result_preview": result[:512],
             }
             if function_name == "run_pytest":
                 source = session.test_outputs_py
@@ -806,6 +834,7 @@ def _bind_agent_tools(agent: Any, *, role: AgentRole, session: AgentSession) -> 
                     ),
                 })
             session.tool_events.append(event)
+            record({"status": "FINISHED", **event, "result": result})
             fatal = is_fatal_tool_result(function_name, result)
             if fatal:
                 session.policy_errors.append(result.removeprefix("error:").strip())
@@ -815,42 +844,14 @@ def _bind_agent_tools(agent: Any, *, role: AgentRole, session: AgentSession) -> 
     agent._traceforge_tool_names = set(role.tools)
 
 
-def _redact_trace(value: Any, *, max_chars: int | None = 4096) -> Any:
-    """保留工具结构并脱敏；完整 pytest 审计仅取消长度截断，不取消脱敏。"""
-    secret = ("key", "token", "secret", "password", "authorization", "credential")
-    if isinstance(value, dict):
-        return {
-            str(k): (
-                "<redacted>" if any(x in str(k).lower() for x in secret)
-                else _redact_trace(v, max_chars=max_chars)
-            )
-            for k, v in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact_trace(item, max_chars=max_chars) for item in value]
-    if isinstance(value, str):
-        if max_chars is None:
-            return _redact_text(value)
-        if len(value) > max_chars:
-            return value[:max_chars] + "...[truncated]"
-    return value
-
-
-def _redact_text(value: str) -> str:
-    return re.sub(
-        r"(?i)(sk-[A-Za-z0-9_-]{8,}|(?:api[_-]?key|token|password)\s*[=:]\s*)[^\s,;]+",
-        lambda match: "<redacted>" if match.group(0).lower().startswith("sk-") else match.group(1) + "<redacted>",
-        value,
-    )
-
-
 def _omit_reasoning_text(value: str) -> str:
     cleaned = re.sub(r"(?is)<thinking>.*?</thinking>", "", value)
     try:
         parsed = json.loads(cleaned)
     except json.JSONDecodeError:
-        return _redact_text(cleaned)
-    return _redact_text(json.dumps(omit_private_reasoning(parsed), ensure_ascii=False))
+        return cleaned
+    visible = omit_private_reasoning(parsed)
+    return cleaned if visible == parsed else json.dumps(visible, ensure_ascii=False)
 
 
 def _unexpected_workspace_changes(
@@ -901,6 +902,38 @@ def _messages_base_url(url: str) -> str:
     return cleaned
 
 
+def _execute_final_verifier(role: AgentRole, session: AgentSession,
+                            result: AgentResult, output_root: Path) -> None:
+    """候选交付后补齐本轮真实执行，不依赖模型记住重建沙箱内的测试状态。"""
+    if (role.result_schema != "traceforge.verifier-candidate.v1" or not result.completed
+            or result.errors or result.payload.get("status") != "READY"):
+        return
+    groups = [result.payload.get(key) for key in ("missing_capability_tests", "protective_tests")]
+    if any(not isinstance(group, list) or not group
+           or any(not isinstance(name, str) or not name for name in group) for group in groups):
+        return
+    source = session.test_outputs_py or result.payload.get("test_outputs_py")
+    if not isinstance(source, str) or not source.strip():
+        return
+    names = list(dict.fromkeys(name for group in groups for name in group))
+    digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+    executed = {run.get("name") for run in session.pytest_runs
+                if run.get("test_sha256") == digest and run.get("input_unchanged") is True
+                and run.get("status") in {"PASS", "FAIL"}}
+    if set(names) <= executed:
+        return
+    runner = SimpleNamespace()
+    _bind_agent_tools(runner, role=role, session=session,
+                      trace_path=Path(output_root) / "private/tool_events.jsonl")
+    written = runner._invoke_tool("write_test", {"content": source}, role.name,
+                                  tool_call_id="pipeline-final-write-test")
+    if written.startswith("error:"):
+        result.errors.append(written)
+        return
+    runner._invoke_tool("run_pytest", {"names": names}, role.name,
+                        tool_call_id="pipeline-final-run-pytest")
+
+
 class SandboxedAgentRuntime:
     """Hermes 仍在宿主机推理；文件和 pytest 打到注入的 ContainerRuntime。"""
 
@@ -934,7 +967,7 @@ class SandboxedAgentRuntime:
         from traceforge.reconstruction.agents.sandbox import prepare_role_sandbox, run_coro
 
         runtime = None
-        started = False
+        result: AgentResult | None = None
         try:
             try:
                 runtime = self.runtime_factory()
@@ -949,13 +982,7 @@ class SandboxedAgentRuntime:
             except Exception as exc:
                 init_error = f"SANDBOX_INIT:{type(exc).__name__}"
                 session.policy_errors.append(init_error)
-                if runtime is not None:
-                    try:
-                        run_coro(runtime.stop(delete=True))
-                        session.sandbox_stopped = True
-                    except Exception as cleanup_exc:
-                        session.sandbox_cleanup_error = f"{type(cleanup_exc).__name__}:{cleanup_exc}"
-                return AgentResult(
+                result = AgentResult(
                     role=role.name,
                     backend=self.backend,
                     payload={},
@@ -963,8 +990,10 @@ class SandboxedAgentRuntime:
                     final_text=None,
                     completed=False,
                 )
-            started = True
+                return result
             try:
+                # 新沙箱不能继承上一轮执行回执；测试正文可复用，仍需实际重跑。
+                session.pytest_runs.clear()
                 result = self.inner.run(
                     role=role,
                     instruction=instruction,
@@ -972,6 +1001,7 @@ class SandboxedAgentRuntime:
                     output_root=output_root,
                 )
                 result.backend = self.backend
+                _execute_final_verifier(role, session, result, Path(output_root))
             except Exception as exc:
                 result = AgentResult(
                     role=role.name,
@@ -983,17 +1013,15 @@ class SandboxedAgentRuntime:
                 )
             return result
         finally:
-            if started:
+            if runtime is not None:
                 try:
                     run_coro(runtime.stop(delete=True))
                     session.sandbox_stopped = True
                 except Exception as exc:
                     session.sandbox_cleanup_error = f"{type(exc).__name__}:{exc}"
                     session.policy_errors.append(f"CONTAINER_CLEANUP_ERROR:{type(exc).__name__}")
-                    # The result is returned before finally runs; mutate its
-                    # error list so callers cannot treat an unclean sandbox as
-                    # a successful agent turn.
-                    if "result" in locals():
+                    # 准备中断也要清理；已产生的返回值必须携带清理失败。
+                    if result is not None:
                         result.errors.append("CONTAINER_CLEANUP_ERROR:" + type(exc).__name__)
                         result.completed = False
 

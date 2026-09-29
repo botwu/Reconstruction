@@ -1,7 +1,7 @@
 """重建角色 Agent 的身份与工具边界。
 
 一次 Chat Completions 不是 Agent。这里每个角色有固定身份、工具集、
-轮次上限和结果契约；编排器只负责先后顺序和 REVIEW 即停。
+轮次上限和结果契约；编排器负责阶段顺序，并按独立诊断决定 REVIEW 的反馈方向。
 """
 
 from __future__ import annotations
@@ -19,12 +19,13 @@ class AgentRole:
     result_schema: str
     temperature: float
     allow_write: bool
+    request_timeout_seconds: float = 120.0
+    max_output_tokens: int | None = None
 
 
 TERMINAL_TASK_START_RESPONSIBILITIES = (
     "\nTerminal 任务初态的共同职责：\n"
-    "FILE/NON_FILE 是验收产物类型，不能据此把功能实现任务解释成只读源码审查。"
-    "任务所需能力由原用户目标决定；FILE 绑定和拟修改文件列表不等于环境依赖的全部范围。\n"
+    "任务所需能力由原用户目标决定；初态输入和拟修改文件列表不等于环境依赖的全部范围。\n"
     "Completion 负责补齐这些能力所需的可信初态，包括必要的项目邻域源码、配置和数据；"
     "Sufficiency 负责独立判断当前候选是否提供了这些初态条件。"
     "可依据证据修复的采集损坏应在重建阶段处理，不能把 solver 将来顺带修复它作为环境充分的依据。\n"
@@ -33,7 +34,7 @@ TERMINAL_TASK_START_RESPONSIBILITIES = (
     "明确可再生成的构建产物无需预置；第三方依赖需要实际可用或有经过验证的准备途径。"
     "依赖声明不是安装证据；缺失或受损的项目源码不能仅因理论上可重写就当作可再生产物。\n"
     "判断缺口是否无关，应说明它与任务实际操作、加载和验收路径的关系，必要时用探针验证。"
-    "不在 FILE 修改列表中、不是目标功能、solver 可以修复，都不能单独证明缺口无关。"
+    "不在拟修改列表中、不是目标功能、solver 可以修复，都不能单独证明缺口无关。"
     "读取正文或检查符号只能证明相应的可读性，不能替代任务确实需要的加载或运行证据。\n"
     "充分的初态可以零写入；无法有依据判断或修复的部分应明确报告不确定性，交给现有检查与反馈流程。"
     "候选 READY 不等于环境已可执行，也不等于目标任务已完成。\n"
@@ -117,6 +118,8 @@ _COMPLETION_TOOLS = (
     "read_file",
     "list_evidence",
     "read_evidence",
+    "read_session_message",
+    "read_session_context",
     "write_file",
     "web_search",
 )
@@ -128,9 +131,9 @@ COMPLETION_REPLAYED_ROLE = AgentRole(
         "Identity: reconstruct the task-start environment so the task is "
         "solvable, but NOT solved. The task request describes a future change; "
         "never implement that change or add its output.\n"
-        "Original Replay evidence is immutable. Candidates may repair PARTIAL capture "
+        "Original Replay evidence is immutable. Candidates may repair COMPLETE/PARTIAL capture "
         "damage only through declared capture_repairs. "
-        "COMPLETE files are read-only. PARTIAL excerpts may be enriched, or "
+        "COMPLETE permits only the declared replacements; PARTIAL excerpts may be enriched, or "
         "locally corrected using explicit capture_repairs, only as pre-task context "
         "grounded in q and neighborhood "
         "evidence. Add only missing pre-existing neighborhood files needed "
@@ -210,13 +213,12 @@ SUFFICIENCY_ROLE = AgentRole(
         "a solver to implement the requested task. The requested capability is "
         "expected to be absent in this pre-task workspace; its absence is not "
         "a sufficiency failure.\n"
-        "FILE initial_required_paths must exist and must not be an all-stub tree; "
+        "initial_required_paths must exist and must not be an all-stub tree; "
         "output_paths are post-execution targets. Judge whether the solver can start "
         "from the available "
         "interfaces and context, not whether the acceptance obligations already "
-        "pass. PARTIAL excerpts suffice when they expose the interfaces and "
-        "structures needed to implement the task; require a missing file only "
-        "when its absence prevents the task's required operations. Inspect "
+        "pass. Required source and dependencies must support the task's actual "
+        "operations. Captured syntax damage is not the requested feature. Inspect "
         "files with tools. Do not modify or solve the workspace. When the "
         "workspace is sufficient, use the read-only environment probe for load, "
         "repeatable reset, and dependency checks. A task conflict requires a "

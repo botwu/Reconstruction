@@ -33,6 +33,8 @@ def test_role_matrix_resolves_public_metadata_without_keys(tmp_path: Path) -> No
         "model": "gpt-5",
     }
     assert matrix["rollout"].model == "anthropic/claude-opus-4-8"
+    assert matrix["session_parser"].channel == "deepseek"
+    assert matrix["session_parser"].model == "bailian/deepseek-v4-flash-0731"
     assert "key" not in json.dumps({name: value.public() for name, value in matrix.items()})
 
 

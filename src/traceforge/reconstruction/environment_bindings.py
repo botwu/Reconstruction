@@ -632,6 +632,29 @@ def file_output_paths(task: dict[str, Any] | None) -> list[str]:
     return paths
 
 
+def task_start_message_index(task: dict[str, Any]) -> int | None:
+    source = task.get("source_task") or task
+    indices = (source.get("evidence_refs") or {}).get("message_indices") or source.get("message_indices") or []
+    return min((i for i in indices if type(i) is int and i >= 0), default=None)
+
+
+def workspace_task_context(task: dict[str, Any]) -> dict[str, Any]:
+    """初态 Agent 接收用户语义和输入输出路径，验收后端标签仅供编排器使用。"""
+    context = {key: task[key] for key in (
+        "task_id", "task_instruction", "core_objective", "source_task", "evidence_refs",
+        "success_criteria", "mandatory_constraints", "prohibitions", "specified_output_format",
+        "has_examples",
+    ) if key in task}
+    context["acceptance_obligations"] = [
+        {key: item[key] for key in ("id", "text", "evidence_ref_ids") if key in item}
+        for item in task.get("acceptance_obligations") or [] if isinstance(item, dict)
+    ]
+    context["initial_required_paths"] = file_required_paths(task)
+    context["output_paths"] = file_output_paths(task)
+    context["task_start_message_index"] = task_start_message_index(task)
+    return context
+
+
 def file_obligation_ids(task: dict[str, Any] | None) -> list[str]:
     bindings = environment_bindings(task)
     obligations = [

@@ -43,7 +43,7 @@ def _run(source: Path, output: Path, *extra: str) -> subprocess.CompletedProcess
     )
 
 
-def test_inventory_is_bounded_redacted_and_manifest_grounded(tmp_path: Path) -> None:
+def test_inventory_is_bounded_verbatim_and_manifest_grounded(tmp_path: Path) -> None:
     first = _record("请修复 src/app.py，token=SECRET_VALUE_12345678")
     second = _record("请查看 src/other.py", command="git status --short")
     source = tmp_path / "selected.jsonl"
@@ -86,14 +86,13 @@ def test_inventory_is_bounded_redacted_and_manifest_grounded(tmp_path: Path) -> 
     assert first_row["preflight"]["eligible"] is True
     assert first_row["source"]["manifest_hash_match"] is True
     assert "src/app.py" in first_row["path_tokens"]
-    assert "SECRET_VALUE_12345678" not in first_row["user_summary"]
-    assert "<redacted>" in first_row["user_summary"]
+    assert first_row["user_summary"] == "请修复 src/app.py，token=SECRET_VALUE_12345678"
     second_row = next(row for row in rows if row["source"]["source_line"] == 78)
     assert "NO_EXPLICIT_FILE_ACTION" in second_row["preflight"]["reason_codes"]
     assert source.read_bytes() == first + second
 
 
-def test_inventory_redacts_colon_and_bearer_credentials(tmp_path: Path) -> None:
+def test_inventory_preserves_colon_and_bearer_text(tmp_path: Path) -> None:
     source = tmp_path / "selected.jsonl"
     source.write_bytes(
         _record(
@@ -105,12 +104,10 @@ def test_inventory_redacts_colon_and_bearer_credentials(tmp_path: Path) -> None:
     result = _run(source, output)
     assert result.returncode == 0, result.stderr
     summary = json.loads(output.read_text(encoding="utf-8"))["candidates"][0]["user_summary"]
-    assert "COLON_SECRET_12345678" not in summary
-    assert "abcdefghijklmnop" not in summary
-    assert "token: <redacted>" in summary
-    assert "Bearer <redacted>" in summary
-    assert "AUTH_SECRET_12345678" not in summary
-    assert "Authorization: Bearer <redacted>" in summary
+    assert summary == (
+        "请修复 src/app.py，token: COLON_SECRET_12345678 "
+        "Bearer abcdefghijklmnop Authorization: Bearer AUTH_SECRET_12345678"
+    )
 
 
 def test_inventory_refuses_overwrite(tmp_path: Path) -> None:

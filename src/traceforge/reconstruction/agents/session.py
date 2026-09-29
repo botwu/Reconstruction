@@ -5,17 +5,29 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from traceforge.reconstruction.capture_repair import CAPTURE_REPAIRS_SCHEMA, capture_repair_error
+from traceforge.reconstruction.capture_repair import (
+    CAPTURE_REPAIRS_SCHEMA,
+    apply_capture_repairs,
+    capture_repair_error,
+)
 
 MAX_TOOL_RESULT_CHARS = 8000
 
 
 @dataclass
+class AgentConversation:
+    """由调用方显式共享的研究者会话；独立求解和审查不传此对象。"""
+    messages: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
 class AgentSession:
+    conversation: AgentConversation | None = None
     workspace: Path | None = None
     user_texts: list[str] = field(default_factory=list)
     user_records: list[dict[str, Any]] = field(default_factory=list)
@@ -26,11 +38,15 @@ class AgentSession:
     replay_files: dict[str, str] = field(default_factory=dict)
     protected_paths: set[str] = field(default_factory=set)
     partial_files: dict[str, str] = field(default_factory=dict)
+    complete_files: dict[str, str] = field(default_factory=dict)
     prior_capture_repairs: dict[str, list[dict[str, str]]] = field(default_factory=dict)
     listing_names: set[str] = field(default_factory=set)
     body_paths: set[str] = field(default_factory=set)
     required_paths: set[str] = field(default_factory=set)
     web_search_handler: Any = None
+    web_open_handler: Any = None
+    candidate_check_handler: Callable[..., dict[str, Any]] | None = None
+    repair_feedback: dict[str, Any] | None = None
     allow_write: bool = False
     allow_tests: bool = False
     allow_exec: bool = False
@@ -190,12 +206,12 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
         ),
         "list_evidence": ("List the evidence available to this session.", {}, []),
         "read_evidence": (
-            "Read an evidence record as JSON text; paginate with offset and limit.",
-            {"id": text, **page},
+            "读取原始证据；可指定 path 只读取解析器已定位的该文件观察，正文不改写。支持 offset/limit 分页。",
+            {"id": text, "path": text, **page},
             ["id"],
         ),
         "write_file": (
-            "Write evidence-backed initial context. COMPLETE files and paths outside workspace are forbidden.",
+            "写入有证据支持的初态。COMPLETE 仅允许显式 capture_repairs；不得覆盖 UNKNOWN、ABSENT 或工作区外路径。",
             {
                 "path": text,
                 "content": text,
@@ -204,11 +220,41 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
             },
             ["path", "content", "evidence_ref_ids"],
         ),
+        "repair_capture": (
+            "修复已有 COMPLETE/PARTIAL 采集文件，无需重复提交完整正文。"
+            "每次只提供新增或更新的 capture_repairs；old_text 始终定位最初捕获，"
+            "相同 old_text 更新已有声明，其余成功修改自动保留。"
+            "撤销某项修改时将其 new_text 设回 old_text。"
+            "PARTIAL 可用 append_content 提交完整缺失尾部；省略时保留已有尾部。"
+            "仍校验证据、唯一匹配和写入权限，不恢复 UNKNOWN/ABSENT，不实现目标功能。",
+            {"path": text, "capture_repairs": CAPTURE_REPAIRS_SCHEMA, "append_content": text,
+             "evidence_ref_ids": {"type": "array", "items": text, "minItems": 1}},
+            ["path", "capture_repairs", "evidence_ref_ids"],
+        ),
+        "restore_observed_file": (
+            "从选定的初态全文观察直接恢复文件；分段观察按原行号拼接，重叠必须一致且从 1 连续。"
+            "不解码、不猜测缺失行、不应用目标补丁；覆盖当前候选前先读取来源。",
+            {"path": text, "evidence_ref_ids": {"type": "array", "items": text, "minItems": 1}},
+            ["path", "evidence_ref_ids"],
+        ),
+        "edit_candidate_file": (
+            "对当前候选执行文本替换，自动记录相对最初捕获的修复声明。"
+            "默认 old_text 必须唯一；replace_all=true 明确替换全部匹配。"
+            "只恢复必要初态，不能实现用户目标；原因和原始证据必填。",
+            {"path": text, "old_text": text, "new_text": text, "reason": text,
+             "replace_all": {"type": "boolean"},
+             "evidence_ref_ids": {"type": "array", "items": text, "minItems": 1}},
+            ["path", "old_text", "new_text", "reason", "evidence_ref_ids"],
+        ),
         "web_search": (
-            "Optional. Search typical project layout, dependency names, and common filenames. "
-            "Do not write retrieved source into workspace paths.",
+            "查询公开资料。按当前角色要求使用，检索片段不等于来源全文。",
             {"query": text},
             ["query"],
+        ),
+        "web_open": (
+            "读取公开来源正文；使用 offset/limit 继续读取同一页面快照。",
+            {"url": text, **page},
+            ["url"],
         ),
         "write_test": (
             "Write the hidden pytest file test_outputs.py. Never write this into the public workspace.",
@@ -219,6 +265,16 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
             "Run named pytest functions in the sandbox only. Never execute generated tests on the host.",
             {"names": {"type": "array", "items": text, "minItems": 1}},
             ["names"],
+        ),
+        "run_candidate": (
+            "冻结当前候选，在独立 AGS 只读环境中准备依赖并运行 Python 检查。"
+            "返回实际退出码、日志及候选哈希；修改源码后需要重新检查。"
+            "用 assert 或异常表达失败；临时文件写入 TRACEFORGE_PROBE_SCRATCH。"
+            "purpose 可为 load、dependency、reset、task_conflict，不实现用户目标功能。",
+            {"python_code": text, "purpose": {"type": "string", "enum":
+                ["load", "reset", "dependency", "task_conflict"]},
+             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60}},
+            ["python_code", "purpose", "timeout_seconds"],
         ),
         "run_environment_probe": (
             "在只读工作区的沙盒中运行环境探针；reset 和 task_conflict 在独立临时目录重复运行。"
@@ -309,6 +365,14 @@ def execute_tool(name: str, arguments: Any, session: AgentSession) -> str:
         ref = str(args.get("id") or args.get("evidence_ref_id") or "")
         for item in session.evidence:
             if str(item.get("evidence_ref_id")) == ref:
+                if args.get("path"):
+                    observations = [
+                        op for op in (item.get("session_parse") or {}).get("file_ops", [])
+                        if op.get("kind") == "read" and op.get("path") == args["path"]
+                    ]
+                    if not observations:
+                        return "error: no parsed file observation for this path; read the full record"
+                    return _window(_dump({"evidence_ref_id": ref, "observations": observations}), args)
                 return _window(_dump(item), args)
         return "error: unknown evidence_ref_id"
     if name == "list_dir":
@@ -322,12 +386,32 @@ def execute_tool(name: str, arguments: Any, session: AgentSession) -> str:
         return "error: unsafe path" if path is None else _read_file(session, path, args)
     if name == "write_file":
         return _write_file(session, args)
+    if name == "repair_capture":
+        return _repair_capture(session, args)
+    if name == "restore_observed_file":
+        return _restore_observed_file(session, args)
+    if name == "edit_candidate_file":
+        return _edit_candidate_file(session, args)
     if name == "web_search":
         return _web_search(session, args)
+    if name == "web_open":
+        if not callable(session.web_open_handler):
+            return _dump({"success": False, "error": "页面读取后端未配置"})
+        return _dump(session.web_open_handler(
+            str(args.get("url") or ""), offset=args.get("offset", 0),
+            limit=args.get("limit", MAX_TOOL_RESULT_CHARS),
+        ))
     if name == "write_test":
         return _write_test(session, args)
     if name == "run_pytest":
         return _run_pytest(session, args)
+    if name == "run_candidate":
+        if session.candidate_check_handler is None:
+            return "error: 当前会话没有配置候选执行后端"
+        return _dump(session.candidate_check_handler(
+            python_code=args.get("python_code"), purpose=args.get("purpose"),
+            timeout_seconds=args.get("timeout_seconds", 30),
+        ))
     if name == "run_environment_probe":
         from traceforge.reconstruction.environment_probe import (
             environment_probe_summary,
@@ -424,13 +508,108 @@ def _run_pytest(session: AgentSession, args: dict[str, Any]) -> str:
     return _dump(runs)
 
 
+def _write_candidate_edit(session: AgentSession, args: dict[str, Any], content: str, reason: str) -> str:
+    """当前候选编辑只在这里转为既有来源契约，原始 Replay 永不改变。"""
+    path = workspace_relpath(session, str(args.get("path") or ""))
+    original = session.complete_files.get(path, session.partial_files.get(path))
+    if not original:
+        return "error: 只能编辑已捕获文件；新文件请使用 write_file"
+    previous = next((item for item in reversed(session.writes) if item["path"] == path), {})
+    refs = args.get("evidence_ref_ids")
+    if isinstance(refs, list) and all(isinstance(ref, str) for ref in refs):
+        refs = list(dict.fromkeys([*previous.get("evidence_ref_ids", []), *refs]))
+    return _write_file(session, {**args, "content": content, "evidence_ref_ids": refs,
+                                "capture_repairs": [{"old_text": original, "new_text": content,
+                                                     "reason": reason}]})
+
+
+def _restore_observed_file(session: AgentSession, args: dict[str, Any]) -> str:
+    refs = args.get("evidence_ref_ids")
+    if not isinstance(refs, list) or not refs or any(not isinstance(ref, str) for ref in refs):
+        return "error: evidence_ref_ids 必须是非空字符串数组"
+    path = workspace_relpath(session, str(args.get("path") or ""))
+    evidence = {str(item.get("evidence_ref_id")): item for item in session.evidence}
+    lines: dict[int, str] = {}
+    for ref in refs:
+        observations = [op for op in (evidence.get(ref, {}).get("session_parse") or {}).get("file_ops", [])
+                        if op.get("kind") == "read" and op.get("path") == path]
+        if not observations:
+            return f"error: 没有可用的初态文件观察：{ref}:{path}"
+        for observation in observations:
+            numbers, contents = observation.get("line_numbers"), observation.get("line_contents")
+            if observation.get("partial") is False and isinstance(observation.get("content"), str):
+                contents = observation["content"].splitlines()
+                numbers = list(range(1, len(contents) + 1))
+            if (not isinstance(numbers, list) or not numbers or not isinstance(contents, list)
+                    or len(numbers) != len(contents)):
+                return f"error: 观察没有可靠的行号与正文：{ref}:{path}"
+            for number, content in zip(numbers, contents):
+                if type(number) is not int or number < 1 or not isinstance(content, str):
+                    return f"error: 观察行号或正文无效：{ref}:{path}"
+                if number in lines and lines[number] != content:
+                    return f"error: 选定观察在第 {number} 行冲突，请比较来源后重新选择"
+                lines[number] = content
+    if len(lines) != max(lines):
+        return "error: 选定观察存在缺失行，必须从第 1 行连续覆盖"
+    content = "\n".join(lines[number] for number in range(1, max(lines) + 1)) + "\n"
+    return _write_candidate_edit(session, args, content, "依据选定初态观察按行号恢复：" + ", ".join(refs))
+
+
+def _edit_candidate_file(session: AgentSession, args: dict[str, Any]) -> str:
+    path = workspace_relpath(session, str(args.get("path") or ""))
+    previous = next((item for item in reversed(session.writes) if item["path"] == path), {})
+    content = previous.get("content", session.replay_files.get(path))
+    old, new, reason = args.get("old_text"), args.get("new_text"), args.get("reason")
+    if not isinstance(content, str) or not isinstance(old, str) or not old or not isinstance(new, str):
+        return "error: 需要已有候选和非空 old_text，以及字符串 new_text"
+    if not isinstance(reason, str) or not reason.strip():
+        return "error: 必须说明该改动如何恢复原任务初态"
+    # read_file 与既有采集修复使用 LF；原始 Replay 保留原换行。
+    content, old, new = (value.replace("\r\n", "\n") for value in (content, old, new))
+    count = content.count(old)
+    if not count or (count != 1 and args.get("replace_all") is not True):
+        return f"error: 当前候选中 old_text 匹配 {count} 次；请读取后唯一定位或明确 replace_all"
+    return _write_candidate_edit(session, args, content.replace(old, new), reason)
+
+
+def _repair_capture(session: AgentSession, args: dict[str, Any]) -> str:
+    """累计保存已批准修改；后续编辑不能因漏抄声明而撤销先前修复。"""
+    path = workspace_relpath(session, str(args.get("path") or ""))
+    original = session.complete_files.get(path, session.partial_files.get(path))
+    previous = next((item for item in reversed(session.writes) if item["path"] == path), {})
+    prior = previous.get("capture_repairs", session.prior_capture_repairs.get(path, []))
+    updates = args.get("capture_repairs")
+    try:
+        apply_capture_repairs(original, updates, diagnostics=True)
+        old_body = apply_capture_repairs(original, prior, diagnostics=True)
+        repairs = {item["old_text"].replace("\r\n", "\n"): item for item in prior}
+        repairs.update({item["old_text"].replace("\r\n", "\n"): item for item in updates})
+        merged = list(repairs.values())
+        new_body = apply_capture_repairs(original, merged, diagnostics=True)
+    except ValueError as exc:
+        return f"error: {exc}:{path}"
+    current = previous.get("content", session.replay_files.get(path, original))
+    current = current.replace("\r\n", "\n")
+    if not old_body or current.count(old_body) != 1:
+        return f"error: 当前候选无法唯一定位已声明修复的原片段，请先读取候选：{path}"
+    prefix, _, suffix = current.partition(old_body)
+    suffix = args.get("append_content", suffix)
+    if not isinstance(suffix, str):
+        return "error: append_content 必须为字符串"
+    refs = args.get("evidence_ref_ids")
+    if isinstance(refs, list) and refs and all(isinstance(ref, str) for ref in refs):
+        refs = list(dict.fromkeys([*previous.get("evidence_ref_ids", []), *refs]))
+    return _write_file(session, {**args, "content": prefix + new_body + suffix,
+                                "capture_repairs": merged, "evidence_ref_ids": refs})
+
+
 def _write_file(session: AgentSession, args: dict[str, Any]) -> str:
     if not session.allow_write:
         return "error: this agent cannot write files"
     path = workspace_relpath(session, str(args.get("path") or ""))
     if path is None or path == "":
         return "error: unsafe path"
-    if path in session.protected_paths:
+    if path in session.protected_paths and path not in session.complete_files:
         return f"error: PROTECTED_FILE_OVERWRITE:{path}"
     from traceforge.reconstruction.completion_holes import is_runtime_log, listing_stub_error
 
@@ -450,18 +629,16 @@ def _write_file(session: AgentSession, args: dict[str, Any]) -> str:
     if stub_error:
         return f"error: {stub_error}"
     capture_repairs = args.get("capture_repairs", session.prior_capture_repairs.get(path, []))
-    repair_error = capture_repair_error(session.partial_files.get(path), content, capture_repairs)
+    repair_error = capture_repair_error(
+        session.complete_files.get(path, session.partial_files.get(path)), content, capture_repairs,
+        complete=path in session.complete_files, diagnostics=True,
+    )
     if repair_error:
         return f"error: {repair_error}:{path}"
     repair_metadata = (
         {"capture_repairs": [dict(item) for item in capture_repairs]}
         if "capture_repairs" in args or path in session.prior_capture_repairs else {}
     )
-    previous = next((item for item in reversed(session.writes) if item.get("path") == path), None)
-    if previous is not None:
-        if previous.get("content") != content:
-            return f"error: DUPLICATE_CONFLICTING_PATH:{path}"
-        return f"error: DUPLICATE_PATH:{path}"
     refs = args.get("evidence_ref_ids")
     if (
         not isinstance(refs, list)
@@ -496,7 +673,9 @@ def _write_file(session: AgentSession, args: dict[str, Any]) -> str:
             return "error: unsafe path"
         # A symlink alias must not bypass the COMPLETE-file guard.
         canonical = resolved.relative_to(root).as_posix()
-        if canonical in session.protected_paths:
+        if canonical in session.protected_paths and not (
+            canonical == path and path in session.complete_files
+        ):
             return f"error: PROTECTED_FILE_OVERWRITE:{canonical}"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")

@@ -24,7 +24,6 @@ from traceforge.harbor_ags.rollout import (
     build_rollout_plan,
     execute_rollout_plan,
     publish_rollout_bundle,
-    redact_harbor_output,
 )
 from traceforge.reconstruction.environment_bindings import non_file_obligation_ids
 from traceforge.reconstruction.model_gateway import ChatModel, ModelGatewayError
@@ -51,9 +50,11 @@ class VerificationConfig:
     execute: bool = False
     execute_red: bool = False
     execute_rollout: bool = False
+    manual_response_review: bool = False
     rollout_trials: int = 2
     max_rounds: int = 2
     config_path: Path | None = None
+    hermes_home: Path | None = None
     channel: str = "claude"
     timeout_seconds: int = 900
     rollout_max_iterations: int = 60
@@ -216,9 +217,11 @@ def _write_verification(
     blocking = unresolved - (pending & response_ready)
     if blocking:
         result["status"] = "REVIEW"
+        manual = set(result.get("manual_response_review", {}).get("obligation_ids", []))
         result["errors"] = list(dict.fromkeys([
-            *(result.get("errors") or []), "UNVERIFIED_OBLIGATIONS",
-            *(f"RESPONSE_VERIFIER_MISSING:{item}" for item in sorted(blocking & pending)),
+            *(result.get("errors") or []),
+            "MANUAL_RESPONSE_REVIEW_REQUIRED" if blocking <= manual else "UNVERIFIED_OBLIGATIONS",
+            *(f"RESPONSE_VERIFIER_MISSING:{item}" for item in sorted((blocking & pending) - manual)),
         ]))
     _write(root / "verification.json", result)
     write_execution_manifest(root, result, config)
@@ -367,12 +370,12 @@ class HarborCalibrationExecutor:
             except OSError:
                 text = ""
             if text:
-                diagnostic["oracle_log_tail"] = redact_harbor_output(text[-2000:])
+                diagnostic["oracle_log_tail"] = text[-2000:]
         return diagnostic
 
     @classmethod
     def _failure_diagnostics(cls, run: dict[str, Any]) -> dict[str, Any]:
-        """为下一轮 Verifier 提供最小的失败证据，而不是只给 job 标签。"""
+        """为下一轮 Verifier 保留完整测试错误，避免丢失首次异常。"""
 
         diagnostics: dict[str, Any] = {}
         if run.get("error"):
@@ -400,7 +403,7 @@ class HarborCalibrationExecutor:
                             continue
                         test_row = {"name": item.get("name"), "status": item.get("status")}
                         if isinstance(item.get("message"), str) and item["message"]:
-                            test_row["message"] = redact_harbor_output(item["message"][:2000])
+                            test_row["message"] = item["message"]
                         row["tests"].append(test_row)
                 row["exit_code"] = verdict.get("exit_code") if isinstance(verdict, dict) else None
             rows.append(row)
@@ -548,6 +551,8 @@ class HarborCalibrationExecutor:
         _write(self.root / f"{prefix}.json", record)
         failed_case_ids = list(report.failed_case_ids)
         feedback_payload = {
+            "calibrated_candidate_id": candidate.candidate_id,
+            "calibrated_test_sha256": expected_hash,
             "initial_red": initial,
             "failed_cases": failed_case_ids,
             "case_diagnostics": {
@@ -660,6 +665,10 @@ def run_reconstruction_verification(
         "rollout": "NOT_RUN",
         "unverified_obligations": [],
     }
+    if config.manual_response_review:
+        result["manual_response_review"] = {
+            "status": "NOT_ASSESSED", "obligation_ids": non_file_obligation_ids(task),
+        }
     try:
         candidate = None
         audit: dict[str, Any] = {}
@@ -693,6 +702,7 @@ def run_reconstruction_verification(
                     source=source,
                     feedback=feedback,
                     round_number=round_number,
+                    manual_response_review=config.manual_response_review,
                 )
                 audit = recovered
                 task = _adopt_reviewed_response_contract(task, recovered, generated, result)
@@ -711,7 +721,7 @@ def run_reconstruction_verification(
                     errors = list(recovered.get("errors") or ["VERIFIER_REVIEW"])
                     iterations.append({"round": round_number, "status": "REVIEW", "errors": errors})
                     prior_feedback = recovered.get("feedback")
-                    feedback = dict(prior_feedback) if isinstance(prior_feedback, dict) else {}
+                    feedback = {**(feedback or {}), **(prior_feedback if isinstance(prior_feedback, dict) else {})}
                     feedback["generation_errors"] = errors
                     continue
                 outcome = executor.run(generated)
@@ -819,6 +829,7 @@ def run_reconstruction_verification(
                 agent=agent,
                 output_root=root / "agent" / "round-01",
                 source=source,
+                manual_response_review=config.manual_response_review,
             )
             audit = recovered
             task = _adopt_reviewed_response_contract(task, recovered, candidate, result)

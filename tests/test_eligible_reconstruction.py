@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +24,16 @@ from traceforge.reconstruction.verification import VerificationConfig
 from traceforge.reconstruction.workspace_completion import run_workspace_completion
 from traceforge.reconstruction.workspace_sufficiency import run_workspace_sufficiency
 from traceforge.screening.observable import build_spans
+
+
+def test_known_search_domain_cannot_be_overridden_by_task_or_files() -> None:
+    route = execution_support_route(
+        task={"domain_route": "terminal"}, source={"domain_route": "retrieval"},
+        replay=SimpleNamespace(files=[SimpleNamespace(path="snippet.py")]),
+    )
+    assert route["domain_route"] == "retrieval"
+    assert route["route"] == "RETRIEVAL_UNSUPPORTED"
+    assert route["allow_completion"] is False
 
 
 def _session() -> dict[str, object]:
@@ -724,10 +735,20 @@ def test_cli_reconstruct_run_writes_manifest(
         lambda **kwargs: _sandboxed_agent(tmp_path),
     )
     monkeypatch.setattr("traceforge.cli.resolve_model_name", lambda *args, **kwargs: "claude-opus-4-6")
-    # Keep this CLI contract test offline.  Without an explicit verifier model,
-    # the reconstruction must fail closed after producing the task/environment
-    # artifacts instead of attempting an external model request.
-    monkeypatch.setattr("traceforge.cli.build_chat_model", lambda **kwargs: None)
+    # 走真实解析与回放接口；仅替换外部模型响应，验证 DeepSeek 角色确实进入主流程。
+    from test_session_parser import _Model, _event, _read
+
+    operations = [_read("foo.py"), _read("helper.py")]
+    for operation in operations:
+        operation["content_ref"].update(block_index=0, json_path=[])
+    parser = _Model({
+        "domain": "terminal", "workspace_root": None, "unresolved": [],
+        "events": [_event(i, [operation]) for i, operation in enumerate(operations)],
+    })
+    monkeypatch.setattr(
+        "traceforge.cli.build_chat_model",
+        lambda **kwargs: parser if kwargs["channel"] == "deepseek" else None,
+    )
     output = tmp_path / "out"
     assert (
         main(
@@ -748,22 +769,22 @@ def test_cli_reconstruct_run_writes_manifest(
                 "claude",
             ]
         )
-        == 0
+        == 2
     )
     published = Path(capsys.readouterr().out.strip())
+    assert json.loads((output / "session_parser/receipt.json").read_text())["status"] == "READY"
     payload = json.loads(published.read_text(encoding="utf-8"))
-    assert payload["status"] == "REVIEW"
+    assert payload["status"] == "PENDING_EXECUTION"
     assert payload["stopped_at"] == "verification"
     assert published.name == "reconstruction_manifest.json"
     assert (output / "reconstruction_source.json").is_file()
     task_result = payload["tasks"][0]
     task_root = output / "tasks" / task_result["task_id"]
-    assert task_result["status"] == "REVIEW"
+    assert task_result["status"] == "PENDING_EXECUTION"
     assert task_result["stopped_at"] == "verification"
-    # The CLI always supplies the Hermes runtime.  In a sandbox, verifier
-    # recovery therefore fails closed until a hidden RED pytest run exists.
-    assert "SANDBOX_PYTEST_RED_REQUIRED" in task_result["errors"]
-    assert task_result["verification"]["status"] == "REVIEW"
-    assert "SANDBOX_PYTEST_RED_REQUIRED" in task_result["verification"]["errors"]
+    assert task_result["verification"]["status"] == "PENDING_EXECUTION"
+    assert task_result["verification"]["calibration"] == "NOT_RUN"
+    assert task_result["verification"]["rollout"] == "NOT_RUN"
+    assert task_result["verification"]["sft_eligible"] is False
     assert (task_root / "replay.json").is_file()
     assert Path(task_result["workspace"]).joinpath("foo.py").is_file()

@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from traceforge.reconstruction import eligible_reconstruction as reconstruction
 from traceforge.reconstruction.raw_session import RawSessionSourceError, build_raw_session_source
+from traceforge.reconstruction.session_source import write_reconstruction_source
 from traceforge.screening.observable import build_spans
 
 
@@ -28,6 +30,7 @@ class FakeAgent:
 
     def run(self, *, role, instruction, session, output_root):
         self.role_name = role.name
+        self.session_context = session.session_context
         assert session.workspace is None
         assert "SPAN_CATALOG=" in instruction
         return FakeResult(
@@ -86,13 +89,20 @@ def segmentation_payload(line: str) -> dict:
 
 
 def test_raw_session_groups_continuation_and_preserves_all_spans(tmp_path: Path) -> None:
-    line = raw_session()
+    payload = json.loads(raw_session())
+    payload["messages"][2]["reasoning_content"] = "原始轨迹中的历史推理"
+    payload["meta"] = {"reasoning": {"effort": "high"}}
+    line = json.dumps(payload)
     agent = FakeAgent(segmentation_payload(line))
     source = build_raw_session_source(
         raw_line=line, line_number=7, source_ref="R04.jsonl", agent=agent, output_root=tmp_path
     )
 
     assert agent.role_name == "session_tasks"
+    assert json.loads(agent.session_context) == payload
+    assert source["raw_session"] == payload
+    saved = json.loads(write_reconstruction_source(source, tmp_path).read_text())
+    assert saved["raw_session"] == payload
     assert source["entry_mode"] == "RAW_SESSION"
     assert source["line_number"] == 7
     assert len(source["tasks"]) == 2
@@ -202,3 +212,34 @@ def test_raw_session_rejects_evidence_outside_task_users(
     receipt = json.loads((tmp_path / "session_task_segmentation.json").read_text())
     assert receipt["status"] == "SESSION_TASK_REVIEW"
     assert "TASK_0_EVIDENCE_SCOPE_MISMATCH" in receipt["errors"]
+
+
+@pytest.mark.parametrize("domain,route", [("search", "retrieval"), ("terminal", "terminal")])
+def test_raw_entry_uses_supplied_domain_without_screening(tmp_path, monkeypatch, domain, route):
+    line = raw_session()
+    received = {}
+
+    def continue_reconstruction(**kwargs):
+        received.update(kwargs)
+        return tmp_path / "reconstruction_manifest.json"
+
+    monkeypatch.setattr(reconstruction, "run_eligible_reconstruction", continue_reconstruction)
+    reconstruction.run_raw_session_reconstruction(
+        raw_line=line, line_number=1, source_ref="known-domain", domain=domain,
+        agent=FakeAgent(segmentation_payload(line)), output_root=tmp_path,
+    )
+    source = received["source_override"]
+    assert source["domain_route"] == route
+    assert source["input_domain"] == domain
+    assert received["record"] is None
+    assert all("reconstruction_eligible" not in task for task in source["tasks"])
+
+
+def test_invalid_input_domain_fails_before_any_agent_call(tmp_path):
+    agent = FakeAgent({})
+    with pytest.raises(reconstruction.EligibleReconstructionError, match="显式指定 domain"):
+        reconstruction.run_raw_session_reconstruction(
+            raw_line=raw_session(), line_number=1, source_ref="unknown", domain="auto",
+            agent=agent, output_root=tmp_path,
+        )
+    assert agent.role_name is None

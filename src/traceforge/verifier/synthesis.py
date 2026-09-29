@@ -16,7 +16,7 @@ from traceforge.reconstruction.model_gateway import (
     parse_json_object,
 )
 
-VERIFIER_PROMPT_VERSION = "terminal-universe-verifier-adaptation-v4-semantic-review"
+VERIFIER_PROMPT_VERSION = "terminal-universe-verifier-adaptation-v5-task-scope"
 VERIFIER_SYSTEM = """你是独立的 code/file 任务验证器构建者。参照 Terminal-Universe 附录 D：
 只测试用户明确规定的接口和功能。期望值必须在测试中独立计算；不得运行待测实现
 来产生 gold。至少一个 missing-capability 测试必须在当前完成态 workspace（bE）上失败；
@@ -373,14 +373,19 @@ def is_python_solution(script: str) -> bool:
 
 
 def python_script_syntax_error(script: str) -> str | None:
-    """返回 Python 参考解的稳定语法错误码；shell/heredoc 不会被误判。"""
+    """返回编译器错误和附近原文，供作者修正；shell/heredoc 不会被误判。"""
 
     if not is_python_solution(script):
         return None
     try:
         ast.parse(script)
     except SyntaxError as exc:
-        return f"line={exc.lineno or 0};offset={exc.offset or 0}"
+        column = max(0, (exc.offset or 1) - 1)
+        context = (exc.text or "").rstrip("\n")[max(0, column - 120):column + 120]
+        return (
+            f"line={exc.lineno or 0};offset={exc.offset or 0};"
+            f"message={exc.msg};source={context!r}"
+        )
     return None
 
 
@@ -581,7 +586,7 @@ def candidate_from_payload(
             protective,
             normalized,
             strategy,
-            _strings(payload.get("open_questions"), "open_questions"),
+            _strings(payload.get("open_questions", []), "open_questions"),
             model_name,
             VERIFIER_PROMPT_VERSION,
             prompt_sha256,

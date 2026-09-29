@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import sys
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -30,13 +30,6 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
-_SECRET_RE = re.compile(r"(?i)(?:authorization\s*:\s*bearer\s+|(?:api[_-]?key|token|secret|password)\s*[=:]\s*)([^\s,;]+)|\bsk-[A-Za-z0-9_-]{12,}\b")
-
-
-def _redact_detail(value: str) -> str:
-    return _SECRET_RE.sub("[REDACTED]", value[-1200:])
-
-
 def _trial_diagnostic(trial_dir: Path, result: dict[str, Any]) -> dict[str, str]:
     """保留短的失败原因，避免只暴露 TrajectoryCaptureError 包装层。"""
     diagnostic: dict[str, str] = {}
@@ -47,7 +40,7 @@ def _trial_diagnostic(trial_dir: Path, result: dict[str, Any]) -> dict[str, str]
         if isinstance(kind, str) and kind:
             diagnostic["error_code"] = kind
         if isinstance(message, str) and message:
-            diagnostic["error_detail"] = _redact_detail(message)
+            diagnostic["error_detail"] = message[-1200:]
     try:
         payload = json.loads((trial_dir / "agent/hermes-result.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
@@ -56,7 +49,7 @@ def _trial_diagnostic(trial_dir: Path, result: dict[str, Any]) -> dict[str, str]
     if isinstance(meta, dict) and meta.get("failed") is True:
         final_response = meta.get("final_response")
         if isinstance(final_response, str) and final_response:
-            diagnostic["agent_error"] = _redact_detail(final_response)
+            diagnostic["agent_error"] = final_response[-1200:]
     if isinstance(exception, dict):
         traceback = exception.get("exception_traceback")
         evidence = traceback if isinstance(traceback, str) else ""
@@ -218,18 +211,22 @@ def certify_hermes_job(job_dir: Path | str, *, harbor_root: Path | str | None = 
         _HARBOR_AGS_SRC, Path(__file__).resolve().parents[4] / "harbor_ags" / "src",
     ]
     for source in sources:
-        if (source / "harbor_ags/artifacts.py").is_file() and str(source) not in sys.path:
-            sys.path.insert(0, str(source))
+        if (source / "harbor_ags/artifacts.py").is_file():
+            if str(source) not in sys.path:
+                sys.path.insert(0, str(source))
             break
     for trial_dir in sorted(path for path in root.iterdir() if path.is_dir() and path.name != "_control"):
         receipt: dict[str, Any] = {"schema_version": "traceforge.rollout-certification.v1", "certified": False}
         try:
             from harbor_ags.artifacts import build_artifact_manifest
-            from harbor_ags.validator import validate_harbor_trial
+            validator = importlib.import_module("harbor_ags.validator")
             build_artifact_manifest(trial_dir)
-            validated = validate_harbor_trial(trial_dir)
+            validated = validator.validate_harbor_trial(trial_dir, preserve_source_literals=True)
             receipt["certified"] = getattr(validated, "certified", False) is True
             receipt["validator_status"] = str(getattr(validated, "status", "UNKNOWN"))
+            receipt["validator_errors"] = getattr(validated, "errors", [])
+            receipt["validator_warnings"] = getattr(validated, "warnings", [])
+            receipt["validator_source_sha256"] = hashlib.sha256(Path(validator.__file__).read_bytes()).hexdigest()
         except Exception as exc:
             receipt["error_code"] = type(exc).__name__
         for label, path in (

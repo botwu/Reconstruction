@@ -43,6 +43,19 @@ def test_missing_or_invalid_schema_does_not_block_instruction_delivery():
     assert grounded_response_contract(task) is None
 
 
+def test_derived_observation_does_not_become_a_new_user_requirement():
+    task = {
+        "task_instruction": "表头包含店铺关键字即可识别。",
+        "acceptance_obligations": [{
+            "text": "其他表头同样适用。",
+            "observable": "修改 tests/test_excel.py 并运行 pytest。",
+        }],
+    }
+    assert render_task_instruction(task) == "表头包含店铺关键字即可识别。\n\n其他表头同样适用。"
+    task["acceptance_obligations"][0]["text"] = "修改 tests/test_excel.py 并运行 pytest。"
+    assert "修改 tests/test_excel.py 并运行 pytest。" in render_task_instruction(task)
+
+
 def test_response_contract_uses_source_fields_and_ids_not_model_invention():
     contract = grounded_response_contract(_task())
     report, summary = contract["checks"]

@@ -40,7 +40,10 @@ def test_invalid_python_shebang_is_rejected_before_harbor() -> None:
         "Path('out.txt').write_text('first\n"
         "second')\n"
     )
-    assert python_script_syntax_error(script) == "line=3;offset=28"
+    error = python_script_syntax_error(script)
+    assert error.startswith("line=3;offset=28;")
+    assert "unterminated string literal" in error
+    assert "Path('out.txt').write_text('first" in error
     with pytest.raises(VerifierSynthesisError, match="ORACLE_SCRIPT_SYNTAX_ERROR:bad"):
         candidate_from_payload(
             _payload(script),
@@ -59,6 +62,16 @@ def test_shell_heredoc_is_not_misclassified_as_python() -> None:
         "PY"
     )
     assert python_script_syntax_error(script) is None
+
+
+def test_long_installer_reports_context_at_actual_syntax_error() -> None:
+    script = "from pathlib import Path\nnew = '" + "padding " * 150 + "getattr(response, 'status_code', '网络错误')'\n"
+    error = python_script_syntax_error(script)
+    assert error.startswith("line=2;")
+    assert "invalid syntax" in error
+    assert "'status_code'" in error
+    assert len(error) < 500
+    assert python_script_syntax_error("from pathlib import Path\nnew = '''getattr(response, 'status_code', '网络错误')'''\n") is None
 
 
 def test_optional_review_headings_not_authorized_by_task_are_rejected() -> None:

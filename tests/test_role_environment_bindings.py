@@ -309,7 +309,7 @@ def test_rejected_partial_write_does_not_wipe_payload() -> None:
         is_fatal_tool_result("write_file", "error: BINDING_PATH_STUB_ONLY:RobloxDLL.cpp")
         is False
     )
-    assert is_fatal_tool_result("write_file", "error: PROTECTED_FILE_OVERWRITE:build.bat") is True
+    assert is_fatal_tool_result("write_file", "error: PROTECTED_FILE_OVERWRITE:build.bat") is False
     assert is_fatal_tool_result("write_file", "error: unsafe path") is False
 
 

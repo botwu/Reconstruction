@@ -81,7 +81,8 @@ def test_repair_loop_distinguishes_new_diagnostics_from_probe_noise(
         purposes = ["load", "reset", "dependency"]
         purposes = purposes[:round_index + 1] if mode == "probe_progress" else ["load"]
         return {
-            "status": "READY", "label": "SUFFICIENT", "errors": [],
+            "status": "REVIEW" if mode == "context_progress" else "READY",
+            "label": "INSUFFICIENT" if mode == "context_progress" else "SUFFICIENT", "errors": [],
             "environment_probes": [_probe(purpose, round_index) for purpose in purposes],
         }
 

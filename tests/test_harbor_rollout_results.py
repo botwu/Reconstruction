@@ -224,10 +224,14 @@ def test_failed_validator_is_persisted_and_blocks_gate(tmp_path, monkeypatch):
     _write_valid_hermes_artifacts(trial)
     _write_ledger(job / "_control/ags-sandbox-ledger.jsonl")
     monkeypatch.setitem(sys.modules, "harbor_ags.artifacts", SimpleNamespace(build_artifact_manifest=lambda path: None))
-    monkeypatch.setitem(sys.modules, "harbor_ags.validator", SimpleNamespace(validate_harbor_trial=lambda path: SimpleNamespace(certified=False, status="INFRA_CAPTURE")))
+    def validate(path, *, preserve_source_literals):
+        assert path == trial and preserve_source_literals is True
+        return SimpleNamespace(certified=False, status="INFRA_CAPTURE", errors=[{"code": "CAPTURE_FILES_MISSING"}])
+    monkeypatch.setitem(sys.modules, "harbor_ags.validator", SimpleNamespace(validate_harbor_trial=validate, __file__=__file__))
     certify_hermes_job(job)
     receipt = json.loads((trial / "reconstruction-certification.json").read_text())
     assert receipt["certified"] is False
+    assert receipt["validator_errors"] == [{"code": "CAPTURE_FILES_MISSING"}]
     report = read_rollout_results(job)
     assert report["quality_gate"]["ok"] is False
     assert "HERMES_CERTIFICATION_FAILED" in report["trials"][0]["content_errors"]
@@ -254,7 +258,7 @@ def test_results_include_bounded_hermes_failure_detail(tmp_path: Path) -> None:
     report = read_rollout_results(job)
     row = report["trials"][0]
     assert row["error_code"] == "TrajectoryCaptureError"
-    assert "sk-abcdefghijklmnopqrs" not in row["error_detail"]
+    assert row["error_detail"] == "轨迹失败：secret=sk-abcdefghijklmnopqrs"
     assert row["agent_error"] == "HTTP 503: no channel"
 
 

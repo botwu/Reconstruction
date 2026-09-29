@@ -11,6 +11,7 @@ from traceforge.reconstruction.session_source import (
     ReconstructionSourceError,
     build_reconstruction_source,
     load_eligible_record,
+    write_reconstruction_source,
 )
 from traceforge.screening.observable import build_spans
 
@@ -54,16 +55,16 @@ def _record(raw_line: str, *, decision: str = "ELIGIBLE") -> dict[str, object]:
     }
 
 
-def test_source_omits_private_reasoning() -> None:
+def test_source_preserves_original_reasoning_fields(tmp_path: Path) -> None:
     session = _session()
-    session["messages"][1]["reasoning"] = "secret chain of thought"
-    session["messages"][1]["reasoning_content"] = "also secret"
+    session["messages"][1]["reasoning"] = "原始轨迹中的解释"
+    session["messages"][1]["reasoning_content"] = "保留历史参考"
     raw_line = json.dumps(session, ensure_ascii=False)
     source = build_reconstruction_source(raw_line=raw_line, record=_record(raw_line))
-    dumped = json.dumps(source, ensure_ascii=False)
-    assert "secret chain of thought" not in dumped
-    assert "also secret" not in dumped
-    assert source["privacy"]["private_thinking_reasoning"] == "omitted"
+    assert source["raw_session"] == session
+    assert source["privacy"]["raw_session"] == "verbatim"
+    saved = json.loads(write_reconstruction_source(source, tmp_path).read_text())
+    assert saved == source
     assert source["raw_session"]["messages"][1]["tool_calls"][0]["function"]["name"] == "exec"
 
 

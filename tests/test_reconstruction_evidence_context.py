@@ -155,6 +155,7 @@ def test_repair_loop_passes_each_current_candidates_metadata(tmp_path, monkeypat
         contexts.append(kwargs["reconstruction_context"])
         ready = len(contexts) > 1
         return {"status": "READY" if ready else "REVIEW",
+                "label": "SUFFICIENT" if ready else "INSUFFICIENT",
                 "missing_context": [] if ready else ["需要任务相关后段"], "errors": []}
 
     def environment(**kwargs):

@@ -124,7 +124,8 @@ def test_repair_keeps_untouched_completed_context(tmp_path):
 
 
 def _feedback_case(tmp_path, monkeypatch, *, context="REVIEW", execute="FAILED",
-                   repair="READY", failed_probe=False, progressing=False):
+                   repair="READY", failed_probe=False, progressing=False,
+                   ready_after=1, max_repair_rounds=2):
     seed, replay = repair_seed(tmp_path)
     calls = {"judge": [], "repair": []}
     task = {"task_id": "one", "task_instruction": "审查 original.py", "core_objective": "源码审查"}
@@ -136,7 +137,7 @@ def _feedback_case(tmp_path, monkeypatch, *, context="REVIEW", execute="FAILED",
 
     def judge(**kwargs):
         calls["judge"].append(kwargs)
-        success = len(calls["judge"]) > 1 and repair == "READY"
+        success = len(calls["judge"]) > ready_after and repair == "READY"
         return {
             "label": "SUFFICIENT" if success or context == "READY" else "INSUFFICIENT",
             "decision": "READY" if success or context == "READY" else "REVIEW",
@@ -150,7 +151,7 @@ def _feedback_case(tmp_path, monkeypatch, *, context="REVIEW", execute="FAILED",
         }
 
     def contract(**kwargs):
-        if len(calls["judge"]) > 1 and repair == "READY":
+        if len(calls["judge"]) > ready_after and repair == "READY":
             return settled
         return {**initial, "workspace_sha256": str(len(calls["judge"]))} if progressing else initial
 
@@ -167,6 +168,7 @@ def _feedback_case(tmp_path, monkeypatch, *, context="REVIEW", execute="FAILED",
     result = pipeline._judge_and_repair_candidate(
         task=task, candidate=seed, replay=replay, timeline=[], task_source={},
         agent=RepairAgent(), task_root=tmp_path / "task", index=0, origin="REPLAYED",
+        max_repair_rounds=max_repair_rounds,
     )
     return result, calls, seed
 
@@ -179,6 +181,15 @@ def test_sufficiency_gap_returns_to_completion_then_rejudges(tmp_path, monkeypat
     assert calls["repair"][0]["feedback"]["missing_context"] == ["缺少支持配置"]
     assert candidate["workspace"] == seed["workspace"]
     assert env["execution_readiness"] == "PROBED"
+    assert audit["stop_reason"] == "READY"
+
+
+def test_researcher_can_continue_past_two_repairs_while_making_progress(tmp_path, monkeypatch):
+    (_, _, environment, audit), calls, _ = _feedback_case(
+        tmp_path, monkeypatch, ready_after=4, progressing=True, max_repair_rounds=None,
+    )
+    assert len(calls["repair"]) == 4 and len(calls["judge"]) == 5
+    assert environment["execution_readiness"] == "PROBED"
     assert audit["stop_reason"] == "READY"
 
 
@@ -228,14 +239,17 @@ def test_unchanged_diagnosis_stops_without_exhausting_all_retries(tmp_path, monk
     assert audit["stop_reason"] == "NO_PROGRESS"
 
 
-def test_failed_execution_probe_is_sent_to_completion(tmp_path, monkeypatch):
+@pytest.mark.parametrize("confirmed_gap", [False, True])
+def test_failed_probe_requires_a_confirmed_gap_before_rewriting(tmp_path, monkeypatch, confirmed_gap):
     (_, _, env, audit), calls, _ = _feedback_case(
-        tmp_path, monkeypatch, context="READY", failed_probe=True,
+        tmp_path, monkeypatch, context="REVIEW" if confirmed_gap else "READY", failed_probe=True,
     )
-    assert len(calls["repair"]) == 1
-    assert calls["repair"][0]["feedback"]["failed_probes"][0]["executions"][0]["stderr"] == (
+    assert len(calls["repair"]) == int(confirmed_gap)
+    feedback = calls["repair"][0]["feedback"] if confirmed_gap else calls["judge"][1]["repair_feedback"]
+    assert feedback["failed_probes"][0]["executions"][0]["stderr"] == (
         "ModuleNotFoundError: support"
     )
+    assert audit["rounds"][1]["action"] == ("REPAIR" if confirmed_gap else "RECHECK")
     assert len(calls["judge"]) == 2
     assert env["execution_readiness"] == "PROBED"
     assert audit["stop_reason"] == "READY"

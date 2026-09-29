@@ -4,7 +4,7 @@ import copy
 import json
 
 import pytest
-from test_reconstruction_verification import _VERIFIER_PAYLOAD
+from test_reconstruction_verification import VerifierRuntime, _VERIFIER_PAYLOAD
 
 from traceforge.reconstruction.agents.runtime import AgentResult
 from traceforge.reconstruction.verification import (
@@ -183,7 +183,7 @@ def test_verifier_completes_missing_summary_before_same_semantic_review(tmp_path
     assert context["response_evidence"] == "真实 rollout 的 trajectory.full.json"
     assert result["unverified_obligations"] == ["obl-002", "obl-003"]
     assert result["semantic_review"]["prompt_version"] == (
-        "terminal-universe-verifier-semantic-review-v2-phase-boundary"
+        "terminal-universe-verifier-semantic-review-v4-original-failure-path"
     )
     assert not list((tmp_path / "workspace").rglob("trajectory.full.json"))
 
@@ -299,3 +299,87 @@ def test_final_contract_is_identical_in_review_red_bundle_and_verification(tmp_p
     assert result["pending_response_obligations"] == ["obl-002", "obl-003"]
     assert result["rollout"] == "NOT_RUN" and result["sft_eligible"] is False
     assert task == runtime.before
+
+
+@pytest.mark.parametrize("reject_file_verifier", [False, True])
+def test_manual_response_review_keeps_file_gate_and_uncertified_rollouts(
+    tmp_path, monkeypatch, reject_file_verifier
+):
+    task = task_fixture()
+    task["task_instruction"] = "Write review.md and analyze code quality."
+    task["source_task"]["user_texts"] = [task["task_instruction"]]
+    task["acceptance_obligations"] = task["acceptance_obligations"][:2]
+    task["acceptance_obligations"][1]["text"] = "Analyze code quality"
+    task["environment_bindings"] = task["environment_bindings"][:2]
+    task["response_contract"] = None
+    original = copy.deepcopy(task)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.py").write_text("print(1)\n")
+    calls = []
+
+    class Runtime(VerifierRuntime):
+        def run(self, **kwargs):
+            result = super().run(**kwargs)
+            if kwargs["role"].result_schema == "traceforge.verifier-semantic-review.v1":
+                spec = json.loads(kwargs["instruction"].splitlines()[-1])
+                assert spec["manual_response_obligation_ids"] == ["obl-002"]
+                assert spec["response_obligation_ids"] == []
+                assert spec["task"]["source_task"]["user_texts"] == original["source_task"]["user_texts"]
+                if reject_file_verifier:
+                    result.payload["decision"] = "REVISE"
+                    result.payload["obligation_reviews"][0].update(
+                        covered=False, reason="关键词检查会放过错误内容"
+                    )
+                    result.payload["issues"] = [{"obligation_id": "obl-001", "problem": "漏检"}]
+            return result
+
+    def calibrate(self, candidate):
+        calls.append("calibration")
+        bundle = compile_bundle(
+            task=self.task, workspace_root=workspace, verifier=candidate,
+            output_root=tmp_path / "bundles",
+        )
+        self.bundle = bundle / "task"
+        assert "analyze code quality" in (self.bundle / "instruction.md").read_text()
+        return {"status": "PASS"}
+
+    # 仅用于验证编排和认证边界；这两条合成轨迹不是真实 rollout 证据。
+    trajectory = tmp_path / "synthetic-trajectory.json"
+    trajectory.write_text(json.dumps({"messages": [{"role": "assistant", "content": "分析内容"}]}))
+
+    def rollout(self, *args, **kwargs):
+        calls.append("rollout")
+        return {
+            "execution": {"status": "COMPLETED"},
+            "results": {"quality_gate": {"ok": True}, "trials": [
+                {"status": "PASS", "reward": 1.0, "trajectory_path": str(trajectory)}
+                for _ in range(2)
+            ]},
+        }
+
+    monkeypatch.setattr(HarborCalibrationExecutor, "run", calibrate)
+    monkeypatch.setattr(HarborCalibrationExecutor, "_run_bundle", rollout)
+    result = run_reconstruction_verification(
+        task=task, workspace_root=workspace, model=None, agent=Runtime(),
+        output_root=tmp_path / "verification",
+        config=VerificationConfig(
+            harbor_root=tmp_path, model_name="test", rollout_model="test/test",
+            execute_red=True, execute_rollout=True, manual_response_review=True, max_rounds=1,
+        ),
+    )
+    assert task == original
+    assert result["status"] == "REVIEW" and result["sft_eligible"] is False
+    assert result["unverified_obligations"] == ["obl-002"]
+    assert result["manual_response_review"] == {"status": "NOT_ASSESSED", "obligation_ids": ["obl-002"]}
+    assert "MANUAL_RESPONSE_REVIEW_REQUIRED" in result["errors"]
+    assert not any(e.startswith("RESPONSE_VERIFIER_MISSING") for e in result["errors"])
+    manifest = json.loads((tmp_path / "verification/execution_manifest.json").read_text())
+    assert manifest["certification_closed"] is False
+    if reject_file_verifier:
+        assert calls == [] and result["rollout"] == "NOT_RUN"
+        assert result["iterations"][0]["errors"] == ["VERIFIER_SEMANTIC_REPAIR_REQUIRED"]
+    else:
+        assert calls == ["calibration", "rollout"]
+        assert len(result["response_receipts"]) == 2
+        assert all(not r["verified_obligation_ids"] for r in result["response_receipts"])

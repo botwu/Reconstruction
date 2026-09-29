@@ -1,0 +1,43 @@
+# 默认原始会话重建入口
+
+使用 `traceforge reconstruct raw-run`，显式提供已知的 `search` 或 `terminal`。入口逐条读取完整原始 session，保留原文，不做筛选或领域分类，不脱敏。会话任务解析、DeepSeek 工具/时间意图解析及后续恢复均通过模型完成；工具只负责来源绑定、受控文件操作和执行回执。
+
+rollout 认证也保留已绑定原始工作区中的常量，避免将源码自带的 Bearer 值误报为捕获失败。只有初始工作区与冻结任务的哈希绑定通过后，匹配到的同一常量才作为 `SOURCE_LITERALS_PRESERVED` 记录；新增凭据、显式运行凭据及其他捕获或产物错误仍会拒收。认证回执保留具体错误与原文保留记录，原始轨迹不被改写。
+
+```bash
+traceforge reconstruct raw-run \
+  --input /path/to/sessions.jsonl --line-number 1 --domain terminal \
+  --config /path/to/config.yaml --output /path/to/new-output \
+  --hermes-home /path/to/hermes-agent --harbor-root /path/to/harbor_ags \
+  --execute-red --execute-rollout
+```
+
+terminal 默认启用 AGS。`--no-sandbox` 仅供离线诊断，不能证明环境可执行。search 沿用专用检索环境及真实检索工具，不走文件恢复和 pytest 路径。
+
+解析器同时接收完整原文和返回块的机械索引。模型决定工具含义、文件归属和读取范围；提取器核对原始 JSON 路径、返回行号和文件行号，原样保留源码。引用失败会将具体事件、文件和错误一起反馈给模型。已有解析尝试仅在原始输入、模型和系统策略一致时恢复；保留每份请求、响应及重验记录，不手工改写模型输出。
+
+search 补全收到当前任务最后一次用户请求之前的对话，恢复“选题1”等必要指代，不能把后续原答案带给 solver。原始捕获与当前公开检索分开标记；只有真实查询返回非空结果、网页读取成功且引用有效，环境才可进入 rollout。遗漏检索或引用错误返回同一补全会话。`ROLLOUT_COMPLETED` 表示执行完整，回答内容仍标记为 `NOT_ASSESSED`，不能等同于任务正确。
+
+terminal 每个恢复任务建立自己的作者会话，完成初态、自测、隐藏测试和参考解。配置使用不同作者/验证器模型时，两个模型沿用同一份作者历史；环境检查和验证器语义审查使用独立会话。完整原始 session 和阶段检查点单独保存，不由历史摘要替代。
+
+一个 session 中有多个任务时，各自恢复到对应用户请求开始前。先前任务已经完成的模块和接入属于下一任务的已有环境；Replay 剔除已知写入之后失效的旧观察，完整历史仍提供给作者。截断调用可能隐藏写入，因此作者和独立检查员还要核对起点附近的原始源码、接口、配置和文档。能导入或通过自测，不足以证明补全仍忠实于原项目。
+
+`run_candidate` 对当前候选快照进行真实执行，文件修改后须重查。自测失败和独立环境检查的具体缺口返回同一作者。原有行为应可用，原用户指定的新功能或待修缺陷保持未解决。
+
+检查员认为上下文足够，但 load/reset/dependency 缺少成功回执时，继续同一独立检查会话。检查了无关文件或遗漏入口不能要求作者改源码；确认实际初态缺口后才返修。原始失败记录保留，补做成功检查不会把旧失败改成通过。
+
+混合 FILE/NON_FILE 任务若需要先交付文件行为验证和真实 rollout，可显式加 `--manual-response-review`。它保留 solver 的完整原任务，仅将响应内容留待逐份人工核查，不再为自由文本分析编造固定报告格式。文件验证器仍经独立语义审查及真实校准；响应记为 NOT_ASSESSED、未验证义务保留，最终状态为 REVIEW、SFT 资格为 false。该选项不表示分析已通过验收。
+
+验证器每轮使用新沙箱，保留对话不等于保留旧执行。最终候选缺少本轮完整测试回执时，管线通过现有测试工具补齐真实执行，并记录 `pipeline-final` 调用；已执行的同一测试正文不重复运行。旧回执不能用于新沙箱或新候选。READY 可以省略空问题列表，未解决问题和实际失败仍须明确保留。
+
+下游验证器或 rollout 返回失败时，编排器在原始初态上进行独立复查。只有实际执行失败、必要输入缺失或已分类的重建损坏才进入初态返修；已确认的传输/基础设施错误、未验证响应义务及普通 solver 解题失败保留原失败。修改后重新经过环境检查、验证器校准和 rollout，不复用旧候选的成功结论。各次尝试分别落盘，`tasks/<task_id>/task_repair_audit.json` 记录反馈方向和停止原因。
+
+环境返修和跨阶段返修不设固定轮数；候选与诊断重复时停止为 NO_PROGRESS。验证器默认最多六轮，每次模型调用和沙箱执行仍有预算。可推断的源码缺口由模型基于原轨迹补全；无法获得的外部服务状态明确记录，受控替身不能宣称为真实账户操作成功。
+
+Python 依赖首次在目标 AGS 中下载并冻结，下载最多 900 秒，安装最多 180 秒；`python-runtime-receipt.json` 记录当前阶段和真实结果。同一作者的后续检查及下游角色复用已成功准备的依赖包，复用前核对 requirements 和所有包的哈希，依赖声明改变后重新解析。原文与 Replay 保留原始换行；候选文本编辑与读取统一使用 LF，避免 Windows 捕获出现“刚读取却匹配不到”的循环。
+
+CLI 只有 READY、READY_VARIANT、COMPLETED 等成功终态返回退出码 0；REVIEW、BLOCKED 或运行异常返回 2。应同时读取最终 manifest 和各阶段回执，不能仅凭进程结束或模型声明判断通过。
+
+控制端 Python、Hermes 源码和执行目录应使用本地盘，运行完将产物和检查点归档到持久存储。该选择来自 dev-wj 上已复现的 AFS 解释器启动、模块读取和配置初始化等待；不是模型或业务失败。
+
+实现位于 `src/traceforge/reconstruction/researcher.py` 和现有 `eligible_reconstruction.py`，核心代码不依赖参考仓库。参考 AgenticFoundry 提交 `c91ab4f33f787b5901c3e2df1566f81bf531cfbd`（Apache-2.0）的 `harness/run_synth.py`、`agents/synth/instruction.md` 作者自测组织方式；原实验的 `harness/reconstruction_runtime.py` 已收敛到本项目。模型连接、证据约束、AGS、正式校准和产物合同均使用 TraceRconstruction 原有实现。

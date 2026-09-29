@@ -38,7 +38,6 @@ def render_task_instruction(task: dict[str, Any]) -> str:
     for item in task.get("acceptance_obligations") or []:
         if isinstance(item, dict):
             append(item.get("text"))
-            append(item.get("observable"))
     for field in ("mandatory_constraints", "prohibitions"):
         for text in task.get(field) or []:
             append(text)

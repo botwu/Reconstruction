@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from traceforge.reconstruction.agents.runtime import AgentResult
 from traceforge.reconstruction.model_gateway import ModelRequest
 from traceforge.reconstruction import verification as verification_module
@@ -28,14 +30,18 @@ PAYLOAD = {
 class _Agent:
     model_name = "fake"
 
-    def __init__(self):
+    def __init__(self, intermediate_review=False):
         self.calls: list[str] = []
+        self.intermediate_review = intermediate_review
 
     def run(self, *, role, instruction, session, output_root):
         if role.result_schema == "traceforge.verifier-semantic-review.v1":
+            revise = self.intermediate_review and len(self.calls) == 2
             return AgentResult(role=role.name, backend="fake", completed=True, payload={
-                "decision": "ACCEPT", "issues": [], "obligation_reviews": [
-                    {"obligation_id": "o", "covered": True, "reason": "反馈编排单测审查替身"}]})
+                "decision": "REVISE" if revise else "ACCEPT",
+                "issues": [{"problem": "还需修正测试替身"}] if revise else [],
+                "obligation_reviews": [
+                    {"obligation_id": "o", "covered": not revise, "reason": "反馈编排单测审查替身"}]})
         self.calls.append(instruction)
         return AgentResult(
             role=role.name,
@@ -63,8 +69,9 @@ class _Executor:
         return {}
 
 
-def test_agent_verifier_uses_feedback_rounds(monkeypatch, tmp_path: Path):
-    agent = _Agent()
+@pytest.mark.parametrize("intermediate_review", [False, True])
+def test_agent_verifier_uses_feedback_rounds(monkeypatch, tmp_path: Path, intermediate_review):
+    agent = _Agent(intermediate_review)
     executor = _Executor(root=tmp_path)
     monkeypatch.setattr(verification_module, "HarborCalibrationExecutor", lambda **kwargs: executor)
     workspace = tmp_path / "workspace"
@@ -84,14 +91,16 @@ def test_agent_verifier_uses_feedback_rounds(monkeypatch, tmp_path: Path):
             model_name="fake",
             rollout_model="anthropic/fake",
             execute_red=True,
-            max_rounds=2,
+            max_rounds=3,
         ),
         source={"selected_span_has_file_ops": True},
     )
     assert result["status"] == "READY"
     assert executor.calls == 2
-    assert len(agent.calls) == 2
-    assert "failed_cases" in agent.calls[1]
+    assert len(agent.calls) == (3 if intermediate_review else 2)
+    for instruction in agent.calls[1:]:
+        feedback = json.loads(instruction.split("PREVIOUS_CALIBRATION_FEEDBACK:\n")[1])
+        assert feedback["failed_cases"] == ["nop"]
 
 
 def test_verifier_recovery_does_not_return_candidate_with_errors(tmp_path: Path):
