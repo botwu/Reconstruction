@@ -12,4 +12,6 @@
 
 产物位于 `tasks/<task_id>/environment.json` 和 `rollouts/trial-*/`。环境 `READY` 要求补全完成且实际查询、页面读取成功；`ROLLOUT_COMPLETED` 仅表示真实 solver 完成并留下回答与调用记录，不代表事实与引用已验收，也不会自动写成 SFT 合格。
 
+READY 初态同时导出 `harbor/<digest>/task/`，`result.json.harbor_task` 返回可交给下游的原生任务路径。该目录包含任务说明、捕获证据和可执行检索工具；使用原生 Harbor 时仍须 `--disable-verification`，内容留待核查。详见 [Harbor 任务交付](harbor-task-delivery.md)。
+
 重建角色的工具调用在 `private/tool_events.jsonl` 逐次落盘。`STARTED` 后没有 `FINISHED` 表示该工具尚未返回；相邻工具之间的空档可能是模型请求，不能只凭运行时长推断死循环。

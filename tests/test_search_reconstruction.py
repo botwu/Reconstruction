@@ -1,6 +1,9 @@
 """检索环境保留原始返回，并隔离原轨迹答案。"""
 
 import json
+import os
+import subprocess
+import sys
 
 import pytest
 
@@ -82,6 +85,40 @@ def test_page_pagination_reuses_same_snapshot(tmp_path, monkeypatch):
     assert second["text"] == "def"
     assert second["next_offset"] is None
     assert calls == ["https://example.org"]
+
+
+def test_cli_pagination_reads_saved_page_in_a_new_process(tmp_path, monkeypatch):
+    from traceforge.reconstruction import search_tools
+
+    tools = SearchTools(tmp_path)
+    monkeypatch.setattr(tools, "_fetch", lambda url: {
+        "url": url, "text": "abcdef", "success": True, "raw_sha256": "original-hash",
+    })
+    tools.open("https://example.invalid/page", limit=3)
+    result = subprocess.run([
+        sys.executable, search_tools.__file__, "--output-root", str(tmp_path),
+        "open", "https://example.invalid/page", "--offset", "3", "--limit", "3",
+    ], capture_output=True, text=True, check=True)
+    page = json.loads(result.stdout)
+    assert page["text"] == "def"
+    assert page["raw_sha256"] == "original-hash"
+    assert page["next_offset"] is None
+    assert len((tmp_path / "calls.jsonl").read_text().splitlines()) == 2
+
+
+def test_cli_returns_failure_when_search_credentials_are_missing(tmp_path):
+    from traceforge.reconstruction import search_tools
+
+    result = subprocess.run([
+        sys.executable, search_tools.__file__, "--output-root", str(tmp_path),
+        "search", "原任务关键词",
+    ], capture_output=True, text=True, env={
+        **os.environ, "SERPER_API_KEY": "", "JINA_API_KEY": "",
+        "TRACEFORGE_SEARCH_CONFIG": str(tmp_path / "missing-config.json"),
+    })
+    assert result.returncode == 1
+    assert json.loads(result.stdout)["success"] is False
+    assert json.loads((tmp_path / "calls.jsonl").read_text())["success"] is False
 
 
 def test_private_urls_are_not_public_sources(tmp_path):
@@ -195,7 +232,8 @@ def test_optional_preferences_do_not_replace_required_input_gate(tmp_path, monke
         errors=[], completed=True,
     ))
     result = search_environment.run_search_task(
-        source={"raw_session": {"messages": []}}, task={"task_id": "q1"},
+        source={"raw_session": {"messages": []}},
+        task={"task_id": "q1", "task_instruction": "查找公开来源并概述。"},
         agent=agent, output_root=tmp_path,
     )
     assert result["status"] == expected
@@ -242,7 +280,8 @@ def test_pending_reference_feedback_keeps_context_and_stops_without_progress(tmp
             {"role": "user", "content": "另一个独立任务"},
         ]}, "tool_timeline": [
             {"name": "search", "result_text": "原始来源"}, {"name": "search", "pending": True},
-        ]}, task={"task_id": "q1", "source_task": {"message_indices": [1]}},
+        ]}, task={"task_id": "q1", "task_instruction": "选题1投哪个口？",
+                  "source_task": {"message_indices": [1]}},
         agent=SimpleNamespace(run=run), output_root=tmp_path,
     )
     assert len(sessions) == 2
@@ -278,7 +317,8 @@ def test_missing_live_query_returns_to_author_without_faking_readiness(tmp_path,
         })
 
     result = search_environment.run_search_task(
-        source={"raw_session": {"messages": []}}, task={"task_id": "q"},
+        source={"raw_session": {"messages": []}},
+        task={"task_id": "q", "task_instruction": "查找公开来源并概述。"},
         agent=SimpleNamespace(run=run), output_root=tmp_path,
     )
     assert len(attempts) == 2

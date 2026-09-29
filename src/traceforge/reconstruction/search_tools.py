@@ -139,3 +139,34 @@ class SearchTools:
         return any(c.get("success") and c.get("results") for c in self.calls) and any(
             c.get("success") and c.get("text") for c in self.calls
         )
+
+
+def main() -> int:
+    """同一检索实现既供补全 agent 调用，也可在 Harbor 任务容器内执行。"""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="检索公开资料并保存原始返回")
+    parser.add_argument("--output-root", type=Path, default=Path("/logs/artifacts/search"))
+    commands = parser.add_subparsers(dest="command", required=True)
+    search = commands.add_parser("search")
+    search.add_argument("query")
+    page = commands.add_parser("open")
+    page.add_argument("url")
+    page.add_argument("--offset", type=int, default=0)
+    page.add_argument("--limit", type=int, default=8000)
+    args = parser.parse_args()
+    tools = SearchTools(args.output_root)
+    if args.command == "search":
+        result = tools.search(args.query)
+    else:
+        # 终端每次启动新进程；翻页仍须使用第一次实际抓取的正文。
+        cache = args.output_root / (hashlib.sha256(args.url.encode()).hexdigest() + ".json")
+        if cache.is_file():
+            tools.pages[args.url] = json.loads(cache.read_text(encoding="utf-8"))
+        result = tools.open(args.url, offset=args.offset, limit=args.limit)
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if result.get("success") else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

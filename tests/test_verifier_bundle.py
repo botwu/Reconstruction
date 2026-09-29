@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import tomllib
 from dataclasses import replace
 
 import pytest
@@ -79,6 +80,11 @@ def test_bundle_keeps_solution_and_verifier_outside_workspace(tmp_path):
     assert (output / "artifact_manifest.json").is_file()
     assert (output / "task/workspace/input.txt").stat().st_mode & 0o002
     assert (output / "task/workspace").stat().st_mode & 0o002
+    config = tomllib.loads((output / "task/task.toml").read_text())
+    assert config["metadata"]["domain"] == "terminal"
+    assert config["verifier"]["environment_mode"] == "separate"
+    assert len(config["verifier"]["collect"]) == 1
+    assert "/logs/artifacts/traceforge/workspace" in config["verifier"]["collect"][0]["command"]
 
 
 def test_bundle_carries_identical_frozen_dependencies_to_both_environments(tmp_path):
@@ -358,7 +364,7 @@ def test_bundle_digest_includes_compiler_contract(tmp_path):
     manifest = __import__("json").loads(
         (output / "compile_manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v7-frozen-python-runtime"
+    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v8-native-harbor"
     assert manifest["entrypoint_contract"] == {
         "workspace_mount": "/home/user/workspace",
         "solution_mount": "/solution",

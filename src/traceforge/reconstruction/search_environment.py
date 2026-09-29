@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from traceforge.harbor_task import export_search_task
 from traceforge.reconstruction.agents import AgentRuntime, AgentSession
 from traceforge.reconstruction.agents.roles import AgentRole
 from traceforge.reconstruction.agents.session import AgentConversation
@@ -186,11 +187,16 @@ def run_search_task(
                "domain_route": "retrieval", "errors": errors, "rollouts": []}
     if errors:
         outcome.update(status="BLOCKED", stopped_at="search_completion")
-    elif rollout_agent is not None:
-        return run_search_rollouts(
-            environment=environment, rollout_agent=rollout_agent, output_root=output_root,
-            rollout_trials=rollout_trials, rollout_max_iterations=rollout_max_iterations,
-        )
+    else:
+        harbor_task = export_search_task(environment, output_root / "harbor")
+        outcome["harbor_task"] = str(harbor_task.resolve())
+        outcome["harbor_rollout_args"] = ["--disable-verification"]
+        if rollout_agent is not None:
+            rollout = run_search_rollouts(
+                environment=environment, rollout_agent=rollout_agent, output_root=output_root,
+                rollout_trials=rollout_trials, rollout_max_iterations=rollout_max_iterations,
+            )
+            outcome.update(rollout)
     _save(output_root / "result.json", outcome)
     return outcome
 

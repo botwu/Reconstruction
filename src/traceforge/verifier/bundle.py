@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from traceforge.harbor_ags.adapter import validate_bundle_layout
+from traceforge.harbor_task import (
+    CONTAINER_VERSION,
+    WORKSPACE_SNAPSHOT_HOOK,
+    write_container_environment,
+)
 from traceforge.reconstruction.python_runtime import RUNTIME_NAME, validate_python_runtime
 from traceforge.task_instruction import render_task_instruction
 from traceforge.trajectory.artifacts import (
@@ -19,7 +24,7 @@ from traceforge.trajectory.artifacts import (
 
 from .synthesis import VerifierCandidate, is_python_solution, validate_solution_scripts
 
-_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v7-frozen-python-runtime"
+_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v8-native-harbor"
 
 
 def _make_workspace_solver_writable(workspace: Path) -> None:
@@ -121,6 +126,7 @@ def compile_bundle(
         json.dumps(
             {
                 "compiler_version": _BUNDLE_COMPILER_VERSION,
+                "container_version": CONTAINER_VERSION,
                 "instruction": instruction,
                 "task_acceptance": task_acceptance,
                 "tree": tree,
@@ -195,16 +201,17 @@ def compile_bundle(
         (root / "task.toml").write_text(
             'schema_version = "1.4"\n[task]\n'
             f'name = "traceforge/reconstructed-{digest[:16]}"\nversion = "1.0.0"\n'
-            "[metadata]\nworkspace_snapshot = true\n"
+            '[metadata]\nworkspace_snapshot = true\ndomain = "terminal"\n'
             '[agent]\ntimeout_sec = 900.0\nuser = "user"\n'
             '[verifier]\ntimeout_sec = 120.0\nenvironment_mode = "separate"\nuser = "user"\n'
             '[verifier.environment]\nnetwork_mode = "no-network"\n'
-            '[environment]\nos = "linux"\nnetwork_mode = "public"\n',
+            '[environment]\nos = "linux"\nnetwork_mode = "public"\n' + WORKSPACE_SNAPSHOT_HOOK,
             encoding="utf-8",
         )
         (root / "environment/README.md").write_text(
-            "使用 harbor_ags 锁定的 AGS 预置环境；python3 来自模板，"
-            "pytest 由 tests/vendor 离线提供；项目依赖由环境中的 python_runtime 冻结并离线安装，verifier 无网。\n",
+            "原生 Harbor 通过 Dockerfile/Compose 构建与冻结依赖 ABI 匹配的 Python 环境；"
+            "现有 AGS 后端继续使用其锁定模板。pytest 由 tests/vendor 离线提供；"
+            "项目依赖从冻结的 python_runtime 离线安装，verifier 无网。\n",
             encoding="utf-8",
         )
         if is_python_solution(variant.script):
@@ -259,6 +266,7 @@ def compile_bundle(
                 verifier.to_dict(),
             )
         )
+        write_container_environment(root, separate_verifier=True)
         layout = validate_bundle_layout(root)
         entries.append(
             write_json_artifact(

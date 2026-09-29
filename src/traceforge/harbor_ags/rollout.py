@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from traceforge.harbor_task import WORKSPACE_SNAPSHOT_HOOK
 from traceforge.reconstruction.model_gateway import (
     ModelGatewayError,
     iter_config_items,
@@ -215,20 +216,10 @@ def _ensure_workspace_snapshot_hook(task_toml: Path) -> None:
     marker_text = "TraceForge workspace snapshot hook"
     if marker_text in raw:
         return
-    marker = (
-        "\n# TraceForge workspace snapshot hook\n"
-        "[[verifier.collect]]\n"
-        'command = "set -eu; rm -rf /logs/artifacts/traceforge/workspace; '
-        "mkdir -p /logs/artifacts/traceforge/workspace; "
-        'cp -a /home/user/workspace/. /logs/artifacts/traceforge/workspace/"\n'
-        'service = "main"\n'
-        'user = "root"\n'
-        "timeout_sec = 120.0\n"
-    )
     # Array-of-table must be appended after all existing tables. Inserting it
     # inside [verifier] would re-parent later fields and can create duplicate
     # keys when the hook declares timeout/user itself.
-    rendered = raw.rstrip() + "\n" + marker.lstrip("\n")
+    rendered = raw.rstrip() + "\n" + WORKSPACE_SNAPSHOT_HOOK
     try:
         tomllib.loads(rendered)
     except tomllib.TOMLDecodeError as exc:
