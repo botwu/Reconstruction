@@ -8,6 +8,7 @@
 | --- | --- |
 | [cli.py](../src/traceforge/cli.py) | `reconstruct raw-run`、已有 records 的 `reconstruct run`、Harbor 计划/执行/读取入口 |
 | [raw_session.py](../src/traceforge/reconstruction/raw_session.py) | 原始 session 的 span 分段、任务覆盖与用户消息引用 |
+| [session_parser.py](../src/traceforge/reconstruction/session_parser.py) | 模型理解完整原文、系统消息和工具协议，校验解析结果的原始引用 |
 | [session_source.py](../src/traceforge/reconstruction/session_source.py) | records 路径的 source、用户文本和工具时间线 |
 | [eligible_reconstruction.py](../src/traceforge/reconstruction/eligible_reconstruction.py) | 共用编排：Intent、Replay/路由、候选、充分性、任务拟合、验证与执行门禁 |
 | [session_inventory.py](../src/traceforge/reconstruction/session_inventory.py) | 冻结输入和逐条 inventory 的完整性核对 |
@@ -27,6 +28,9 @@
 | [workspace_integrity.py](../src/traceforge/reconstruction/workspace_integrity.py) | 静态完整性诊断与任务相关分类 |
 | [workspace_sufficiency.py](../src/traceforge/reconstruction/workspace_sufficiency.py) | 只读判断上下文是否足够，单列执行 preflight；`sufficiency.json` |
 | [environment_probe.py](../src/traceforge/reconstruction/environment_probe.py) | 真实沙盒探针收据、输入不变与有限范围 reset 检查 |
+| [researcher.py](../src/traceforge/reconstruction/researcher.py) | terminal 作者保持会话，执行候选自测；独立审查后反馈修订 |
+| [python_runtime.py](../src/traceforge/reconstruction/python_runtime.py) | 按候选依赖准备并冻结 Python wheel，供自测和交付包复用 |
+| [search_environment.py](../src/traceforge/reconstruction/search_environment.py)、[search_tools.py](../src/traceforge/reconstruction/search_tools.py) | search 上下文重建、历史捕获引用、真实检索和网页读取及 rollout |
 | [reconstructability.py](../src/traceforge/reconstruction/reconstructability.py) | 对必要环境缺口、基础设施问题和管线错误分类 |
 | [task_fit.py](../src/traceforge/reconstruction/task_fit.py) | 环境合同、原任务合同、义务映射、变体与执行 blocker |
 | [task_environment.py](../src/traceforge/reconstruction/task_environment.py)、[stage_metrics.py](../src/traceforge/reconstruction/stage_metrics.py) | `task_environment_pair.json` 与阶段汇总 |
@@ -50,7 +54,7 @@
 
 `--sandbox` 用于 AGS 沙盒路径；不能把宿主机代理或离线替身称为沙盒执行。进程启动和运行完成也是两件事，应检查真实结果与清理收据。
 
-Verifier 校准和真实解题复验分开。RED 的初态失败、oracle 成功、mutation 失败用于检验验证器；rollout 的实际任务行为与轨迹用于检验 solver。两者不能互相代替。显式请求 rollout 时允许执行尚未验证响应义务的诊断试跑；试跑失败或仍有未验证义务时保持 REVIEW，完整验收后才能进入 SFT。有效 acceptance-report 收据只证明格式与轨迹绑定，不能代替内容验收。
+Verifier 校准和真实解题复验分开。RED 的初态失败、oracle 成功、mutation 失败用于检验验证器；rollout 的实际任务行为与轨迹用于检验 solver。两者不能互相代替。显式启用人工回答核查时，可以先验证 FILE 行为并执行真实 rollout；未验证的 NON_FILE 义务仍保留 REVIEW，不能进入 SFT。有效 acceptance-report 收据只证明格式与轨迹绑定，不能代替内容验收。
 
 ## 专题文档
 

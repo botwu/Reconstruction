@@ -24,9 +24,6 @@ capture_timeout_sec 是独立的上游 socket 空闲超时，默认 300 秒；
 仍不能通过验收。恢复情况记录为 RETRY_SUPERSEDED_TRANSPORT_ERROR，
 失败尝试不会从证据中删除。
 
-运行时 SHA-256：
+上述 patch 保留历史变更。当前外部 Harbor 源码单独归档，完整哈希、部署回执和固定的核心提交见项目 `artifacts/pipeline-debug-20260929/default-integration/release-freeze.json`；每份旧执行仍绑定自己的运行时，不随新版本改写。
 
-- agent.py: bb38248b976bc3cd7887fa5add7c74e927a956dc8f5a2fda810bc0cd9f4af612
-- capture.py: ce0a129a1806ea84ce409698e5561153f06a94f3936c6375b7e0b4af7c785761
-- evidence.py: 98fdc7fc0e98b9c298571d2483d286fc72be16776cab140eb3e718d54846aeba
-- validator.py: ad71cede3cf1ffe6c221270f11620a88c6c4d971b4b50e4681fecddeab49574f
+原文保留模式只认可经过哈希绑定的初始工作区中已有的常量，以及能从该原文证明的显示缩略。检测记录保留，新增凭据和显式运行密钥仍拒收。源码常量是否属于原输入，与任务行为是否通过分别判定；失败产物仍保持 TASK_FAIL。

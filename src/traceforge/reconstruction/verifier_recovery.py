@@ -190,13 +190,11 @@ def run_verifier_recovery(
     workspace = Path(workspace_root).resolve()
     all_non_file = bool(environment_bindings(task)) and not file_ids
     if (
-        (
+        all_non_file or (
             source is not None
             and not _workspace_has_files(workspace)
             and source.get("selected_span_has_file_ops") is False
         )
-        or (all_non_file and not _workspace_has_files(workspace))
-        or all_non_file
     ):
         result = {
             "schema_version": VERIFIER_RECOVERY_SCHEMA,

@@ -187,13 +187,7 @@ VERIFIER_ROLE = AgentRole(
         "(file/dir exists is not a missing capability). Protective tests must "
         "pass. Reference scripts must satisfy task obligations and preserve user constraints; they "
         "must not read hidden tests or answers. Expected values are computed "
-        "independently. After each run, inspect every failing assertion and repair "
-        "the candidate instead of repeating it. Generated YAML/configuration must "
-        "be syntactically valid with correct indentation; a quoted `$placeholder` "
-        "uses a literal `$` without a backslash. Every Python reference or mutation script must be "
-        "syntactically valid as a standalone file; mentally apply ast.parse or "
-        "python -m py_compile before returning it, and never place a raw newline "
-        "inside a quoted string. Run pytest only through the provided sandbox tool."
+        "independently. Run pytest only through the provided sandbox tool."
     ),
     toolsets=("traceforge_proxy",),
     tools=("list_dir", "read_file", "write_test", "run_pytest"),

@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from traceforge.reconstruction.agents.runtime import AgentResult
-from traceforge.reconstruction.model_gateway import ModelRequest
 from traceforge.reconstruction import verification as verification_module
 from traceforge.reconstruction.verification import VerificationConfig, run_reconstruction_verification
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import re
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path("/mnt/afs_toolcall/wujian1/Projects/workspace/TraceRconstruction")

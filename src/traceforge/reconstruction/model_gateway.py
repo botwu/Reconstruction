@@ -101,7 +101,7 @@ def _parse_config_value(raw: str) -> Any:
         return raw.strip().strip("'\"")
 
 
-def _iter_config_items(path: str | os.PathLike[str]) -> list[tuple[str, Any]]:
+def iter_config_items(path: str | os.PathLike[str]) -> list[tuple[str, Any]]:
     """解析顶层 key / 一行 JSON 或标量，结果只留在进程内存。"""
 
     try:
@@ -131,12 +131,6 @@ def _iter_config_items(path: str | os.PathLike[str]) -> list[tuple[str, Any]]:
     return items
 
 
-def iter_config_items(path: str | os.PathLike[str]) -> list[tuple[str, Any]]:
-    """Return parsed top-level config entries without exposing credentials in logs."""
-
-    return _iter_config_items(path)
-
-
 def _config_channels(path: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
     """读取 ``newapi_channel_conn`` 配置而不将密钥写入日志或 artifact。
 
@@ -146,7 +140,7 @@ def _config_channels(path: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
     """
 
     channels: dict[str, dict[str, Any]] = {}
-    for name, value in _iter_config_items(path):
+    for name, value in iter_config_items(path):
         if isinstance(value, dict):
             channels[name] = value
     return channels
@@ -155,7 +149,7 @@ def _config_channels(path: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
 def load_e2b_api_key(path: str | os.PathLike[str]) -> str | None:
     """读取 AGS/E2B 沙盒密钥；只返回内存中的字符串，不写日志。"""
 
-    for name, value in _iter_config_items(path):
+    for name, value in iter_config_items(path):
         if name.lower() not in _SANDBOX_KEY_ALIASES:
             continue
         if isinstance(value, str) and value.strip():

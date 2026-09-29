@@ -1,57 +1,38 @@
 # TraceForge
 
-TraceForge 从真实 session 中恢复用户任务、补全 task-start 环境并生成行为验证器，交付 Harbor 任务包；真实 agent 在包中执行后，再交付执行轨迹和验收证据。
+从真实 session 恢复用户任务和任务初始环境，再执行真实 agent rollout。输入由调用方明确标为 `search` 或 `terminal`，两者使用不同的环境与工具。
 
-**当前尚无可信的完整端到端验收结果。** 已有真实重建、RED 校准和解题轨迹，但任务绑定、环境补全反馈与输出义务验收仍有未解决问题。最新审计结论、历史运行证据和待修事项统一见 [当前状态](docs/current-status.md)，不能仅凭某个阶段的 `READY` 宣布任务已完成。
+已取得两种 domain 的真实执行产物。阶段通过、文件评分和回答内容正确是不同结论；最新证据与未完成事项见 [当前状态](docs/current-status.md)。
 
-## 阅读入口
-
-1. [当前状态与交付标准](docs/current-status.md)
-2. [原始会话处理流程](docs/raw-session-pipeline.md)
-3. [源码阅读地图与契约](docs/rebuild-live-map.md)
-4. [AGENTS.md](AGENTS.md)：唯一开发规范
-
-## 当前入口
-
-R04/R05 按原始 session 处理使用 `reconstruct raw-run`；`reconstruct run --records` 保留给已有筛选记录的路径。两者进入共同的重建主链。
-
-`raw-run` 的 terminal 默认在 AGS 使用连续 researcher：初态恢复、自测、验证器和参考解共享作者历史，独立检查发现的初态缺口可跨阶段返回原作者。search 保留检索专用路径。入口、反馈方向和停止条件见 [默认研究者管线](docs/researcher-pipeline.md)。
-
-```text
-原始 session → 任务分段 → Intent → Replay/Route
-→ Completion → Sufficiency → Environment Contract / TaskFit
-→ Verifier / Harbor RED → Harbor bundle
-→ 独立的 Hermes rollout 与完整验收
-```
-
-以下命令需要配置可用模型、Hermes、Harbor/AGS 环境；行号对应冻结输入，运行目录必须唯一：
+## 入口
 
 ```bash
 PYTHONPATH=src python -m traceforge reconstruct raw-run \
-    --input return_data/four_batch/frozen_r04_r05/R04.jsonl \
-    --line-number <原始行号> \
-    --output artifacts/terminal-live/<run-id> \
-    --config config.yaml \
-    --hermes-home "$HERMES_HOME" \
-    --sandbox \
-    --execute-red \
-    --execute-rollout \
-    --rollout-trials 2 \
-    --rollout-timeout-seconds 14400 \
-    --rollout-max-iterations 500
+  --input return_data/four_batch/by-rubric/R04.jsonl \
+  --line-number 1 --domain terminal \
+  --output /path/to/new-run --config /path/to/config.yaml \
+  --hermes-home /path/to/hermes-agent --harbor-root /path/to/harbor_ags \
+  --execute-red --execute-rollout --rollout-trials 2 \
+  --manual-response-review
 ```
 
-`--execute-red` 校准重建任务的验证器；`--execute-rollout` 追加真实解题复验。这两个阶段在产物和资格判断上分开。批处理入口为 `scripts/prepare_session_batch.py`、`scripts/run_session_batch.py`，输入清单说明见 [原始会话流程](docs/raw-session-pipeline.md)。
+`--manual-response-review` 适用于用户同意逐份人工核查自由文本分析的任务；文件验证照常执行，未核查的回答不计为通过。纯文件任务不需要此选项。
 
-## 开发检查
+terminal 默认使用 AGS；`--no-sandbox` 仅供离线诊断。search 使用检索和网页读取服务，不依赖 AGS，不走文件补全与 pytest 路径。模型、凭据和执行预算从配置读取，配置说明见 [模型连接](docs/model-gateway-config.md)。
+
+批处理使用 `scripts/prepare_session_batch.py` 和 `scripts/run_session_batch.py`；执行时同样必须显式传入 `--domain search` 或 `--domain terminal`。每条 session 单独记录最终清单和错误，不能以进程结束代替产物验收。
+
+## 阅读与开发
+
+- [处理流程与产物](docs/raw-session-pipeline.md)
+- [作者、独立检查和反馈循环](docs/researcher-pipeline.md)
+- [模块阅读地图](docs/rebuild-live-map.md)
+- [开发规范](AGENTS.md)
 
 ```bash
 uv sync --dev --python 3.12
-uv run pytest
-uv run ruff check .
-uv run ruff format --check .
+uv run pytest -m 'not live'
+uv run ruff check src scripts --select F,E9
 ```
 
-这些是开发检查命令，不代表当前版本已经通过所有检查。离线测试、命令退出码或单个 RED 数值均不能替代真实产物验收。
-
-原始轨迹提供重建依据；生成内容必须区分观察事实和补全推断。Completion 不提前实现用户目标，也不把参考答案或隐藏测试放进 agent 工作区。`config.yaml`、真实数据、凭据和运行产物不进入 Git。
+普通测试不发起模型请求；真实验证须另外检查输入、环境、校准、rollout 和实际产物。原始 session、配置、凭据及运行结果不提交到 Git。

@@ -22,7 +22,7 @@ class ReconstructionSourceError(ValueError):
     """无法从原始 session 构造重建源。"""
 
 
-def _message_text(message: dict[str, Any]) -> str:
+def message_text(message: dict[str, Any]) -> str:
     content = message.get("content")
     if isinstance(content, str):
         return content.strip()
@@ -105,7 +105,7 @@ def _span_at(spans: list[Any]) -> dict[int, str]:
     return result
 
 
-def _tool_timeline(messages: list[dict[str, Any]], spans: list[Any]) -> list[dict[str, Any]]:
+def tool_timeline(messages: list[dict[str, Any]], spans: list[Any]) -> list[dict[str, Any]]:
     index_to_span = _span_at(spans)
     pending: dict[str, dict[str, Any]] = {}
     timeline: list[dict[str, Any]] = []
@@ -137,7 +137,7 @@ def _tool_timeline(messages: list[dict[str, Any]], spans: list[Any]) -> list[dic
                     "call_id": call_id,
                     "name": str(message.get("name") or message.get("tool_name") or ""),
                     "arguments": None,
-                    "result_text": _message_text(message),
+                    "result_text": message_text(message),
                     "result_blocks": _result_blocks(message),
                     "pending": False,
                     "span_id": index_to_span.get(index),
@@ -146,7 +146,7 @@ def _tool_timeline(messages: list[dict[str, Any]], spans: list[Any]) -> list[dic
                     **_tool_result_state(message),
                 })
             else:
-                item["result_text"] = _message_text(message)
+                item["result_text"] = message_text(message)
                 item["result_blocks"] = _result_blocks(message)
                 item.update(_tool_result_state(message))
                 item["pending"] = False
@@ -158,10 +158,10 @@ def timeline_has_file_ops(timeline: list[dict[str, Any]]) -> bool:
     return any(op.get("kind") in {"read", "write"} for op in normalize_file_ops(timeline))
 
 
-def _span_records(spans: list[Any], messages: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def span_records(spans: list[Any], messages: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     for span in spans:
-        users = [_message_text(messages[i]) for i in span.user_message_indices if 0 <= i < len(messages)]
+        users = [message_text(messages[i]) for i in span.user_message_indices if 0 <= i < len(messages)]
         result[span.span_id] = {
             "span_id": span.span_id,
             "message_start": span.message_start,
@@ -262,9 +262,9 @@ def build_reconstruction_source(*, raw_line: str, record: dict[str, Any]) -> dic
     raw_messages = [item if isinstance(item, dict) else {} for item in payload["messages"]]
     # span_id 和落盘内容均使用完整原始 messages。
     spans, span_meta = build_spans(raw_messages)
-    span_map = _span_records(spans, raw_messages)
+    span_map = span_records(spans, raw_messages)
     tasks, relations, label_status = _tagged_tasks(record, span_map)
-    timeline = _tool_timeline(raw_messages, spans)
+    timeline = tool_timeline(raw_messages, spans)
     triage = record.get("triage") if isinstance(record.get("triage"), dict) else {}
     session_tags = build_session_tags(
         tasks=tasks,
@@ -357,17 +357,3 @@ def write_reconstruction_source(source: dict[str, Any], output_dir: str | Path) 
     path = root / "reconstruction_source.json"
     path.write_text(json.dumps(source, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
-
-
-# Public read-only wrappers used by raw-session intake. The underlying helpers stay
-# private so the legacy screened source keeps its existing implementation.
-def message_text(message: dict[str, Any]) -> str:
-    return _message_text(message)
-
-
-def tool_timeline(messages: list[dict[str, Any]], spans: list[Any]) -> list[dict[str, Any]]:
-    return _tool_timeline(messages, spans)
-
-
-def span_records(spans: list[Any], messages: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    return _span_records(spans, messages)

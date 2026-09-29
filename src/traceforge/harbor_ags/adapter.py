@@ -175,11 +175,6 @@ def validate_harbor_bundle(
     return dict(result)
 
 
-def _run_harbor_validator(task_dir: Path, *, harbor_root: Path | None) -> dict[str, Any]:
-    """调用现有 harbor_ags.task_bundle.validate_task_bundle。"""
-    return validate_harbor_bundle(task_dir, harbor_root=harbor_root)
-
-
 def _plan_id(layout: Mapping[str, Any], *, source_refs: tuple[str, ...]) -> str:
     identity = {
         "schema_version": HARBOR_AGS_PLAN_SCHEMA,
@@ -208,7 +203,7 @@ def build_boundary_plan(
     harbor_validation = None
     validation_status = "LOCAL_LAYOUT_ONLY"
     if harbor_root is not None:
-        harbor_validation = _run_harbor_validator(root, harbor_root=Path(harbor_root))
+        harbor_validation = validate_harbor_bundle(root, harbor_root=Path(harbor_root))
         validation_status = "HARBOR_VALIDATED"
     plan_id = _plan_id(layout, source_refs=refs)
     plan = {
