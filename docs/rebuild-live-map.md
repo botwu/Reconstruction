@@ -6,11 +6,11 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [cli.py](../src/traceforge/cli.py) | `reconstruct raw-run`、已有 records 的 `reconstruct run`、Harbor 计划/执行/读取入口 |
+| [cli.py](../src/traceforge/cli.py) | `reconstruct raw-run`、Harbor 计划/执行/读取入口 |
 | [raw_session.py](../src/traceforge/reconstruction/raw_session.py) | 原始 session 的 span 分段、任务覆盖与用户消息引用 |
 | [session_parser.py](../src/traceforge/reconstruction/session_parser.py) | 模型理解完整原文、系统消息和工具协议，校验解析结果的原始引用 |
-| [session_source.py](../src/traceforge/reconstruction/session_source.py) | records 路径的 source、用户文本和工具时间线 |
-| [eligible_reconstruction.py](../src/traceforge/reconstruction/eligible_reconstruction.py) | 共用编排：Intent、Replay/路由、候选、充分性、任务拟合、验证与执行门禁 |
+| [session_source.py](../src/traceforge/reconstruction/session_source.py) | 原始行读取、消息视图和调用/返回索引 |
+| [pipeline.py](../src/traceforge/reconstruction/pipeline.py) | 共用编排：Intent、Replay/路由、候选、充分性、任务拟合、验证与执行门禁 |
 | [session_inventory.py](../src/traceforge/reconstruction/session_inventory.py) | 冻结输入和逐条 inventory 的完整性核对 |
 | [prepare_session_batch.py](../scripts/prepare_session_batch.py)、[run_session_batch.py](../scripts/run_session_batch.py) | 批次准备、顺序执行与最终清单检查 |
 | [run_config.py](../src/traceforge/reconstruction/run_config.py) | 模型、沙盒和 rollout 参数解析 |
@@ -60,7 +60,6 @@ Verifier 校准和真实解题复验分开。RED 的初态失败、oracle 成功
 
 - [模型通道](model-gateway-config.md)
 - [Harbor/AGS 适配](harbor-ags-boundary-adapter.md)
-- [筛选设计](reconstruction-screening-plan.md)、[筛选 rubric](reconstruction-screening-rubric.md)：已有 records 路径
 - [失败分析复用](failure-analysis-reuse.md)
 
 原始数据、凭据、运行产物不进入 Git。历史诊断路径和已知缺口只在 [当前状态](current-status.md) 维护，避免阅读地图混入过期单次运行记录。

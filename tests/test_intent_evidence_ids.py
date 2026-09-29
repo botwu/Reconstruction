@@ -5,23 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from hermes_fakes import tagged_record
-from p1_fixtures import ToolCitingIntentRuntime, load_jsonl_row
+from hermes_fakes import raw_source
+from p1_fixtures import ToolCitingIntentRuntime
 from traceforge.reconstruction.agents.runtime import AgentResult
 from traceforge.reconstruction.agents.sandbox import staging_user_texts
 from traceforge.reconstruction.agents.session import AgentSession, execute_tool
 from traceforge.reconstruction.intent_recovery import run_intent_recovery
 from traceforge.reconstruction.session_source import (
-    build_reconstruction_source,
     load_raw_line,
 )
 
-_AUDIT_RECORDS = Path(
-    "/tmp/traceforge-screen-live10/ab2e5edb3b6889e47b49b2d9b71e239b85cc615a695bee8a976ec41796d89a40/private/records.jsonl"
-)
-_AUDIT_SESSIONS = Path(
-    "/mnt/afs_toolcall/wujian1/Projects/data_back_workspace/R01/opus-4.8/sessions.jsonl"
-)
 
 
 class _CaptureRuntime:
@@ -79,7 +72,7 @@ def _padded_source(*, user_index: int, text: str, extra_task: bool = False) -> d
         )
     raw_line = json.dumps({"messages": messages, "meta": {}, "tools": []}, ensure_ascii=False)
     selected = [0, 1] if extra_task else [0]
-    return build_reconstruction_source(raw_line=raw_line, record=tagged_record(raw_line, selected=selected))
+    return raw_source(raw_line, selected=selected)
 
 
 def test_read_session_message_returns_one_turn() -> None:
@@ -217,32 +210,6 @@ def test_intent_rejects_cross_task_and_unknown_ids(tmp_path: Path) -> None:
     assert any(code.startswith("OBLIGATION_EVIDENCE_REQUIRED") for code in rejected["errors"])
 
 
-@pytest.mark.parametrize("line_number", [3, 10])
-def test_audit_line_intent_ids_match_tools(tmp_path: Path, line_number: int) -> None:
-    record = load_jsonl_row(_AUDIT_RECORDS, line_number)
-    if record is None or not _AUDIT_SESSIONS.is_file():
-        pytest.skip("audit live10 records or opus-4.8 sessions.jsonl not available")
-    raw_line = load_raw_line(
-        _AUDIT_SESSIONS,
-        line_number=line_number,
-        line_sha256=str(record.get("line_sha256") or "") or None,
-    )
-    source = build_reconstruction_source(raw_line=raw_line, record=record)
-    runtime = ToolCitingIntentRuntime()
-    result = run_intent_recovery(
-        source=source, agent=runtime, output_root=tmp_path / f"L{line_number}"
-    )
-    assert runtime.listed
-    assert all(item["id"] == f"user:{item['message_index']}" for item in runtime.listed)
-    assert all(not str(item["by_id"]).startswith("error:") for item in runtime.reads)
-    assert all(item["by_id"] == item["by_index"] for item in runtime.reads)
-    if any(item["message_index"] == 129 for item in runtime.listed):
-        assert execute_tool("read_user_text", {"index": 129}, runtime.session)
-        assert not execute_tool("read_user_text", {"index": 129}, runtime.session).startswith("error:")
-        assert execute_tool("read_user_text", {"index": 0}, runtime.session).startswith("error:")
-    cited = result["tasks"][0]["task"]["acceptance_obligations"][0]["evidence_ref_ids"]
-    assert cited == [item["id"] for item in runtime.listed]
-    assert result["status"] == "READY"
 
 
 

@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from traceforge.reconstruction import eligible_reconstruction as reconstruction
+from traceforge.reconstruction import pipeline as reconstruction
 from traceforge.reconstruction.raw_session import RawSessionSourceError, build_raw_session_source
 from traceforge.reconstruction.session_source import write_reconstruction_source
-from traceforge.screening.observable import build_spans
+from traceforge.reconstruction.session_spans import build_spans
 
 
 @dataclass
@@ -107,7 +107,7 @@ def test_raw_session_groups_continuation_and_preserves_all_spans(tmp_path: Path)
     assert source["line_number"] == 7
     assert len(source["tasks"]) == 2
     assert len(source["tasks"][0]["span_ids"]) == 2
-    assert source["tasks"][0]["intake_selected"] is True
+    assert "intake_selected" not in source["tasks"][0]
     assert source["context_span_ids"]
     assert source["selected_task_ids"] == [task["task_id"] for task in source["tasks"]]
     assert "decision" not in source
@@ -223,21 +223,21 @@ def test_raw_entry_uses_supplied_domain_without_screening(tmp_path, monkeypatch,
         received.update(kwargs)
         return tmp_path / "reconstruction_manifest.json"
 
-    monkeypatch.setattr(reconstruction, "run_eligible_reconstruction", continue_reconstruction)
+    monkeypatch.setattr(reconstruction, "run_reconstruction", continue_reconstruction)
     reconstruction.run_raw_session_reconstruction(
         raw_line=line, line_number=1, source_ref="known-domain", domain=domain,
         agent=FakeAgent(segmentation_payload(line)), output_root=tmp_path,
     )
-    source = received["source_override"]
+    source = received["source"]
     assert source["domain_route"] == route
     assert source["input_domain"] == domain
-    assert received["record"] is None
+    assert "record" not in received
     assert all("reconstruction_eligible" not in task for task in source["tasks"])
 
 
 def test_invalid_input_domain_fails_before_any_agent_call(tmp_path):
     agent = FakeAgent({})
-    with pytest.raises(reconstruction.EligibleReconstructionError, match="显式指定 domain"):
+    with pytest.raises(reconstruction.ReconstructionError, match="显式指定 domain"):
         reconstruction.run_raw_session_reconstruction(
             raw_line=raw_session(), line_number=1, source_ref="unknown", domain="auto",
             agent=agent, output_root=tmp_path,

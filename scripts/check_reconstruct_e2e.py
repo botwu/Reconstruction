@@ -1,4 +1,4 @@
-"""按阶段验收 reconstruct run 活跑产物，不打印密钥或文件正文。"""
+"""按阶段验收 reconstruct raw-run 活跑产物，不打印密钥或文件正文。"""
 
 from __future__ import annotations
 

@@ -20,7 +20,7 @@ from traceforge.reconstruction.session_source import (
     span_records,
     tool_timeline,
 )
-from traceforge.screening.observable import build_spans
+from traceforge.reconstruction.session_spans import build_spans
 
 RAW_SOURCE_SCHEMA = "traceforge.reconstruction-source.raw-session.v1"
 SEGMENTATION_SCHEMA = "traceforge.session-task-segmentation.v1"
@@ -323,10 +323,6 @@ def build_raw_session_source(
             "user_texts": texts,
             "evidence_refs": evidence,
             "task_kind": group["task_kind"],
-            "intake_selected": True,
-            "is_actionable": True,
-            "outcome": "UNCERTAIN",
-            "needs_reconstruction": None,
         }
         source_tasks.append(task)
         selected_ids.append(task_id)

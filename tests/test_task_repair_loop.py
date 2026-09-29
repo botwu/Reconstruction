@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from traceforge.reconstruction import eligible_reconstruction as pipeline
+from traceforge.reconstruction import pipeline as pipeline
 from traceforge.reconstruction.researcher import ReconstructionRuntime
 
 

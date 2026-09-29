@@ -5,40 +5,16 @@ from pathlib import Path
 
 import pytest
 
+from hermes_fakes import raw_source
+
 from traceforge.reconstruction.agents.runtime import AgentResult
 from traceforge.reconstruction.env_replay import replay_from_timeline
 from traceforge.reconstruction.intent_recovery import IntentRecoveryError, run_intent_recovery
-from traceforge.reconstruction.session_source import build_reconstruction_source
-from traceforge.screening.observable import build_spans
+from traceforge.reconstruction.session_spans import build_spans
 
 
 def _record(payload: dict) -> dict:
-    spans, _ = build_spans(payload["messages"])
-
-    def task(span, indices, task_id):
-        return {
-            "task_id": task_id,
-            "span_ids": [span.span_id],
-            "evidence_refs": {"span_ids": [span.span_id], "message_indices": indices},
-            "is_actionable": True,
-            "outcome": "INCOMPLETE",
-            "needs_reconstruction": True,
-            "reconstruction_eligible": True,
-            "rubric": {},
-            "reason": "未完成",
-            "tags": ["actionable", "incomplete", "needs_reconstruction", "rubric_pass", "selected_for_reconstruction"],
-        }
-
-    return {
-        "decision": "ELIGIBLE",
-        "source_ref": "session:test",
-        "line_number": 1,
-        "triage": {
-            "tasks": [task(spans[0], [0, 1], "t1"), task(spans[1], [2, 3], "t2")],
-            "relations": [],
-            "label_status": "COMPLETE",
-        },
-    }
+    return raw_source(json.dumps(payload), selected=[0, 1], task_ids=["t1", "t2"])
 
 
 class _IntentAgent:
@@ -72,7 +48,7 @@ def test_source_and_intent_preserve_full_session_and_emit_multiple_tasks(tmp_pat
         ],
         "meta": {"capture": "immutable"},
     }
-    source = build_reconstruction_source(raw_line=json.dumps(payload), record=_record(payload))
+    source = _record(payload)
     assert len(source["raw_session"]["messages"]) == 5
     assert source["selected_task_ids"] == ["t1", "t2"]
     result = run_intent_recovery(source=source, agent=_IntentAgent(), output_root=tmp_path)
@@ -81,20 +57,6 @@ def test_source_and_intent_preserve_full_session_and_emit_multiple_tasks(tmp_pat
     assert all(item["task"]["evidence_refs"]["message_indices"] for item in result["tasks"])
 
 
-def test_legacy_span_only_record_is_review_only():
-    payload = {"messages": [{"role": "user", "content": "做事"}, {"role": "assistant", "content": "未完成"}]}
-    spans, _ = build_spans(payload["messages"])
-    record = {
-        "decision": "ELIGIBLE",
-        "source_ref": "legacy",
-        "line_number": 1,
-        "triage": {"selected_span_ids": [spans[0].span_id]},
-    }
-    source = build_reconstruction_source(raw_line=json.dumps(payload), record=record)
-    assert source["label_status"] == "LEGACY_INCOMPLETE"
-    assert source["selected_task_ids"] == []
-    with pytest.raises(IntentRecoveryError, match="真实任务标签"):
-        run_intent_recovery(source=source, agent=_IntentAgent(), output_root="/tmp/unused-intent")
 
 
 def test_replay_does_not_downgrade_complete_file_after_later_write():
@@ -113,7 +75,7 @@ def test_replay_does_not_downgrade_complete_file_after_later_write():
 
 
 def test_intent_to_environment_keeps_tagged_tool_evidence():
-    from traceforge.reconstruction.eligible_reconstruction import _task_source
+    from traceforge.reconstruction.pipeline import _task_source
 
     tag = {"task_id": "t1", "span_ids": ["s1"]}
     source = {
@@ -135,7 +97,7 @@ def test_intent_to_environment_keeps_tagged_tool_evidence():
 
 
 def test_task_source_keeps_span_relations_for_intent() -> None:
-    from traceforge.reconstruction.eligible_reconstruction import _task_source
+    from traceforge.reconstruction.pipeline import _task_source
 
     source = {
         "tasks": [{"task_id": "t1", "span_ids": ["s1"]}],
@@ -152,7 +114,7 @@ def test_task_source_keeps_span_relations_for_intent() -> None:
 
 
 def test_selected_span_file_ops_ignore_other_spans() -> None:
-    from traceforge.reconstruction.eligible_reconstruction import _task_source
+    from traceforge.reconstruction.pipeline import _task_source
 
     tag = {"task_id": "t-ret", "span_ids": ["s-ret"], "domain_route": "retrieval"}
     source = {
@@ -184,7 +146,7 @@ def test_selected_span_file_ops_ignore_other_spans() -> None:
 
 
 def test_replay_and_completion_use_full_session_tool_timeline(tmp_path: Path, monkeypatch) -> None:
-    from traceforge.reconstruction import eligible_reconstruction as er
+    from traceforge.reconstruction import pipeline as er
     from traceforge.reconstruction.terminal_universe_environment import ReplayResult, ReplayedFile
 
     tag = {"task_id": "t1", "span_ids": ["s1"]}

@@ -13,7 +13,7 @@ from traceforge.reconstruction.researcher import ReconstructionRuntime, check_ca
 from traceforge.reconstruction.agents import AgentSession, COMPLETION_REPLAYED_ROLE, SUFFICIENCY_ROLE
 from traceforge.reconstruction.agents.runtime import AgentResult
 from traceforge.reconstruction.agents.session import execute_tool
-from traceforge.reconstruction.eligible_reconstruction import EligibleReconstructionError, run_prepared_task
+from traceforge.reconstruction.pipeline import ReconstructionError, run_prepared_task
 
 
 class ReconstructionTests(unittest.TestCase):
@@ -140,7 +140,7 @@ class ReconstructionTests(unittest.TestCase):
         search.assert_called_once()
         self.assertEqual(result["status"], "ENVIRONMENT_READY")
         source["session_parser"]["status"] = "ERROR"
-        with self.assertRaisesRegex(EligibleReconstructionError, "Session Parser"):
+        with self.assertRaisesRegex(ReconstructionError, "Session Parser"):
             run_prepared_task(source=source, task=source["tasks"][0], agent=Mock(), output_root=self.root)
 
     def test_environment_review_does_not_inherit_author_assumptions(self) -> None:
@@ -350,7 +350,7 @@ class ReconstructionTests(unittest.TestCase):
                     self.assertEqual(result.errors, [])
 
     def test_prepared_entry_repairs_existing_candidate_instead_of_starting_over(self) -> None:
-        module = "traceforge.reconstruction.eligible_reconstruction."
+        module = "traceforge.reconstruction.pipeline."
         source = {"session_parser": {"status": "READY"}, "tasks": [{"task_id": "t"}],
                   "input_domain": "terminal"}
         candidate, feedback = {"workspace": "previous"}, {"failure": "原测试收集失败"}
@@ -367,6 +367,6 @@ class ReconstructionTests(unittest.TestCase):
         self.assertEqual(repair.call_args.kwargs["candidate"], candidate)
         self.assertEqual(repair.call_args.kwargs["feedback"], feedback)
         self.assertEqual(result["errors"], ["仍需修复"])
-        with self.assertRaisesRegex(EligibleReconstructionError, "检查点.*反馈"):
+        with self.assertRaisesRegex(ReconstructionError, "检查点.*反馈"):
             run_prepared_task(source=source, task=source["tasks"][0], agent=Mock(),
                               output_root=self.root, completion_seed=candidate)

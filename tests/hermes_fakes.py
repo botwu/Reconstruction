@@ -7,57 +7,35 @@ import json
 from typing import Any
 
 
-def tagged_record(raw_line: str, *, selected: list[int] | None = None) -> dict[str, Any]:
-    """带完整 v10 标签的固定筛选 fixture，不经过模型重新判定。"""
-    from traceforge.screening.contracts import TRIAGE_PROMPT_VERSION
-    from traceforge.screening.observable import build_spans
+def raw_source(raw_line: str, *, selected: list[int] | None = None,
+               groups: list[list[int]] | None = None, task_ids: list[str] | None = None,
+               domain: str = "terminal") -> dict[str, Any]:
+    """固定任务分组通过真实原始会话入口，保留完整会话和上下文。"""
+    from tempfile import TemporaryDirectory
+    from types import SimpleNamespace
+    from traceforge.reconstruction.raw_session import build_raw_session_source
+    from traceforge.reconstruction.session_spans import build_spans
 
-    payload = json.loads(raw_line)
-    spans, _ = build_spans(payload["messages"])
-    selected_indices = set([0] if selected is None else selected)
-    tasks = [
-        {
-            "task_id": f"fixture-task-{index}",
-            "span_ids": [span.span_id],
-            "is_actionable": True,
-            "outcome": "INCOMPLETE" if index in selected_indices else "SUCCESS",
-            "needs_reconstruction": index in selected_indices,
-            "reconstruction_eligible": index in selected_indices,
-            "eligibility": {
-                "decision": "ELIGIBLE" if index in selected_indices else "REJECT",
-                "blocking_reason_codes": [] if index in selected_indices else ["OUTCOME_SUCCESS"],
-            },
-            "tags": [],
-            "evidence_refs": {
-                "span_ids": [span.span_id],
-                "message_indices": list(range(span.message_start, span.message_end)),
-            },
-        }
-        for index, span in enumerate(spans)
-    ]
-    from traceforge.screening.task_labels import apply_task_tags, build_session_tags
-
-    for task in tasks:
-        apply_task_tags(task)
-    session_tags = build_session_tags(tasks=tasks, relations=[], decision="ELIGIBLE")
-    return {
-        "decision": "ELIGIBLE",
-        "route": "ELIGIBLE_CODE_FILE",
-        "source_ref": "jsonl:4:abcd",
-        "line_number": 4,
-        "line_sha256": "unused",
-        "triage": {
-            "prompt_version": TRIAGE_PROMPT_VERSION,
-            "label_status": "COMPLETE",
-            "tasks": tasks,
-            "relations": [],
-            "session_tags": session_tags,
-            "selected_task_ids": [
-                task["task_id"] for task in tasks if task["reconstruction_eligible"]
-            ],
-            "selected_span_ids": [spans[index].span_id for index in sorted(selected_indices)],
-        },
+    spans, _ = build_spans(json.loads(raw_line)["messages"])
+    groups = groups if groups is not None else [[i] for i in ([0] if selected is None else selected)]
+    assigned = {i for group in groups for i in group}
+    payload = {
+        "tasks": [{"span_ids": [spans[i].span_id for i in group],
+                   "evidence_refs": {"message_indices": [j for i in group for j in spans[i].user_message_indices]},
+                   "task_kind": "fixture"} for group in groups],
+        "context_span_ids": [span.span_id for i, span in enumerate(spans) if i not in assigned],
+        "relations": [], "label_status": "COMPLETE",
     }
+    agent = SimpleNamespace(run=lambda **_: SimpleNamespace(
+        payload=payload, completed=True, errors=[], final_text=json.dumps(payload), turns=[]))
+    with TemporaryDirectory() as output:
+        source = build_raw_session_source(raw_line=raw_line, line_number=4,
+                                         source_ref="fixture:session", agent=agent, output_root=output)
+    for task, task_id in zip(source["tasks"], task_ids or [f"fixture-task-{i}" for i in range(len(groups))], strict=True):
+        task["task_id"] = task_id
+    source["selected_task_ids"] = [task["task_id"] for task in source["tasks"]]
+    source["domain_route"] = domain
+    return source
 
 
 class FakeHermesAgent:
@@ -84,6 +62,13 @@ class FakeHermesAgent:
                                        for oid in [*specification["file_obligation_ids"],
                                                    *specification.get("response_obligation_ids", [])]],
             }
+        elif task_id == "session_tasks":
+            catalog = next(json.loads(line.split("=", 1)[1]) for line in instruction.splitlines()
+                           if line.startswith("SPAN_CATALOG="))
+            payload = {"tasks": [{"span_ids": [item["span_id"]],
+                                  "evidence_refs": {"message_indices": item["user_message_indices"]},
+                                  "task_kind": "fixture"} for item in catalog],
+                       "context_span_ids": [], "relations": [], "label_status": "COMPLETE"}
         elif task_id == "intent":
             records = []
             tag = {}

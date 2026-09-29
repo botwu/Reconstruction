@@ -4,7 +4,7 @@
 
 本模块把已经编好的 Task Bundle 映射成 Harbor/AGS 可执行计划。它只做协议转换、目录边界审计和执行参数冻结，不调用 Hermes、不创建 AGS 沙盒，也不判断任务语义正确性。
 
-它**不是** `reconstruct run` 的主入口。重建主链在 Sufficiency 之后、且 `allow_file_verifier=true` 时，由 [`verification.py`](../src/traceforge/reconstruction/verification.py) 直接调用 [`harbor_ags/rollout.py`](../src/traceforge/harbor_ags/rollout.py) 做 RED / rollout。`harbor-ags plan` 只用于已经落盘的 Bundle 做边界审计。
+它**不是** `reconstruct raw-run` 的主入口。重建主链在 Sufficiency 之后、且 `allow_file_verifier=true` 时，由 [`verification.py`](../src/traceforge/reconstruction/verification.py) 直接调用 [`harbor_ags/rollout.py`](../src/traceforge/harbor_ags/rollout.py) 做 RED / rollout。`harbor-ags plan` 只用于已经落盘的 Bundle 做边界审计。
 
 没有 FILE 义务时重建不会走到这里（`NO_FILE_ACCEPTANCE`）。
 
@@ -12,9 +12,9 @@
 
 | 命令 | 做什么 |
 | --- | --- |
-| `reconstruct run` | 重建 q/E；默认不做 RED |
-| `reconstruct run --execute-red` | Verifier 编 Bundle 后，对**初始 workspace** 做 nop/oracle/mutation。通过才标重建 READY |
-| `reconstruct run --execute-rollout` | RED 后执行 Hermes 复验；完整验收才可 READY/SFT，未验证义务保留 REVIEW |
+| `reconstruct raw-run` | 重建 q/E；默认不做 RED |
+| `reconstruct raw-run --execute-red` | Verifier 编 Bundle 后，对**初始 workspace** 做 nop/oracle/mutation。通过才标重建 READY |
+| `reconstruct raw-run --execute-rollout` | RED 后执行 Hermes 复验；完整验收才可 READY/SFT，未验证义务保留 REVIEW |
 | `harbor-ags plan` | 对现成 Bundle 做 dry-run 边界计划，`model_status=NOT_RUN` |
 | `harbor-ags prepare-rollout` | 物化 Harbor Dataset 并生成显式 dry-run 计划 |
 | `harbor-ags execute-rollout` | 执行已审核的 rollout plan（独立于 reconstruct） |

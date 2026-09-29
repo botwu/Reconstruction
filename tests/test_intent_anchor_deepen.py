@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 
 from traceforge.reconstruction.agents.roles import INTENT_ROLE
-from traceforge.reconstruction.eligible_reconstruction import execution_support_route
+from traceforge.reconstruction.pipeline import execution_support_route
 from traceforge.reconstruction.environment_bindings import (
     collect_allowed_paths,
     collect_file_binding_paths,
@@ -17,7 +17,6 @@ from traceforge.reconstruction.intent_recovery import (
     _prompt,
     deepen_requires_file,
 )
-from traceforge.screening.contracts import TRIAGE_PROMPT_VERSION
 
 
 def _l22_timeline() -> list[dict]:
@@ -379,7 +378,6 @@ def test_stub_observable_does_not_satisfy_file_gate() -> None:
 
 
 def test_intent_role_and_prompt_name_the_anchor() -> None:
-    assert TRIAGE_PROMPT_VERSION == "reconstruction-screening-triage-v10"
     assert INTENT_PROMPT_VERSION == "intent-recovery-agent-v15-user-obligations"
     assert "original user query is the anchor" in INTENT_ROLE.identity
     assert "deepen" in INTENT_ROLE.identity

@@ -42,4 +42,4 @@ CLI 只有 READY、READY_VARIANT、COMPLETED 等成功终态返回退出码 0；
 
 控制端 Python、Hermes 源码和执行目录应使用本地盘，运行完将产物和检查点归档到持久存储。该选择来自 dev-wj 上已复现的 AFS 解释器启动、模块读取和配置初始化等待；不是模型或业务失败。
 
-实现位于 `src/traceforge/reconstruction/researcher.py` 和现有 `eligible_reconstruction.py`，核心代码不依赖参考仓库。参考 AgenticFoundry 提交 `c91ab4f33f787b5901c3e2df1566f81bf531cfbd`（Apache-2.0）的 `harness/run_synth.py`、`agents/synth/instruction.md` 作者自测组织方式；原实验的 `harness/reconstruction_runtime.py` 已收敛到本项目。模型连接、证据约束、AGS、正式校准和产物合同均使用 TraceRconstruction 原有实现。
+实现位于 `src/traceforge/reconstruction/researcher.py` 和现有 `pipeline.py`，核心代码不依赖参考仓库。参考 AgenticFoundry 提交 `c91ab4f33f787b5901c3e2df1566f81bf531cfbd`（Apache-2.0）的 `harness/run_synth.py`、`agents/synth/instruction.md` 作者自测组织方式；原实验的 `harness/reconstruction_runtime.py` 已收敛到本项目。模型连接、证据约束、AGS、正式校准和产物合同均使用 TraceRconstruction 原有实现。

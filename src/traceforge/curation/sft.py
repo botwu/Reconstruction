@@ -364,7 +364,7 @@ def write_reconstruction_sft_curation(
     root: str | Path,
     task_results: list[dict[str, Any]],
 ) -> Path:
-    """把 reconstruct run 的任务结果写成 SFT 裁决，未跑 rollout 不得标 ELIGIBLE。"""
+    """把 reconstruct raw-run 的任务结果写成 SFT 裁决，未跑 rollout 不得标 ELIGIBLE。"""
 
     summaries: list[dict[str, Any]] = []
     curate_rows: list[dict[str, Any]] = []

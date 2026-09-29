@@ -6,13 +6,12 @@ from typing import Any
 
 import pytest
 
-from hermes_fakes import tagged_record
+from hermes_fakes import raw_source
 
 from traceforge.reconstruction.agents.runtime import AgentResult
 from traceforge.reconstruction.agents.session import execute_tool
 from traceforge.reconstruction.env_replay import replay_from_timeline
 from traceforge.reconstruction.intent_recovery import run_intent_recovery
-from traceforge.reconstruction.session_source import build_reconstruction_source
 from traceforge.reconstruction.terminal_universe_environment import (
     ReplayResult,
     validate_completion_candidate,
@@ -22,7 +21,7 @@ from traceforge.reconstruction.workspace_completion import (
     timeline_evidence,
 )
 from traceforge.reconstruction.workspace_sufficiency import run_workspace_sufficiency
-from traceforge.screening.observable import build_spans
+from traceforge.reconstruction.session_spans import build_spans
 
 
 class ResultRuntime:
@@ -69,8 +68,8 @@ def _payload() -> dict[str, Any]:
 
 def _source(*, selected: list[int] | None = None) -> dict[str, Any]:
     payload = _payload()
-    record = tagged_record(json.dumps(payload), selected=selected)
-    return build_reconstruction_source(raw_line=json.dumps(payload), record=record)
+    record = raw_source(json.dumps(payload), selected=selected, domain="")
+    return record
 
 
 def _candidate(files=None):
@@ -80,11 +79,11 @@ def _candidate(files=None):
 
 def test_raw_session_and_unselected_timeline_are_preserved() -> None:
     source = _source()
-    assert source["schema_version"] == "traceforge.reconstruction-source.v3"
+    assert source["schema_version"] == "traceforge.reconstruction-source.raw-session.v1"
     assert len(source["raw_session"]["messages"]) == 7
     assert source["raw_session"]["meta"] == {"source": "real-session"}
     assert [item["call_id"] for item in source["tool_timeline"]] == ["c1", "c2"]
-    assert [item["call_id"] for item in source["selected_tool_timeline"]] == ["c1"]
+    assert [item["call_id"] for item in source["selected_tool_timeline"]] == ["c1", "c2"]
 
 
 def test_intent_keeps_selected_clarifications_and_drops_unselected_span(tmp_path: Path) -> None:

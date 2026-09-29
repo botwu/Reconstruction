@@ -384,7 +384,6 @@ def harbor_bundle_manifest(
 
 # Orchestration-level references. Kept separate from model/runtime contracts above.
 PIPELINE_MANIFEST_SCHEMA = "traceforge.reconstruction-pipeline-manifest.v1"
-SELECTION_MANIFEST_SCHEMA = "traceforge.reconstruction-selection-manifest.v1"
 EXECUTION_PLAN_SCHEMA = "traceforge.reconstruction-execution-plan.v1"
 PIPELINE_RUN_RECEIPT_SCHEMA = "traceforge.reconstruction-pipeline-run-receipt.v1"
 RECONSTRUCTION_NODE_SCHEMA = "traceforge.reconstruction-node.v1"

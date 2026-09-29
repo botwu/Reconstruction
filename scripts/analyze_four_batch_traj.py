@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from traceforge.reconstruction.env_replay import replay_from_timeline
 from traceforge.reconstruction.session_source import _tool_timeline
-from traceforge.screening.observable import build_spans
+from traceforge.reconstruction.session_spans import build_spans
 
 CANDIDATE_ROOTS = [
     Path("/mnt/afs_toolcall/juxiaolong1/Projects/DataFilter_v2/gpt56sol/domain/by-rubric"),

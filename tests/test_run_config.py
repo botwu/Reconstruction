@@ -16,7 +16,7 @@ def _config(tmp_path: Path) -> Path:
         "claude:\n"
         "  {\"key\":\"fixture\",\"url\":\"https://example.test\",\"model\":\"anthropic/claude-opus-4-8\"}\n"
         "roles:\n"
-        "  {\"screening\":{\"channel\":\"deepseek\",\"model\":\"bailian/deepseek-v4-flash-0731\"},"
+        "  {\"session_parser\":{\"channel\":\"deepseek\",\"model\":\"bailian/deepseek-v4-flash-0731\"},"
         "\"reconstruction\":{\"channel\":\"gpt\",\"model\":\"gpt-5\"},"
         "\"verifier\":{\"channel\":\"gpt\",\"model\":\"gpt-5\"},"
         "\"rollout\":{\"channel\":\"claude\",\"model\":\"anthropic/claude-opus-4-8\"}}\n",
@@ -71,17 +71,6 @@ def test_canonical_claude_provider_alias_is_rejected(tmp_path: Path) -> None:
         )
 
 
-def test_screening_limits_are_validated_and_loaded(tmp_path: Path) -> None:
-    path = _config(tmp_path)
-    text = path.read_text(encoding="utf-8").replace(
-        '"screening":{"channel":"deepseek","model":"bailian/deepseek-v4-flash-0731"}',
-        '"screening":{"channel":"deepseek","model":"bailian/deepseek-v4-flash-0731",'
-        '"max_input_chars":321,"max_messages_for_triage":7,'
-        '"max_source_requests_for_triage":3}',
-    )
-    path.write_text(text, encoding="utf-8")
-    from traceforge.reconstruction.run_config import load_screening_limits
-    assert load_screening_limits(path) == (321, 7, 3)
 
 
 def test_provider_prefix_alias_cannot_bypass_model_separation(tmp_path: Path) -> None:

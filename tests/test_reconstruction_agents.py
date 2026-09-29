@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_fakes import FakeHermesFactory, tagged_record
+from hermes_fakes import FakeHermesFactory, raw_source
 from traceforge.reconstruction.agents import (
     COMPLETION_ROLE,
     DEFAULT_HERMES_HOME,
@@ -32,7 +32,6 @@ from traceforge.reconstruction.agents.runtime import (
 )
 from traceforge.reconstruction.agents.session import execute_tool
 from traceforge.reconstruction.intent_recovery import run_intent_recovery
-from traceforge.reconstruction.session_source import build_reconstruction_source
 
 
 def _session() -> dict[str, object]:
@@ -61,7 +60,7 @@ def _session() -> dict[str, object]:
 
 
 def _record(raw_line: str) -> dict[str, object]:
-    return tagged_record(raw_line)
+    return raw_source(raw_line)
 
 
 def _runtime(factory: FakeHermesFactory | None = None):
@@ -99,7 +98,7 @@ def test_hermes_runtime_configures_model_on_agent(tmp_path: Path) -> None:
     factory = FakeHermesFactory()
     runtime = _runtime(factory)
     raw_line = json.dumps(_session(), ensure_ascii=False)
-    source = build_reconstruction_source(raw_line=raw_line, record=_record(raw_line))
+    source = _record(raw_line)
     result = run_intent_recovery(
         source=source,
         agent=runtime,

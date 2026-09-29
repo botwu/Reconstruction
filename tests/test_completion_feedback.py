@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from traceforge.reconstruction.agents.runtime import AgentResult
-from traceforge.reconstruction import eligible_reconstruction as pipeline
+from traceforge.reconstruction import pipeline as pipeline
 from traceforge.reconstruction.terminal_universe_environment import ReplayResult, ReplayedFile
 from traceforge.reconstruction.workspace_completion import repair_workspace_completion
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from traceforge.reconstruction.eligible_reconstruction import execution_support_route
+from traceforge.reconstruction.pipeline import execution_support_route
 from traceforge.reconstruction.env_replay import replay_selected_environment
 from traceforge.reconstruction.terminal_universe_environment import ReplayResult, ReplayedFile
 
@@ -24,7 +24,7 @@ def _non_file_binding(oid: str = "publish") -> dict:
 def test_code_file_with_replay_tree_is_terminal_file() -> None:
     result = execution_support_route(
         task={"domain_route": "code_file"},
-        source={"selected_span_has_file_ops": True, "route": "ELIGIBLE_CODE_FILE"},
+        source={"selected_span_has_file_ops": True},
         replay=_replay("foo.py", "bar.py"),
     )
     assert result["route"] == "TERMINAL_FILE"
@@ -58,7 +58,7 @@ def test_retrieval_with_replayed_tree_does_not_enter_terminal() -> None:
 def test_empty_tree_without_bindings_is_default_empty() -> None:
     result = execution_support_route(
         task={"domain_route": "code_file"},
-        source={"selected_span_has_file_ops": False, "route": "ELIGIBLE_CODE_FILE"},
+        source={"selected_span_has_file_ops": False},
         replay=_replay(),
     )
     assert result["route"] == "DEFAULT_EMPTY"
@@ -70,7 +70,7 @@ def test_empty_tree_without_bindings_is_default_empty() -> None:
 def test_empty_tree_with_file_obligation_is_default_empty() -> None:
     result = execution_support_route(
         task={"domain_route": "code_file", "environment_bindings": [_file_binding("app.py")]},
-        source={"selected_span_has_file_ops": False, "route": "ELIGIBLE_CODE_FILE"},
+        source={"selected_span_has_file_ops": False},
         replay=_replay(),
     )
     assert result["route"] == "DEFAULT_EMPTY"
@@ -82,7 +82,7 @@ def test_empty_tree_with_file_obligation_is_default_empty() -> None:
 def test_empty_tree_all_non_file_is_none() -> None:
     result = execution_support_route(
         task={"domain_route": "code_file", "environment_bindings": [_non_file_binding()]},
-        source={"selected_span_has_file_ops": False, "route": "ELIGIBLE_CODE_FILE"},
+        source={"selected_span_has_file_ops": False},
         replay=_replay(),
     )
     assert result["route"] == "DEFAULT_EMPTY"
@@ -108,7 +108,7 @@ def test_empty_retrieval_without_file_is_unsupported() -> None:
 def test_thin_tree_is_replayed_not_hard_stop() -> None:
     result = execution_support_route(
         task={"domain_route": "code_file"},
-        source={"selected_span_has_file_ops": True, "route": "ELIGIBLE_CODE_FILE"},
+        source={"selected_span_has_file_ops": True},
         replay=_replay("build.bat"),
     )
     assert result["route"] == "TERMINAL_FILE"
@@ -139,7 +139,7 @@ def test_prior_visible_read_can_thicken_a_thin_selected_span() -> None:
     assert {item.path for item in replay.files} == {"helper.py", "foo.py"}
     result = execution_support_route(
         task={"domain_route": "code_file"},
-        source={"selected_span_has_file_ops": True, "route": "ELIGIBLE_CODE_FILE"},
+        source={"selected_span_has_file_ops": True},
         replay=replay,
     )
     assert result["route"] == "TERMINAL_FILE"
@@ -152,7 +152,7 @@ def test_prior_visible_read_can_thicken_a_thin_selected_span() -> None:
 def test_two_source_files_remain_terminal() -> None:
     result = execution_support_route(
         task={"domain_route": "code_file"},
-        source={"selected_span_has_file_ops": True, "route": "ELIGIBLE_CODE_FILE"},
+        source={"selected_span_has_file_ops": True},
         replay=_replay("Loader.cpp", "Noclip.h", "build.bat"),
     )
     assert result["route"] == "TERMINAL_FILE"
@@ -187,7 +187,7 @@ def test_all_non_file_with_tree_still_allows_completion():
 
 
 def test_task_rechecks_intent_then_completes_non_file_tree(tmp_path, monkeypatch):
-    from traceforge.reconstruction import eligible_reconstruction as module
+    from traceforge.reconstruction import pipeline as module
 
     def fake_completion(**kwargs):
         assert kwargs.get("replay") is not None
@@ -289,7 +289,7 @@ def test_file_intent_remains_supported():
 
 
 def test_empty_file_task_result_seeds_default_empty(tmp_path, monkeypatch):
-    from traceforge.reconstruction import eligible_reconstruction as module
+    from traceforge.reconstruction import pipeline as module
 
     def fake_completion(**kwargs):
         assert (tmp_path / "tasks" / "t1" / "initial_workspace").is_dir()

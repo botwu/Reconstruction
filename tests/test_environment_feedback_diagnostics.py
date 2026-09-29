@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from test_completion_feedback import RepairAgent, repair_seed
 
-from traceforge.reconstruction import eligible_reconstruction as pipeline
+from traceforge.reconstruction import pipeline as pipeline
 from traceforge.reconstruction.workspace_completion import repair_workspace_completion
 
 

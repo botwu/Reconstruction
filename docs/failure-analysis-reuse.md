@@ -46,4 +46,4 @@ AgentRx 只定位根因、提供 evidence refs。它不能：
 - 代替 `workspace_sufficiency` 判断 `(q, E)` 是否可解
 - 代替 FILE Verifier / Harbor RED
 
-任务能不能进重建，仍看 `screening run` 的 ELIGIBLE。能不能 rollout，仍看 Intent 是否给出 FILE 义务，以及 `--execute-red` 是否通过。TRACE 的能力指标只用于选择训练方向，不把失败轨迹自动当成失败标签。
+原始会话通过 `reconstruct raw-run` 直接进入重建。terminal 的文件验收与校准、search 的检索环境按各自领域执行。TRACE 的能力指标只用于选择训练方向，不把失败轨迹自动当成失败标签。

@@ -31,8 +31,6 @@ from traceforge.reconstruction.model_gateway import ChatModel
 from traceforge.reconstruction.researcher import ReconstructionRuntime
 from traceforge.reconstruction.session_parser import PARSER_MODEL, parse_session_tools
 from traceforge.reconstruction.session_source import (
-    ReconstructionSourceError,
-    build_reconstruction_source,
     timeline_has_file_ops,
     write_reconstruction_source,
 )
@@ -64,7 +62,6 @@ from traceforge.reconstruction.workspace_completion import (
 )
 from traceforge.reconstruction.workspace_sufficiency import run_workspace_sufficiency
 
-ELIGIBLE_RECONSTRUCTION_SCHEMA = "traceforge.eligible-reconstruction.v2"
 RAW_SESSION_RECONSTRUCTION_SCHEMA = "traceforge.raw-session-reconstruction.v1"
 ENV_REPLAYED = "REPLAYED"
 ENV_DEFAULT_EMPTY = "DEFAULT_EMPTY"
@@ -83,11 +80,6 @@ def _domain_route(task: dict[str, Any], source: dict[str, Any]) -> str:
         if isinstance(route, str) and route.strip():
             normalized = route.strip()
             return "terminal" if normalized in {"code_file", "terminal"} else normalized
-    record_route = str(source.get("route") or "")
-    if record_route == "ELIGIBLE_CODE_FILE":
-        return "terminal"
-    if "RETRIEVAL" in record_route.upper():
-        return "retrieval"
     return ""
 
 
@@ -105,7 +97,7 @@ def execution_support_route(
     source: dict[str, Any],
     replay: Any,
 ) -> dict[str, Any]:
-    """把观察、值不值得重建、初始环境和 FILE 验收拆开。"""
+    """根据已知领域和环境证据确定执行路径。"""
 
     domain = _domain_route(task, source)
     files = list(getattr(replay, "files", ()) or ())
@@ -160,11 +152,11 @@ def execution_support_route(
     }
 
 
-class EligibleReconstructionError(RuntimeError):
-    """ELIGIBLE 重建编排无法继续。"""
+class ReconstructionError(RuntimeError):
+    """重建编排无法继续。"""
 
 
-def _write_eligible_manifest(
+def _write_reconstruction_manifest(
     root: Path,
     source: dict[str, Any],
     intent: dict[str, Any],
@@ -177,10 +169,10 @@ def _write_eligible_manifest(
     }
     for result in results:
         task_id = result["task_id"]
-        screening, replay = prepared[task_id]
+        source_task, replay = prepared[task_id]
         try:
             pair = build_task_environment_pair(
-                source_task=screening,
+                source_task=source_task,
                 intent=intent_by_id.get(task_id, {"status": "NOT_RUN"}),
                 source=source,
                 replay=replay,
@@ -229,15 +221,11 @@ def _write_eligible_manifest(
     else:
         stopped_at = "tasks"
     manifest: dict[str, Any] = {
-        "schema_version": (
-            RAW_SESSION_RECONSTRUCTION_SCHEMA
-            if source.get("entry_mode") == "RAW_SESSION"
-            else ELIGIBLE_RECONSTRUCTION_SCHEMA
-        ),
+        "schema_version": RAW_SESSION_RECONSTRUCTION_SCHEMA,
         "status": status,
         "stopped_at": stopped_at,
         "source": {
-            "entry_mode": source.get("entry_mode", "SCREENED_ELIGIBLE"),
+            "entry_mode": source.get("entry_mode", "RAW_SESSION"),
             "source_ref": source.get("source_ref"),
             "line_number": source.get("line_number"),
             "line_sha256": source.get("line_sha256"),
@@ -293,10 +281,10 @@ def _task_source(source: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]
     """给每个 task 保留完整 session 工具上下文；task 标签只作证据锚点。"""
     anchor = task.get("source_task") if isinstance(task.get("source_task"), dict) else task
     if anchor.get("task_id") != task.get("task_id"):
-        raise EligibleReconstructionError("Intent task_id 与筛选任务标签不一致")
+        raise ReconstructionError("Intent task_id 与筛选任务标签不一致")
     spans = set(str(x) for x in anchor.get("span_ids") or [])
     if not spans:
-        raise EligibleReconstructionError("Intent 缺少原始任务的 span_ids")
+        raise ReconstructionError("Intent 缺少原始任务的 span_ids")
     out = copy.deepcopy(source)
     out["tasks"] = [copy.deepcopy(anchor)]
     out["relations"] = _task_relations(source, task)
@@ -858,15 +846,15 @@ def run_prepared_task(
 ) -> dict[str, Any]:
     """消费已解析的真实任务；外部构建入口复用正式后续流程，不重复解析。"""
     if (completion_seed is None) != (completion_feedback is None):
-        raise EligibleReconstructionError("恢复作者检查点必须同时提供候选与返修反馈")
+        raise ReconstructionError("恢复作者检查点必须同时提供候选与返修反馈")
     if (source.get("session_parser") or {}).get("status") != "READY":
-        raise EligibleReconstructionError("准备输入缺少成功的 Session Parser 产物")
+        raise ReconstructionError("准备输入缺少成功的 Session Parser 产物")
     if task.get("task_id") not in {item.get("task_id") for item in source.get("tasks", [])}:
-        raise EligibleReconstructionError("任务不属于当前原始 session")
+        raise ReconstructionError("任务不属于当前原始 session")
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
     write_reconstruction_source(source, root)
-    manifest = {"schema_version": ELIGIBLE_RECONSTRUCTION_SCHEMA, "status": "RUNNING",
+    manifest = {"schema_version": RAW_SESSION_RECONSTRUCTION_SCHEMA, "status": "RUNNING",
                 "source_sha256": source.get("line_sha256"), "tasks": []}
     _write_manifest(root, manifest)
     if _domain_route(task, source) == "retrieval":
@@ -991,10 +979,9 @@ def _run_task_loop(
     return result
 
 
-def run_eligible_reconstruction(
+def run_reconstruction(
     *,
-    raw_line: str,
-    record: dict[str, Any] | None,
+    source: dict[str, Any],
     agent: AgentRuntime,
     output_root: str | Path,
     parser_model: ChatModel | None = None,
@@ -1003,19 +990,10 @@ def run_eligible_reconstruction(
     verifier_agent: AgentRuntime | None = None,
     verification_config: VerificationConfig | None = None,
     container_runtime_factory: Callable[[], Any] | None = None,
-    source_override: dict[str, Any] | None = None,
 ) -> Path:
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
-    if source_override is not None:
-        source = copy.deepcopy(source_override)
-    else:
-        if record is None:
-            raise EligibleReconstructionError("screened reconstruction requires a screening record")
-        try:
-            source = build_reconstruction_source(raw_line=raw_line, record=record)
-        except ReconstructionSourceError as exc:
-            raise EligibleReconstructionError(str(exc)) from exc
+    source = copy.deepcopy(source)
     if parser_model is not None:
         source = parse_session_tools(
             source=source, model=parser_model, model_name=parser_model_name,
@@ -1048,12 +1026,12 @@ def run_eligible_reconstruction(
         agent = SandboxedAgentRuntime(agent, container_runtime_factory)
         if verifier_agent is not None:
             verifier_agent = SandboxedAgentRuntime(verifier_agent, container_runtime_factory)
-    screening_tasks = selected_task_views(source)
-    if not screening_tasks:
+    source_tasks = selected_task_views(source)
+    if not source_tasks:
         return _write_manifest(
             root,
             {
-                "schema_version": ELIGIBLE_RECONSTRUCTION_SCHEMA,
+                "schema_version": RAW_SESSION_RECONSTRUCTION_SCHEMA,
                 "status": "REVIEW",
                 "stopped_at": "intent",
                 "errors": ["筛选记录没有可重建的真实任务标签"],
@@ -1062,17 +1040,17 @@ def run_eligible_reconstruction(
     routed: list[tuple[dict[str, Any], dict[str, Any], Any, dict[str, Any]]] = []
     early: dict[str, dict[str, Any]] = {}
     prepared: dict[str, tuple[dict[str, Any], Any]] = {}
-    for screening in screening_tasks:
+    for source_task in source_tasks:
         task_source, replay, support, _task_root = _replay_and_route(
-            task=screening, root=root, source=source
+            task=source_task, root=root, source=source
         )
-        prepared[str(screening["task_id"])] = (screening, replay)
+        prepared[str(source_task["task_id"])] = (source_task, replay)
         if not support.get("allow_completion"):
-            early[str(screening["task_id"])] = _support_route_result(
-                task=screening, support=support
+            early[str(source_task["task_id"])] = _support_route_result(
+                task=source_task, support=support
             )
             continue
-        routed.append((screening, task_source, replay, support))
+        routed.append((source_task, task_source, replay, support))
     if not routed:
         intent: dict[str, Any] = {
             "schema_version": INTENT_SCHEMA,
@@ -1082,28 +1060,28 @@ def run_eligible_reconstruction(
         }
         results = [
             early[str(task["task_id"])]
-            for task in screening_tasks
+            for task in source_tasks
             if str(task["task_id"]) in early
         ]
-        manifest = _write_eligible_manifest(root, source, intent, results, prepared)
+        manifest = _write_reconstruction_manifest(root, source, intent, results, prepared)
         write_reconstruction_sft_curation(root, results)
         return manifest
     intent_source = copy.deepcopy(source)
     intent_source["tasks"] = []
-    for screening, _task_source_value, _replay, _support in routed:
-        intent_task = copy.deepcopy(screening)
-        intent_task["relations"] = _task_relations(source, screening)
+    for source_task, _task_source_value, _replay, _support in routed:
+        intent_task = copy.deepcopy(source_task)
+        intent_task["relations"] = _task_relations(source, source_task)
         intent_source["tasks"].append(intent_task)
     # Replay.files 已排除修改后才观察到的正文；PARTIAL 初态片段也能定位任务，
     # 完整性仍由后续 Completion/Sufficiency 处理，不回退到未经屏障过滤的原始读取。
     replay_files_by_task = {
-        str(screening.get("task_id")): [
+        str(source_task.get("task_id")): [
             str(item.path)
             for item in replay.files
             if item.completeness == "COMPLETE"
             or (item.completeness == "PARTIAL" and item.content)
         ]
-        for screening, _task_source_value, replay, _support in routed
+        for source_task, _task_source_value, replay, _support in routed
     }
     try:
         intent = run_intent_recovery(
@@ -1127,8 +1105,8 @@ def run_eligible_reconstruction(
         for item in intent.get("tasks") or []
     }
     results = []
-    for screening in screening_tasks:
-        task_id = str(screening["task_id"])
+    for source_task in source_tasks:
+        task_id = str(source_task["task_id"])
         if task_id in early:
             results.append(early[task_id])
             continue
@@ -1146,7 +1124,7 @@ def run_eligible_reconstruction(
             )
             continue
         assert routed_task is not None
-        _screening, task_source, replay, support = routed_task
+        _source_task, task_source, replay, support = routed_task
         task_agent, task_verifier = agent, verifier_agent
         if container_runtime_factory is not None:
             task_agent = ReconstructionRuntime(
@@ -1175,7 +1153,7 @@ def run_eligible_reconstruction(
                 task_source=task_source,
             )
         )
-    manifest = _write_eligible_manifest(root, source, intent, results, prepared)
+    manifest = _write_reconstruction_manifest(root, source, intent, results, prepared)
     write_reconstruction_sft_curation(root, results)
     return manifest
 
@@ -1195,11 +1173,11 @@ def run_raw_session_reconstruction(
     verification_config: VerificationConfig | None = None,
     container_runtime_factory: Callable[[], Any] | None = None,
 ) -> Path:
-    """对一条完整原始 session 直入重建管线，不读取 screening records。"""
+    """对一条完整原始 session 直入重建管线，不读取筛选记录。"""
     from traceforge.reconstruction.raw_session import RawSessionSourceError, build_raw_session_source
 
     if domain not in {"search", "terminal"}:
-        raise EligibleReconstructionError("原始 session 必须显式指定 domain：search 或 terminal")
+        raise ReconstructionError("原始 session 必须显式指定 domain：search 或 terminal")
     root = Path(output_root)
     try:
         source = build_raw_session_source(
@@ -1210,13 +1188,11 @@ def run_raw_session_reconstruction(
             output_root=root / "session_segmentation",
         )
     except RawSessionSourceError as exc:
-        raise EligibleReconstructionError(str(exc)) from exc
+        raise ReconstructionError(str(exc)) from exc
     source["domain_route"] = "retrieval" if domain == "search" else "terminal"
     source["input_domain"] = domain
-    return run_eligible_reconstruction(
-        raw_line=raw_line,
-        record=None,
-        source_override=source,
+    return run_reconstruction(
+        source=source,
         parser_model=parser_model,
         parser_model_name=parser_model_name,
         agent=agent,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-STAGE_METRICS_SCHEMA = "traceforge.reconstruction-stage-metrics.v1"
+STAGE_METRICS_SCHEMA = "traceforge.reconstruction-stage-metrics.v2"
 
 
 def reconstruction_stage_metrics(
@@ -44,7 +44,7 @@ def reconstruction_stage_metrics(
         reasons.update(set(result.get("errors") or []) | set(support.get("reason_codes") or []))
     metrics: dict[str, Any] = {
         "schema_version": STAGE_METRICS_SCHEMA,
-        "screening_count": len(source.get("selected_task_ids") or []),
+        "input_task_count": len(source.get("selected_task_ids") or []),
         "task_count": len(results),
         "support_routed_count": sum(
             (item.get("execution_support_route") or {}).get("allow_completion") is True

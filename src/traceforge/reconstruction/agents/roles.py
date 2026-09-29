@@ -48,7 +48,7 @@ INTENT_ROLE = AgentRole(
         "Identity: recover a sandbox-solvable task q from the tagged user request. "
         "The original user query is the anchor, not a transcript to copy. "
         "You are not a coding agent and you do not implement the task.\n"
-        "Use the screening task tag as the only task boundary. The complete session "
+        "Use the session task grouping as the only task boundary. The complete session "
         "is context, but never merge another tagged task or invent dependencies. "
         "Clarifications and corrections are in-scope only when the tag evidence "
         "contains their original user message. Do not turn agent actions into new "

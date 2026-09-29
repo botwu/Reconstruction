@@ -20,7 +20,6 @@ from traceforge.reconstruction.environment_bindings import (
     normalize_environment_bindings,
 )
 from traceforge.reconstruction.session_parser import indexed_system_messages
-from traceforge.screening.task_labels import apply_task_tags, is_selected_reconstruction_task
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
@@ -91,19 +90,8 @@ def _task_user_records(source: dict[str, Any], task: dict[str, Any]) -> list[dic
 
 
 def selected_task_views(source: dict[str, Any]) -> list[dict[str, Any]]:
-    """只返回 screening 标出的可重建任务，保留每个 task 的原始证据。"""
-    tasks = [x for x in source.get("tasks") or [] if isinstance(x, dict)]
-    if source.get("entry_mode") == "RAW_SESSION":
-        # RAW_SESSION 的任务由边界 agent 明确标出；不写入 screening
-        # 的 reconstruction_eligible/eligibility 字段，避免把 intake 伪装成筛选结论。
-        return [task for task in tasks if task.get("intake_selected") is True]
-    for task in tasks:
-        apply_task_tags(task)
-    eligible = [x for x in tasks if is_selected_reconstruction_task(x)]
-    if eligible:
-        return eligible
-    # legacy labels are intentionally review-only; callers get a clear error.
-    return []
+    """读取会话分组得到的全部任务，不按成功、失败或分数筛选。"""
+    return [task for task in source.get("tasks") or [] if isinstance(task, dict)]
 
 
 def _tool_names(source: dict[str, Any]) -> list[str]:
@@ -221,7 +209,7 @@ def _prompt(
         "TASK_TAG=" + json.dumps(
             {k: task.get(k) for k in (
                 "task_id", "outcome", "span_ids", "message_indices", "evidence_refs",
-                "relations", "tags", "reconstruction_eligible", "domain_route", "rubric",
+                "relations", "domain_route", "task_kind",
             )},
             ensure_ascii=False,
         ),

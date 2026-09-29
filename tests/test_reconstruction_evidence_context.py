@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from traceforge.reconstruction import eligible_reconstruction as pipeline
+from traceforge.reconstruction import pipeline as pipeline
 from traceforge.reconstruction import workspace_completion as completion
 from traceforge.reconstruction.agents.runtime import AgentResult
 from traceforge.reconstruction.env_replay import replay_from_timeline

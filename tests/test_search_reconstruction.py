@@ -116,7 +116,7 @@ def test_solver_plaintext_is_not_retried_as_invalid_json(tmp_path, completed):
 @pytest.mark.parametrize("execute_rollout", [False, True])
 def test_search_entry_does_not_enter_file_replay_or_sandbox(tmp_path, monkeypatch, execute_rollout):
     from traceforge.reconstruction import agents, search_environment
-    from traceforge.reconstruction.eligible_reconstruction import run_eligible_reconstruction
+    from traceforge.reconstruction.pipeline import run_reconstruction
     from traceforge.reconstruction.verification import VerificationConfig
 
     agent = object()
@@ -134,9 +134,10 @@ def test_search_entry_does_not_enter_file_replay_or_sandbox(tmp_path, monkeypatc
 
     monkeypatch.setattr(search_environment, "run_search_reconstruction", run_search)
     monkeypatch.setattr(agents, "build_hermes_runtime", build_solver)
-    result = run_eligible_reconstruction(
-        raw_line="{}", record=None, agent=agent, output_root=tmp_path,
-        source_override={"domain_route": "retrieval", "raw_session": {"messages": []}},
+    result = run_reconstruction(
+        agent=agent,
+        output_root=tmp_path,
+        source={"domain_route": "retrieval", "raw_session": {"messages": []}},
         container_runtime_factory=lambda: pytest.fail("search 不应启动文件沙箱"),
         verification_config=VerificationConfig(
             harbor_root=tmp_path, model_name="author", rollout_model="claude/solver",

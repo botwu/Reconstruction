@@ -18,12 +18,8 @@ from traceforge.reconstruction.model_gateway import (
     load_channel_model,
 )
 
-DEFAULT_SCREENING_MAX_INPUT_CHARS = 240_000
-DEFAULT_SCREENING_MAX_MESSAGES = 260
-DEFAULT_SCREENING_MAX_SOURCE_REQUESTS = 20
 
 ROLE_DEFAULTS: dict[str, tuple[str, str]] = {
-    "screening": ("deepseek", "bailian/deepseek-v4-flash-0731"),
     "session_parser": ("deepseek", "bailian/deepseek-v4-flash-0731"),
     "reconstruction": ("gpt", "gpt-5"),
     "verifier": ("gpt", "gpt-5"),
@@ -86,47 +82,6 @@ def load_role_settings(
     if not model:
         raise ModelGatewayError(f"role model is empty: {role}", code="ROLE_CONFIG_INVALID")
     return RoleSettings(role=role, channel=channel, model=model)
-
-
-def load_screening_max_input_chars(path: str | Path | None) -> int:
-    """Read the screening evidence budget from the local role config."""
-
-    entry = _role_entries(path).get("screening")
-    if isinstance(entry, dict) and entry.get("max_input_chars") is not None:
-        value = entry.get("max_input_chars")
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ModelGatewayError(
-                "screening max_input_chars must be a positive integer",
-                code="ROLE_CONFIG_INVALID",
-            )
-        return value
-    return DEFAULT_SCREENING_MAX_INPUT_CHARS
-
-
-def load_screening_limits(path: str | Path | None) -> tuple[int, int, int]:
-    """Read bounded screening limits from the local role config."""
-
-    entry = _role_entries(path).get("screening")
-    if not isinstance(entry, dict):
-        return (
-            DEFAULT_SCREENING_MAX_INPUT_CHARS,
-            DEFAULT_SCREENING_MAX_MESSAGES,
-            DEFAULT_SCREENING_MAX_SOURCE_REQUESTS,
-        )
-    values = []
-    for key, default in (
-        ("max_input_chars", DEFAULT_SCREENING_MAX_INPUT_CHARS),
-        ("max_messages_for_triage", DEFAULT_SCREENING_MAX_MESSAGES),
-        ("max_source_requests_for_triage", DEFAULT_SCREENING_MAX_SOURCE_REQUESTS),
-    ):
-        value = entry.get(key, default)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-            raise ModelGatewayError(
-                f"screening {key} must be a positive integer",
-                code="ROLE_CONFIG_INVALID",
-            )
-        values.append(value)
-    return tuple(values)  # type: ignore[return-value]
 
 
 def load_rollout_limits(
@@ -198,14 +153,9 @@ def resolve_role_matrix(
 
 
 __all__ = [
-    "DEFAULT_SCREENING_MAX_INPUT_CHARS",
-    "DEFAULT_SCREENING_MAX_MESSAGES",
-    "DEFAULT_SCREENING_MAX_SOURCE_REQUESTS",
     "ROLE_DEFAULTS",
     "RoleSettings",
     "load_role_settings",
     "load_rollout_limits",
-    "load_screening_limits",
-    "load_screening_max_input_chars",
     "resolve_role_matrix",
 ]

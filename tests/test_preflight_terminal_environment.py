@@ -38,7 +38,6 @@ def test_build_report_marks_sandbox_unchecked_and_never_e2e_ready(
     config = tmp_path / "config.yaml"
     config.write_text("roles: {}\\n", encoding="utf-8")
     monkeypatch.setattr(module, "resolve_role_matrix", lambda path: {})
-    monkeypatch.setattr(module, "load_screening_limits", lambda path: (500_000, 260, 20))
     monkeypatch.setattr(module, "load_channel_connection", lambda path, channel: ("url", "key"))
     monkeypatch.setattr(module, "load_e2b_api_key", lambda path: "key")
     monkeypatch.setattr(module, "resolve_sandbox_api_key", lambda: "key")

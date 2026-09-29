@@ -29,29 +29,22 @@ from traceforge.reconstruction.container_verification import (
     SandboxUnavailableError,
     build_ags_runtime_factory,
 )
-from traceforge.reconstruction.eligible_reconstruction import (
-    EligibleReconstructionError,
-    run_eligible_reconstruction,
+from traceforge.reconstruction.pipeline import (
+    ReconstructionError,
     run_raw_session_reconstruction,
 )
-from traceforge.reconstruction.env_replay import replay_from_timeline, write_replay_artifacts
 from traceforge.reconstruction.model_gateway import (
     ModelGatewayError,
     build_chat_model,
     resolve_model_name,
 )
 from traceforge.reconstruction.run_config import (
-    load_role_settings,
-    load_screening_limits,
     load_rollout_limits,
     resolve_role_matrix,
 )
 from traceforge.reconstruction.session_source import (
     ReconstructionSourceError,
-    build_reconstruction_source,
-    load_eligible_record,
     load_raw_line,
-    write_reconstruction_source,
 )
 from traceforge.reconstruction.tls import pin_process_tls
 from traceforge.reconstruction.verification import VerificationConfig
@@ -70,14 +63,13 @@ from traceforge.requery.single_workspace import (
     SingleWorkspaceSynthesisError,
     synthesize_single_workspace_tasks,
 )
-from traceforge.screening import ScreeningInputError, run_reconstruction_screening
 from traceforge.trajectory.artifacts import ArtifactPublishError
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="traceforge",
-        description="从 ELIGIBLE 原始 session 重建可验证任务与环境",
+        description="从原始 session 重建可验证任务与环境",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
@@ -185,88 +177,9 @@ def _parser() -> argparse.ArgumentParser:
         "reconstruct", help="从原始 session 重建（默认入口：raw-run）"
     )
     reconstruct_commands = reconstruct.add_subparsers(dest="reconstruct_command", required=True)
-    reconstruct_source = reconstruct_commands.add_parser(
-        "source",
-        help="从 ELIGIBLE 原始 session 抽出重建源并做 Stage 1 回放（不编译）",
-    )
-    reconstruct_source.add_argument("--input", type=Path, required=True, help="原始 session JSONL")
-    reconstruct_source.add_argument(
-        "--records", type=Path, required=True, help="筛选 private/records.jsonl"
-    )
-    reconstruct_source.add_argument(
-        "--line-number", type=int, required=True, help="要重建的原始 JSONL 行号"
-    )
-    reconstruct_source.add_argument("--output", type=Path, required=True, help="重建源输出目录")
-    reconstruct_run = reconstruct_commands.add_parser(
-        "run",
-        help="从 ELIGIBLE 记录重建：source + Stage1 + 四个 Hermes 角色（含 Verifier）",
-    )
-    reconstruct_run.add_argument("--input", type=Path, required=True, help="原始 session JSONL")
-    reconstruct_run.add_argument(
-        "--records", type=Path, required=True, help="筛选 private/records.jsonl"
-    )
-    reconstruct_run.add_argument(
-        "--line-number", type=int, required=True, help="要重建的原始 JSONL 行号"
-    )
-    reconstruct_run.add_argument("--output", type=Path, required=True, help="重建输出目录")
-    reconstruct_run.add_argument(
-        "--model-name",
-        default=None,
-        help="兼容覆盖 reconstruction role 的模型；默认从 config.yaml roles 读取",
-    )
-    reconstruct_run.add_argument(
-        "--config", type=Path, required=True, help="给各角色配模型的 config.yaml"
-    )
-    reconstruct_run.add_argument(
-        "--channel",
-        default=None,
-        help="兼容覆盖 reconstruction role 的 channel；默认从 config.yaml roles 读取",
-    )
-    reconstruct_run.add_argument("--verifier-model", default=None)
-    reconstruct_run.add_argument("--verifier-channel", default=None)
-    reconstruct_run.add_argument(
-        "--hermes-home",
-        type=Path,
-        default=None,
-        help="本机 hermes-agent 根目录（默认 HERMES_HOME 或本机已有路径）",
-    )
-    reconstruct_run.add_argument(
-        "--harbor-root",
-        type=Path,
-        default=Path("/mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags"),
-        help="Harbor/AGS 仓库根目录；没有通过校准前不会标记 READY",
-    )
-    reconstruct_run.add_argument(
-        "--sandbox",
-        action="store_true",
-        help="文件/pytest 打到 AGS；需要 AGS_API_KEY 或 E2B_API_KEY，缺 key 失败",
-    )
-    reconstruct_run.add_argument(
-        "--execute-red",
-        action="store_true",
-        help="在 Harbor/AGS 中对初始 workspace 做 RED 校准；通过后才标记重建 READY",
-    )
-    reconstruct_run.add_argument(
-        "--execute-rollout",
-        action="store_true",
-        help="RED 后执行 Hermes 复验；完整验收才可 READY/SFT，未验证义务保留 REVIEW",
-    )
-    reconstruct_run.add_argument(
-        "--rollout-model",
-        default=None,
-        help="兼容覆盖 rollout role 的 provider/model；默认从 config.yaml roles 读取",
-    )
-    reconstruct_run.add_argument("--rollout-channel", default=None)
-    reconstruct_run.add_argument("--rollout-trials", type=int, default=2)
-    reconstruct_run.add_argument("--manual-response-review", action="store_true",
-                                 help="文件验证通过后采集 rollout；响应内容保留人工核查，不标为完整验收或 SFT")
-    reconstruct_run.add_argument("--rollout-timeout-seconds", type=int, default=None)
-    reconstruct_run.add_argument("--rollout-max-iterations", type=int, default=None)
-    reconstruct_run.add_argument("--verifier-rounds", type=int, default=2)
-
     raw_run = reconstruct_commands.add_parser(
         "raw-run",
-        help="不读取 screening records，按物理原始 session 逐条进入重建",
+        help="按物理原始 session 逐条解析并重建",
     )
     raw_run.add_argument("--input", type=Path, required=True, help="冻结的原始 session JSONL")
     raw_run.add_argument("--domain", choices=("search", "terminal"), required=True,
@@ -298,44 +211,6 @@ def _parser() -> argparse.ArgumentParser:
     raw_run.add_argument("--rollout-timeout-seconds", type=int, default=None)
     raw_run.add_argument("--rollout-max-iterations", type=int, default=None)
     raw_run.add_argument("--verifier-rounds", type=int, default=6)
-
-    screening = commands.add_parser(
-        "screening", help="重建筛选：对原始 session 做规则分流，不编译轨迹"
-    )
-    screening_commands = screening.add_subparsers(dest="screening_command", required=True)
-    screening_run = screening_commands.add_parser("run", help="扫描 JSONL 并发布 SelectionManifest")
-    screening_run.add_argument("--input", type=Path, required=True, help="原始 session JSONL")
-    screening_run.add_argument("--output", type=Path, required=True, help="筛选 artifact 根目录")
-    screening_run.add_argument("--limit", type=int, default=None, help="最多处理的记录数")
-    screening_run.add_argument("--offset", type=int, default=0, help="跳过的前部记录数")
-    screening_run.add_argument(
-        "--rules-only",
-        action="store_true",
-        help="只跑规则粗筛，不调用模型；无法产生 ELIGIBLE",
-    )
-    screening_run.add_argument(
-        "--model-name",
-        default=None,
-        help="兼容覆盖 screening role 的模型；默认从 config.yaml roles 读取",
-    )
-    screening_run.add_argument("--config", type=Path, default=None, help="NewAPI 配置文件（可选）")
-    screening_run.add_argument(
-        "--channel",
-        default=None,
-        help="兼容覆盖 screening role 的 channel；默认从 config.yaml roles 读取",
-    )
-    screening_run.add_argument(
-        "--concurrency",
-        type=int,
-        default=8,
-        help="模型细筛并发数，默认 8",
-    )
-    screening_run.add_argument(
-        "--max-input-chars",
-        type=int,
-        default=None,
-        help="完整可观察证据上限；默认读取 config.yaml screening.max_input_chars",
-    )
 
     requery = commands.add_parser("requery", help="Terminal-Universe C.2/C.3/C.4 任务扩展")
     requery_commands = requery.add_subparsers(dest="requery_command", required=True)
@@ -541,129 +416,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         acceptance = result.get("acceptance")
         passed = acceptance["status"] == "PASS" if acceptance is not None else result["quality_gate"]["ok"]
         return 0 if passed else 2
-    if arguments.command == "reconstruct" and arguments.reconstruct_command == "source":
-        try:
-            record = load_eligible_record(arguments.records, line_number=arguments.line_number)
-            raw_line = load_raw_line(
-                arguments.input,
-                line_number=arguments.line_number,
-                line_sha256=str(record.get("line_sha256") or "") or None,
-            )
-            source = build_reconstruction_source(raw_line=raw_line, record=record)
-            output_path = write_reconstruction_source(source, arguments.output)
-            replay = replay_from_timeline(
-                list(source.get("tool_timeline") or []),
-                arguments.output / "initial_workspace",
-            )
-            write_replay_artifacts(replay, arguments.output)
-        except ReconstructionSourceError as exc:
-            print(f"重建源构造失败：{exc}", file=sys.stderr)
-            return 2
-        print(output_path)
-        return 0
-    if arguments.command == "reconstruct" and arguments.reconstruct_command == "run":
-        try:
-            os.environ["HERMES_REDACT_SECRETS"] = "false"
-            container_runtime_factory = None
-            if arguments.sandbox:
-                container_runtime_factory = build_ags_runtime_factory(
-                    harbor_root=arguments.harbor_root,
-                    output_root=arguments.output,
-                    config_path=arguments.config,
-                )
-            record = load_eligible_record(arguments.records, line_number=arguments.line_number)
-            if arguments.config is None:
-                raise ValueError("会话解析需要 --config 中的 session_parser 模型连接配置")
-            raw_line = load_raw_line(
-                arguments.input,
-                line_number=arguments.line_number,
-                line_sha256=str(record.get("line_sha256") or "") or None,
-            )
-            matrix = resolve_role_matrix(
-                arguments.config,
-                overrides={
-                    "reconstruction": (arguments.channel, arguments.model_name),
-                    "verifier": (arguments.verifier_channel, arguments.verifier_model),
-                    "rollout": (arguments.rollout_channel, arguments.rollout_model),
-                },
-            )
-            reconstruction_role = matrix["reconstruction"]
-            verifier_role = matrix["verifier"]
-            rollout_role = matrix["rollout"]
-            resolved_rollout = resolve_rollout_model(
-                rollout_role.model,
-                channel=rollout_role.channel,
-                model_name=rollout_role.model,
-            )
-            arguments.output.mkdir(parents=True, exist_ok=True)
-            (arguments.output / "model_roles.json").write_text(
-                json.dumps(
-                    {name: role.public() for name, role in matrix.items()},
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            reconstruction_agent = build_hermes_runtime(
-                config_path=arguments.config,
-                channel=reconstruction_role.channel,
-                model_name=reconstruction_role.model,
-                hermes_home=arguments.hermes_home,
-            )
-            verifier_agent = build_hermes_runtime(
-                config_path=arguments.config,
-                channel=verifier_role.channel,
-                model_name=verifier_role.model,
-                hermes_home=arguments.hermes_home,
-            )
-            verification_model = build_chat_model(
-                config_path=arguments.config, channel=verifier_role.channel
-            )
-            rollout_timeout_seconds, rollout_max_iterations = load_rollout_limits(
-                arguments.config,
-                timeout_seconds=arguments.rollout_timeout_seconds,
-                max_iterations=arguments.rollout_max_iterations,
-            )
-            output_path = run_eligible_reconstruction(
-                raw_line=raw_line,
-                record=record,
-                agent=reconstruction_agent,
-                parser_model=build_chat_model(
-                    config_path=arguments.config, channel=matrix["session_parser"].channel
-                ),
-                parser_model_name=matrix["session_parser"].model,
-                verifier_agent=verifier_agent,
-                verification_model=verification_model,
-                verification_config=VerificationConfig(
-                    harbor_root=arguments.harbor_root,
-                    model_name=verifier_role.model,
-                    rollout_model=resolved_rollout,
-                    execute_red=arguments.execute_red,
-                    execute_rollout=arguments.execute_rollout,
-                    manual_response_review=arguments.manual_response_review,
-                    rollout_trials=arguments.rollout_trials,
-                    max_rounds=arguments.verifier_rounds,
-                    config_path=arguments.config,
-                    hermes_home=arguments.hermes_home,
-                    channel=rollout_role.channel,
-                    timeout_seconds=rollout_timeout_seconds,
-                    rollout_max_iterations=rollout_max_iterations,
-                ),
-                output_root=arguments.output,
-                container_runtime_factory=container_runtime_factory,
-            )
-        except (
-            EligibleReconstructionError,
-            ReconstructionSourceError,
-            ModelGatewayError,
-            HermesUnavailableError,
-            SandboxUnavailableError,
-            ValueError,
-        ) as exc:
-            print(f"重建失败：{exc}", file=sys.stderr)
-            return 2
-        return _reconstruction_exit_code(output_path)
     if arguments.command == "reconstruct" and arguments.reconstruct_command == "raw-run":
         try:
             os.environ["HERMES_REDACT_SECRETS"] = "false"
@@ -760,7 +512,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 container_runtime_factory=container_runtime_factory,
             )
         except (
-            EligibleReconstructionError,
+            ReconstructionError,
             ReconstructionSourceError,
             ModelGatewayError,
             HermesUnavailableError,
@@ -770,48 +522,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"原始 session 重建失败：{exc}", file=sys.stderr)
             return 2
         return _reconstruction_exit_code(output_path)
-    if arguments.command == "screening" and arguments.screening_command == "run":
-        try:
-            model = None
-            screening_role = load_role_settings(
-                arguments.config,
-                "screening",
-                channel_override=arguments.channel,
-                model_override=arguments.model_name,
-            )
-            model_name = screening_role.model
-            if not arguments.rules_only:
-                model = build_chat_model(
-                    config_path=arguments.config, channel=screening_role.channel
-                )
-            output_path = run_reconstruction_screening(
-                input_path=arguments.input,
-                output_root=arguments.output,
-                limit=arguments.limit,
-                offset=arguments.offset,
-                model=model,
-                model_name=model_name,
-                concurrency=1 if arguments.rules_only else arguments.concurrency,
-                max_input_chars=(
-                    arguments.max_input_chars
-                    if arguments.max_input_chars is not None
-                    else load_screening_limits(arguments.config)[0]
-                ),
-                max_messages_for_triage=load_screening_limits(arguments.config)[1],
-                max_source_requests_for_triage=load_screening_limits(arguments.config)[2],
-            )
-        except (
-            ScreeningInputError,
-            ArtifactPublishError,
-            ModelGatewayError,
-            OSError,
-            UnicodeError,
-            ValueError,
-        ) as exc:
-            print(f"重建筛选失败：{exc}", file=sys.stderr)
-            return 2
-        print(output_path)
-        return 0
     if arguments.command == "requery" and arguments.requery_command == "single-ws":
         try:
             workspace = arguments.workspace.resolve()

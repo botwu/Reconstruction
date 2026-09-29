@@ -13,7 +13,7 @@ PYTHONPATH=src .venv/bin/python -m traceforge failure-analysis agentrx \
   --model-name gemini-2.5-pro
 ```
 
-`model-judge` 和 `reconstruct run` 同样支持 `--config` 与 `--channel`。当配置了 NewAPI channel 却仍使用默认的 Claude 模型名时，CLI 会自动选择该 channel 的安全默认模型（Gemini 为 `gemini-2.5-pro`，GPT 为 `gpt-5`）；需要其他模型时显式传入 `--model-name`。
+`model-judge` 和 `reconstruct raw-run` 同样支持 `--config` 与 `--channel`。当配置了 NewAPI channel 却仍使用默认的 Claude 模型名时，CLI 会自动选择该 channel 的安全默认模型（Gemini 为 `gemini-2.5-pro`，GPT 为 `gpt-5`）；需要其他模型时显式传入 `--model-name`。
 
 配置格式是顶层 channel 名和一行 JSON 连接对象，例如：
 
@@ -24,14 +24,14 @@ gemini:
 
 如果网关返回 HTTP 503，应先检查 channel 路由、模型名和服务状态；客户端会保留错误码但不会把响应正文（可能包含敏感信息）写入 artifact。
 
-`reconstruct run` 和 `reconstruct raw-run` 在 Replay 前调用独立的 `session_parser`。
+`reconstruct raw-run` 在 Replay 前调用独立的 `session_parser`。
 默认 channel 为 `deepseek`，模型为 `bailian/deepseek-v4-flash-0731`；使用配置文件的
 `deepseek` 连接，或在 `roles` 中覆盖 `session_parser.channel/model`。
 该角色解读完整原始 session 的系统指令和工具语义，不执行历史命令。任务分组仍由 Session
 Agent 负责，环境补全与验收沿用各自角色。
 
 `raw-run --domain search|terminal` 直接使用数据已有的领域；R01 指定 search，R04 指定
-terminal。解析请求携带既定 `domain_route`，输出契约 v1.4 不要求模型分类，模型也不能覆盖路由。
+terminal。解析请求携带既定 `domain_route`，输出契约 v1.5 不要求模型分类，模型也不能覆盖路由。
 
 解析产物位于 `session_parser/`。默认 DeepSeek 使用模型提供的 1M 上下文能力，
 每次送入完整原始 session，不做摘要或分组替代，也不按字段名删去原数据中的

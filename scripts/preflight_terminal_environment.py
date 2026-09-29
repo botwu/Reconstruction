@@ -34,7 +34,7 @@ from traceforge.reconstruction.model_gateway import (
     load_channel_connection,
     load_e2b_api_key,
 )
-from traceforge.reconstruction.run_config import load_screening_limits, resolve_role_matrix
+from traceforge.reconstruction.run_config import resolve_role_matrix
 from traceforge.verifier.grading import PytestVendorError, prepare_pytest_site
 
 _SMOKE_TESTS = """import os
@@ -190,11 +190,9 @@ def build_report(
     """默认仅检查本地配置；显式 sandbox_output 才创建远程沙盒。"""
     checks: list[dict[str, Any]] = []
     matrix = {}
-    limits: tuple[int, int, int] | None = None
     try:
         matrix = resolve_role_matrix(config)
-        limits = load_screening_limits(config)
-        checks.append(_check("role_config", True, "四个角色与筛选预算已解析"))
+        checks.append(_check("role_config", True, "解析、重建、验证和执行角色已解析"))
     except (ModelGatewayError, OSError, ValueError) as exc:
         checks.append(_check("role_config", False, type(exc).__name__))
     for role, settings in matrix.items():
@@ -262,15 +260,6 @@ def build_report(
         "unchecked_probes": unchecked,
         "end_to_end_verified": False,
         "roles": {name: settings.public() for name, settings in matrix.items()},
-        "screening_limits": dict(
-            zip(
-                ("max_input_chars", "max_messages_for_triage", "max_source_requests_for_triage"),
-                limits,
-                strict=True,
-            )
-        )
-        if limits
-        else None,
         "policy": {
             "source_read_only": True,
             "temporary_vendor_expansion": True,

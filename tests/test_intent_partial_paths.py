@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from traceforge.reconstruction.agents.runtime import AgentResult
-from traceforge.reconstruction.eligible_reconstruction import run_eligible_reconstruction
+from traceforge.reconstruction.pipeline import run_reconstruction
 from traceforge.reconstruction.environment_bindings import normalize_environment_bindings
 
 REQUEST = "增加智能识别表头功能，包含关键字即可匹配。"
@@ -47,9 +47,10 @@ def _intent_candidates(tmp_path, timeline):
         "raw_session": {"messages": [{"role": "user", "content": REQUEST}]},
         "tool_timeline": timeline,
     }
-    run_eligible_reconstruction(
-        raw_line="", record=None, source_override=source,
-        agent=runtime, output_root=tmp_path,
+    run_reconstruction(
+        source=source,
+        agent=runtime,
+        output_root=tmp_path,
     )
     replay = json.loads((tmp_path / "tasks/synthetic/replay.json").read_text())
     return runtime.fields, replay

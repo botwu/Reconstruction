@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from hermes_fakes import FakeHermesFactory
+from hermes_fakes import FakeHermesFactory, raw_source
 from traceforge.reconstruction.agents import (
     COMPLETION_ROLE,
     INTENT_ROLE,
@@ -20,11 +20,10 @@ from traceforge.reconstruction.agents.sandbox import LocalExecRuntime
 from traceforge.reconstruction.agents.session import AgentSession, execute_tool
 from traceforge.reconstruction.env_replay import replay_from_timeline
 from traceforge.reconstruction.intent_recovery import IntentRecoveryError, run_intent_recovery
-from traceforge.reconstruction.session_source import build_reconstruction_source
 from traceforge.reconstruction.verifier_recovery import run_verifier_recovery
 from traceforge.reconstruction.workspace_completion import run_workspace_completion
 from traceforge.reconstruction.workspace_sufficiency import run_workspace_sufficiency
-from traceforge.screening.observable import build_spans
+from traceforge.reconstruction.session_spans import build_spans
 
 
 def _session(*, extra_user: str | None = None) -> dict[str, object]:
@@ -48,52 +47,14 @@ def _session(*, extra_user: str | None = None) -> dict[str, object]:
     return {"messages": messages, "meta": {}, "tools": [], "domain_meta": {}}
 
 
-def _record(raw_line: str, *, eligible: bool = True, extra_task: bool = False) -> dict[str, object]:
-    payload = json.loads(raw_line)
-    spans, _ = build_spans(payload["messages"])
-    tasks = [
-        {
-            "task_id": "t-read-foo",
-            "span_ids": [spans[0].span_id],
-            "is_actionable": True,
-            "reconstruction_eligible": eligible,
-            "outcome": "INCOMPLETE",
-            "tags": ["actionable", "incomplete", "needs_reconstruction", "rubric_pass", "selected_for_reconstruction"],
-            "eligibility": {"decision": "ELIGIBLE", "blocking_reason_codes": []},
-            "evidence_refs": {"span_ids": [spans[0].span_id], "message_indices": [0, 1, 2, 3]},
-        }
-    ]
-    if extra_task and len(spans) > 1:
-        tasks.append(
-            {
-                "task_id": "t-other",
-                "span_ids": [spans[1].span_id],
-                "is_actionable": True,
-                "reconstruction_eligible": True,
-                "outcome": "INCOMPLETE",
-                "tags": ["actionable", "incomplete", "needs_reconstruction", "rubric_pass", "selected_for_reconstruction"],
-                "eligibility": {"decision": "ELIGIBLE", "blocking_reason_codes": []},
-                "evidence_refs": {"span_ids": [spans[1].span_id], "message_indices": [4, 5]},
-            }
-        )
-    return {
-        "decision": "ELIGIBLE",
-        "route": "ELIGIBLE_CODE_FILE",
-        "source_ref": "jsonl:1:audit",
-        "line_number": 1,
-        "triage": {
-            "label_status": "COMPLETE",
-            "selected_span_ids": [task["span_ids"][0] for task in tasks if task["reconstruction_eligible"]],
-            "selected_task_ids": [task["task_id"] for task in tasks if task["reconstruction_eligible"]],
-            "relations": [],
-            "tasks": tasks,
-        },
-    }
+def _record(raw_line: str, *, extra_task: bool = False) -> dict[str, object]:
+    return raw_source(raw_line, selected=[0, 1] if extra_task else [0],
+                      task_ids=["t-read-foo", "t-other"] if extra_task else ["t-read-foo"])
 
 
 def _source(**kwargs) -> dict[str, object]:
     raw = json.dumps(_session(**kwargs), ensure_ascii=False)
-    return build_reconstruction_source(raw_line=raw, record=_record(raw, extra_task=bool(kwargs.get("extra_user"))))
+    return _record(raw, extra_task=bool(kwargs.get("extra_user")))
 
 
 def _hermes(**kwargs):
@@ -168,30 +129,11 @@ def test_intent_ready_io_and_task_boundary(tmp_path: Path) -> None:
     assert (tmp_path / "intent/tasks/t-read-foo/intent.json").is_file()
 
 
-def test_intent_rejects_legacy_labels_without_eligible_tasks(tmp_path: Path) -> None:
-    raw = json.dumps(_session(), ensure_ascii=False)
-    payload = json.loads(raw)
-    spans, _ = build_spans(payload["messages"])
-    source = build_reconstruction_source(
-        raw_line=raw,
-        record={
-            "decision": "ELIGIBLE",
-            "triage": {"selected_span_ids": [spans[0].span_id]},
-        },
-    )
-    assert source["label_status"] == "LEGACY_INCOMPLETE"
-    assert source["tasks"][0]["reconstruction_eligible"] is False
-    try:
-        run_intent_recovery(source=source, agent=_hermes(), output_root=tmp_path)
-    except IntentRecoveryError as exc:
-        assert "没有可重建的真实任务标签" in str(exc)
-    else:
-        raise AssertionError("legacy labels must not silently recover a task")
 
 
 def test_intent_does_not_merge_two_eligible_tasks(tmp_path: Path) -> None:
     source = _source(extra_user="另外做一个完全不同的任务：重构 bar 服务")
-    assert [item["task_id"] for item in source["tasks"] if item["reconstruction_eligible"]] == [
+    assert [item["task_id"] for item in source["tasks"]] == [
         "t-read-foo",
         "t-other",
     ]

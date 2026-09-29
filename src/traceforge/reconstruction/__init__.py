@@ -1,7 +1,6 @@
 """重建流水线的数据契约和公共校验函数。
 
-生产入口只有 ``screening run`` → ``reconstruct run`` / ``reconstruct source``。
-旧的 prepare / workflow / M1B pipeline 已删除。
+生产入口为 ``reconstruct raw-run``，由调用方明确指定领域。
 """
 
 from .contracts import (
@@ -13,7 +12,6 @@ from .contracts import (
     RECONSTRUCTION_CONTRACT_VERSION,
     ROLLOUT_REQUEST_SCHEMA,
     ROLLOUT_TRIAL_SCHEMA,
-    SELECTION_MANIFEST_SCHEMA,
     SFT_CANDIDATE_SCHEMA,
     TASK_RECOVERY_SCHEMA,
     VERIFICATION_RESULT_SCHEMA,
@@ -53,7 +51,6 @@ __all__ = [
     "RECONSTRUCTION_CONTRACT_VERSION",
     "ROLLOUT_REQUEST_SCHEMA",
     "ROLLOUT_TRIAL_SCHEMA",
-    "SELECTION_MANIFEST_SCHEMA",
     "SFT_CANDIDATE_SCHEMA",
     "TASK_RECOVERY_SCHEMA",
     "VERIFICATION_RESULT_SCHEMA",
