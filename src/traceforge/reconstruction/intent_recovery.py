@@ -23,7 +23,7 @@ from traceforge.reconstruction.session_parser import indexed_system_messages
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v15-user-obligations"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v16-qualified-obligations"
 _STUB_OBSERVABLE = "replayed excerpts still present"
 _REVIEW_ONLY = re.compile(
     r"(?i)(只读(?:代码)?(?:评审|审查)|只审查(?:并)?不修改|只查看.*不修改|"
@@ -167,10 +167,16 @@ def _prompt(
         "when explicitly requested; do not discard them as context.",
         "Do not invent a different product goal or a nearby unrelated coding task. Keep the same task_id.",
         "Use only explicit user intent and evidence refs; never turn assistant/tool actions into requirements.",
+        "每条 acceptance_obligations.text 必须保留该用户要求的时间范围、指定资料来源、比较对象、"
+        "数据条件和输出证据，不能只概括最终动作。observable 也必须涵盖这些限定；"
+        "例如用户要求依据特定年份的报告，不能降为泛化建议。暂时无法核实的限定仍是义务，"
+        "不得因工具可用或另一子问题已能回答而删除。原文、任务说明与验收义务必须表达同一要求。",
         "TASK_USER_MESSAGES 保留原角色为 user 的完整文本。harness 可能把协议、提醒、历史摘要与"
         "实际请求包装在同一条消息；须结合上下文区分，不把模板当用户目标，也不能丢掉其后的请求。",
         "Do not merge another tagged task. A clarification/correction belongs here only when its message is in this task tag.",
-        "Do not web-search or invent workspace paths. Bind only paths listed in ALLOWED_OBSERVED_PATHS.",
+        "意图提取阶段不要联网搜索或发明工作区路径；只绑定 ALLOWED_OBSERVED_PATHS。"
+        "这是当前解析角色的运行约束，不能复制成原任务的 mandatory_constraints/prohibitions。"
+        "这些字段只能保留原用户或原系统对该任务实际声明的约束；只读要求不自动等于禁止网络或运行测试。",
         "路径按证据角色绑定：引用用户消息中实际要求读取/修改的路径是初始输入；明确新增/生成的路径是执行输出，不要求 task-start 已存在。格式示例、分类词、工具正文中的字符串不是环境依赖。每条义务只使用其 evidence_ref_ids 引用的用户要求，不能把其他消息的平台说明转成依赖。",
         "PATH_ALIASES 是由原始路径和 Replay 工作目录确定的坐标转换；task_instruction、environment_bindings 和 response_contract 中的路径统一使用右侧工作区路径。不能按 basename 猜测路径。",
         "initial_required_paths are task-start inputs; they may name an explicitly referenced but currently missing input and must remain a blocker. output_paths are only explicit new/generated final files. required_paths is their union. Listing-only names are not bindings. When FILE_BINDING_PATHS is empty, do not invent a project.",
