@@ -19,11 +19,66 @@ from traceforge.reconstruction.session_parser import (
 
 def _event(index: int, operations: list, effect: str = "read_only") -> dict:
     return {"event_index": index, "effect": effect, "ordering": "parallel",
-            "reason": "按调用与实际返回配对", "operations": operations}
+            "action": "按参数请求读取", "observation": "按实际返回配对",
+            "excluded_content": [], "operations": operations}
+
+
+def _excluded(start: int, end: int, *, block: int = 0, path: list | None = None) -> dict:
+    return {"content_ref": {"block_index": block, "json_path": path or [],
+                            "start_line": start, "end_line": end},
+            "kind": "wrapper",
+            "reason": "调用包装产生的分隔或状态信息，不是文件正文"}
+
+
+def test_file_reference_requires_complete_nonoverlapping_return_accounting():
+    timeline = [{"pending": False, "result_blocks": [
+        {"index": 0, "text": "---file---\nfirst\nlast\n"},
+    ]}]
+    op = {**_read(), "partial": True, "file_start_line": 380,
+          "content_ref": {"block_index": 0, "json_path": [], "start_line": 2, "end_line": 2}}
+    event = _event(0, [op])
+    event["excluded_content"] = [_excluded(1, 1)]
+    interpretation = {"workspace_root": "/workspace", "events": [event]}
+    with pytest.raises(SessionParserError, match="未解释.*3"):
+        materialize_interpretation(timeline, interpretation)
+    op["content_ref"]["end_line"] = 3
+    parsed = materialize_interpretation(timeline, interpretation)[0]["session_parse"]
+    assert parsed["file_ops"][0]["content"] == "first\nlast\n"
+    assert parsed["file_ops"][0]["line_numbers"] == [380, 381]
+    assert parsed["ordering"] == "parallel"
+    op["content_ref"]["start_line"] = 1
+    with pytest.raises(SessionParserError, match="重叠.*1"):
+        materialize_interpretation(timeline, interpretation)
+    op["content_ref"]["start_line"] = 2
+    event["excluded_content"][0]["content_ref"].pop("end_line")
+    with pytest.raises(SessionParserError, match="必须明确起止行"):
+        materialize_interpretation(timeline, interpretation)
+
+
+def test_requested_range_and_truncation_anchor_reject_adjacent_source_loss():
+    timeline = [{"pending": False, "result_blocks": [
+        {"index": 0, "text": "first\nlast\n\n…8 tokens truncated…\n"},
+    ]}]
+    op = {**_read(), "partial": True, "file_start_line": 220, "requested_range": [220, 221],
+          "content_ref": {"block_index": 0, "json_path": [], "start_line": 1, "end_line": 3}}
+    event = _event(0, [op])
+    event["excluded_content"] = [{**_excluded(4, 4), "kind": "truncation",
+                                  "truncation_marker": "…8 tokens truncated…"}]
+    data = {"workspace_root": "/workspace", "events": [event]}
+    with pytest.raises(SessionParserError, match="最多返回 2 行，实际引用 3 行"):
+        materialize_interpretation(timeline, data)
+    op["content_ref"]["end_line"] = 2
+    event["excluded_content"].append(_excluded(3, 3))
+    parsed = materialize_interpretation(timeline, data)
+    assert parsed[0]["session_parse"]["file_ops"][0]["content"] == "first\nlast\n"
+    event["excluded_content"][0]["content_ref"]["start_line"] = 2
+    with pytest.raises(SessionParserError, match="没有标记.*2"):
+        materialize_interpretation(timeline, data)
 
 
 def _read(path: str = "lib/a.py") -> dict:
     return {"kind": "file_text", "path": path, "partial": False, "file_start_line": 1,
+            "requested_range": None,
             "content_ref": {"block_index": 1, "json_path": ["output"],
                             "start_line": 1, "end_line": None}}
 
@@ -203,7 +258,7 @@ def test_pending_patch_is_visible_for_semantics_but_never_materialized(tmp_path:
     model = _Model(data)
     parsed = parse_session_tools(source=source, model=model, output_root=tmp_path)
     assert patch in model.request.prompt
-    assert model.request.max_tokens == 65536
+    assert model.request.max_tokens == 131072
     assert parsed["tool_timeline"][2]["session_parse"]["file_ops"] == []
     assert source["tool_timeline"][2]["arguments"] == patch
 
@@ -215,6 +270,7 @@ def test_plain_text_harness_uses_exact_partial_reference() -> None:
     op.update(partial=True, file_start_line=161)
     op["content_ref"] = {"block_index": 0, "json_path": [], "start_line": 2, "end_line": 2}
     data = {**_interpretation(), "events": [_event(0, [op])]}
+    data["events"][0]["excluded_content"] = [_excluded(1, 1), _excluded(3, 3)]
     parsed = materialize_interpretation(timeline, data)[0]["session_parse"]["file_ops"][0]
     assert parsed["content"] == "    value\n"
     assert parsed["line_numbers"] == [161]
@@ -252,6 +308,13 @@ def test_truncated_exec_wrapper_is_indexed_and_cannot_enter_file_content(native_
     op = {**_read(), "partial": True,
           "content_ref": {"block_index": 0, "json_path": [], "start_line": 9 - shift, "end_line": 9 - shift}}
     data = {"workspace_root": "/workspace", "events": [_event(0, [op])]}
+    tail = copy.deepcopy(op)
+    tail["content_ref"].update(start_line=11 - shift, end_line=11 - shift)
+    tail["file_start_line"] = None
+    data["events"][0]["operations"].append(tail)
+    data["events"][0]["excluded_content"] = [
+        _excluded(1, 8 - shift), _excluded(10 - shift, 10 - shift),
+    ]
     read = materialize_interpretation(timeline, data)[0]["session_parse"]["file_ops"][0]
     assert read["content"] == "first = 1\n"
     for start, end in [(6, 9), (9, 11)]:
@@ -261,6 +324,8 @@ def test_truncated_exec_wrapper_is_indexed_and_cannot_enter_file_content(native_
     # 没有已识别的工具包装时，正文中的相同字样必须原样保留。
     timeline[0]["result_blocks"][0]["text"] = "example = '…3 tokens truncated…'\n"
     op["content_ref"].update(start_line=1, end_line=1)
+    data["events"][0]["operations"] = [op]
+    data["events"][0]["excluded_content"] = []
     read = materialize_interpretation(timeline, data)[0]["session_parse"]["file_ops"][0]
     assert read["content"] == "example = '…3 tokens truncated…'\n"
     assert reference_views(timeline)[0]["non_source_lines"] == []
@@ -350,11 +415,34 @@ def test_numbered_shell_output_preserves_source_bytes_and_replay(tmp_path: Path,
     op["file_start_line"] = first
     op["content_ref"].update(json_path=["main"], start_line=4, end_line=6,
                              line_number_separator=": ")
+    data["events"][1]["excluded_content"] = [_excluded(1, 3, block=1, path=["main"])]
     before = copy.deepcopy(source)
     parsed = materialize_interpretation(source["tool_timeline"], data)
     replay_from_timeline(parsed, tmp_path)
     assert (tmp_path / "lib/a.py").read_bytes() == b"def existing():\r\n    return 1\r\n\r\n"
     assert source == before
+
+
+def test_wrong_request_range_cannot_discard_numbered_source_tail():
+    source, data = _source(), _interpretation()
+    item = source["tool_timeline"][1]
+    item["arguments"] = {"cmd": "nl -ba lib/a.py | sed -n '25,27p'"}
+    item["result_blocks"][1]["text"] = json.dumps({"output": "25\ta\n26\tb\n27\tc\n"})
+    event = data["events"][1]
+    op = event["operations"][0]
+    op.update(partial=True, file_start_line=25, requested_range=[25, 26])
+    op["content_ref"].update(start_line=1, end_line=2, line_number_separator="\t")
+    event["excluded_content"] = [_excluded(3, 3, block=1, path=["output"])]
+    with pytest.raises(SessionParserError, match="连续编号正文段.*被部分排除"):
+        materialize_interpretation(source["tool_timeline"], data)
+    op["content_ref"]["end_line"] = 3
+    event["excluded_content"] = []
+    with pytest.raises(SessionParserError, match="先核对 requested_range.*25,27p"):
+        materialize_interpretation(source["tool_timeline"], data)
+    op["requested_range"] = [25, 27]
+    read = materialize_interpretation(source["tool_timeline"], data)[1]["session_parse"]["file_ops"][0]
+    assert read["content"] == "a\nb\nc\n"
+    assert read["line_numbers"] == [25, 26, 27]
 
 
 def test_reference_index_exposes_nested_positions_without_rewriting_or_selecting_source():
