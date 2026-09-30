@@ -30,6 +30,7 @@ class FakeAgent:
 
     def run(self, *, role, instruction, session, output_root):
         self.role_name = role.name
+        self.instruction = instruction
         self.session_context = session.session_context
         assert session.workspace is None
         assert "SPAN_CATALOG=" in instruction
@@ -243,3 +244,18 @@ def test_invalid_input_domain_fails_before_any_agent_call(tmp_path):
             agent=agent, output_root=tmp_path,
         )
     assert agent.role_name is None
+
+
+def test_segmentation_receives_prior_work_and_complete_user_requirements(tmp_path: Path) -> None:
+    payload = json.loads(raw_session())
+    user_text = "背景" * 2500 + "保留中间的关键目标与约束" + "材料" * 2500
+    payload["messages"][1]["content"] = user_text
+    payload["messages"][4]["content"] = "此前模块已经交付；后续任务应以该模块为已有状态。"
+    line = json.dumps(payload)
+    agent = FakeAgent(segmentation_payload(line))
+    build_raw_session_source(raw_line=line, line_number=1, source_ref="sample",
+                             agent=agent, output_root=tmp_path)
+    assert user_text in agent.instruction
+    assert payload["messages"][4]["content"] in agent.instruction
+    assert '"message_index": 4' in agent.instruction
+    assert "context" in agent.instruction

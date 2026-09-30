@@ -53,29 +53,27 @@ def _user_records(raw_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def _bounded_text(value: str, limit: int = 4000) -> str:
-    if len(value) <= limit:
-        return value
-    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
-    edge = limit // 2
-    return value[:edge] + f"…[truncated hash={digest}]…" + value[-edge:]
-
-
 def _segmentation_prompt(
-    *, spans: list[Any], span_map: dict[str, dict[str, Any]], user_records: list[dict[str, Any]]
+    *, spans: list[Any], user_records: list[dict[str, Any]],
+    raw_messages: list[dict[str, Any]],
 ) -> str:
     entries = []
     for span in spans:
-        item = span_map[span.span_id]
         entries.append(
             {
                 "span_id": span.span_id,
                 "message_start": span.message_start,
                 "message_end": span.message_end,
                 "user_message_indices": list(span.user_message_indices),
-                "user_texts": [_bounded_text(str(text)) for text in item["user_texts"]],
             }
         )
+    previous_responses = [
+        {"before_span_id": span.span_id, "message_index": index, "text": text}
+        for position, span in enumerate(spans)
+        for index in range(spans[position - 1].message_start if position else 0, span.message_start)
+        if raw_messages[index].get("role") == "assistant"
+        if (text := message_text(raw_messages[index]))
+    ]
     return "\n".join(
         [
             "Segment this complete raw session into distinct user tasks for reconstruction.",
@@ -89,7 +87,12 @@ def _segmentation_prompt(
             (
                 "Group spans by one coherent user goal. A continuation or correction "
                 "stays with its parent task when it clearly refers to it. "
-                "Do not merge unrelated goals."
+                "Do not merge unrelated goals. "
+                "任务边界还取决于请求开始时已有的工作。先核对 PREVIOUS_RESPONSES 中的原始助手回复；"
+                "若新请求以此前已交付产物为起点，提出新的行为或修复目标，应建立独立任务，"
+                "用 context 关系保留前置依赖；不能仅因项目或文件相同就合并。"
+                "对尚未完成目标的格式纠正、补充约束及继续执行仍合并，不按成功或报错词汇机械切分。"
+                "助手自述只作状态线索；有歧义时用 read_session_message 核对邻近工具返回及修改。"
             ),
             (
                 "Every span must occur exactly once in either tasks[].span_ids or "
@@ -103,11 +106,8 @@ def _segmentation_prompt(
                 "evidence. Do not invent ids or paths."
             ),
             "SPAN_CATALOG=" + json.dumps(entries, ensure_ascii=False),
-            "USER_MESSAGES="
-            + json.dumps(
-                [{**item, "text": _bounded_text(str(item["text"]))} for item in user_records],
-                ensure_ascii=False,
-            ),
+            "USER_MESSAGES=" + json.dumps(user_records, ensure_ascii=False),
+            "PREVIOUS_RESPONSES=" + json.dumps(previous_responses, ensure_ascii=False),
         ]
     )
 
@@ -248,7 +248,7 @@ def build_raw_session_source(
     spans, span_meta = build_spans(raw_messages)
     span_map = span_records(spans, raw_messages)
     users = _user_records(raw_messages)
-    prompt = _segmentation_prompt(spans=spans, span_map=span_map, user_records=users)
+    prompt = _segmentation_prompt(spans=spans, user_records=users, raw_messages=raw_messages)
     session = AgentSession(
         user_records=users,
         user_texts=[item["text"] for item in users],
@@ -282,6 +282,7 @@ def build_raw_session_source(
         "status": status,
         "line_number": line_number,
         "source_ref": source_ref,
+        "prompt_version": "session-boundaries-v2-prior-state",
         "line_sha256": line_hash,
         "span_count": len(spans),
         "assigned_span_count": len(

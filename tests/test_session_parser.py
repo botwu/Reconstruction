@@ -514,3 +514,44 @@ def test_reference_feedback_identifies_all_failed_events() -> None:
         materialize_interpretation(_source()["tool_timeline"], data)
     assert "event_index=0" in str(caught.value)
     assert "event_index=1" in str(caught.value)
+
+
+def test_unclosed_json_string_preserves_complete_lines_and_rejects_missing_tail():
+    body = "Output:\n 1: first = 1\r\n 2: second = 2\r\n 3: incomplete"
+    raw = '{"results":[' + json.dumps(body)[:-1]
+    offset = len('{"results":[')
+    timeline = [{"pending": False, "result_blocks": [{"index": 0, "text": raw}]}]
+    views = reference_views(timeline)
+    view = next(v for v in views if v.get("json_string_start") == offset)
+    assert view["lines"][1][1] == " 1: first = 1\r\n"
+    assert view["non_source_lines"] == [4]
+    ref = {"block_index": 0, "json_path": [], "json_string_start": offset,
+           "start_line": 2, "end_line": 3, "line_number_separator": ": "}
+    event = _event(0, [{**_read(), "partial": True, "content_ref": ref}])
+    event["excluded_content"] = [
+        {"content_ref": {**ref, "start_line": n, "end_line": n}, "kind": "observation",
+         "reason": "输出头或末尾未闭合字符串中的不完整行"} for n in (1, 4)
+    ]
+    data = {"events": [event], "workspace_root": "/work"}
+    parsed = materialize_interpretation(timeline, data)
+    op = parsed[0]["session_parse"]["file_ops"][0]
+    assert op["content"] == "first = 1\r\nsecond = 2\r\n"
+    assert op["line_numbers"] == [1, 2]
+    assert timeline[0]["result_blocks"][0]["text"] == raw
+    event["operations"][0]["partial"] = False
+    with pytest.raises(SessionParserError, match="截断 JSON.*partial"):
+        materialize_interpretation(timeline, data)
+    event["operations"][0]["partial"] = True
+    ref["end_line"] = 4
+    with pytest.raises(SessionParserError, match="不完整"):
+        materialize_interpretation(timeline, data)
+    ref["end_line"] = 3
+    ref["json_string_start"] = offset + 1
+    with pytest.raises(SessionParserError, match="起点"):
+        materialize_interpretation(timeline, data)
+
+
+@pytest.mark.parametrize("raw", ['{"x":"bad\\q', '{"x": nope}', '{"x":"complete"}'])
+def test_invalid_or_complete_json_is_not_repaired_as_unclosed_string(raw):
+    views = reference_views([{"result_blocks": [{"index": 0, "text": raw}]}])
+    assert not any("json_string_start" in v for v in views)
