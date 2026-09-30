@@ -39,7 +39,11 @@ oracle 只用于校准参考解与验证器；实际 rollout 由下游配置求�
 
 补全输出 READY 后自动生成 `tasks/<task_id>/harbor/<digest>/task/`，`result.json` 返回 `harbor_task` 和 `harbor_rollout_args`。原有直接检索 rollout 仍保留；这一新增任务路径供下游独立 Harbor runner 使用，不表示旧 runner 已整体替换。
 
-任务说明保留原用户要求及必要指代上下文，`workspace/evidence.json` 原样携带选定的捕获记录与实际抓取资料。公开检索工具复用现有实现，在容器中执行：
+任务说明保留原用户要求及必要指代上下文，`workspace/evidence.json` 原样携带选定的捕获记录与实际抓取资料，并保留解析后的文件来源和坐标。补全 agent 根据原任务声明 `requires_live_web` 和依据；这不改变调用方指定的 domain。
+
+本地代码、文档检索通过 `search_evidence/read_evidence` 查询捕获语料；READY 前必须实际读取所选证据。Harbor solver 可用 Python 读取同一 `evidence.json`，保留当前文件与历史版本的区别。这类任务不安装网页检索脚本，也不要求 Serper/Jina 密钥。
+
+需要公开来源的任务仍须实证完成搜索和页面读取。公开检索工具复用现有实现，在容器中执行：
 
 ```bash
 traceforge-search search "查询内容"
@@ -56,4 +60,4 @@ harbor run --path /path/to/search/task --agent nop --env docker \
   --disable-verification --yes
 ```
 
-生产 rollout 将 `nop` 替换为已配置的求解 agent 和模型，并保留 `--disable-verification`。这一导出只改变交付边界，尚未解决 search 补全必须实际网页搜索、因而不能覆盖纯本地代码检索的既有限制。
+生产 rollout 将 `nop` 替换为已配置的求解 agent 和模型，并保留 `--disable-verification`。环境可查询与回答内容正确分别记录，不能以网页或本地工具调用成功代替内容核查。
