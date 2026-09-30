@@ -47,16 +47,29 @@ uv run ruff check src scripts --select F,E9
 不依赖 dev-wj 的绝对路径，也不宣称验证了外部运行时本身。完整模型执行还需要
 Hermes 源码及其依赖，terminal 另需 Harbor/AGS 适配运行时和沙盒权限。
 这些运行时不能由原始 session 的 harness 名称替代，也不属于本项目的基础依赖。
-现有运行时位于 dev-wj：
+Hermes 对应仓库为 `SenseTime-FVG/hermes-agent`，固定提交
+`83c2ca5b2e250d69ce301c751ea83fd425eb2de1`；已核对当前实跑的入口、依赖声明、
+锁文件和上下文压缩模块与该提交一致。Harbor/AGS 是现有适配源码，仍需通过 dev-wj
+私有同步，未将整个外部参考仓库塞入本项目。
 
-- Hermes：`/tmp/researcher-hermes-runtime-source`。
-- Harbor/AGS：`/tmp/researcher-local-inputs-13/harbor`。
-- 实际运行的 Python：`/tmp/researcher-runtime-312.venv/bin/python`。
+在仓库根目录执行以下步骤；需要已有的 dev-wj SSH 访问权限：
 
-不要直接复制虚拟环境到另一种操作系统。将实际使用的源码同步到本机目录，在 Python 3.12
-环境重新安装，并通过 `--hermes-home`、`--harbor-root` 指定。
-Harbor/AGS 的源码快照、边界和部署校验见 [运行时绑定](harbor_ags/README.md) 与
-[terminal 预检](terminal-run-config.md)。直接安装任意最新版不能保证与本次实跑相同。
+```bash
+mkdir -p .runtime
+git clone git@github.com:SenseTime-FVG/hermes-agent.git .runtime/hermes-agent
+git -C .runtime/hermes-agent checkout 83c2ca5b2e250d69ce301c751ea83fd425eb2de1
+rsync -a --exclude=.venv --exclude=.git --exclude=__pycache__ \
+  dev-wj:/tmp/researcher-local-inputs-13/harbor/ .runtime/harbor-ags/
+uv venv --python 3.12 .runtime/harbor-ags/.venv
+uv pip install --python .runtime/harbor-ags/.venv/bin/python \
+  -e . -e ".runtime/hermes-agent[anthropic]" -e .runtime/harbor-ags "pytest==8.4.2"
+export TRACEFORGE_PYTHON="$PWD/.runtime/harbor-ags/.venv/bin/python"
+```
+
+运行环境放在 Harbor/AGS 目录的 `.venv`，满足它现有的可执行入口约定。
+不要复制旧虚拟环境，也不要对这个实跑环境执行会移除额外依赖的基础 `uv sync`。
+`.runtime/` 已忽略。Hermes 与 Harbor/AGS 的完整部署及网络权限仍须在目标机器
+预检；上述说明不把源码同步当成新机器上已经完成真实 rollout。
 
 ## 私有配置与真实入口
 
@@ -68,19 +81,19 @@ Harbor/AGS 的源码快照、边界和部署校验见 [运行时绑定](harbor_a
 下面的输出目录必须是新目录；运行会真实调用模型和相应外部服务：
 
 ```bash
-uv run traceforge reconstruct raw-run \
+"$TRACEFORGE_PYTHON" -m traceforge reconstruct raw-run \
   --input return_data/four_batch/by-rubric/R01.jsonl \
   --line-number 559 --domain search \
   --output artifacts/new-machine-search559 --config config.yaml \
-  --hermes-home /absolute/path/to/hermes-agent \
+  --hermes-home "$PWD/.runtime/hermes-agent" \
   --execute-rollout --rollout-trials 1 --manual-response-review
 
-uv run traceforge reconstruct raw-run \
+"$TRACEFORGE_PYTHON" -m traceforge reconstruct raw-run \
   --input return_data/four_batch/by-rubric/R04.jsonl \
   --line-number 1 --domain terminal \
   --output artifacts/new-machine-terminal1 --config config.yaml \
-  --hermes-home /absolute/path/to/hermes-agent \
-  --harbor-root /absolute/path/to/harbor-ags \
+  --hermes-home "$PWD/.runtime/hermes-agent" \
+  --harbor-root "$PWD/.runtime/harbor-ags" \
   --execute-red --execute-rollout --rollout-trials 2 --manual-response-review
 ```
 

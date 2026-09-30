@@ -19,3 +19,6 @@ return_data/
 # 本地临时虚拟环境
 .venv-*/
 .uvpy/
+
+# 跨机调试的外部运行时源码及独立环境。
+.runtime/
