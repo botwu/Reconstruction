@@ -37,9 +37,9 @@ oracle 只用于校准参考解与验证器；实际 rollout 由下游配置求�
 
 ## search
 
-通过 v3 来源交接校验并输出 READY 后自动生成 `tasks/<task_id>/harbor/<digest>/task/`，`result.json` 返回 `harbor_task` 和 `harbor_rollout_args`。直接检索 rollout 与 Harbor 包使用同一批公开材料；该 runner 的实际答案和工具轨迹会返回持续 researcher 复核。原生 Harbor 的执行情况单独记录，不能把直接 runner 的结果说成原生 Harbor 已运行。
+通过 v4 来源交接校验并输出 READY 后自动生成 `tasks/<task_id>/harbor/<digest>/task/`，`result.json` 返回 `harbor_task` 和 `harbor_rollout_args`。直接检索 rollout 与 Harbor 包使用同一批公开材料；该 runner 的实际答案和工具轨迹会返回持续 researcher 复核。原生 Harbor 的执行情况单独记录，不能把直接 runner 的结果说成原生 Harbor 已运行。
 
-任务说明保留原用户要求及必要指代上下文，`workspace/evidence.json` 默认携带全部已返回记录与实际抓取资料，必要排除有索引及原因；保留原文和文件坐标，隔离解析模型的分析意见。历史方案按原消息恢复，不使用自由生成的 context_note。补全 agent 根据原任务声明 `requires_live_web` 和依据；这不改变调用方指定的 domain。
+任务说明保留原用户要求及必要指代上下文，`workspace/evidence.json` 默认携带全部已返回记录与实际抓取资料，必要排除只限任务答案或解题后状态，必须给出事件索引、分类、逐字原文和原因；保留原文和文件坐标，隔离解析模型的分析意见。历史方案按原消息恢复，不使用自由生成的 context_note。旧检索片段、摘要或重复材料不能因为已有新来源而删除。分类与引文只提供可审查依据，不能代替语义核对；旧 v3 环境须重新补全后再续跑。补全 agent 根据原任务声明 `requires_live_web` 和依据；这不改变调用方指定的 domain。
 
 本地代码、文档检索通过 `search_evidence/read_evidence` 查询捕获语料；READY 前必须逐项说明原要求所需材料，并实际读取引用证据。Harbor solver 可用 Python 读取同一 `evidence.json`，保留当前文件与历史版本的区别。这类任务不安装网页检索脚本，也不要求 Serper/Jina 密钥。
 

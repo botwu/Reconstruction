@@ -33,8 +33,9 @@ SEARCH_COMPLETION_ROLE = AgentRole(
         "不能再用 reference_event_indices 白名单缩减资料。"
         "要求定位具体实现时，调用处、docstring 和测试预期不能替代实现正文。"
         "reconstruction_feedback 中已发现的缺口要逐项重新取证；不能靠改写覆盖说明宣称消失。"
-        "逐项审查事件目录及相关原文；excluded_events 仅用于隔离本次生成的答案、解题后的状态或"
-        "不属于本任务输入的返回，每项给出 event_index 和具体原因。不能因为未读、重叠、较长、"
+        "逐项审查事件目录及相关原文；excluded_events 仅隔离本任务答案(task_answer)或解题后状态"
+        "(post_task_state)，每项提供 event_index、kind、逐字原文 quote 和具体 reason。"
+        "旧检索、摘要和已被新来源补充的资料仍保留为线索。不能因为未读、重叠、较长、"
         "报错或看似次要就删除：它们可能保留调用链、版本边界、失败原因或关键尾部。"
         "混合返回中含必要输入和答案时先明确缺口，不把整段答案交付或声称输入已完整。"
         "context_references 指向后续用户真正依赖的历史消息，注明 used_by_user_message_index。"
@@ -58,7 +59,9 @@ SEARCH_COMPLETION_ROLE = AgentRole(
         "公开原文能恢复的部分保留完整来源和版本，不能恢复的本地差异单独说明，不纯生成替代真实源码。"
         "requires_live_web 表示 solver 是否需要继续公网研究，不限制重建者获取有依据的公开补充材料。"
         "补充的公开源码以实际打开的 URL 引用并随 live_references 交付。"
-        "公开资料任务实际搜索并打开相关来源；一次访问成功不等于资料足够。"
+        "公开资料任务实际搜索并打开相关来源，核对所需章节是否可读；访问成功不等于正文完整。"
+        "乱码、正文漏字、仅目录或摘要不能当作已读全文；沿 DOI、期刊网页和公开版本继续取证，"
+        "必要时找同一问题的其他真实文献，保留原来源并说明覆盖边界，不生成替代正文。"
         "captured 中的历史搜索和原助手说过的行动，不是你本轮执行的 web_search；"
         "必须依据本轮工具回执区分已查询、只打开已有链接和从未查询。"
         "逐项对 acceptance_obligations 给 requirement_coverage：obligation_id、evidence_ref_ids、reason。"
@@ -71,7 +74,7 @@ SEARCH_COMPLETION_ROLE = AgentRole(
         "篇幅、引用体例等未指定偏好采用合理默认，不能新增阻塞条件。"
         "READY 表示逐项核对了输入供给，尚不表示最终回答通过验收。"
         "返回 JSON：{status: READY|BLOCKED, requires_live_web: true|false, retrieval_reason: 访问依据, "
-        "excluded_events: [{event_index: 整数, reason: 排除原因}], "
+        "excluded_events: [{event_index: 整数, kind: task_answer|post_task_state, quote: 逐字原文, reason: 隔离原因}], "
         "context_references: [{message_index: 整数, used_by_user_message_index: 整数, quote: 可选逐字摘录}], "
         "requirement_coverage: [{obligation_id: 原要求id, evidence_ref_ids: [来源], reason: 说明文本或文本数组}], "
         "limitations: [真实输入限制], missing_inputs: [必需输入缺口]}。"
@@ -120,6 +123,8 @@ SEARCH_REVIEW_ROLE = replace(
         "未取得实现正文时，不能把调用处、docstring 或测试预期当作已逐行核实的实现。"
         "区分环境缺口和 solver 错误：已有可检索原文但 solver 漏读/误推断，属于 SOLVER_ERROR；"
         "有效原文被漏交、历史方案截短、初态包含待求答案或必要工具不可用，属于 ENVIRONMENT_GAP。"
+        "复核 excluded_events 的 quote 是否真是任务答案或解题后状态；分类名存在不代表语义正确，"
+        "不能因资料是历史片段、摘要或已有新来源就删除原始返回。"
         "若无法从真实执行验证某要求，标 NOT_EXERCISED，不能以工具能访问替代。"
         "只按已知来源修复缺口，不能编造材料。返回 JSON："
         "{decision: COMPLETE|REPAIR|BLOCKED, requirements: [{obligation_id: 原要求id, "
@@ -188,7 +193,7 @@ def _complete_search_environment(
         if type(requires_web) is not bool or not str(payload.get("retrieval_reason") or "").strip():
             errors.append("必须根据原任务说明 requires_live_web 和 retrieval_reason，不能从 domain 猜测")
         elif requires_web and not network.ready():
-            errors.append("未实证完成公开查询及来源页面读取：须执行有结果的 web_search 和成功的 web_open")
+            errors.append("未实证完成公开查询及来源页面读取：须执行成功的 web_search 和含正文的 web_open")
         elif not requires_web and not any(record["evidence_ref_id"] in read_ids for record in captures):
             errors.append("本地检索缺少原始证据：未提供内联文件正文时，须执行 read_evidence 读取")
         source_task = task.get("source_task") or {}
@@ -221,7 +226,11 @@ def _complete_search_environment(
             "validation_feedback": errors, "previous_output": payload,
             "live_access": live_access, "author_evidence_access": evidence_access,
             "available_reference_event_indices": [item["event_index"] for item in records],
+            "available_evidence_ref_ids": sorted(available),
+            "read_evidence_ref_ids": sorted(available & (read_ids | set(network.pages) | context_ids)),
             "instruction": "保留原任务和全部可用原文，修正交接引用及实际读取缺口，提交完整 JSON。"
+            "evidence_ref_ids 从 available_evidence_ref_ids 原样选择，不把 offset、用户角色或查询词拼进编号；"
+            "分页范围写在 reason，不能改写来源 ID。网页用已打开 URL，历史消息用 message:索引。"
             "live_access 仅列本轮真实调用，空 web_search_calls 表示本轮一次查询都没有执行；"
             "不能把原 session 的搜索或自己的声明当成本轮查询。"
             "author_evidence_access 区分已内联原文和实际读取调用；search_evidence 预览不计全文读取。"
@@ -265,35 +274,66 @@ def _review_search_rollouts(
                 for event in execution["tool_events"] if event.get("name") == "read_evidence"
             ],
         })
-    result = agent.run(
-        role=SEARCH_REVIEW_ROLE, session=session, output_root=output_root / "researcher-review",
-        instruction=json.dumps({
-            "task": task, "evidence_handoff": environment["evidence_handoff"],
-            "available_evidence_ref_ids": [r["evidence_ref_id"] for r in environment["captures"]],
-            "author_input_references": [
-                {key: item[key] for key in ("obligation_id", "evidence_ref_ids")}
-                for item in environment["requirement_coverage"]
-            ],
-            "context_messages": environment["context_messages"], "trials": trials,
-        }, ensure_ascii=False),
-    )
-    review = result.payload or {}
-    checks = review.get("requirements")
+    request = {
+        "current_stage_instruction": (
+            "补全和真实 rollout 已结束，现在复核 trials 中的实际读取与回答。"
+            "按 search_review 角色返回 decision 和逐项 requirements；"
+            "不能再返回补全阶段的 status=READY、excluded_events 或 requirement_coverage。"
+        ),
+        "task": task, "evidence_handoff": environment["evidence_handoff"],
+        "available_evidence_ref_ids": [r["evidence_ref_id"] for r in environment["captures"]],
+        "author_input_references": [
+            {key: item[key] for key in ("obligation_id", "evidence_ref_ids")}
+            for item in environment["requirement_coverage"]
+        ],
+        "context_messages": environment["context_messages"], "trials": trials,
+    }
     expected = {item["id"] for item in task.get("acceptance_obligations", [])}
-    valid = (isinstance(checks, list) and all(isinstance(item, dict) and isinstance(item.get("obligation_id"), str)
-                     for item in checks)
-             and {item.get("obligation_id") for item in checks} == expected
-             and len(checks) == len(expected)
-             and all(item.get("status") in {"SUPPORTED", "ENVIRONMENT_GAP", "SOLVER_ERROR", "NOT_EXERCISED"}
-                     and str(item.get("reason") or "").strip() for item in checks))
-    decision = review.get("decision")
-    if (not result.completed or result.errors or not valid
-            or decision not in {"COMPLETE", "REPAIR", "BLOCKED"}
-            or (decision == "REPAIR" and not any(item["status"] == "ENVIRONMENT_GAP" for item in checks))
-            or (decision == "COMPLETE" and any(item["status"] in {"ENVIRONMENT_GAP", "NOT_EXERCISED"}
-                                               for item in checks))):
-        review = {**review, "decision": "BLOCKED", "errors": [
-            *result.errors, "真实 rollout 的重建复核尚未完整，不能声称环境已验证"]}
+    seen_errors: set[tuple[str, ...]] = set()
+    while True:
+        attempt_root = output_root / "researcher-review"
+        if seen_errors:
+            attempt_root = attempt_root / "attempts" / f"{len(seen_errors):04d}"
+        result = agent.run(
+            role=SEARCH_REVIEW_ROLE, session=session, output_root=attempt_root,
+            instruction=json.dumps(request, ensure_ascii=False),
+        )
+        review = result.payload or {}
+        checks = review.get("requirements")
+        valid = (isinstance(checks, list)
+                 and all(isinstance(item, dict) and isinstance(item.get("obligation_id"), str)
+                         for item in checks)
+                 and {item.get("obligation_id") for item in checks} == expected
+                 and len(checks) == len(expected)
+                 and all(item.get("status") in {
+                     "SUPPORTED", "ENVIRONMENT_GAP", "SOLVER_ERROR", "NOT_EXERCISED"}
+                     and isinstance(item.get("reason"), str) and item["reason"].strip()
+                     for item in checks))
+        decision = review.get("decision")
+        errors = []
+        if decision not in {"COMPLETE", "REPAIR", "BLOCKED"}:
+            errors.append("decision 必须为 COMPLETE、REPAIR 或 BLOCKED；READY 属于之前的补全阶段")
+        if not valid:
+            errors.append("requirements 须逐项对应 " + ", ".join(sorted(expected))
+                          + "，每项包含 obligation_id、合法 status 和非空 reason")
+        elif (decision == "REPAIR" and not any(item["status"] == "ENVIRONMENT_GAP" for item in checks)):
+            errors.append("只有真实 ENVIRONMENT_GAP 才能返回 REPAIR；solver 错误不能通过改写环境修复")
+        elif (decision == "COMPLETE" and any(item["status"] in {"ENVIRONMENT_GAP", "NOT_EXERCISED"}
+                                             for item in checks)):
+            errors.append("存在 ENVIRONMENT_GAP 或 NOT_EXERCISED 时不能返回 COMPLETE")
+        _save(attempt_root / "validation.json", {
+            "status": "INVALID" if errors or result.errors or not result.completed else "VALID",
+            "errors": [*result.errors, *errors],
+        })
+        signature = tuple(errors)
+        if not result.completed or result.errors or (errors and signature in seen_errors):
+            review = {**review, "decision": "BLOCKED", "errors": [
+                *result.errors, *errors, "复核未完成或相同格式错误重复出现，保留既有环境和 rollout"]}
+            break
+        if not errors:
+            break
+        seen_errors.add(signature)
+        request["review_format_errors"] = errors
     _save(output_root / "researcher-review.json", review)
     return review
 

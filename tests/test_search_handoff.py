@@ -9,7 +9,7 @@ import pytest
 from traceforge.reconstruction.search_environment import run_search_task
 
 
-def run_fixture(root, **changes):
+def run_fixture(root, *, second_result="B 的源码及调用链", **changes):
     messages = [
         {"role": "assistant", "content": "历史完整方案：先恢复数据；再比较两个实现；保留失败重试与版本约束。"},
         {"role": "user", "content": "按上述方案比较两个实现。"},
@@ -20,7 +20,7 @@ def run_fixture(root, **changes):
          "session_parse": {"reason": "模型已经认定 A 优于 B", "effect": "read_only",
                            "file_ops": [{"kind": "read", "path": "a.py", "content": "A 的完整源码\r\n",
                                          "line_numbers": [1]}]}},
-        {"name": "Read", "arguments": {"path": "b.py"}, "result_text": "B 的源码及调用链"},
+        {"name": "Read", "arguments": {"path": "b.py"}, "result_text": second_result},
         {"name": "Read", "pending": True},
     ]}
     payload = {
@@ -91,7 +91,10 @@ def test_exclusions_require_existing_unique_source_and_reason(tmp_path, excluded
 
 def test_explicit_exclusion_is_audited_and_does_not_leave_false_support(tmp_path):
     outcome, env, _ = run_fixture(
-        tmp_path, excluded_events=[{"event_index": 1, "reason": "该返回是本次生成的答案，不能作为初态"}])
+        tmp_path, second_result="本次比较的最终答案：A 优于 B。",
+        excluded_events=[{"event_index": 1, "kind": "task_answer",
+                          "quote": "本次比较的最终答案：A 优于 B。",
+                          "reason": "该返回是本次生成的答案，不能作为初态"}])
     assert outcome["status"] == "BLOCKED"
     assert any("captured:1" in error for error in outcome["errors"])
     assert env["evidence_handoff"]["excluded_events"][0]["event_index"] == 1
@@ -145,7 +148,9 @@ def test_actual_rollout_gap_returns_to_same_researcher_and_stops_without_change(
         repaired = repair_changes_input and len(completions) > 1
         return SimpleNamespace(completed=True, errors=[], payload={
             "status": "READY", "requires_live_web": False, "retrieval_reason": "比较本地源码",
-            "excluded_events": [] if repaired else [{"event_index": 1, "reason": "被误判为无关"}],
+            "excluded_events": [] if repaired else [{
+                "event_index": 1, "kind": "post_task_state", "quote": "B 的原始源码",
+                "reason": "模型误把原始观察当成解题后的状态，语义复核仍需纠正"}],
             "context_references": [], "missing_inputs": [],
             "requirement_coverage": [{
                 "obligation_id": "compare",
@@ -182,12 +187,13 @@ def test_actual_rollout_gap_returns_to_same_researcher_and_stops_without_change(
         assert outcome["errors"] == ["SEARCH_RECONSTRUCTION_NO_PROGRESS"]
 
 
-def test_old_environment_cannot_bypass_source_boundary_by_resuming(tmp_path):
+@pytest.mark.parametrize("version", ["v2", "v3"])
+def test_old_environment_cannot_bypass_source_boundary_by_resuming(tmp_path, version):
     from traceforge.reconstruction.search_environment import run_search_rollouts
 
     with pytest.raises(ValueError, match="重新补全"):
         run_search_rollouts(
-            environment={"status": "READY", "schema_version": "traceforge.search-environment.v2"},
+            environment={"status": "READY", "schema_version": f"traceforge.search-environment.{version}"},
             rollout_agent=SimpleNamespace(), output_root=tmp_path)
 
 
@@ -212,7 +218,7 @@ def test_execution_errors_and_empty_answers_are_not_completed_rollouts(tmp_path,
     from traceforge.reconstruction.search_environment import run_search_rollouts
 
     result = run_search_rollouts(
-        environment={"schema_version": "traceforge.search-environment.v3", "status": "READY",
+        environment={"schema_version": "traceforge.search-environment.v4", "status": "READY",
                      "task": {"task_id": "q", "task_instruction": "比较源码"},
                      "captures": [], "context_messages": [], "limitations": []},
         rollout_agent=SimpleNamespace(model_name="fixture", run=lambda **kwargs: SimpleNamespace(
@@ -331,3 +337,103 @@ def test_coverage_explanation_accepts_text_or_text_items_without_hiding_missing_
     task = {"acceptance_obligations": [{"id": "inspect"}]}
     assert (not validate_requirement_coverage(task, coverage, {"captured:0"}, {"captured:0"})) == valid
     assert validate_requirement_coverage(task, coverage, {"captured:0"}, set())
+
+
+@pytest.mark.parametrize("extra", [
+    {},
+    {"kind": "retrieval_preview", "quote": "旧的搜索片段仍有来源线索"},
+    {"kind": "task_answer", "quote": "不在原始返回中的结论"},
+])
+def test_history_search_cannot_be_discarded_as_replaced_or_with_invented_proof(extra):
+    from traceforge.reconstruction.search_handoff import deliver_captures
+
+    records = [{"event_index": 0, "evidence_ref_id": "captured:0",
+                "result_text": "旧的搜索片段仍有来源线索"}]
+    with pytest.raises(ValueError):
+        deliver_captures(records, [{
+            "event_index": 0, "reason": "历史检索预览，已用新的期刊页面替代。",
+            **extra,
+        }], event_count=1)
+    assert records[0]["result_text"] == "旧的搜索片段仍有来源线索"
+
+
+def test_task_answer_exclusion_requires_original_return_not_parser_opinion():
+    from traceforge.reconstruction.search_handoff import deliver_captures
+
+    records = [{"event_index": 0, "evidence_ref_id": "captured:0",
+                "result_blocks": [{"text": "子 agent 已完成本题，最终结论 A 优于 B。"}]}]
+    exclusion = {"event_index": 0, "kind": "task_answer", "quote": "最终结论 A 优于 B",
+                 "reason": "原解题过程产生的回答不进入初态。"}
+    delivered, handoff = deliver_captures(records, [exclusion], event_count=1)
+    assert delivered == []
+    assert handoff["excluded_events"] == [exclusion]
+
+
+@pytest.mark.parametrize("corrects_response", [True, False])
+def test_review_phase_retries_wrong_completion_shape_without_rebuilding_environment(tmp_path, corrects_response):
+    from traceforge.reconstruction.agents import AgentSession
+    from traceforge.reconstruction.agents.session import AgentConversation
+    from traceforge.reconstruction.search_environment import _review_search_rollouts
+
+    trial = tmp_path / "rollouts/trial-01"
+    trial.mkdir(parents=True)
+    (trial / "answer.md").write_text("基于原文完成的回答")
+    (trial / "execution.json").write_text(json.dumps({"tool_events": []}))
+    (trial / "receipt.json").write_text(json.dumps({"completed": True}))
+    calls = []
+    session = AgentSession(conversation=AgentConversation())
+
+    def review(**kwargs):
+        calls.append(kwargs)
+        payload = {"status": "READY", "requirement_coverage": []}
+        if corrects_response and len(calls) == 2:
+            payload = {"decision": "COMPLETE", "requirements": [{
+                "obligation_id": "compare", "status": "SUPPORTED",
+                "reason": "实际回答使用了已交付的原始比较资料", "repair": "",
+            }]}
+        return SimpleNamespace(completed=True, errors=[], payload=payload)
+
+    result = _review_search_rollouts(
+        task={"acceptance_obligations": [{"id": "compare"}]},
+        environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
+                     "context_messages": []},
+        agent=SimpleNamespace(run=review), session=session, output_root=tmp_path,
+    )
+    assert len(calls) == 2
+    assert all(call["role"].name == "search_review" and call["session"] is session for call in calls)
+    assert (trial / "answer.md").read_text() == "基于原文完成的回答"
+    assert result["decision"] == ("COMPLETE" if corrects_response else "BLOCKED")
+
+@pytest.mark.parametrize("corrects_references", [True, False])
+def test_coverage_retry_supplies_exact_delivered_ids_without_guessing(tmp_path, corrects_references):
+    calls = []
+
+    def author(**kwargs):
+        calls.append(json.loads(kwargs["instruction"]))
+        kwargs["session"].tool_events.append(
+            {"name": "read_evidence", "arguments": {"id": "captured:0"}, "ok": True})
+        refs = ["captured:0:offset0..2000", "user:1"]
+        if len(calls) == 2:
+            assert calls[-1]["available_evidence_ref_ids"] == ["captured:0", "message:1"]
+            assert calls[-1]["read_evidence_ref_ids"] == ["captured:0", "message:1"]
+            if corrects_references:
+                refs = calls[-1]["available_evidence_ref_ids"]
+        return SimpleNamespace(completed=True, errors=[], payload={
+            "status": "READY", "requires_live_web": False, "retrieval_reason": "检索已捕获源码",
+            "excluded_events": [], "context_references": [], "missing_inputs": [],
+            "requirement_coverage": [{"obligation_id": "inspect", "evidence_ref_ids": refs,
+                                      "reason": "原始源码和用户要求已经读取"}],
+        })
+
+    outcome = run_search_task(
+        source={"raw_session": {"messages": [
+            {"role": "assistant", "content": "前文"},
+            {"role": "user", "content": "分析这份代码"},
+        ]}, "tool_timeline": [{"name": "Read", "result_text": "原始源码"}]},
+        task={"task_id": "q", "task_instruction": "分析这份代码",
+              "source_task": {"message_indices": [1], "user_texts": ["分析这份代码"]},
+              "acceptance_obligations": [{"id": "inspect", "text": "分析代码"}]},
+        agent=SimpleNamespace(run=author), output_root=tmp_path,
+    )
+    assert len(calls) == 2
+    assert outcome["status"] == ("ENVIRONMENT_READY" if corrects_references else "BLOCKED")

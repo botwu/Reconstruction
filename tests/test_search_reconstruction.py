@@ -217,7 +217,7 @@ def test_ready_search_environment_can_resume_with_captured_and_live_evidence(tmp
         return SimpleNamespace(completed=True, errors=[], turns=[], final_text="实际回答")
 
     environment = {
-        "schema_version": "traceforge.search-environment.v3",
+        "schema_version": "traceforge.search-environment.v4",
         "status": "READY", "task": {"task_id": "q1", "task_instruction": "梳理文献"},
         "captures": [{"evidence_ref_id": "captured:0", "result_text": "原始返回"}],
         "live_references": [{"source_mode": "live_page", "text": "完整页面", "raw_sha256": "h",

@@ -8,7 +8,7 @@ from typing import Any
 from traceforge.reconstruction.session_source import message_text
 from traceforge.trajectory.privacy import omit_private_reasoning
 
-SEARCH_ENVIRONMENT_SCHEMA = "traceforge.search-environment.v3"
+SEARCH_ENVIRONMENT_SCHEMA = "traceforge.search-environment.v4"
 
 
 def deliver_captures(
@@ -24,6 +24,20 @@ def deliver_captures(
         if (type(index) is not int or not 0 <= index < event_count or index in excluded
                 or not isinstance(reason, str) or not reason.strip()):
             raise ValueError("排除必须引用唯一且存在的原始事件，并说明其不属于任务初态的原因")
+        if index in by_index:
+            record = by_index[index]
+            quote = item.get("quote")
+            texts = [record.get("result_text"), *[
+                block.get("text") for block in record.get("result_blocks", [])
+                if isinstance(block, dict)]]
+            if (item.get("kind") not in {"task_answer", "post_task_state"}
+                    or not isinstance(quote, str) or not quote.strip()
+                    or not any(isinstance(text, str) and quote in text for text in texts)):
+                raise ValueError(
+                    f"事件 {index} 的排除缺少任务答案/解题后状态分类及逐字原文依据。"
+                    "仅允许 kind=task_answer|post_task_state，并提供 quote 和 reason；"
+                    "历史、摘要、重复、已有新来源都不能作为删除资料的依据。"
+                    "没有需隔离的答案或终态时使用 excluded_events=[]。")
         excluded.add(index)
     delivered = []
     for original in records:
