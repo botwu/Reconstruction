@@ -227,7 +227,8 @@ def test_optional_preferences_do_not_replace_required_input_gate(tmp_path, monke
     network = SimpleNamespace(ready=lambda: True, search=None, open=None, calls=[], pages={})
     monkeypatch.setattr(search_environment, "SearchTools", lambda root: network)
     agent = SimpleNamespace(run=lambda **kwargs: SimpleNamespace(
-        payload={"status": "READY", "reference_event_indices": [], "context_note": "已恢复任务",
+        payload={"status": "READY", "requires_live_web": True, "retrieval_reason": "任务需要公开文献",
+                 "reference_event_indices": [], "context_note": "已恢复任务",
                  "limitations": ["未指定篇幅，按中文综述处理"], "missing_inputs": missing},
         errors=[], completed=True,
     ))
@@ -268,6 +269,7 @@ def test_pending_reference_feedback_keeps_context_and_stops_without_progress(tmp
             assert sessions[1].conversation.messages == [{"role": "assistant", "content": "已查来源"}]
         sessions[-1].conversation.messages = [{"role": "assistant", "content": "已查来源"}]
         return SimpleNamespace(completed=True, errors=[], payload={
+            "requires_live_web": True, "retrieval_reason": "查找公开来源",
             "status": "READY", "reference_event_indices": [0] if repair and len(sessions) > 1 else [1],
             "context_note": "原 message 3 中的选题1是原题目", "missing_inputs": [],
         })
@@ -313,6 +315,7 @@ def test_missing_live_query_returns_to_author_without_faking_readiness(tmp_path,
             if perform_check:
                 kwargs["session"].web_search_handler("任务的公开来源")
         return SimpleNamespace(completed=True, errors=[], payload={
+            "requires_live_web": True, "retrieval_reason": "查找公开来源",
             "status": "READY", "reference_event_indices": [], "missing_inputs": [],
         })
 
@@ -323,3 +326,60 @@ def test_missing_live_query_returns_to_author_without_faking_readiness(tmp_path,
     )
     assert len(attempts) == 2
     assert result["status"] == ("ENVIRONMENT_READY" if perform_check else "BLOCKED")
+
+
+def test_local_evidence_search_can_resume_and_read_historical_file_coordinates():
+    from traceforge.reconstruction.agents.session import AgentSession, execute_tool
+
+    session = AgentSession(evidence=[{
+        "evidence_ref_id": "captured:0", "result_text": "needle " * 12,
+        "session_parse": {"reference_file_ops": [
+            {"kind": "read", "path": None, "source_path": "HEAD^:removed.py",
+             "content": "class Reference:\r\n    pass\r\n", "line_numbers": [4, 5]},
+        ]},
+    }])
+    first = json.loads(execute_tool("search_evidence", {"query": "needle"}, session))
+    assert len(first["matches"]) == 10 and first["next_offset"] == 10
+    second = json.loads(execute_tool("search_evidence", {"query": "needle", "offset": 10}, session))
+    assert len(second["matches"]) == 2 and second["next_offset"] is None
+    read = json.loads(execute_tool("read_evidence", {"id": "captured:0", "path": "HEAD^:removed.py"}, session))
+    assert read["observations"][0]["content"] == "class Reference:\r\n    pass\r\n"
+    assert read["observations"][0]["line_numbers"] == [4, 5]
+    assert execute_tool("search_evidence", {"query": ""}, session).startswith("error:")
+
+
+@pytest.mark.parametrize("read_source", [True, False])
+def test_local_search_requires_actual_corpus_reading_without_public_web(tmp_path, monkeypatch, read_source):
+    from types import SimpleNamespace
+
+    from traceforge.reconstruction import search_environment
+    from traceforge.reconstruction.agents.session import execute_tool
+
+    def no_network(*args, **kwargs):
+        pytest.fail("本地代码检索不需要网络验证")
+
+    network = SimpleNamespace(ready=no_network, search=no_network, open=no_network, calls=[], pages={})
+    monkeypatch.setattr(search_environment, "SearchTools", lambda root: network)
+
+    def run(**kwargs):
+        if read_source:
+            session = kwargs["session"]
+            args = {"id": "captured:0"}
+            value = execute_tool("read_evidence", args, session)
+            session.tool_events.append({"name": "read_evidence", "arguments": args,
+                                        "ok": not value.startswith("error:")})
+        return SimpleNamespace(completed=True, errors=[], payload={
+            "status": "READY", "requires_live_web": False, "retrieval_reason": "只读比较已捕获源码",
+            "reference_event_indices": [0], "missing_inputs": [],
+        })
+
+    result = search_environment.run_search_task(
+        source={"domain_route": "retrieval", "raw_session": {"messages": []},
+                "tool_timeline": [{"name": "Read", "result_text": "class Reference: pass"}]},
+        task={"task_id": "code-search", "task_instruction": "比较源码，引用路径和行号。"},
+        agent=SimpleNamespace(run=run), output_root=tmp_path,
+    )
+    assert result["status"] == ("ENVIRONMENT_READY" if read_source else "BLOCKED")
+    environment = json.loads((tmp_path / "environment.json").read_text())
+    assert environment["source_mode"] == "captured_references"
+    assert "web_search" not in environment["tools"]

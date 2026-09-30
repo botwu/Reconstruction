@@ -74,7 +74,9 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
             or not isinstance(instruction, str) or not instruction.strip()):
         raise ValueError("只有任务和必要上下文完整的检索初态才能导出 Harbor")
     tool_source = Path(__file__).parent / "reconstruction/search_tools.py"
+    requires_web = environment.get("requires_live_web", True)
     digest = hashlib.sha256(json.dumps({
+        "search_delivery_version": 2,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),
     }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
@@ -97,12 +99,18 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
         instruction += "\n\n任务所需历史上下文：\n" + json.dumps(context, ensure_ascii=False, indent=2)
         instruction += (
             "\n\n工作目录为 /home/user/workspace。evidence.json 保留原始资料及捕获来源；"
-            "可使用终端工具检索和读取。需要公开网页资料时可执行：\n"
-            '- traceforge-search search "查询内容"\n'
-            '- traceforge-search open "https://来源地址" --offset 0 --limit 8000\n'
-            "工具返回保留抓取时间与原始内容哈希；历史片段不能当作已读取当前全文。"
+            "可使用 Python 读取 JSON，再按关键词检索 captures 中的 result_blocks 和 session_parse。"
+            "文件路径和行号来自原始观察；历史版本与当前文件分开引用，未捕获不等于不存在。"
             "按原任务要求给出最终回答，Harbor 会保存执行轨迹。\n"
         )
+        if requires_web:
+            instruction += (
+                '\n公开网页工具：traceforge-search search "查询内容"；'
+                'traceforge-search open "https://来源地址" --offset 0 --limit 8000。'
+                "返回保留抓取时间与原始内容哈希；历史片段不能当作已读取当前全文。\n"
+            )
+        else:
+            instruction += "\n本任务使用已捕获的本地语料，不需要公网搜索；缺少的证据应明确说明。\n"
         (root / "instruction.md").write_text(instruction, encoding="utf-8")
         (root / "task.toml").write_text(
             'schema_version = "1.4"\nartifacts = ["/home/user/workspace"]\n'
@@ -110,23 +118,24 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
             '[metadata]\ndomain = "search"\nresponse_acceptance = "NOT_ASSESSED"\n'
             '[agent]\ntimeout_sec = 1800.0\nuser = "user"\n'
             '[environment]\nos = "linux"\nnetwork_mode = "public"\n'
-            'workdir = "/home/user/workspace"\ncpus = 2\nmemory_mb = 4096\n'
+            'workdir = "/home/user/workspace"\ncpus = 2\nmemory_mb = 4096\n' + (
             '[environment.env]\nSERPER_API_KEY = "${SERPER_API_KEY:-}"\n'
             'JINA_API_KEY = "${JINA_API_KEY:-}"\n'
-            'TRACEFORGE_FETCH_PROVIDER = "${TRACEFORGE_FETCH_PROVIDER:-jina}"\n',
+            'TRACEFORGE_FETCH_PROVIDER = "${TRACEFORGE_FETCH_PROVIDER:-jina}"\n' if requires_web else ''),
             encoding="utf-8",
         )
         write_container_environment(root, separate_verifier=False)
-        shutil.copyfile(tool_source, root / "environment/search_tools.py")
-        (root / "environment/traceforge-search").write_text(
-            '#!/bin/sh\nexec python3 /opt/traceforge-environment/search_tools.py "$@"\n',
-            encoding="utf-8",
-        )
-        (root / "environment/setup.sh").write_text(
-            '#!/bin/sh\nset -eu\nchmod 755 /opt/traceforge-environment/traceforge-search\n'
-            'ln -s /opt/traceforge-environment/traceforge-search /usr/local/bin/traceforge-search\n',
-            encoding="utf-8",
-        )
+        if requires_web:
+            shutil.copyfile(tool_source, root / "environment/search_tools.py")
+            (root / "environment/traceforge-search").write_text(
+                '#!/bin/sh\nexec python3 /opt/traceforge-environment/search_tools.py "$@"\n',
+                encoding="utf-8",
+            )
+            (root / "environment/setup.sh").write_text(
+                '#!/bin/sh\nset -eu\nchmod 755 /opt/traceforge-environment/traceforge-search\n'
+                'ln -s /opt/traceforge-environment/traceforge-search /usr/local/bin/traceforge-search\n',
+                encoding="utf-8",
+            )
         (root / "tests").mkdir()
         (root / "tests/README.md").write_text(
             "此任务的回答内容由人工核查，尚无自动 verifier。\n"

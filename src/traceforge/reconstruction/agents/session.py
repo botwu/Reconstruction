@@ -205,6 +205,11 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
             ["path"],
         ),
         "list_evidence": ("List the evidence available to this session.", {}, []),
+        "search_evidence": (
+            "按字面关键词检索已交付原始证据，返回来源 id 和 read_evidence 可续读的字符位置；不联网。",
+            {"query": text, "offset": {"type": "integer", "minimum": 0}},
+            ["query"],
+        ),
         "read_evidence": (
             "读取原始证据；可指定 path 只读取解析器已定位的该文件观察，正文不改写。支持 offset/limit 分页。",
             {"id": text, "path": text, **page},
@@ -361,15 +366,32 @@ def execute_tool(name: str, arguments: Any, session: AgentSession) -> str:
                 for item in session.evidence
             ]
         )
+    if name == "search_evidence":
+        query = args.get("query")
+        offset = args.get("offset", 0)
+        if not isinstance(query, str) or not query or type(offset) is not int or offset < 0:
+            return "error: query 必须为非空字符串，offset 必须为非负整数"
+        matches = []
+        for item in session.evidence:
+            text = _dump(item)
+            position = text.find(query)
+            while position >= 0:
+                start = max(0, position - 100)
+                matches.append({"evidence_ref_id": item.get("evidence_ref_id"),
+                                "offset": start, "preview": text[start:position + len(query) + 100]})
+                position = text.find(query, position + len(query))
+        return _dump({"matches": matches[offset:offset + 10], "total_matches": len(matches),
+                      "next_offset": offset + 10 if offset + 10 < len(matches) else None})
     if name == "read_evidence":
         ref = str(args.get("id") or args.get("evidence_ref_id") or "")
         for item in session.evidence:
             if str(item.get("evidence_ref_id")) == ref:
                 if args.get("path"):
-                    observations = [
-                        op for op in (item.get("session_parse") or {}).get("file_ops", [])
-                        if op.get("kind") == "read" and op.get("path") == args["path"]
-                    ]
+                    parsed = item.get("session_parse") or {}
+                    observations = [op for op in [*parsed.get("file_ops", []),
+                                                   *parsed.get("reference_file_ops", [])]
+                                    if op.get("kind") == "read"
+                                    and args["path"] in {op.get("path"), op.get("source_path")}]
                     if not observations:
                         return "error: no parsed file observation for this path; read the full record"
                     return _window(_dump({"evidence_ref_id": ref, "observations": observations}), args)

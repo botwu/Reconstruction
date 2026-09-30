@@ -74,6 +74,17 @@ def test_export_rejects_overwriting_a_published_task(tmp_path):
         export_search_task(source, tmp_path)
 
 
+def test_local_code_search_remains_search_and_does_not_require_web_credentials(tmp_path):
+    source = {**search_environment(), "requires_live_web": False, "live_references": []}
+    task = export_search_task(source, tmp_path)
+    config = tomllib.loads((task / "task.toml").read_text())
+    assert config["metadata"]["domain"] == "search"
+    assert "env" not in config["environment"]
+    assert not (task / "environment/search_tools.py").exists()
+    assert "本任务使用已捕获的本地语料" in (task / "instruction.md").read_text()
+    assert json.loads((task / "workspace/evidence.json").read_text())["captures"] == source["captures"]
+
+
 def test_container_python_matches_frozen_binary_wheels(tmp_path):
     wheels = tmp_path / "environment/python_runtime/wheels"
     wheels.mkdir(parents=True)
