@@ -37,6 +37,7 @@ def test_search_delivery_preserves_evidence_without_inventing_a_verifier(tmp_pat
     assert (task / "environment/Dockerfile").is_file()
     assert (task / "environment/docker-compose.yaml").is_file()
     assert (task / "environment/search_tools.py").is_file()
+    assert "live_references" in (task / "instruction.md").read_text()
     assert not (task / "solution").exists()
     assert not (task / "tests/test.sh").exists()
     assert not (task / "workspace/raw-session.json").exists()
@@ -81,7 +82,7 @@ def test_local_code_search_remains_search_and_does_not_require_web_credentials(t
     assert config["metadata"]["domain"] == "search"
     assert "env" not in config["environment"]
     assert not (task / "environment/search_tools.py").exists()
-    assert "本任务使用已捕获的本地语料" in (task / "instruction.md").read_text()
+    assert "不需要继续公网搜索" in (task / "instruction.md").read_text()
     assert json.loads((task / "workspace/evidence.json").read_text())["captures"] == source["captures"]
 
 

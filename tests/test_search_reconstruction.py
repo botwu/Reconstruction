@@ -42,6 +42,26 @@ def test_search_failure_is_recorded_and_not_marked_ready(tmp_path, monkeypatch):
     assert json.loads((tmp_path / "calls.jsonl").read_text())["success"] is False
 
 
+
+@pytest.mark.parametrize("query_success", [True, False])
+def test_empty_search_result_is_not_a_transport_failure(tmp_path, monkeypatch, query_success):
+    tools = SearchTools(tmp_path)
+
+    def search(_query):
+        if not query_success:
+            raise RuntimeError("检索请求失败")
+        return [], "empty-result-hash"
+
+    monkeypatch.setattr(tools, "_search", search)
+    monkeypatch.setattr(tools, "_fetch", lambda url: {
+        "success": True, "url": url, "text": "已知地址的真实正文",
+    })
+    result = tools.search("精确符号")
+    tools.open("https://example.org/source")
+    assert result["success"] is query_success
+    assert tools.ready() is query_success
+
+
 @pytest.mark.parametrize("provider", ["jina", "serper"])
 def test_provider_results_keep_raw_snapshot_reference(tmp_path, monkeypatch, provider):
     tools = SearchTools(tmp_path)
@@ -200,7 +220,9 @@ def test_ready_search_environment_can_resume_with_captured_and_live_evidence(tmp
         "schema_version": "traceforge.search-environment.v3",
         "status": "READY", "task": {"task_id": "q1", "task_instruction": "梳理文献"},
         "captures": [{"evidence_ref_id": "captured:0", "result_text": "原始返回"}],
-        "live_references": [{"source_mode": "live_page", "text": "完整页面", "raw_sha256": "h"}],
+        "live_references": [{"source_mode": "live_page", "text": "完整页面", "raw_sha256": "h",
+                             "url": "https://example.org/source.py", "title": "来源正文",
+                             "source_ref": "v1", "content_kind": "source_file"}],
         "context_note": "历史内容是线索", "limitations": [],
     }
     result = run_search_rollouts(
@@ -210,6 +232,16 @@ def test_ready_search_environment_can_resume_with_captured_and_live_evidence(tmp
     evidence = calls[0]["session"].evidence
     assert evidence[0] == environment["captures"][0]
     assert json.loads(evidence[1]["result_text"])["text"] == "完整页面"
+    from traceforge.reconstruction.agents.session import execute_tool
+
+    index = json.loads(execute_tool("list_evidence", {}, calls[0]["session"]))
+    assert index[0]["evidence_ref_id"] == "captured:0"
+    assert "url" not in index[0]
+    assert index[1]["url"] == "https://example.org/source.py"
+    assert index[1]["source_ref"] == "v1"
+    assert index[1]["content_kind"] == "source_file"
+    assert index[1]["title"] == "来源正文"
+    assert "完整页面" not in json.dumps(index, ensure_ascii=False)
     assert len(environment["captures"]) == 1
     assert result["status"] == "ROLLOUT_COMPLETED"
     assert result["rollouts"][0]["acceptance"] == "NOT_ASSESSED"

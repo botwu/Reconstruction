@@ -204,7 +204,7 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
             {"path": text, **page},
             ["path"],
         ),
-        "list_evidence": ("List the evidence available to this session.", {}, []),
+        "list_evidence": ("列出可读证据及已知来源地址、查询、版本和类型；正文用 read_evidence 读取。", {}, []),
         "search_evidence": (
             "按字面关键词检索已交付原始证据，返回来源 id 和 read_evidence 可续读的字符位置；不联网。",
             {"query": text, "offset": {"type": "integer", "minimum": 0}},
@@ -361,6 +361,9 @@ def execute_tool(name: str, arguments: Any, session: AgentSession) -> str:
                 {
                     "evidence_ref_id": item.get("evidence_ref_id"),
                     "name": item.get("name"),
+                    **{key: item[key] for key in
+                       ("url", "query", "title", "source_ref", "source_mode", "content_kind", "retrieved_at")
+                       if key in item},
                     "chars": len(_dump(item)),
                 }
                 for item in session.evidence

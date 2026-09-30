@@ -421,6 +421,9 @@ def run_search_rollouts(
     evidence = copy.deepcopy(environment["captures"])
     evidence.extend({"evidence_ref_id": f"live:{i}", "name": item.get("tool", "web_open"),
                      "source_mode": item["source_mode"],
+                     **{key: item[key] for key in
+                        ("url", "query", "title", "source_ref", "content_kind", "retrieved_at")
+                        if key in item},
                      "result_text": json.dumps(item, ensure_ascii=False)}
                     for i, item in enumerate(environment.get("live_references", [])))
     outcome = {"task_id": task["task_id"], "status": "ROLLOUT_INCOMPLETE",

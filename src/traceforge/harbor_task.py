@@ -80,7 +80,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
     tool_source = Path(__file__).parent / "reconstruction/search_tools.py"
     requires_web = environment.get("requires_live_web", True)
     digest = hashlib.sha256(json.dumps({
-        "search_delivery_version": 3,
+        "search_delivery_version": 4,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),
     }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
@@ -103,8 +103,10 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
         instruction += "\n\n任务所需历史上下文：\n" + json.dumps(context, ensure_ascii=False, indent=2)
         instruction += (
             "\n\n工作目录为 /home/user/workspace。evidence.json 保留原始资料及捕获来源；"
-            "可使用 Python 读取 JSON，再按关键词检索 captures 中的 result_blocks 和 session_parse。"
-            "文件路径和行号来自原始观察；历史版本与当前文件分开引用，未捕获不等于不存在。"
+            "可使用 Python 读取 JSON：captures 中的 result_blocks 和 session_parse 保存原始观察；"
+            "live_references 中的 results/text 保存补全时取得的检索返回与源码或网页正文，"
+            "按 url、title、source_ref 定位并核对所需内容。"
+            "文件路径和行号来自原始观察；公开上游版本与原仓库分开引用，未捕获不等于不存在。"
             "按原任务要求给出最终回答，Harbor 会保存执行轨迹。\n"
         )
         if requires_web:
@@ -114,7 +116,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
                 "返回保留抓取时间与原始内容哈希；历史片段不能当作已读取当前全文。\n"
             )
         else:
-            instruction += "\n本任务使用已捕获的本地语料，不需要公网搜索；缺少的证据应明确说明。\n"
+            instruction += "\n本任务使用已交付的原始语料及补充来源，不需要继续公网搜索；缺少的证据应明确说明。\n"
         (root / "instruction.md").write_text(instruction, encoding="utf-8")
         (root / "task.toml").write_text(
             'schema_version = "1.4"\nartifacts = ["/home/user/workspace"]\n'

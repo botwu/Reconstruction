@@ -162,8 +162,9 @@ class SearchTools:
         return self._record("web_open", value)
 
     def ready(self) -> bool:
-        return any(c.get("success") and c.get("results") for c in self.calls) and any(
-            c.get("success") and c.get("text") for c in self.calls
+        """只确认检索和读取可用；空匹配不代表请求失败或资料充足。"""
+        return any(c.get("tool") == "web_search" and c.get("success") for c in self.calls) and any(
+            c.get("tool") == "web_open" and c.get("success") and c.get("text") for c in self.calls
         )
 
 
