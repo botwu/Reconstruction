@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-01",
+  "code_commit": "466d52f686cd17ab759efeafce3676b42d87b88f",
+  "datasets": [
+    {
+      "name": "R01",
+      "domain": "search",
+      "path": "return_data/four_batch/by-rubric/R01.jsonl",
+      "bytes": 560481884,
+      "sha256": "3832d8aa4ecd577636ce67b56d8798d9fb6311662a7bbce65814e5e8d260d4d8",
+      "physical_lines": 1683,
+      "blank_lines": 0,
+      "invalid_json_or_nonobject_lines": 0,
+      "final_newline": true,
+      "debug_samples": [
+        {
+          "physical_line": 1,
+          "sha256": "9acc299ce82398d0d3fbfaac0ff37fa80d79d80d4865826c0b87eef166bf59e5",
+          "bytes": 559540
+        },
+        {
+          "physical_line": 38,
+          "sha256": "d11028d4d9a4d06e1c2f3e852d10e0980066f922da32774675ea73099b91a5ad",
+          "bytes": 172876
+        },
+        {
+          "physical_line": 39,
+          "sha256": "8c33a4c06f4973daec9dd9ac9185eae28e83c08fe0b7b152a5e15458a70db2f7",
+          "bytes": 194183
+        },
+        {
+          "physical_line": 559,
+          "sha256": "5f5e4c177393c129af89db66840a4d7148c08b7ff1dedba270e58342803439f9",
+          "bytes": 391453
+        }
+      ],
+      "archive": "R01.jsonl.gz",
+      "archive_bytes": 163423536,
+      "archive_sha256": "091a09b94507f3ff7cb0c83ecbf33ecc26c56f55d5cee3a54cbc906d76b2df51"
+    },
+    {
+      "name": "R04",
+      "domain": "terminal",
+      "path": "return_data/four_batch/by-rubric/R04.jsonl",
+      "bytes": 2690137992,
+      "sha256": "483906f7b0ed4cf01b0fa1fc91f2e07e4931a08f9516d105c39eb61615247657",
+      "physical_lines": 6535,
+      "blank_lines": 0,
+      "invalid_json_or_nonobject_lines": 0,
+      "final_newline": true,
+      "debug_samples": [
+        {
+          "physical_line": 1,
+          "sha256": "2c9d609055058904e0162e0d5e3ab74116f2a6d4a765b08b3c6a8de4e3c67486",
+          "bytes": 502624
+        },
+        {
+          "physical_line": 3,
+          "sha256": "fe36e666120cee197972faad4b44fc42d87c0e82ca9a6eaf1d045e57752baa5c",
+          "bytes": 480612
+        },
+        {
+          "physical_line": 270,
+          "sha256": "174303340fc6928d6249027215994be3ed89ffa0ed67c1b916c2fe693db0c8d9",
+          "bytes": 352374
+        },
+        {
+          "physical_line": 2179,
+          "sha256": "c4319da2562777d90c52fe46ac19bf7d053211208eee7614468e6e314cb91f11",
+          "bytes": 282794
+        },
+        {
+          "physical_line": 4322,
+          "sha256": "e5dd7a5a81bd9bb942ba9ec0b7c788bde3047c98e8f8413d6a7ea66f5bf07ce4",
+          "bytes": 294669
+        }
+      ],
+      "archive": "R04.jsonl.gz",
+      "archive_bytes": 676807141,
+      "archive_sha256": "37386bcc8880fd793ba016028e3101588f302699be46ac2eb918bc84179c0dc8"
+    }
+  ],
+  "format": "未修改的完整 JSONL；gzip 无损压缩；样本哈希包含原始行尾字节",
+  "distribution": {
+    "status": "PREPARED_NOT_UPLOADED",
+    "repository": "botwu/Reconstruction",
+    "reason": "目标仓库公开；等待用户确认原始数据的发布方式。"
+  }
+}
