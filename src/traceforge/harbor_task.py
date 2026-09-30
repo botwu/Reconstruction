@@ -67,6 +67,10 @@ def write_container_environment(task: Path, *, separate_verifier: bool) -> None:
 
 def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
     """封装已补全的检索初态；未提供内容验证器时使用 Harbor 的跳过验证模式。"""
+    from traceforge.reconstruction.search_handoff import SEARCH_ENVIRONMENT_SCHEMA
+
+    if environment.get("schema_version") != SEARCH_ENVIRONMENT_SCHEMA:
+        raise ValueError("旧检索交付缺少来源边界与材料覆盖记录，请重新补全")
     task = environment.get("task") or {}
     instruction = task.get("task_instruction")
     if (environment.get("status") != "READY" or environment.get("errors")
@@ -76,7 +80,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
     tool_source = Path(__file__).parent / "reconstruction/search_tools.py"
     requires_web = environment.get("requires_live_web", True)
     digest = hashlib.sha256(json.dumps({
-        "search_delivery_version": 2,
+        "search_delivery_version": 3,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),
     }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
@@ -93,7 +97,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
         })
         context = {
             "original_user_texts": (task.get("source_task") or {}).get("user_texts", []),
-            "context_note": environment.get("context_note"),
+            "context_messages": environment.get("context_messages", []),
             "limitations": environment.get("limitations", []),
         }
         instruction += "\n\n任务所需历史上下文：\n" + json.dumps(context, ensure_ascii=False, indent=2)

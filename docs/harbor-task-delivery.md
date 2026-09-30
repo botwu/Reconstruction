@@ -37,11 +37,11 @@ oracle 只用于校准参考解与验证器；实际 rollout 由下游配置求�
 
 ## search
 
-补全输出 READY 后自动生成 `tasks/<task_id>/harbor/<digest>/task/`，`result.json` 返回 `harbor_task` 和 `harbor_rollout_args`。原有直接检索 rollout 仍保留；这一新增任务路径供下游独立 Harbor runner 使用，不表示旧 runner 已整体替换。
+通过 v3 来源交接校验并输出 READY 后自动生成 `tasks/<task_id>/harbor/<digest>/task/`，`result.json` 返回 `harbor_task` 和 `harbor_rollout_args`。直接检索 rollout 与 Harbor 包使用同一批公开材料；该 runner 的实际答案和工具轨迹会返回持续 researcher 复核。原生 Harbor 的执行情况单独记录，不能把直接 runner 的结果说成原生 Harbor 已运行。
 
-任务说明保留原用户要求及必要指代上下文，`workspace/evidence.json` 原样携带选定的捕获记录与实际抓取资料，并保留解析后的文件来源和坐标。补全 agent 根据原任务声明 `requires_live_web` 和依据；这不改变调用方指定的 domain。
+任务说明保留原用户要求及必要指代上下文，`workspace/evidence.json` 默认携带全部已返回记录与实际抓取资料，必要排除有索引及原因；保留原文和文件坐标，隔离解析模型的分析意见。历史方案按原消息恢复，不使用自由生成的 context_note。补全 agent 根据原任务声明 `requires_live_web` 和依据；这不改变调用方指定的 domain。
 
-本地代码、文档检索通过 `search_evidence/read_evidence` 查询捕获语料；READY 前必须实际读取所选证据。Harbor solver 可用 Python 读取同一 `evidence.json`，保留当前文件与历史版本的区别。这类任务不安装网页检索脚本，也不要求 Serper/Jina 密钥。
+本地代码、文档检索通过 `search_evidence/read_evidence` 查询捕获语料；READY 前必须逐项说明原要求所需材料，并实际读取引用证据。Harbor solver 可用 Python 读取同一 `evidence.json`，保留当前文件与历史版本的区别。这类任务不安装网页检索脚本，也不要求 Serper/Jina 密钥。
 
 需要公开来源的任务仍须实证完成搜索和页面读取。公开检索工具复用现有实现，在容器中执行：
 

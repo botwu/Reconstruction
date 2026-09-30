@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from traceforge.reconstruction.search_environment import captured_evidence, select_captures
+from traceforge.reconstruction.search_environment import captured_evidence
 from traceforge.reconstruction.search_tools import SearchTools
 
 
@@ -25,13 +25,6 @@ def test_captures_preserve_results_without_original_answer():
     assert len(records) == 1
     assert records[0]["result_blocks"] == source["tool_timeline"][0]["result_blocks"]
     assert "原答案" not in json.dumps(records, ensure_ascii=False)
-    assert select_captures(records, [0]) == records
-
-
-@pytest.mark.parametrize("indices", [[1], [0, 0], [True], "0"])
-def test_selection_rejects_missing_or_ambiguous_source(indices):
-    with pytest.raises(ValueError):
-        select_captures([{"event_index": 0}], indices)
 
 
 def test_search_failure_is_recorded_and_not_marked_ready(tmp_path, monkeypatch):
@@ -201,6 +194,7 @@ def test_ready_search_environment_can_resume_with_captured_and_live_evidence(tmp
         return SimpleNamespace(completed=True, errors=[], turns=[], final_text="实际回答")
 
     environment = {
+        "schema_version": "traceforge.search-environment.v3",
         "status": "READY", "task": {"task_id": "q1", "task_instruction": "梳理文献"},
         "captures": [{"evidence_ref_id": "captured:0", "result_text": "原始返回"}],
         "live_references": [{"source_mode": "live_page", "text": "完整页面", "raw_sha256": "h"}],
@@ -244,7 +238,7 @@ def test_optional_preferences_do_not_replace_required_input_gate(tmp_path, monke
 
 
 @pytest.mark.parametrize("repair", [True, False])
-def test_pending_reference_feedback_keeps_context_and_stops_without_progress(tmp_path, monkeypatch, repair):
+def test_unknown_reference_feedback_keeps_context_and_stops_without_progress(tmp_path, monkeypatch, repair):
     from types import SimpleNamespace
 
     from traceforge.reconstruction import search_environment
@@ -270,8 +264,10 @@ def test_pending_reference_feedback_keeps_context_and_stops_without_progress(tmp
         sessions[-1].conversation.messages = [{"role": "assistant", "content": "已查来源"}]
         return SimpleNamespace(completed=True, errors=[], payload={
             "requires_live_web": True, "retrieval_reason": "查找公开来源",
-            "status": "READY", "reference_event_indices": [0] if repair and len(sessions) > 1 else [1],
-            "context_note": "原 message 3 中的选题1是原题目", "missing_inputs": [],
+            "status": "READY", "excluded_events": [] if repair and len(sessions) > 1 else [
+                {"event_index": 99, "reason": "原始事件中不存在的索引"}],
+            "context_references": [{"message_index": 0, "used_by_user_message_index": 1}],
+            "missing_inputs": [],
         })
 
     outcome = search_environment.run_search_task(
@@ -290,7 +286,10 @@ def test_pending_reference_feedback_keeps_context_and_stops_without_progress(tmp
     assert outcome["status"] == ("ENVIRONMENT_READY" if repair else "BLOCKED")
     assert ("SEARCH_COMPLETION_NO_PROGRESS" in outcome["errors"]) is not repair
     environment = json.loads((tmp_path / "environment.json").read_text())
-    assert environment["context_note"] == "原 message 3 中的选题1是原题目"
+    assert environment["context_messages"] == ([{
+        "message_index": 0, "used_by_user_message_index": 1,
+        "role": "assistant", "content": "选题1：原题目",
+    }] if repair else [])
     assert len(environment["captures"]) == int(repair)
 
 

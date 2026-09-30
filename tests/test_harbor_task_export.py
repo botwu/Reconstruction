@@ -9,11 +9,11 @@ from traceforge.harbor_task import export_search_task, write_container_environme
 
 
 def search_environment():
-    return {
+    return {"schema_version": "traceforge.search-environment.v3",
         "status": "READY", "errors": [], "missing_inputs": [],
         "task": {"task_id": "search-1", "task_instruction": "比较两种处理方式。",
                  "source_task": {"user_texts": ["保留出处。"]}},
-        "source_sha256": "fixture-source", "context_note": "原始对象的必要说明。",
+        "source_sha256": "fixture-source", "context_messages": [{"message_index": 0, "content": "原始完整方案。"}],
         "limitations": ["原始页面是历史快照。"],
         "captures": [{"evidence_ref_id": "captured:0", "result_text": "完整正文\r\n尾行\n"}],
         "live_references": [{"url": "https://example.org", "text": "网页正文"}],
@@ -32,7 +32,7 @@ def test_search_delivery_preserves_evidence_without_inventing_a_verifier(tmp_pat
     assert evidence["live_references"] == source["live_references"]
     instruction = (task / "instruction.md").read_text()
     assert source["task"]["task_instruction"] in instruction
-    assert source["context_note"] in instruction
+    assert source["context_messages"][0]["content"] in instruction
     assert "保留出处。" in instruction
     assert (task / "environment/Dockerfile").is_file()
     assert (task / "environment/docker-compose.yaml").is_file()
