@@ -183,3 +183,186 @@ def test_session_batch_real_timeout_continues_to_next_session(tmp_path: Path) ->
     assert report["completed_sessions"] == 2
     assert report["status"] == "COMPLETED_WITH_ERRORS"
     assert (output / "runs" / "r04-one" / "batch_stdout.txt").read_text() == "session 1\n"
+
+
+def test_search_batch_preserves_real_completion_and_unassessed_answer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest, config = inventory(tmp_path)
+    output = tmp_path / "batch"
+    task = {"task_id": "search-task", "status": "ROLLOUT_COMPLETED",
+            "acceptance": "NOT_ASSESSED", "environment_review": "COMPLETE"}
+
+    def run(command: list[str], **kwargs: object) -> int:
+        run_root = Path(command[command.index("--output") + 1])
+        (run_root / "manifest.json").write_text(json.dumps({
+            "schema_version": "traceforge.search-reconstruction.v1",
+            "status": "COMPLETED", "domain_route": "retrieval",
+            "acceptance": "NOT_ASSESSED", "tasks": [task],
+        }))
+        return 0
+
+    monkeypatch.setattr(batch, "run_batch_process", run)
+    report = batch.execute_batch(manifest_path=manifest, output_root=output, config=config,
+                                 domain="search", repo_root=_REPO)
+    row = result_row(output)
+    assert row["status"] == "COMPLETED"
+    assert row["manifest"].endswith("/manifest.json")
+    assert row["acceptance"] == "NOT_ASSESSED"
+    assert row["tasks"] == [task]
+    assert report["status"] == "COMPLETED"
+
+
+def test_batch_passes_same_runtime_and_review_options_as_single_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest, config = inventory(tmp_path)
+    output = tmp_path / "batch"
+
+    def run(command: list[str], **kwargs: object) -> int:
+        assert command[command.index("--hermes-home") + 1] == str(tmp_path / "hermes")
+        assert command[command.index("--harbor-root") + 1] == str(tmp_path / "harbor")
+        assert "--manual-response-review" in command
+        run_root = Path(command[command.index("--output") + 1])
+        (run_root / "reconstruction_manifest.json").write_text(json.dumps({"status": "REVIEW"}))
+        return 2
+
+    monkeypatch.setattr(batch, "run_batch_process", run)
+    report = batch.execute_batch(
+        manifest_path=manifest, output_root=output, config=config, domain="terminal",
+        repo_root=_REPO, hermes_home=tmp_path / "hermes", harbor_root=tmp_path / "harbor",
+        manual_response_review=True,
+    )
+    assert result_row(output)["status"] == "REVIEW"
+    assert report["status"] == "COMPLETED_WITH_ERRORS"
+
+
+def test_resume_keeps_finished_session_and_interrupted_attempt(tmp_path, monkeypatch):
+    manifest, config = inventory(tmp_path)
+    data = json.loads(manifest.read_text())
+    sessions = Path(data["sessions"])
+    first = json.loads(sessions.read_text())
+    sessions.write_text(json.dumps(first) + "\n" + json.dumps({
+        **first, "session_id": "r04-two", "line_number": 2,
+    }) + "\n")
+    data["pending_sessions"] = 2
+    manifest.write_text(json.dumps(data))
+    output = tmp_path / "batch"
+    calls = []
+
+    def run(command, **kwargs):
+        number = int(command[command.index("--line-number") + 1])
+        root = Path(command[command.index("--output") + 1])
+        calls.append(number)
+        if len(calls) == 2:
+            (root / "batch_stdout.txt").write_text("中断前的真实进度")
+            (root / "batch_process.json").write_text(json.dumps({"status": "EXITED"}))
+            raise OSError("控制端连接中断")
+        (root / "reconstruction_manifest.json").write_text(json.dumps({"status": "READY"}))
+        return 0
+
+    monkeypatch.setattr(batch, "run_batch_process", run)
+    with pytest.raises(OSError, match="中断"):
+        batch.execute_batch(manifest_path=manifest, output_root=output, config=config,
+                            domain="terminal", repo_root=_REPO)
+    progress = json.loads((output / "batch_manifest.json").read_text())
+    assert progress["completed_sessions"] == 1
+    assert progress["status"] == "RUNNING"
+    report = batch.execute_batch(manifest_path=manifest, output_root=output, config=config,
+                                 domain="terminal", repo_root=_REPO, resume=True)
+    assert calls == [1, 2, 2]
+    assert report["completed_sessions"] == 2
+    assert report["status"] == "COMPLETED"
+    assert (output / "runs/r04-two/batch_stdout.txt").read_text() == "中断前的真实进度"
+    assert "/retries/" in report["session_results"][1]["manifest"]
+    batch.execute_batch(manifest_path=manifest, output_root=output, config=config,
+                        domain="terminal", repo_root=_REPO, resume=True)
+    assert calls == [1, 2, 2]
+    with pytest.raises(batch.BatchInputError, match="配置"):
+        batch.execute_batch(manifest_path=manifest, output_root=output, config=config,
+                            domain="terminal", repo_root=_REPO, resume=True, execute_rollout=True)
+
+
+def test_batch_domain_mismatch_fails_before_model_start(tmp_path):
+    manifest, config = inventory(tmp_path)
+    data = json.loads(manifest.read_text())
+    data["domain"] = "search"
+    manifest.write_text(json.dumps(data))
+    with pytest.raises(batch.BatchInputError, match="domain"):
+        batch.execute_batch(manifest_path=manifest, output_root=tmp_path / "batch",
+                            config=config, domain="terminal")
+
+def test_success_manifest_cannot_hide_process_failure(tmp_path, monkeypatch):
+    manifest, config = inventory(tmp_path)
+    output = tmp_path / "batch"
+
+    def run(command, **kwargs):
+        root = Path(command[command.index("--output") + 1])
+        (root / "manifest.json").write_text(json.dumps({"status": "COMPLETED"}))
+        return 1
+
+    monkeypatch.setattr(batch, "run_batch_process", run)
+    report = batch.execute_batch(manifest_path=manifest, output_root=output, config=config,
+                                 domain="search", repo_root=_REPO)
+    assert report["status"] == "COMPLETED_WITH_ERRORS"
+    assert result_row(output)["status"] == "PROCESS_ERROR"
+
+
+def test_broken_manifest_is_recorded_and_batch_continues(tmp_path, monkeypatch):
+    manifest, config = inventory(tmp_path)
+    data = json.loads(manifest.read_text())
+    sessions = Path(data["sessions"])
+    first = json.loads(sessions.read_text())
+    sessions.write_text(json.dumps(first) + "\n" + json.dumps({
+        **first, "session_id": "r04-two", "line_number": 2,
+    }) + "\n")
+    data["pending_sessions"] = 2
+    manifest.write_text(json.dumps(data))
+
+    def run(command, **kwargs):
+        root = Path(command[command.index("--output") + 1])
+        number = int(command[command.index("--line-number") + 1])
+        content = '{"status":' if number == 1 else json.dumps({
+            "status": "READY", "tasks": [
+                {"task_id": "task", "status": "READY", "source_task": {"user_text": "large original"}}
+            ],
+        })
+        (root / "reconstruction_manifest.json").write_text(content)
+        return 1 if number == 1 else 0
+
+    monkeypatch.setattr(batch, "run_batch_process", run)
+    report = batch.execute_batch(manifest_path=manifest, output_root=tmp_path / "batch",
+                                 config=config, domain="terminal", repo_root=_REPO)
+    assert report["status_counts"] == {"RECEIPT_ERROR": 1, "READY": 1}
+    assert report["session_results"][0]["errors"]
+    assert report["session_results"][1]["tasks"] == [{"task_id": "task", "status": "READY"}]
+
+
+@pytest.mark.parametrize("changed", ["config", "code"])
+def test_resume_rejects_changed_content_at_same_path(tmp_path, monkeypatch, changed):
+    manifest, config = inventory(tmp_path)
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    code = repo / "src/runtime.py"
+    code.write_text("version = 1\n")
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        root = Path(command[command.index("--output") + 1])
+        (root / "manifest.json").write_text(json.dumps({"status": "COMPLETED"}))
+        return 0
+
+    monkeypatch.setattr(batch, "run_batch_process", run)
+    options = dict(manifest_path=manifest, output_root=tmp_path / "batch", config=config,
+                   domain="search", repo_root=repo)
+    batch.execute_batch(**options)
+    batch.execute_batch(**options, resume=True)
+    assert len(calls) == 1
+    if changed == "config":
+        config.write_text("model: another-model\n")
+    else:
+        code.write_text("version = 2\n")
+    with pytest.raises(batch.BatchInputError, match="配置"):
+        batch.execute_batch(**options, resume=True)
+    assert len(calls) == 1

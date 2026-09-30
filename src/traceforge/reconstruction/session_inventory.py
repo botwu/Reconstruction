@@ -1,4 +1,4 @@
-"""冻结 R04/R05 原始字节，并为每个物理 session 建立可定位清单。"""
+"""冻结调用方指定的原始字节，并为每个物理 session 建立可定位清单。"""
 
 from __future__ import annotations
 
@@ -6,11 +6,11 @@ import hashlib
 import json
 import os
 import tempfile
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO, TextIO, TypedDict
 
-RUBRICS = ("R04", "R05")
 SOURCE_SCHEMA = "traceforge.session-source-manifest.v1"
 SESSION_SCHEMA = "traceforge.session-inventory.v1"
 
@@ -61,6 +61,7 @@ class InventoryManifest(TypedDict):
 
     schema: str
     status: str
+    domain: str
     created_at: str
     distribution: str
     distribution_sha256: str
@@ -75,14 +76,21 @@ class InventoryManifest(TypedDict):
     sources: list[SourceInventory]
 
 
-def _expectations(path: Path) -> tuple[dict[str, SourceExpectation], str]:
+def _expectations(path: Path, source_codes: Sequence[str]) -> tuple[dict[str, SourceExpectation], str]:
     raw = path.read_bytes()
     value = json.loads(raw)
-    if not isinstance(value, dict) or not isinstance(value.get("distribution"), list):
-        raise ValueError(f"{path}: distribution 必须是数组")
+    entries = value.get("distribution") if isinstance(value, dict) else None
+    if entries is None and isinstance(value, dict) and isinstance(value.get("datasets"), list):
+        entries = [
+            {"code": item.get("name"), "records": item.get("physical_lines"),
+             "bytes": item.get("bytes"), "sha256": item.get("sha256")}
+            for item in value["datasets"] if isinstance(item, dict)
+        ]
+    if not isinstance(entries, list):
+        raise ValueError(f"{path}: distribution 或 datasets 必须是数组")
     result: dict[str, SourceExpectation] = {}
-    for entry in value["distribution"]:
-        if not isinstance(entry, dict) or entry.get("code") not in RUBRICS:
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("code") not in source_codes:
             continue
         code = entry["code"]
         if code in result:
@@ -99,8 +107,8 @@ def _expectations(path: Path) -> tuple[dict[str, SourceExpectation], str]:
         ):
             raise ValueError(f"{path}: {code} 缺少有效 records/bytes/sha256")
         result[code] = {"records": records, "bytes": size, "sha256": digest}
-    if set(result) != set(RUBRICS):
-        raise ValueError(f"{path}: 必须同时声明 R04 和 R05")
+    if set(result) != set(source_codes):
+        raise ValueError(f"{path}: 必须声明全部指定数据源：{list(source_codes)}")
     return result, hashlib.sha256(raw).hexdigest()
 
 
@@ -190,9 +198,17 @@ def prepare_session_batch(
     frozen_dir: str | Path,
     output_dir: str | Path,
     *,
+    source_codes: Sequence[str],
+    domain: str,
     distribution_path: str | Path | None = None,
 ) -> InventoryManifest:
-    """完整盘点两个 rubric；覆盖不符时只发布失败报告，不发布批处理输入。"""
+    """按指定 domain 盘点源文件；覆盖不符时只发布失败报告。"""
+    if domain not in {"search", "terminal"}:
+        raise ValueError("domain 必须由调用方指定为 search 或 terminal")
+    if (not source_codes or len(set(source_codes)) != len(source_codes)
+            or any(not code or code in {".", ".."} or Path(code).name != code
+                   for code in source_codes)):
+        raise ValueError("数据源名称须非空、互不重复且不包含路径")
     source_root = Path(source_dir).resolve()
     frozen_root = Path(frozen_dir).resolve()
     output_root = Path(output_dir).resolve()
@@ -201,14 +217,14 @@ def prepare_session_batch(
         if distribution_path
         else source_root / "distribution.json"
     )
-    expected, distribution_hash = _expectations(distribution)
+    expected, distribution_hash = _expectations(distribution, source_codes)
     manifest_path = output_root / "source_manifest.json"
     sessions_path = output_root / "sessions.jsonl"
-    destinations = [manifest_path, sessions_path, *(frozen_root / f"{r}.jsonl" for r in RUBRICS)]
+    destinations = [manifest_path, sessions_path, *(frozen_root / f"{r}.jsonl" for r in source_codes)]
     for destination in destinations:
         if destination.exists():
             raise FileExistsError(f"拒绝覆盖已有输入或清单：{destination}")
-    for rubric in RUBRICS:
+    for rubric in source_codes:
         if not (source_root / f"{rubric}.jsonl").is_file():
             raise FileNotFoundError(f"缺少完整源文件：{source_root / (rubric + '.jsonl')}")
     frozen_root.mkdir(parents=True, exist_ok=True)
@@ -223,7 +239,7 @@ def prepare_session_batch(
         ) as sessions:
             session_temp = Path(sessions.name)
             temporary_paths.append(session_temp)
-            for rubric in RUBRICS:
+            for rubric in source_codes:
                 frozen = frozen_root / f"{rubric}.jsonl"
                 with tempfile.NamedTemporaryFile(
                     mode="wb", dir=frozen_root, prefix=f".{rubric}-", delete=False
@@ -251,10 +267,11 @@ def prepare_session_batch(
         manifest: InventoryManifest = {
             "schema": SOURCE_SCHEMA,
             "status": "READY" if complete else "PARTIAL_SOURCE",
+            "domain": domain,
             "created_at": datetime.now(UTC).isoformat(),
             "distribution": str(distribution),
             "distribution_sha256": distribution_hash,
-            "rubrics": list(RUBRICS),
+            "rubrics": list(source_codes),
             "coverage_complete": complete,
             "total_sessions": sum(source["records"] for source in sources),
             "pending_sessions": sum(source["valid_records"] for source in sources),

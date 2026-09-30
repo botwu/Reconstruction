@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -38,12 +39,27 @@ def run_batch_process(
             stderr=stderr,
             start_new_session=True,
         )
+        state_path = stdout_path.parent / "batch_process.json"
+
+        def save_state(status: str) -> None:
+            temporary = state_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"status": status, "pid": process.pid,
+                                             "exit_code": process.poll()}) + "\n")
+            temporary.replace(state_path)
+
         try:
+            save_state("RUNNING")
             return process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
             return None
+        finally:
+            if process.poll() is None:
+                try:
+                    os.killpg(process.pid, signal.SIGINT)
+                    process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+                except ProcessLookupError:
+                    process.wait()
+            save_state("EXITED")

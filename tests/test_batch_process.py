@@ -46,8 +46,29 @@ def test_timeout_kills_parent_and_child_and_keeps_logs(tmp_path: Path) -> None:
     )
     assert code is None
     assert time.monotonic() - started < 4
-    assert int(log.read_text().strip()) > 0
+    assert int(log.read_text().splitlines()[0]) > 0
     assert marker.is_file()
     mtime = marker.stat().st_mtime_ns
     time.sleep(0.2)
     assert marker.stat().st_mtime_ns == mtime
+
+
+@pytest.mark.skipif(os.name != "posix", reason="批处理进程组用于 POSIX 环境")
+def test_timeout_allows_process_cleanup_and_records_exit(tmp_path: Path) -> None:
+    marker = tmp_path / "cleanup"
+    script = (
+        "import signal, sys, time\n"
+        "from pathlib import Path\n"
+        "def cleanup(*args):\n"
+        f"    Path({str(marker)!r}).write_text('cleaned')\n"
+        "    sys.exit(0)\n"
+        "signal.signal(signal.SIGINT, cleanup)\n"
+        "print('started', flush=True)\n"
+        "time.sleep(30)\n"
+    )
+    code = run_batch_process([sys.executable, "-c", script], cwd=tmp_path,
+                             stdout_path=tmp_path / "log", timeout_seconds=1)
+    assert code is None
+    assert marker.read_text() == "cleaned"
+    state = json.loads((tmp_path / "batch_process.json").read_text())
+    assert state["status"] == "EXITED"

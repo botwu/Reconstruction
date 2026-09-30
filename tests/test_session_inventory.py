@@ -31,7 +31,7 @@ def test_freezes_every_physical_session_and_preserves_duplicate_rows(tmp_path: P
     raw = b'{"messages":[{"role":"user","content":"hello"}]}\n'
     source = _source(tmp_path, raw + raw, raw.rstrip(b"\n"))
     frozen, output = tmp_path / "frozen", tmp_path / "output"
-    result = prepare_session_batch(source, frozen, output)
+    result = prepare_session_batch(source, frozen, output, source_codes=["R04", "R05"], domain="terminal")
     rows = [json.loads(line) for line in (output / "sessions.jsonl").read_text().splitlines()]
     assert result["coverage_complete"] is True
     assert result["total_sessions"] == result["pending_sessions"] == 3
@@ -59,7 +59,7 @@ def test_coverage_mismatch_does_not_publish_input(
     data["distribution"][0][key] = value
     meta.write_text(json.dumps(data))
     frozen, output = tmp_path / "frozen", tmp_path / "output"
-    result = prepare_session_batch(source, frozen, output)
+    result = prepare_session_batch(source, frozen, output, source_codes=["R04", "R05"], domain="terminal")
     assert result["status"] == "PARTIAL_SOURCE"
     assert result["coverage_complete"] is False
     assert key in result["sources"][0]["errors"][0]
@@ -72,7 +72,7 @@ def test_coverage_mismatch_does_not_publish_input(
 def test_bad_json_remains_in_inventory_with_location(tmp_path: Path) -> None:
     source = _source(tmp_path, b'{"messages":[]}\n{broken\n\n', b'[]\n{"x":1}\n')
     output = tmp_path / "output"
-    result = prepare_session_batch(source, tmp_path / "frozen", output)
+    result = prepare_session_batch(source, tmp_path / "frozen", output, source_codes=["R04", "R05"], domain="terminal")
     rows = [json.loads(line) for line in (output / "sessions.jsonl").read_text().splitlines()]
     assert result["coverage_complete"] is True
     assert result["total_sessions"] == 5
@@ -86,17 +86,41 @@ def test_bad_json_remains_in_inventory_with_location(tmp_path: Path) -> None:
 def test_rerun_refuses_to_overwrite_frozen_data_and_manifests(tmp_path: Path) -> None:
     source = _source(tmp_path, b'{"messages":[]}\n', b'{"messages":[]}\n')
     frozen, output = tmp_path / "frozen", tmp_path / "output"
-    prepare_session_batch(source, frozen, output)
+    prepare_session_batch(source, frozen, output, source_codes=["R04", "R05"], domain="terminal")
     original = (output / "source_manifest.json").read_bytes()
     with pytest.raises(FileExistsError, match="拒绝覆盖"):
-        prepare_session_batch(source, frozen, output)
+        prepare_session_batch(source, frozen, output, source_codes=["R04", "R05"], domain="terminal")
     assert (output / "source_manifest.json").read_bytes() == original
     with pytest.raises(FileExistsError, match=r"R04\.jsonl"):
-        prepare_session_batch(source, frozen, tmp_path / "another-output")
+        prepare_session_batch(source, frozen, tmp_path / "another-output", source_codes=["R04", "R05"], domain="terminal")
 
 
-def test_requires_both_rubric_coverage_declarations(tmp_path: Path) -> None:
+def test_requires_all_selected_source_coverage_declarations(tmp_path: Path) -> None:
     source = _source(tmp_path, b'{"messages":[]}\n', b'{"messages":[]}\n')
     (source / "distribution.json").write_text('{"distribution":[]}')
-    with pytest.raises(ValueError, match="同时声明"):
-        prepare_session_batch(source, tmp_path / "frozen", tmp_path / "output")
+    with pytest.raises(ValueError, match="全部指定数据源"):
+        prepare_session_batch(source, tmp_path / "frozen", tmp_path / "output", source_codes=["R04", "R05"], domain="terminal")
+
+
+@pytest.mark.parametrize("published_manifest", [False, True])
+def test_search_inventory_uses_only_explicit_source_without_terminal_pair(tmp_path: Path, published_manifest: bool) -> None:
+    raw = b'{"messages":[{"role":"user","content":"search"}]}\n'
+    source = _source(tmp_path, raw, b'{"messages":[]}\n')
+    (source / "R04.jsonl").rename(source / "R01.jsonl")
+    metadata = source / "distribution.json"
+    value = json.loads(metadata.read_text())
+    value["distribution"][0]["code"] = "R01"
+    if published_manifest:
+        value = {"datasets": [
+            {"name": item["code"], "physical_lines": item["records"],
+             "bytes": item["bytes"], "sha256": item["sha256"]}
+            for item in value["distribution"]
+        ]}
+    metadata.write_text(json.dumps(value))
+    frozen, output = tmp_path / "frozen", tmp_path / "output"
+    result = prepare_session_batch(source, frozen, output, source_codes=["R01"], domain="search")
+    assert result["domain"] == "search"
+    assert result["rubrics"] == ["R01"]
+    assert result["total_sessions"] == 1
+    assert (frozen / "R01.jsonl").read_bytes() == raw
+    assert not (frozen / "R05.jsonl").exists()

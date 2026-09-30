@@ -1,71 +1,51 @@
 # 当前状态
 
-更新：2026-09-30（北京时间）。阶段 READY、rollout 完成、文件通过、回答正确分别记录，不能互相替代。
+更新：2026-10-01（北京时间）。目标是从完整原始 session 恢复忠实、可解的任务与初始环境，再用真实 rollout 检验，最后稳定批量执行。阶段完成、文件评分与回答正确分别记录。
 
-## 当前交付
+## 代码与数据
 
-输入是完整原始 session 和调用方已知的 search / terminal，不做初始筛选、领域推断或脱敏。harness 的消息外壳由结构层适配，系统指令、工具协议、调用意图和返回含义由模型解读；原文和来源引用始终保留。
+公开仓库为 https://github.com/botwu/Reconstruction 。R01 search 共 1,683 条、R04 terminal 共 6,535 条，完整原始数据已通过 Git LFS 发布，并按 data/debug-datasets.json 校验跨机下载与恢复。原数据已有的占位符保留，本项目不新增脱敏或初始筛选。
 
-两种 domain 均可导出标准 Harbor 任务。terminal 交付文件初态、依赖、测试与参考解；search 交付任务、原始证据和所需检索能力。本地代码检索仍属于 search，不强制调用公网工具。见 [Harbor 交付](harbor-task-delivery.md) 和 [原始会话流程](raw-session-pipeline.md)。
+修改仅位于 dev-wj 的 TraceRconstruction。AgenticFoundry 是只读参考；本项目运行不依赖其目录。两种 domain 使用明确指定的不同策略，最终均导出 Harbor 任务。详见[跨机调试](cross-machine-debug.md)、[批量执行](batch-reconstruction.md)、[Harbor 交付](harbor-task-delivery.md)。
 
-本轮已修复 search 的来源交接与上下文边界，并真实重跑 R01:559。交接完整不等于回答正确；目前仍不能宣称所有原任务均已完整可解、回答全部通过。
+## 本轮真实运行
 
-- R01:559 原先通过模型白名单将 47 条已返回记录缩为 25 条。现在默认保留返回、显式说明排除；新环境、solver 输入和 Harbor 包均包含相同的 47 条，原正文、参数与消息来源逐项一致。
-- 自由生成的 context_note 与 session_parse.reason 不再进入 solver。历史上下文按原消息及其所支持的用户请求恢复；完整方案可以成为后续输入，摘录须逐字匹配。
-- R01:39 的真实模型边界实验恢复了前置用户要求和选题 1 的完整方案、数据条件与评价指标，未交付后面的投稿建议答案。其 2024/2025 CSTRO oral 来源问题仍未解决，不能以该上下文实验替代全流程通过。
-- 新的持续 researcher 接收真实 rollout 的答案和工具轨迹，并区分作者来源索引与 solver 的实际读取。其首次复核仍漏报了回答错误；人工反馈后对源码事实作了更正，但仍返回 COMPLETE。该决定只作环境复核意见，不作为回答验收；真实输出保留 NEEDS_CORRECTION / NOT_ASSESSED。
-- 原始 R01:559 还存在 6 次无返回读取、2 份只有预览的大输出。ImageTransforms / Normalize 部分正文不可取得，原仓库路径在 dev-wj 不存在。已询问对应源码快照；不编造未知真实实现。
+全量 8,218 条已完成字节、JSON 和逐行哈希盘点；不是全量模型重建。模型实跑仍使用已授权的固定样本。
 
-| 样本 / 产物 | 真实结果 | 内容与边界 |
+| 样本 | 本轮实证 | 当前边界 |
 | --- | --- | --- |
-| R01:559，本地代码检索 | handoff-run05 延续真实作者会话后交付 47 份捕获；Claude 31 次 API、48 次工具调用，直接读取 17 个事件，其中 7 个来自此前漏交材料；零公网调用 | 47 条原文无交接丢失；回答仍混淆独立 oracle、baseline 与生产 RB 顺序，并漏读已有目录列表。完整来源不代表全部被利用，内容保持 NEEDS_CORRECTION |
-| R01:1，复杂并行包装 | 最终解析 24 个事件；两段正文为返回行 5–405、408–713，文件起点 220、300 | 排除打印空行和分隔线，保留原先漏掉的完整末行；真实边界复核通过 |
-| R04:270，截断及异步轮询 | 最终解析 28 个事件；保留返回行 9–367、369–686，另一读取完整保留文件行 25–115 | 首段起点 380，后段起点 763 与另一原始编号读取有 21 行逐行一致；不再将空输入轮询解释成发送中断 |
-| R01:39，会议研究 | search05 两次 rollout 完成；本轮复用初态重跑 intent 和 solver | 年份与 oral 来源已恢复到义务；新回答仍缺 2024/2025 CSTRO oral 依据，保持 NEEDS_CORRECTION |
-| R04:1，task1/run09 模块提取与分析 | 两次真实 rollout 的 FILE 评分均为 1，原输入保留认证通过 | 两份分析已核查并提供更正说明；外部账户调用未经实测，文件评分不代表分析全部正确 |
-| 同一 R04，task2/run14 超时修复 | 两次真实 rollout 完成，独立复核与正式评分一致 | 第一份通过；第二份遗漏网络超时重试而拒收，保留真实失败 |
+| R01:38，公开资料研究 | 正式批量入口完成解析、补全、Harbor 导出及一次 Claude rollout；另一次独立 rollout 复用同一环境 | 回答内容 NEEDS_CORRECTION。仍有占位来源及数值解释错误，不把执行完成算成内容合格 |
+| R01:559，本地代码检索 | 47 条已返回记录完整交付；一次真实 rollout 的环境经人工复核仍需返修。新实跑 agent 已取回公开 Normalize（254 行）和 transforms（249 行），逐字节校验 Git blob | 公开版本缺少原调用的裁剪参数与 EvalImageTransforms，不能直接当作私有分支原文；当前继续核对输入覆盖，不宣称整条已通过 |
+| R04:1，terminal | 新分段恢复为两个任务；真实 DeepSeek v1.9 解析完成。第一项环境就绪，但六轮验证器语义检查均拒绝，未进入 RED/rollout | 验证器反复增加 AST 规则导致漏检和误拒绝。提示约束已修正但待真实验证；新运行等待明确外发授权，旧进程已停止并清理沙箱 |
+| R04:1，独立候选检查 | AGS 真实加载 main.py 和已安装的 twitter-api-client 0.10.22；去重、状态保存与重读通过，候选不变、沙箱已清理 | 未替换本地模块；禁止网络连接。未验证外部账户操作或待实现的任务能力 |
 
-R01:559 SHA256 为 `5f5e4c177393c129af89db66840a4d7148c08b7ff1dedba270e58342803439f9`；R01:39 为 `8c33a4c06f4973daec9dd9ac9185eae28e83c08fe0b7b152a5e15458a70db2f7`；R04:1 为 `2c9d609055058904e0162e0d5e3ab74116f2a6d4a765b08b3c6a8de4e3c67486`。
+R01:38 的内容核查区分了环境问题与 solver 错误：资料中已有原论文，但回答将不同编组方案各自最慢车辆的约 48 s / 122 s 再充风时间写成同一列车头尾差异；还混淆了开始制动与开始缓解的时间差。原始回答、轨迹和正式回执未回写。依据为[原论文第3.2、3.3节](https://pdf.hanspub.org/ojtt20220500000_70489163.pdf)。
 
-## 本轮根因修复
+历史 R04:1 task1/run09 两次文件评分通过；task2/run14 两次真实 rollout 中一份通过、一份因漏掉网络超时重试而拒收。这些属于旧代码和旧阶段恢复路径，不代表本轮从原文开始已完整通过。
 
-1. 旧解析只检查引用合法，允许遗漏或错误排除。v1.8 要求正文与排除段完整覆盖；截断排除须对应原文标记，已引用的连续编号正文不能部分丢弃。反馈明确区分模型抄错请求范围与原始返回损坏。
-2. 旧 reason 混合动作和结果。现在分别解释 action / observation，保留内部执行关系，不从退出码倒推未经观察的动作。
-3. search 曾无条件要求网页查询与读取，阻塞纯代码检索。现在根据原任务声明 requires_live_web；本地分支须按原要求列出支持材料并实际读取引用来源，保留历史版本、正文与坐标。
-4. Intent 曾丢失年份/指定来源，也曾把自身“不得联网”的限制写入原任务。v16 约束义务限定与约束来源；真实 R01:559 重跑已去掉无原文依据的网络及测试禁令。
-5. search 的白名单已删除；v3 交接按来源取回上下文并移除解析意见。旧 v2 包不能跳过新边界直接 resume。实跑还移除了两项过严限制：重复引用当前用户原文、排除已知 pending 调用都属于合法操作。
-6. search 原本只在 rollout 前纠正访问错误，现在将真实执行反馈送回同一 researcher；真正的环境缺口才进入重建。输出错误保持人工核查，不新增自动回答评分；复核协议与补全协议分开。
-7. R01:1 一次调用输入约 35 万 token，却耗尽原 65,536 输出预算。当前为 1M 上下文、128K 输出预算，截断作为调用错误保留，不能继续回放不完整 JSON。
+## 本轮定位并修复的问题
 
-最终两条解析各一次模型调用完成，输入分别为 349,850 / 206,422 tokens；未手改模型 JSON。针对性检查共 189 项通过，改动源码 F/E9 检查通过。这些检查不代替真实语义核查，也不证明所有 harness 已普遍无误。
+- 分段只看被截短的用户文本，容易将“基于已有产物的新修复”合并进上一任务。现在保留完整用户文本和前置助手状态，保留任务之间的 context 关系；R04:1 与 R01:38 已真实验证。
+- JSON 工具外壳截断时，内部仍完整的源码行被整段丢弃。解析 v1.9 仅解码确实捕获且可严格解码的字符串前缀，保留原始起点与 partial 标记。R04:1 的四份观察共恢复 591 个重叠计数的观察行，逐字核对原文；不是 591 个不同初态行，不补尾部。
+- search 把历史查询当本轮查询，或把已经内联的真实源码算作未读。现在记录实际查询、内联原文坐标与真实读取；解析意见和搜索预览不能冒充完整正文。说明可以是文本或文本数组，避免无意义的格式阻塞。
+- 真实 fetch 暴露 Serper 把 GitHub 原始 Python 文件压成一行。文件 URL 现在经 GitHub 内容 API 解码，并校验大小、Git blob 与 SHA256；普通网页继续使用现有读取。R01:559 agent 已实际分页读取修复后的两份正文，未生成替代源码。terminal 补全也接通相同公开检索工具，写入仍须绑定原始证据。
+- 环境修复只改缺口描述、不改候选也不重测，却继续循环。现在以候选、实际错误和成功探针判断进展；返修 READY 需要本轮执行依据。反馈删除重复快照，保留完整检查代码、stdout 和 stderr。
+- 批处理固定要求 R04/R05、读取错误的 search 完成回执。现在由调用方明确数据源与 domain，保留失败、人工未验收和阶段产物，支持锁定、原子进度与续跑。续跑绑定代码和配置内容哈希，不能把同路径的新代码混入旧批次。坏回执单独记录，继续下一条。
 
-## Harbor 与版本边界
+真实批次已证明：并发重复启动被拒绝；完成后加 --resume 不再调用已完成样本，105 份既有文件哈希保持不变，原有 BLOCKED 和非零退出码保留。当前批量执行为单工作进程；小批次的语义问题未收敛前，不宣称可稳定生产全量合格产物。
 
-已有 terminal 包通过原生 Harbor 加载、Docker 参考解执行及 Harbor/AGS 独立无网 verifier。search 网页包通过 Docker 真实查询与读取；本轮本地检索包由 Harbor 0.20 在 Docker 中启动成功。nop 只验证初态启动，没有答案或奖励；真实 Claude 检索 rollout 使用现有直接检索 runner。
+## 本轮证据
 
-R01:559 的 full-run01 使用本轮较早的 v1.7 解析快照。reviewed-run02 只更新 intent 与 solver；handoff-run03/04/05 则复用同一解析结果重跑交接。run05 从 run04 的持久化作者会话继续，solver 使用独立新会话；不得改标为 v1.8 全链路或无恢复提示的独立作者试验。v1.8 两条解析保存在 source-provenance-parser。跨机任务归档需保留文件权限；运行凭据不进入任务包或 Git。
+原始运行证据不进入 Git。统一位于项目 artifacts/pipeline-debug-20261001/：
 
-## 剩余内容项
+- batch-input-check：完整输入清单、冻结字节与发布数据哈希。
+- boundary-run02、parser-v19-R04-L1：真实任务边界、解析回执、原始前缀逐字核对。
+- search-batch-run01：两条正式 search 批次、重复启动和续跑验证。
+- search559-completion-run03：47 条交接核对；search559-public-recovery-run04：真实 rollout 与人工环境复核；run05–07：从无 fetch、单行源码到保真获取的实际轨迹。search559-public-recovery-run07/output/public-source-audit.json 记录来源及接口差异。
+- terminal-batch-run01：当前正式 terminal 批次，每阶段候选、检查和失败记录。
+- terminal-real-import-check：真实依赖导入与本地业务读写探针。
+- terminal-dependency-reference：固定公开依赖与原文源码比对，差异为七行原始脱敏占位；未替换候选文件。
+- search38-solver-review-run01：同一环境的新 rollout 与人工内容核查。
+- full-current-run02：旧修复循环的三次相同候选与重复失败；repair-loop-root-cause.json 保存对比。
 
-历年 CSTRO oral 依据尚未补齐。生产工具对已找到的日程入口发生空检索及网页 HTTP 500；公开索引仍有部分日程片段，不能推断资料不存在。solver 用相邻会议趋势作建议，仍不满足指定来源要求。这包含回答提前结束和来源读取失败，不靠重建环境反复循环来伪造通过。
-
-旧 terminal 分析已更正“部分工作区等于完整安装环境”、原编码、外部网络行为及超出测试覆盖的断言。旧回答、正式评分和轨迹不回写；自由文本继续人工核查，不新增筛选或自动评分模型。
-
-本地代码检索返修仍有将零起始显示行号照抄为文件物理行号的问题。人工报告按捕获正文重新核对坐标，并直接执行已读过的映射纯函数，确认两个边缘输入下基线报错而生产可返回；这只是函数级补充证据，不是完整仓库测试或新 rollout。
-
-## 证据位置
-
-本轮统一在项目 `artifacts/pipeline-debug-20260930/root-cause-fix/`：
-
-- `R01-L1/source-provenance-parser/`、`R04-L270/source-provenance-parser/`：完整请求、原响应、解析和回执。
-- `boundary-semantic-review.json`：真实边界前后对比及 R04 坐标交叉复核。
-- `R01-L559/full-run01/`：正式入口的任务、补全、Harbor 包及首次 rollout。
-- `R01-L559/reviewed-run02/`：意图修正、人工反馈及 solver 返修。
-- `R01-L559/handoff-run05/`：47 条交接包、真实 rollout、handoff-audit.json、content-review.json 和 debug-review.zh-CN.md；review-final 保留人工反馈后的原会话复核，不回写首次误判。
-- `search-history-boundary/`：真实 R01:39 历史方案选择、逐字恢复及后续答案隔离回执。
-- `search-obligations/`：指定来源要求的 intent 重跑、回答及实际网页失败。
-- `search-answer-corrections.zh-CN.md`、`terminal-analysis-corrections.zh-CN.md`：旧回答的更正与边界。
-- `local-search559-reviewed-report.zh-CN.md`、`local-search559-function-check.json`：本地检索的人工更正版与源码函数反例。
-- `reconstruction-boundary-audit.json`：原始事件到实际交付范围的核对、历史/答案边界及目前未完成的充分性检查。
-
-此前五条 harness 审核及四份内容核查在上一级 `harness-review-20260930.md/json`、`content-review-20260930.md/json`。原始数据已从上游完整复制并逐文件核对 SHA256；原数据自带的占位符不会因复制恢复。历史代码固定、清理及 terminal 回执保留在 `artifacts/pipeline-debug-20260929/default-integration/`。
+上轮逐份分析与更正保留在 artifacts/pipeline-debug-20260930/root-cause-fix/。测试和静态检查用于保护已修复行为，不能替代上述真实产物核查。

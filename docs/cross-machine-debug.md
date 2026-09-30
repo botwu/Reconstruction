@@ -102,3 +102,5 @@ export TRACEFORGE_PYTHON="$PWD/.runtime/harbor-ags/.venv/bin/python"
 数据清单中的样本哈希用于确认抽取了同一条原始会话。
 迁移校验只证明代码和输入完整、基础入口可用；不会把已有
 `NEEDS_CORRECTION` / `NOT_ASSESSED` 改成验收通过。
+
+批量执行、逐条结果及中断续跑见[批量重建](batch-reconstruction.md)。先验证小批次的真实产物，再扩大处理范围。
