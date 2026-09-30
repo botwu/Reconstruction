@@ -31,6 +31,8 @@ SEARCH_COMPLETION_ROLE = AgentRole(
         "保留有用的原始观察；搜索片段不是全文，历史助手意见不是事实标准答案。"
         "所有已返回工具记录默认交付；pending 调用自动不交付，无需专门排除。"
         "不能再用 reference_event_indices 白名单缩减资料。"
+        "要求定位具体实现时，调用处、docstring 和测试预期不能替代实现正文。"
+        "reconstruction_feedback 中已发现的缺口要逐项重新取证；不能靠改写覆盖说明宣称消失。"
         "逐项审查事件目录及相关原文；excluded_events 仅用于隔离本次生成的答案、解题后的状态或"
         "不属于本任务输入的返回，每项给出 event_index 和具体原因。不能因为未读、重叠、较长、"
         "报错或看似次要就删除：它们可能保留调用链、版本边界、失败原因或关键尾部。"
@@ -44,19 +46,34 @@ SEARCH_COMPLETION_ROLE = AgentRole(
         "说明依赖。没有历史依赖时使用 []。context_note 不用于交付。"
         "任务与材料中的待求结论保持待求；limitations 只写输入/访问边界，不写分析答案。"
         "search 是任务领域，不等于公网搜索。requires_live_web 按原任务判断并给 retrieval_reason。"
-        "本地代码任务使用 search_evidence/read_evidence，不能把私有关键词上传公网。"
+        "events 中 file_ops/reference_file_ops 的 content 是按 content_ref 从原文提取的观察，已直接提供给你；"
+        "interpretation 中的 reason/action 等是解析意见，不能当作源码。"
+        "已内联原文可直接引用；未内联、被截断或仍需核对的资料使用 search_evidence/read_evidence，"
+        "不能把私有关键词上传公网，也不能把 search_evidence 的短预览说成完整读取。"
+        "重建本地代码任务时也可联网恢复原文指向的公开依赖：用公开包名、版本、符号和上游地址"
+        "调用 web_search/web_open，读取真实源码与历史版本；不要只因原仓库不在本机就停止。"
+        "已有公开候选 URL 时先打开正文；搜索未命中不能证明该 URL 不可访问。"
+        "有相关链接却未尝试 web_open 时，不能声称公开恢复已经失败。"
+        "先比对已捕获的导入、接口、调用参数及实现片段；相同符号名不证明它就是私有分支原文。"
+        "公开原文能恢复的部分保留完整来源和版本，不能恢复的本地差异单独说明，不纯生成替代真实源码。"
+        "requires_live_web 表示 solver 是否需要继续公网研究，不限制重建者获取有依据的公开补充材料。"
+        "补充的公开源码以实际打开的 URL 引用并随 live_references 交付。"
         "公开资料任务实际搜索并打开相关来源；一次访问成功不等于资料足够。"
+        "captured 中的历史搜索和原助手说过的行动，不是你本轮执行的 web_search；"
+        "必须依据本轮工具回执区分已查询、只打开已有链接和从未查询。"
         "逐项对 acceptance_obligations 给 requirement_coverage：obligation_id、evidence_ref_ids、reason。"
         "reason 说明需用哪些输入/能力、已核对哪些资料及版本，不预先回答该要求。"
         "evidence_ref_ids 可用 captured:事件索引、已成功打开的 URL 或已恢复的 message:消息索引；"
         "对应原文必须实际读过且会交付，不能引用未返回调用或解析模型的推断代替证据。"
         "缺少原任务必需且无法恢复的输入时返回 BLOCKED 和 missing_inputs；"
+        "原助手计划读取但未返回的文件不自动成为必需输入；每个缺口必须对应原用户要求，"
+        "说明已有原文与公开资料为什么仍不足，不把原助手的探索计划扩大成新验收条件。"
         "篇幅、引用体例等未指定偏好采用合理默认，不能新增阻塞条件。"
         "READY 表示逐项核对了输入供给，尚不表示最终回答通过验收。"
         "返回 JSON：{status: READY|BLOCKED, requires_live_web: true|false, retrieval_reason: 访问依据, "
         "excluded_events: [{event_index: 整数, reason: 排除原因}], "
         "context_references: [{message_index: 整数, used_by_user_message_index: 整数, quote: 可选逐字摘录}], "
-        "requirement_coverage: [{obligation_id: 原要求id, evidence_ref_ids: [来源], reason: 支持材料说明}], "
+        "requirement_coverage: [{obligation_id: 原要求id, evidence_ref_ids: [来源], reason: 说明文本或文本数组}], "
         "limitations: [真实输入限制], missing_inputs: [必需输入缺口]}。"
     ),
     toolsets=("traceforge_proxy",),
@@ -73,11 +90,13 @@ SEARCH_SOLVER_ROLE = AgentRole(
         "公开研究优先原始论文和机构资料；代码检索优先原始源码、版本和测试。"
         "search_evidence 检索已交付的语料，read_evidence 按来源分页读取；"
         "只有任务需要公网资料时才使用 web_search/web_open。说明无法核实之处，"
-        "引用链接、路径和行号须与实际读取的来源相符，不能根据片段推断整个仓库不存在某文件。"
+        "引用须给出原始资料的完整链接或准确路径/行号，不以省略号或内部 evidence 编号代替。"
+        "作者、题名和具体数值逐项对照已读来源；只在参考书目中出现不等于读过该论文。"
+        "不能根据片段推断整个仓库不存在某文件。"
         "逐项回应原用户请求的时间、指定来源、比较对象和数据条件；任务摘要不替代原要求。"
         "必要依据未取得时说明对应未完成项，不把相邻主题或别的数据模态当作满足要求，"
         "也不因部分结论已有证据而声称全部核实。"
-        "直接按任务指定的语言和格式输出最终回答，不输出 JSON 包装。"
+        "直接按任务指定的语言和格式输出正文，不加入工作计划、收尾邀约或 JSON 包装。"
     ),
     toolsets=("traceforge_proxy",), tools=_SEARCH_TOOLS,
     max_iterations=80, result_schema="text/plain", temperature=0.0, allow_write=False,
@@ -138,6 +157,7 @@ def _save(path: Path, value: dict[str, Any]) -> None:
 def _complete_search_environment(
     *, source: dict[str, Any], task: dict[str, Any], agent: AgentRuntime,
     session: AgentSession, network: SearchTools, instruction: str, output_root: Path,
+    inline_observations: list[dict[str, Any]],
 ) -> dict[str, Any]:
     records = session.evidence
     seen: set[str] = set()
@@ -159,16 +179,23 @@ def _complete_search_environment(
                                       payload.get("context_references", []))
         except ValueError as exc:
             errors.append(str(exc))
-        read_ids = {event.get("arguments", {}).get("id") for event in session.tool_events
-                    if event.get("name") == "read_evidence" and event.get("ok")}
+        read_calls = [event.get("arguments", {}) for event in session.tool_events
+                      if event.get("name") == "read_evidence" and event.get("ok")]
+        read_ids = {item["evidence_ref_id"] for item in inline_observations} | {
+            call.get("id") for call in read_calls}
+        evidence_access = {"inline_observations": inline_observations, "read_calls": read_calls}
         requires_web = payload.get("requires_live_web")
         if type(requires_web) is not bool or not str(payload.get("retrieval_reason") or "").strip():
             errors.append("必须根据原任务说明 requires_live_web 和 retrieval_reason，不能从 domain 猜测")
         elif requires_web and not network.ready():
             errors.append("未实证完成公开查询及来源页面读取：须执行有结果的 web_search 和成功的 web_open")
         elif not requires_web and not any(record["evidence_ref_id"] in read_ids for record in captures):
-            errors.append("本地检索须实际读取并交付原始证据：执行 read_evidence")
-        context_ids = {f"message:{item['message_index']}" for item in context}
+            errors.append("本地检索缺少原始证据：未提供内联文件正文时，须执行 read_evidence 读取")
+        source_task = task.get("source_task") or {}
+        # 当前用户原文已经同时进入作者和 solver 的任务输入，无须为引用再复制成历史。
+        context_ids = {f"message:{index}" for index, text in zip(
+            source_task.get("message_indices", []), source_task.get("user_texts", []),
+        ) if text} | {f"message:{item['message_index']}" for item in context}
         available = {item["evidence_ref_id"] for item in captures} | set(network.pages) | context_ids
         errors.extend(validate_requirement_coverage(
             task, payload.get("requirement_coverage", []), available,
@@ -177,7 +204,13 @@ def _complete_search_environment(
         _save(attempt_root / "validation.json", {"status": "INVALID" if errors else "VALID", "errors": errors})
         if not errors:
             break
-        state = json.dumps([errors, sorted(ref for ref in read_ids if ref)], ensure_ascii=False)
+        live_access = {
+            "web_search_calls": [{key: call.get(key) for key in ("query", "success", "results", "error")}
+                                 for call in network.calls if call.get("tool") == "web_search"],
+            "opened_urls": sorted(network.pages),
+        }
+        state = json.dumps([errors, sorted(ref for ref in read_ids if ref), live_access],
+                           sort_keys=True, ensure_ascii=False)
         if (not result.completed or result.errors or payload.get("status") != "READY"
                 or payload.get("missing_inputs") or state in seen):
             if state in seen:
@@ -186,8 +219,12 @@ def _complete_search_environment(
         seen.add(state)
         instruction = json.dumps({
             "validation_feedback": errors, "previous_output": payload,
+            "live_access": live_access, "author_evidence_access": evidence_access,
             "available_reference_event_indices": [item["event_index"] for item in records],
             "instruction": "保留原任务和全部可用原文，修正交接引用及实际读取缺口，提交完整 JSON。"
+            "live_access 仅列本轮真实调用，空 web_search_calls 表示本轮一次查询都没有执行；"
+            "不能把原 session 的搜索或自己的声明当成本轮查询。"
+            "author_evidence_access 区分已内联原文和实际读取调用；search_evidence 预览不计全文读取。"
             "未返回调用不是证据，排除须有依据；不得通过删掉原要求或补写答案消除缺口。",
         }, ensure_ascii=False)
     if not result.completed or payload.get("status") != "READY" or payload.get("missing_inputs"):
@@ -200,6 +237,7 @@ def _complete_search_environment(
         "requires_live_web": requires_web, "retrieval_reason": payload.get("retrieval_reason"),
         "captures": captures, "evidence_handoff": handoff,
         "requirement_coverage": payload.get("requirement_coverage", []),
+        "author_evidence_access": evidence_access,
         "live_references": [*[c for c in network.calls if c.get("tool") == "web_search"
                               and c.get("success")], *network.pages.values()],
         "tools": [tool for tool in _SEARCH_TOOLS if requires_web or not tool.startswith("web_")],
@@ -264,8 +302,18 @@ def run_search_task(
     *, source: dict[str, Any], task: dict[str, Any], agent: AgentRuntime,
     output_root: Path, rollout_agent: AgentRuntime | None = None,
     rollout_trials: int = 2, rollout_max_iterations: int = 80,
+    initial_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     records = captured_evidence(source)
+    inline_observations = [
+        {"evidence_ref_id": record["evidence_ref_id"], **{
+            key: copy.deepcopy(op[key]) for key in ("path", "source_path", "content_ref", "partial")
+            if key in op}}
+        for record in records
+        for group in ("file_ops", "reference_file_ops")
+        for op in (record.get("session_parse") or {}).get(group, [])
+        if op.get("kind") == "read" and op.get("content_ref") and isinstance(op.get("content"), str)
+    ]
     messages = source["raw_session"].get("messages", [])
     task_indices = (task.get("source_task") or {}).get("message_indices")
     last_user = max((i for i, message in enumerate(messages)
@@ -278,7 +326,13 @@ def run_search_task(
         web_search_handler=network.search, web_open_handler=network.open,
     )
     instruction = json.dumps({
+        "current_stage_instruction": (
+            "当前只恢复任务输入和环境，task 描述的是后续 solver 的任务，不是让你现在回答。"
+            "先读取证据并恢复必要正文，再提交输入来源覆盖表。coverage.reason 只说明输入供给，"
+            "不能写任务结论或建议；limitations 只说明访问与版本边界。"
+        ),
         "task": task, "task_last_user_message_index": last_user,
+        "reconstruction_feedback": initial_feedback or {},
         "conversation_messages": [
             {"message_index": i, "role": message["role"], "content": message.get("content")}
             for i, message in enumerate(messages)
@@ -287,7 +341,9 @@ def run_search_task(
         "SOURCE_SYSTEM_MESSAGES": indexed_system_messages(source["raw_session"]),
         "SOURCE_SYSTEM_CONTEXT": source.get("session_parser", {}).get("system_context", []),
         "available_reference_event_indices": [item["event_index"] for item in records],
-        "events": [{"event_index": i, "name": event.get("name"), "arguments": event.get("arguments"),
+        "inline_original_observations": inline_observations,
+        "events": [{"event_index": i, "evidence_ref_id": None if event.get("pending") else f"captured:{i}",
+                    "name": event.get("name"), "arguments": event.get("arguments"),
                     "interpretation": event.get("session_parse")}
                    for i, event in enumerate(source.get("tool_timeline") or [])],
     }, ensure_ascii=False)
@@ -297,7 +353,7 @@ def run_search_task(
         round_root = output_root if not rounds else output_root / "revisions" / f"{len(rounds):04d}"
         environment = _complete_search_environment(
             source=source, task=task, agent=agent, session=session, network=network,
-            instruction=instruction, output_root=round_root,
+            instruction=instruction, output_root=round_root, inline_observations=inline_observations,
         )
         errors = environment["errors"]
         outcome = {"task_id": task["task_id"], "status": "ENVIRONMENT_READY",
@@ -306,7 +362,7 @@ def run_search_task(
                    "environment_path": str(round_root / "environment.json")}
         if errors:
             outcome.update(status="BLOCKED", stopped_at="search_completion",
-                           environment_review="NOT_READY")
+                           environment_review="NOT_READY", missing_inputs=environment["missing_inputs"])
             break
         state = json.dumps({key: environment[key] for key in (
             "task", "captures", "context_messages", "live_references", "tools", "limitations",

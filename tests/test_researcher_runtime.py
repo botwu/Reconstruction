@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
-from traceforge.reconstruction.researcher import ReconstructionRuntime, check_candidate, snapshot_candidate
+from traceforge.reconstruction.researcher import ReconstructionRuntime, author_feedback, check_candidate, snapshot_candidate
 from traceforge.reconstruction.agents import AgentSession, COMPLETION_REPLAYED_ROLE, SUFFICIENCY_ROLE
 from traceforge.reconstruction.agents.runtime import AgentResult
 from traceforge.reconstruction.agents.session import execute_tool
@@ -97,6 +97,32 @@ class ReconstructionTests(unittest.TestCase):
     def test_missing_execution_backend_is_explicit(self) -> None:
         self.assertIn("没有配置", execute_tool("run_candidate", {}, AgentSession()))
 
+    def test_completion_can_recover_public_sources_and_retains_fetch_failure(self) -> None:
+        native = Mock(model_name="test")
+        adapter = ReconstructionRuntime(native, source={}, task={}, runtime_factory=Mock())
+        adapter.agent = native
+        session = AgentSession()
+        with patch("traceforge.reconstruction.researcher.SearchTools") as search:
+            network = search.return_value
+            network.search.return_value = {"success": True, "results": [{"link": "https://example.org/code"}]}
+            network.open.return_value = {"success": False, "error": "HTTP 404"}
+
+            def complete(**kwargs):
+                self.assertIn("web_search", kwargs["role"].tools)
+                self.assertIn("web_open", kwargs["role"].tools)
+                found = json.loads(execute_tool("web_search", {"query": "public-package 1.0"}, session))
+                self.assertTrue(found["success"])
+                fetched = json.loads(execute_tool("web_open", {"url": "https://example.org/code"}, session))
+                self.assertFalse(fetched["success"])
+                self.assertEqual(fetched["error"], "HTTP 404")
+                return AgentResult(role="completion", backend="test", completed=True, payload={})
+
+            native.run.side_effect = complete
+            adapter.run(role=COMPLETION_REPLAYED_ROLE, instruction="", session=session,
+                        output_root=self.root / "completion")
+            network.search.assert_called_once_with("public-package 1.0")
+            network.open.assert_called_once()
+
     def test_template_keeps_feedback_and_exposes_execution_tool(self) -> None:
         source = {"session_parser": {"system_context": [{"meaning": "历史工具协议"}]}}
         adapter = ReconstructionRuntime(Mock(model_name="test"), source=source,
@@ -129,6 +155,41 @@ class ReconstructionTests(unittest.TestCase):
         adapter.run(role=COMPLETION_REPLAYED_ROLE, instruction="old", session=session,
                     output_root=self.root / "retry")
         self.assertIn("上一轮拒写位置", adapter.agent.run.call_args.kwargs["instruction"])
+
+    def test_repair_ready_requires_fresh_execution(self) -> None:
+        for execute_check in (False, True):
+            with self.subTest(execute_check=execute_check):
+                adapter = ReconstructionRuntime(Mock(model_name="test"), source={}, task={},
+                                                runtime_factory=Mock())
+                adapter.agent = Mock()
+                session = AgentSession(repair_feedback={"missing_context": ["broken import"]})
+                calls = []
+
+                def run(**kwargs):
+                    calls.append(kwargs["instruction"])
+                    if len(calls) == 2 and execute_check:
+                        session.environment_probes.append({"status": "PASS"})
+                    return AgentResult(role="completion", backend="test", completed=True,
+                                       payload={"candidates": [{"decision": "READY"}]})
+
+                adapter.agent.run.side_effect = run
+                result = adapter.run(role=COMPLETION_REPLAYED_ROLE, instruction="old", session=session,
+                                     output_root=self.root / str(execute_check))
+                self.assertEqual(len(calls), 2)
+                self.assertEqual("AUTHOR_NO_PROGRESS" in result.errors, not execute_check)
+
+    def test_author_feedback_keeps_full_error_without_duplicate_snapshots(self) -> None:
+        probe = {"python_code": "import package", "status": "FAIL",
+                 "runtime_stdout": "duplicate serialized receipt", "workspace_before": {"x": "hash"},
+                 "executions": [{"stdout": "prefix" + "x" * 10000, "stderr": "actual import error",
+                                 "workspace_after": {"x": "hash"}, "exit_code": 1}]}
+        feedback = {"environment_probes": [probe], "failed_probes": [probe]}
+        compact = author_feedback(feedback)
+        self.assertEqual(compact["environment_probes"][0]["executions"][0]["stderr"], "actual import error")
+        self.assertEqual(compact["environment_probes"][0]["executions"][0]["stdout"],
+                         probe["executions"][0]["stdout"])
+        self.assertNotIn("runtime_stdout", compact["environment_probes"][0])
+        self.assertIn("runtime_stdout", feedback["environment_probes"][0])
 
     def test_prepared_entry_routes_search_without_terminal_execution(self) -> None:
         source = {"session_parser": {"status": "READY"}, "tasks": [{"task_id": "t"}],

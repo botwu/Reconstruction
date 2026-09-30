@@ -41,7 +41,7 @@ def run_fixture(root, **changes):
 
     outcome = run_search_task(
         source=source, task={"task_id": "q", "task_instruction": "比较 A 和 B",
-                             "source_task": {"message_indices": [1]},
+                             "source_task": {"message_indices": [1], "user_texts": [messages[1]["content"]]},
                              "acceptance_obligations": [{"id": "compare", "text": "比较两个实现"}]},
         agent=SimpleNamespace(run=run), output_root=root,
     )
@@ -235,3 +235,99 @@ def test_verbatim_history_quote_keeps_original_whitespace():
         [{"message_index": 0, "used_by_user_message_index": 1, "quote": text}],
     )
     assert result[0]["content"] == text
+
+
+@pytest.mark.parametrize("message,expected", [(1, "ENVIRONMENT_READY"), (2, "BLOCKED")])
+def test_direct_task_input_is_available_without_repeated_history(tmp_path, message, expected):
+    outcome, _, _ = run_fixture(tmp_path, requirement_coverage=[{
+        "obligation_id": "compare", "evidence_ref_ids": ["captured:0", f"message:{message}"],
+        "reason": "原用户要求和比较所需源码",
+    }])
+    assert outcome["status"] == expected
+
+
+def test_missing_live_query_feedback_reports_actual_calls(tmp_path, monkeypatch):
+    from traceforge.reconstruction.search_tools import SearchTools
+
+    url = "https://example.org/paper"
+    monkeypatch.setattr(SearchTools, "_search", lambda self, query: (
+        [{"title": "原始论文", "link": url}], "query-hash"))
+    monkeypatch.setattr(SearchTools, "_fetch", lambda self, address: {
+        "success": True, "url": address, "text": "论文原文", "source_mode": "live_page",
+        "raw_sha256": "page-hash",
+    })
+    instructions = []
+
+    def author(**kwargs):
+        instructions.append(kwargs["instruction"])
+        session = kwargs["session"]
+        if len(instructions) == 1:
+            session.web_open_handler(url)
+        else:
+            feedback = json.loads(kwargs["instruction"])
+            assert feedback["live_access"]["web_search_calls"] == []
+            assert feedback["live_access"]["opened_urls"] == [url]
+            session.web_search_handler("原始论文")
+        return SimpleNamespace(completed=True, errors=[], payload={
+            "status": "READY", "requires_live_web": True, "retrieval_reason": "补充公开文献",
+            "context_references": [], "excluded_events": [], "missing_inputs": [],
+            "requirement_coverage": [{"obligation_id": "research", "evidence_ref_ids": [url],
+                                      "reason": "研究所需论文原文"}],
+        })
+
+    outcome = run_search_task(
+        source={"raw_session": {"messages": []}, "tool_timeline": []},
+        task={"task_id": "query", "task_instruction": "检索论文",
+              "acceptance_obligations": [{"id": "research"}]},
+        agent=SimpleNamespace(run=author), output_root=tmp_path,
+    )
+    assert outcome["status"] == "ENVIRONMENT_READY"
+    assert len(instructions) == 2
+
+
+@pytest.mark.parametrize("original_inline", [True, False])
+def test_inline_original_read_is_evidence_but_parser_opinion_is_not(tmp_path, original_inline):
+    observation = {"kind": "read", "path": "a.py", "content_ref": {
+        "block_index": 0, "start_line": 1, "end_line": 2},
+        "content": "def existing():\n    return 1"}
+    parsed = {"reason": "模型声称读过 a.py", "file_ops": [observation] if original_inline else []}
+    source = {"raw_session": {"messages": []}, "tool_timeline": [
+        {"name": "Read", "result_text": "def existing():\n    return 1", "session_parse": parsed}]}
+
+    def author(**kwargs):
+        prompt = json.loads(kwargs["instruction"])
+        if "events" in prompt:
+            assert prompt["events"][0]["interpretation"] == parsed
+            assert prompt["events"][0]["evidence_ref_id"] == "captured:0"
+        return SimpleNamespace(completed=True, errors=[], payload={
+            "status": "READY", "requires_live_web": False, "retrieval_reason": "原始源码调查",
+            "excluded_events": [], "context_references": [], "missing_inputs": [],
+            "requirement_coverage": [{"obligation_id": "inspect", "evidence_ref_ids": ["captured:0"],
+                                      "reason": ["已有函数正文和读取坐标", "尚未作出分析结论"]}],
+        })
+
+    outcome = run_search_task(
+        source=source, task={"task_id": "inline", "task_instruction": "分析源码",
+                             "acceptance_obligations": [{"id": "inspect"}]},
+        agent=SimpleNamespace(run=author), output_root=tmp_path,
+    )
+    assert outcome["status"] == ("ENVIRONMENT_READY" if original_inline else "BLOCKED")
+    env = json.loads((tmp_path / "environment.json").read_text())
+    if original_inline:
+        access = env["author_evidence_access"]
+        assert access["inline_observations"][0]["evidence_ref_id"] == "captured:0"
+        assert access["inline_observations"][0]["content_ref"] == observation["content_ref"]
+        assert access["read_calls"] == []
+
+
+@pytest.mark.parametrize("reason,valid", [
+    ("源码和调用处", True), (["源码", "调用处"], True),
+    ([], False), (["源码", 1], False), (["  "], False), ({"text": "源码"}, False),
+])
+def test_coverage_explanation_accepts_text_or_text_items_without_hiding_missing_reads(reason, valid):
+    from traceforge.reconstruction.search_handoff import validate_requirement_coverage
+
+    coverage = [{"obligation_id": "inspect", "evidence_ref_ids": ["captured:0"], "reason": reason}]
+    task = {"acceptance_obligations": [{"id": "inspect"}]}
+    assert (not validate_requirement_coverage(task, coverage, {"captured:0"}, {"captured:0"})) == valid
+    assert validate_requirement_coverage(task, coverage, {"captured:0"}, set())

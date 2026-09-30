@@ -133,3 +133,18 @@ def test_progress_state_ignores_probe_order_duplicates_ids_and_explanations():
     assert pipeline._repair_state(environment, first) == pipeline._repair_state(
         environment, repeated,
     )
+
+
+def test_repair_rewording_and_same_failed_probe_are_not_progress():
+    environment = {"workspace_sha256": "unchanged", "status": "REVIEW",
+                   "errors": ["BROKEN_SOURCE"], "execution_errors": ["LOAD_FAILED"]}
+    first = pipeline._environment_feedback({
+        "missing_context": ["source cannot be imported"],
+        "environment_probes": [_probe("load", 0, status="FAIL")],
+    }, environment)
+    repeated = copy.deepcopy(first)
+    repeated["missing_context"] = ["import still fails; preserved as captured"]
+    repeated["environment_probes"][0]["code_sha256"] = "same-import-with-new-print"
+    assert pipeline._repair_state(environment, first) == pipeline._repair_state(environment, repeated)
+    repeated["environment_probes"][0]["status"] = "PASS"
+    assert pipeline._repair_state(environment, first) != pipeline._repair_state(environment, repeated)

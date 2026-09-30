@@ -388,7 +388,10 @@ def _repair_state(environment: dict[str, Any], feedback: dict[str, Any]) -> str:
     # 同一探针重试、更换编号或输出顺序不算进展；新增成功探针属于有效进展。
     probes = {
         json.dumps(
-            {key: probe.get(key) for key in ("purpose", "code_sha256", "status", "error_code")},
+            {key: probe.get(key) for key in (
+                ("purpose", "code_sha256", "status", "error_code") if probe.get("status") == "PASS"
+                else ("purpose", "status", "error_code")
+            )},
             sort_keys=True,
         )
         for probe in feedback["environment_probes"] if isinstance(probe, dict)
@@ -397,11 +400,12 @@ def _repair_state(environment: dict[str, Any], feedback: dict[str, Any]) -> str:
         "workspace": environment.get("workspace_sha256"),
         "context_status": feedback["context_status"],
         "context_errors": sorted(set(feedback["context_errors"])),
-        "missing": sorted(feedback["missing_context"] + feedback["missing_binding_paths"]),
-        "integrity": [
-            {key: issue.get(key) for key in ("code", "path", "classification")}
+        "missing_paths": sorted(set(feedback["missing_binding_paths"])),
+        "integrity": sorted({
+            json.dumps({key: issue.get(key) for key in ("code", "path", "classification")},
+                       sort_keys=True)
             for issue in issues if isinstance(issue, dict)
-        ],
+        }),
         "execution_errors": sorted(feedback["execution_errors"]),
         "environment_probes": sorted(probes),
     }, ensure_ascii=False, sort_keys=True)

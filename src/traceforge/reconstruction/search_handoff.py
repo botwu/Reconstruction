@@ -103,10 +103,13 @@ def validate_requirement_coverage(
             errors.append(f"输入覆盖引用了未知或重复的原始要求：{key}")
             continue
         seen.add(key)
-        if (not isinstance(item.get("reason"), str) or not item["reason"].strip()
+        reason = item.get("reason")
+        explanations = [reason] if isinstance(reason, str) else reason
+        if (not isinstance(explanations, list) or not explanations
+                or any(not isinstance(text, str) or not text.strip() for text in explanations)
                 or not isinstance(refs, list) or not refs
                 or any(not isinstance(ref, str) for ref in refs)):
-            errors.append(f"{key} 必须说明所需资料以及已读取的来源")
+            errors.append(f"{key} 必须提供非空 reason 文本或文本数组，以及 evidence_ref_ids 来源数组")
             continue
         for ref in refs:
             if ref not in available_refs:

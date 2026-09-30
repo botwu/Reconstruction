@@ -1,5 +1,8 @@
 """检索环境保留原始返回，并隔离原轨迹答案。"""
 
+import ast
+import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -220,16 +223,20 @@ def test_optional_preferences_do_not_replace_required_input_gate(tmp_path, monke
 
     network = SimpleNamespace(ready=lambda: True, search=None, open=None, calls=[], pages={})
     monkeypatch.setattr(search_environment, "SearchTools", lambda root: network)
-    agent = SimpleNamespace(run=lambda **kwargs: SimpleNamespace(
-        payload={"status": "READY", "requires_live_web": True, "retrieval_reason": "任务需要公开文献",
-                 "reference_event_indices": [], "context_note": "已恢复任务",
-                 "limitations": ["未指定篇幅，按中文综述处理"], "missing_inputs": missing},
-        errors=[], completed=True,
-    ))
+    feedback = {"missing_inputs": ["上一轮缺少实现正文"]}
+    def complete(**kwargs):
+        assert json.loads(kwargs["instruction"])["reconstruction_feedback"] == feedback
+        return SimpleNamespace(
+            payload={"status": "READY", "requires_live_web": True, "retrieval_reason": "任务需要公开文献",
+                     "reference_event_indices": [], "context_note": "已恢复任务",
+                     "limitations": ["未指定篇幅，按中文综述处理"], "missing_inputs": missing},
+            errors=[], completed=True,
+        )
+    agent = SimpleNamespace(run=complete)
     result = search_environment.run_search_task(
         source={"raw_session": {"messages": []}},
         task={"task_id": "q1", "task_instruction": "查找公开来源并概述。"},
-        agent=agent, output_root=tmp_path,
+        agent=agent, output_root=tmp_path, initial_feedback=feedback,
     )
     assert result["status"] == expected
     environment = json.loads((tmp_path / "environment.json").read_text())
@@ -382,3 +389,39 @@ def test_local_search_requires_actual_corpus_reading_without_public_web(tmp_path
     environment = json.loads((tmp_path / "environment.json").read_text())
     assert environment["source_mode"] == "captured_references"
     assert "web_search" not in environment["tools"]
+
+
+@pytest.mark.parametrize("url", [
+    "https://raw.githubusercontent.com/example/project/abc123/src/module.py",
+    "https://github.com/example/project/blob/abc123/src/module.py",
+])
+@pytest.mark.parametrize("valid_hash", [True, False])
+def test_github_source_preserves_bytes_and_rejects_corruption(tmp_path, monkeypatch, url, valid_hash):
+    original = b"# header\r\nclass Example:\r\n    value = 3\r\n"
+    blob = hashlib.sha1(b"blob " + str(len(original)).encode() + b"\0" + original).hexdigest()
+    api = {"type": "file", "encoding": "base64", "size": len(original),
+           "sha": blob if valid_hash else "0" * 40,
+           "content": base64.encodebytes(original).decode()}
+    tools = SearchTools(tmp_path)
+    tools._fetch_provider = "serper"
+    tools._serper_key = "test-only"
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.data)["url"])
+        return {"text": json.dumps(api)}, "provider-response-sha"
+
+    monkeypatch.setattr(tools, "_response", respond)
+    monkeypatch.setattr("traceforge.reconstruction.search_tools._public_url", lambda value: None)
+    result = tools.open(url)
+    assert requests == ["https://api.github.com/repos/example/project/contents/src/module.py?ref=abc123"]
+    assert result["success"] is valid_hash
+    if valid_hash:
+        assert result["text"].encode() == original
+        assert result["content_sha256"] == hashlib.sha256(original).hexdigest()
+        assert result["git_blob_sha1"] == blob
+        assert isinstance(ast.parse(result["text"]).body[0], ast.ClassDef)
+        assert result["url"] == url
+    else:
+        assert url not in tools.pages
+        assert "哈希" in result["error"]

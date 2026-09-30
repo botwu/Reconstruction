@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import ipaddress
 import json
@@ -82,6 +83,31 @@ class SearchTools:
 
     def _fetch(self, url: str) -> dict[str, Any]:
         _public_url(url)
+        parsed = urllib.parse.urlsplit(url)
+        parts = parsed.path.strip("/").split("/")
+        if parsed.hostname == "raw.githubusercontent.com" and len(parts) >= 4:
+            owner, repo, ref, *file_parts = parts
+        elif parsed.hostname == "github.com" and len(parts) >= 5 and parts[2] == "blob":
+            owner, repo, _, ref, *file_parts = parts
+        else:
+            return self._fetch_page(url)
+        # 网页文本提取会压平源码；内容 API 的编码可保留原字节并校验 Git 对象。
+        api_url = (f"https://api.github.com/repos/{owner}/{repo}/contents/"
+                   + "/".join(file_parts) + "?ref=" + urllib.parse.quote(urllib.parse.unquote(ref), safe=""))
+        _public_url(api_url)
+        page = self._fetch_page(api_url)
+        data = json.loads(page["text"])
+        if not isinstance(data, dict) or data.get("type") != "file" or data.get("encoding") != "base64":
+            raise ValueError("GitHub 内容 API 未返回完整文件，不能使用网页抽取文本替代源码")
+        raw = base64.b64decode("".join(data["content"].split()), validate=True)
+        blob = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        if len(raw) != data.get("size") or blob != data.get("sha"):
+            raise ValueError("GitHub 文件大小或 Git blob 哈希不一致")
+        return {**page, "url": url, "resolved_url": api_url, "text": raw.decode("utf-8"),
+                "content_kind": "source_file", "content_sha256": hashlib.sha256(raw).hexdigest(),
+                "git_blob_sha1": blob, "source_ref": urllib.parse.unquote(ref)}
+
+    def _fetch_page(self, url: str) -> dict[str, Any]:
         if self._fetch_provider == "serper":
             if not self._serper_key:
                 raise ValueError("未配置 Serper 凭据")

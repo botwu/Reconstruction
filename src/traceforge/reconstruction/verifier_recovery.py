@@ -23,11 +23,17 @@ from traceforge.verifier.synthesis import (
 
 VERIFIER_RECOVERY_SCHEMA = "traceforge.verifier-recovery.v1"
 VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION = (
-    "terminal-universe-verifier-semantic-review-v4-original-failure-path"
+    "terminal-universe-verifier-semantic-review-v5-observable-behavior"
 )
 _FAILURE_REPRODUCTION_RULE = (
     "根据原始报错和实际调用链定位失败路径，能力缺失测试须复现对应的输入或返回形态；"
     "应用层错误响应不能用同名的网络异常替代。参考解必须处理该路径，不能只通过替身。"
+    "优先以小输入执行实际入口、观察返回和副作用，独立计算期望值；"
+    "隔离外部网络、账户和时钟，不替换待验证的本地实现。"
+    "AST 只核对用户明确要求的结构，不能用不断扩展的静态调用图代替行为测试。"
+    "不得约束用户未指定的局部变量名、函数签名、导入写法或辅助函数层级。"
+    "审查员给出的修复建议也须遵守这些边界；发现静态规则误拒绝时转为实际调用验证，"
+    "不要再叠加别名、递归深度等新规则。"
 )
 
 

@@ -25,6 +25,7 @@ from traceforge.reconstruction.environment_probe import (
     environment_probe_summary, run_environment_probe,
 )
 from traceforge.reconstruction.python_runtime import validate_python_runtime
+from traceforge.reconstruction.search_tools import SearchTools
 
 COMPLETION_RESULT_CONTRACT = (
     "文件必须通过写入工具交付；实际写入是文件与来源的唯一依据，最终 JSON 只交付候选元数据，"
@@ -133,6 +134,26 @@ def check_candidate(
     return summary
 
 
+def author_feedback(feedback: dict[str, Any] | None) -> dict[str, Any] | None:
+    """反馈保留完整检查代码和输出，去除重复序列化及逐文件快照。原回执不变。"""
+    if feedback is None:
+        return None
+    result = {key: value for key, value in feedback.items() if key != "failed_probes"}
+    if "environment_probes" in result:
+        result["environment_probes"] = [
+            {
+                **{key: value for key, value in probe.items()
+                   if key not in {"workspace_before", "workspace_after", "runtime_stdout", "executions"}},
+                "executions": [
+                    {key: value for key, value in item.items()
+                     if key not in {"workspace_before", "workspace_after", "scratch_hashes"}}
+                    for item in probe.get("executions", [])
+                ],
+            } for probe in feedback["environment_probes"]
+        ]
+    return result
+
+
 class ReconstructionRuntime:
     """同一研究者持续构建任务包，阶段仅切换可用工具和输出契约。"""
 
@@ -149,6 +170,7 @@ class ReconstructionRuntime:
         self.initial_feedback = initial_feedback
         self.conversation = AgentConversation()
         self.phases: list[dict[str, Any]] = []
+        self.public_sources: SearchTools | None = None
 
     def _check_candidate(self, **kwargs: Any) -> dict[str, Any]:
         result = check_candidate(runtime_factory=self.runtime_factory,
@@ -180,12 +202,18 @@ class ReconstructionRuntime:
                 "使用 read_session_message 读取原用户消息及 task_time_context 标出的先前修改。"
                 "先前任务已完成的模块或集成是本任务的历史上下文；不得因候选改回旧调用链就判定它们无关。"
                 "当前任务开始之后的解决方案不能预置进初态。原始 session 只读保留，按索引核对。"
+                "核对探针代码实际调用的实现：替换 sys.modules 或用假类绕过本地源码，不能证明真实模块可加载。"
+                "外部网络可以隔离，但任务所需本地入口和依赖必须真实执行；不要把替身的 PASS 用来豁免损坏源码。"
             )
         if (role.name in {"sufficiency", "verifier"} and self.python_runtime is not None
                 and session.workspace is not None):
             reuse_python_runtime(self.python_runtime, session.workspace,
                                  session.workspace.parent / "python_runtime")
         if role.name == "completion":
+            if self.public_sources is None:
+                self.public_sources = SearchTools(output_root / "public-sources")
+            session.web_search_handler = self.public_sources.search
+            session.web_open_handler = self.public_sources.open
             session.candidate_check_handler = partial(
                 self._check_candidate, session=session, output_root=output_root / "checks",
             )
@@ -217,8 +245,8 @@ class ReconstructionRuntime:
                     for path, repairs in session.prior_capture_repairs.items()
                 }, ensure_ascii=False),
                 "__FEEDBACK__": json.dumps(
-                    session.repair_feedback if session.repair_feedback is not None
-                    else self.initial_feedback, ensure_ascii=False),
+                    author_feedback(session.repair_feedback if session.repair_feedback is not None
+                                    else self.initial_feedback), ensure_ascii=False),
                 "__RESULT_CONTRACT__": COMPLETION_RESULT_CONTRACT,
             }
             template = Path(__file__).with_name("researcher_instruction.md").read_text()
@@ -226,7 +254,8 @@ class ReconstructionRuntime:
             rendered = output_root / "task"
             rendered.mkdir(parents=True, exist_ok=True)
             (rendered / "instruction.md").write_text(instruction)
-            role = replace(role, tools=(*role.tools, "restore_observed_file", "edit_candidate_file", "run_candidate"))
+            role = replace(role, tools=(*role.tools, "restore_observed_file", "edit_candidate_file",
+                                        "run_candidate", "web_search", "web_open"))
         if author:
             instruction = f"同一研究者继续；当前阶段：{role.name}。\n" + instruction
         baseline = None
@@ -289,9 +318,22 @@ class ReconstructionRuntime:
                     or len(candidates) != 1 or not isinstance(candidates[0], dict)
                     or candidates[0].get("decision") not in {"READY", "REVIEW"}):
                 break
-            if candidates[0]["decision"] == "READY" and (baseline is None or baseline.get("status") == "PASS"):
-                break
             recent = session.environment_probes[probe_count:]
+            repair_checked = session.repair_feedback is None or (
+                recent and recent[-1].get("status") == "PASS"
+            )
+            if (candidates[0]["decision"] == "READY" and repair_checked
+                    and (baseline is None or baseline.get("status") == "PASS")):
+                break
+            if session.repair_feedback is not None and not recent and attempt == 1:
+                instruction = (
+                    "本轮返修尚未执行检查，上一轮 READY 已被独立执行结果否定。"
+                    "当前候选与原始证据仍在；先核对具体缺口，恢复任务所需的已有能力，"
+                    "再用 run_candidate 重跑失败能力。不能仅将同一错误改写成 uncertainties 后返回 READY。"
+                    "若探针检查的是用户待实现目标，指出对应原文；若必要事实确实缺失，"
+                    "返回 REVIEW 和具体 open_questions。交付格式：\n" + COMPLETION_RESULT_CONTRACT
+                )
+                continue
             failure = recent[-1] if recent else {}
             digest = failure.get("candidate_sha256")
             if not recent:
