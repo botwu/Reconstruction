@@ -380,6 +380,7 @@ def test_review_phase_retries_wrong_completion_shape_without_rebuilding_environm
     (trial / "answer.md").write_text("基于原文完成的回答")
     (trial / "execution.json").write_text(json.dumps({"tool_events": []}))
     (trial / "receipt.json").write_text(json.dumps({"completed": True}))
+    (trial / "input.json").write_text(json.dumps({"evidence": []}))
     calls = []
     session = AgentSession(conversation=AgentConversation())
 
@@ -437,3 +438,37 @@ def test_coverage_retry_supplies_exact_delivered_ids_without_guessing(tmp_path, 
     )
     assert len(calls) == 2
     assert outcome["status"] == ("ENVIRONMENT_READY" if corrects_references else "BLOCKED")
+
+
+def test_review_resolves_solver_reads_from_its_own_input_not_author_inventory(tmp_path):
+    from traceforge.reconstruction.agents import AgentSession
+    from traceforge.reconstruction.agents.session import AgentConversation
+    from traceforge.reconstruction.search_environment import _review_search_rollouts
+
+    trial = tmp_path / "rollouts" / "trial-01"
+    trial.mkdir(parents=True)
+    (trial / "answer.md").write_text("依据实际读取的 A 作答")
+    (trial / "receipt.json").write_text(json.dumps({"completed": True}))
+    (trial / "input.json").write_text(json.dumps({"evidence": [
+        {"evidence_ref_id": "live:0", "url": "https://example.org/a", "name": "web_open"},
+        {"evidence_ref_id": "live:1", "url": "https://example.org/b", "name": "web_open"},
+    ]}))
+    (trial / "execution.json").write_text(json.dumps({"tool_events": [
+        {"name": "read_evidence", "arguments": {"id": "live:0", "limit": 1000}, "ok": True},
+    ]}))
+
+    def review(**kwargs):
+        prompt = json.loads(kwargs["instruction"])
+        reads = prompt["trials"][0]["read_evidence_calls"]
+        assert reads == [{"id": "live:0", "limit": 1000, "ok": True,
+                          "source": {"evidence_ref_id": "live:0", "url": "https://example.org/a"}}]
+        return SimpleNamespace(completed=True, errors=[], payload={
+            "decision": "COMPLETE", "requirements": []})
+
+    _review_search_rollouts(
+        task={"acceptance_obligations": []},
+        environment={"evidence_handoff": {}, "captures": [], "context_messages": [],
+                     "requirement_coverage": [{"obligation_id": "q",
+                         "evidence_ref_ids": ["https://example.org/a", "https://example.org/b"]}]},
+        agent=SimpleNamespace(run=review),
+        session=AgentSession(conversation=AgentConversation()), output_root=tmp_path)

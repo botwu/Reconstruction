@@ -49,8 +49,9 @@ SEARCH_COMPLETION_ROLE = AgentRole(
         "search 是任务领域，不等于公网搜索。requires_live_web 按原任务判断并给 retrieval_reason。"
         "events 中 file_ops/reference_file_ops 的 content 是按 content_ref 从原文提取的观察，已直接提供给你；"
         "interpretation 中的 reason/action 等是解析意见，不能当作源码。"
-        "已内联原文可直接引用；未内联、被截断或仍需核对的资料使用 search_evidence/read_evidence，"
-        "不能把私有关键词上传公网，也不能把 search_evidence 的短预览说成完整读取。"
+        "先审阅各条原始返回的正文，再判断哪些内容支持任务；不能只读首段后按工具名判断相关性。"
+        "已内联原文可直接引用；未内联的正文用 read_evidence 分页补读，search_evidence 预览只用于定位。"
+        "公开补充来源按原任务需要读取相关章节；不能把私有关键词上传公网。"
         "重建本地代码任务时也可联网恢复原文指向的公开依赖：用公开包名、版本、符号和上游地址"
         "调用 web_search/web_open，读取真实源码与历史版本；不要只因原仓库不在本机就停止。"
         "已有公开候选 URL 时先打开正文；搜索未命中不能证明该 URL 不可访问。"
@@ -118,7 +119,7 @@ SEARCH_REVIEW_ROLE = replace(
         "此前的解析意见、补全分析和旧复核结论都不是标准答案。"
         "available_evidence_ref_ids 只表示材料可读；author_input_references 是作者的来源索引。"
         "只有 trials 中的调用才是 solver 的实际读取，不能把你之前的读取算给 solver。"
-        "read_evidence_calls 的分页范围不一定覆盖整份材料，须结合实际工具结果与回答核对。"
+        "read_evidence_calls.source 按该次 solver 输入映射来源；仅成功调用算实际读取，分页不一定覆盖整份材料。"
         "逐项比较回答中的具体主张与原文，不能用一串来源编号代替核查；"
         "未取得实现正文时，不能把调用处、docstring 或测试预期当作已逐行核实的实现。"
         "区分环境缺口和 solver 错误：已有可检索原文但 solver 漏读/误推断，属于 SOLVER_ERROR；"
@@ -265,12 +266,19 @@ def _review_search_rollouts(
     trials = []
     for root in sorted((output_root / "rollouts").glob("trial-*")):
         execution = json.loads((root / "execution.json").read_text())
+        solver_sources = {
+            item["evidence_ref_id"]: {key: item[key] for key in (
+                "evidence_ref_id", "url", "query", "source_ref", "content_kind",
+            ) if key in item}
+            for item in json.loads((root / "input.json").read_text())["evidence"]
+        }
         trials.append({
             "trial": root.name, "answer": (root / "answer.md").read_text(encoding="utf-8"),
             "receipt": json.loads((root / "receipt.json").read_text()),
             "tool_events": execution["tool_events"],
             "read_evidence_calls": [
-                {**event.get("arguments", {}), "ok": event.get("ok")}
+                {**event.get("arguments", {}), "ok": event.get("ok"),
+                 "source": solver_sources.get(event.get("arguments", {}).get("id"), {})}
                 for event in execution["tool_events"] if event.get("name") == "read_evidence"
             ],
         })
