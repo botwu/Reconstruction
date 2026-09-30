@@ -6,11 +6,9 @@ terminal 的处理策略，也不表示现有真实回答全部通过，见[当�
 
 ## 代码与完整数据
 
-当前代码提交包含完整校验清单和恢复脚本；两份归档已在 dev-wj 准备并验证，
-原始数据发布方式尚待确认，暂未上传到公开仓库。归档准备位置为本项目
-`artifacts/repository-transfer-20261001/datasets/`。
+两份完整原始数据经用户明确授权，作为本仓库的 Git LFS 对象公开发布。
 
-要求 Python 3.12、Git；数据发布到仓库后还需要 Git LFS。届时按以下步骤恢复输入：
+要求 Python 3.12、Git；获取数据还需要 Git LFS。按以下步骤恢复输入：
 
 ```bash
 git lfs install

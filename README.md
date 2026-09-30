@@ -41,4 +41,4 @@ uv run pytest -m 'not live'
 uv run ruff check src scripts --select F,E9
 ```
 
-普通测试不发起模型请求；真实验证须另外检查输入、环境、校准、rollout 和实际产物。原始 session、配置、凭据及运行结果不提交到 Git。
+普通测试不发起模型请求；真实验证须另外检查输入、环境、校准、rollout 和实际产物。两份原始数据按用户明确授权通过 Git LFS 发布；部署配置、凭据及运行结果不提交到 Git。

@@ -83,8 +83,10 @@
   ],
   "format": "未修改的完整 JSONL；gzip 无损压缩；样本哈希包含原始行尾字节",
   "distribution": {
-    "status": "PREPARED_NOT_UPLOADED",
+    "status": "GIT_LFS",
     "repository": "botwu/Reconstruction",
-    "reason": "目标仓库公开；等待用户确认原始数据的发布方式。"
+    "visibility": "public",
+    "authorized_on": "2026-10-01",
+    "archive_directory": "data/snapshots"
   }
 }
