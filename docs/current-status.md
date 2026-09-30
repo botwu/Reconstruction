@@ -8,6 +8,15 @@
 
 两种 domain 均可导出标准 Harbor 任务。terminal 交付文件初态、依赖、测试与参考解；search 交付任务、原始证据和所需检索能力。本地代码检索仍属于 search，不强制调用公网工具。见 [Harbor 交付](harbor-task-delivery.md) 和 [原始会话流程](raw-session-pipeline.md)。
 
+按“充分利用原轨迹并交付可解的任务与环境”重新核对后，当前只能确认已有技术链路和下表实测结果，不能宣称重建充分性已全部完成：
+
+- R01:559 共 47 条已返回工具事件，环境交付 25 条；未交付项包括 `v1_compat.py` 源码观察、`moz_dataset.py` 后续区间、生产装配和配置的检索结果。不是每条未选事件都有必要，但当前没有逐项说明相关材料为何不交付，部分原有源码和调用链信息对 solver 不可见。
+- 同一环境的 `context_note` 已写入“仅用于 parity/调试的参考实现，非训练路径”等结论，而这是原任务要求 solver 判断的内容。应交付源材料并保留待判断目标，不能由补全说明提前作答。
+- R01:39 原始 messages 中有 30 次 `web_search` 调用，没有与之匹配的 tool 返回；原助手回答保留了日程链接和主题总结，但不能当作网页原文。当前环境对 2026 分类来源的成功访问不足以证明 2024/2025 oral 资料可取得。原轨迹可用于恢复来源线索，所需原始资料仍待补证。
+- search 当前以最后一条本任务用户消息为历史边界，并把更早助手内容限制为指代所需名称/描述。它还不能一般性表达“前一方案完整成为下一任务输入”，也不能靠这个边界解决多轮任务合并后的答案混入。具体任务起点和上下文用途需要核对。
+
+这些是重建交接的缺口，不能只靠返修 solver 回答解决。此次补充了完成标准和事实核对记录，运行逻辑尚未按这些标准全部修正；已有 rollout、人工报告与冻结任务包保持原样。
+
 | 样本 / 产物 | 真实结果 | 内容与边界 |
 | --- | --- | --- |
 | R01:559，本地代码检索 | 正式 raw 入口完成分段、DeepSeek 解析、gpt-5 补全和 Claude rollout；25 份捕获，补全读取 21 次；首次 solver 12 次 API、26 次工具调用，返修 20 次 API、21 次工具调用，均无公网调用 | 返修纠正了主要过度结论，仍有部分引用行号偏差和准备性文字；另交人工核对后的完整报告，未改写自动状态 |
@@ -54,5 +63,6 @@ R01:559 的 full-run01 使用本轮较早的 v1.7 解析快照。后续返修绑
 - `search-obligations/`：指定来源要求的 intent 重跑、回答及实际网页失败。
 - `search-answer-corrections.zh-CN.md`、`terminal-analysis-corrections.zh-CN.md`：旧回答的更正与边界。
 - `local-search559-reviewed-report.zh-CN.md`、`local-search559-function-check.json`：本地检索的人工更正版与源码函数反例。
+- `reconstruction-boundary-audit.json`：原始事件到实际交付范围的核对、历史/答案边界及目前未完成的充分性检查。
 
 此前五条 harness 审核及四份内容核查在上一级 `harness-review-20260930.md/json`、`content-review-20260930.md/json`。原始数据已从上游完整复制并逐文件核对 SHA256；原数据自带的占位符不会因复制恢复。历史代码固定、清理及 terminal 回执保留在 `artifacts/pipeline-debug-20260929/default-integration/`。
