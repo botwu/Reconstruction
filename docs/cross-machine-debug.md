@@ -50,7 +50,8 @@ Hermes 源码及其依赖，terminal 另需 Harbor/AGS 适配运行时和沙盒�
 Hermes 对应仓库为 `SenseTime-FVG/hermes-agent`，固定提交
 `83c2ca5b2e250d69ce301c751ea83fd425eb2de1`；已核对当前实跑的入口、依赖声明、
 锁文件和上下文压缩模块与该提交一致。Harbor/AGS 是现有适配源码，仍需通过 dev-wj
-私有同步，未将整个外部参考仓库塞入本项目。
+私有同步；已将实跑所用源码和配置另存到项目内的稳定路径，避免依赖 /tmp。
+该副本不在公开 Git 中，逐文件哈希保存在相邻的 runtime-validation.json。
 
 在仓库根目录执行以下步骤；需要已有的 dev-wj SSH 访问权限：
 
@@ -59,7 +60,7 @@ mkdir -p .runtime
 git clone git@github.com:SenseTime-FVG/hermes-agent.git .runtime/hermes-agent
 git -C .runtime/hermes-agent checkout 83c2ca5b2e250d69ce301c751ea83fd425eb2de1
 rsync -a --exclude=.venv --exclude=.git --exclude=__pycache__ \
-  dev-wj:/tmp/researcher-local-inputs-13/harbor/ .runtime/harbor-ags/
+  dev-wj:/mnt/afs_toolcall/wujian1/Projects/workspace/TraceRconstruction/artifacts/repository-transfer-20261001/runtime/harbor-ags/ .runtime/harbor-ags/
 uv venv --python 3.12 .runtime/harbor-ags/.venv
 uv pip install --python .runtime/harbor-ags/.venv/bin/python \
   -e . -e ".runtime/hermes-agent[anthropic]" -e .runtime/harbor-ags "pytest==8.4.2"
