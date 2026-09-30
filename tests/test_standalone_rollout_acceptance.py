@@ -2,8 +2,9 @@
 
 import hashlib
 import json
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,9 @@ from test_harbor_rollout_results import _write, _write_ledger, _write_valid_herm
 from test_response_receipt import acceptance_contract, trajectory
 from traceforge.cli import main
 from traceforge.harbor_ags.rollout import HarborRolloutConfig, build_rollout_plan
+
+
+pytestmark = pytest.mark.usefixtures("harbor_cleanup")
 
 
 def _fixture(tmp_path, monkeypatch, *, trials=1, contract=True, runtime=False):
@@ -58,8 +62,6 @@ def _fixture(tmp_path, monkeypatch, *, trials=1, contract=True, runtime=False):
         (trial / "agent/trajectory.full.json").write_bytes(trajectory())
         (trial / "reconstruction-certification.json").unlink()
     _write_ledger(job / "_control/ags-sandbox-ledger.jsonl")
-    import harbor_ags.artifacts
-    import harbor_ags.validator
     calls = []
 
     def validate(trial, *, preserve_source_literals):
@@ -67,8 +69,19 @@ def _fixture(tmp_path, monkeypatch, *, trials=1, contract=True, runtime=False):
         calls.append(trial)
         return SimpleNamespace(certified=True, status="TASK_PASS")
 
-    monkeypatch.setattr(harbor_ags.artifacts, "build_artifact_manifest", lambda trial: None)
-    monkeypatch.setattr(harbor_ags.validator, "validate_harbor_trial", validate)
+    # 本测试核对桥接和来源绑定，不依赖部署机安装的外部 Harbor。
+    package = ModuleType("harbor_ags")
+    package.__path__ = []
+    package.artifacts = ModuleType("harbor_ags.artifacts")
+    package.artifacts.build_artifact_manifest = lambda trial: None
+    package.validator = ModuleType("harbor_ags.validator")
+    package.validator.validate_harbor_trial = validate
+    package.validator.__file__ = __file__
+    for name, module in (
+        ("harbor_ags", package), ("harbor_ags.artifacts", package.artifacts),
+        ("harbor_ags.validator", package.validator),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
     return plan_dir, job, calls
 
 
@@ -189,11 +202,12 @@ def test_repeated_read_recomputes_receipts_without_changing_inputs(tmp_path, mon
 
 @pytest.mark.parametrize("wrong_source", [False, True])
 def test_explicit_recertification_keeps_original_execution_runtime(tmp_path, monkeypatch, wrong_source):
-    import harbor_ags.validator
     from traceforge.harbor_ags import acceptance
     from traceforge.harbor_ags.results import HarborResultError
 
     plan, job, _ = _fixture(tmp_path, monkeypatch, runtime=True)
+    import harbor_ags.validator
+
     before = (plan / "rollout_plan.json").read_bytes()
     certify = acceptance.certify_hermes_job
     selected = []

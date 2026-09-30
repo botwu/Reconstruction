@@ -9,6 +9,9 @@ import pytest
 from traceforge.harbor_ags.results import read_rollout_results
 
 
+pytestmark = pytest.mark.usefixtures("harbor_cleanup")
+
+
 def _write(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value), encoding="utf-8")
@@ -84,7 +87,7 @@ def test_results_calculate_pass_tokens_duration_and_cleanup(tmp_path: Path) -> N
     assert report["metrics"]["mean_duration_seconds"] == 5.0
 
 
-def test_results_accept_ags_killed_ledger_without_stopped(tmp_path: Path) -> None:
+def test_results_accept_confirmed_cleanup(tmp_path: Path) -> None:
     job = tmp_path / "job"
     trial = job / "task--trial-001"
     _write(
@@ -102,7 +105,8 @@ def test_results_accept_ags_killed_ledger_without_stopped(tmp_path: Path) -> Non
     assert report["quality_gate"]["ok"] is True
 
 
-def test_results_reject_stopped_only_ledger(tmp_path: Path) -> None:
+def test_results_reject_unconfirmed_cleanup(tmp_path: Path, harbor_cleanup) -> None:
+    harbor_cleanup.ok = False
     job = tmp_path / "job"
     trial = job / "task--trial-001"
     _write(

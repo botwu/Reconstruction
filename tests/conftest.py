@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 
 def json_line(value: Any) -> bytes:
@@ -19,3 +22,14 @@ def json_line(value: Any) -> bytes:
         ).encode("utf-8")
         + b"\n"
     )
+
+
+@pytest.fixture
+def harbor_cleanup(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """桥接单元测试使用外部审计回执，不加载部署机的 Harbor。"""
+    result = SimpleNamespace(ok=True)
+    monkeypatch.setattr(
+        "traceforge.harbor_ags.results._import_audit_sandbox_ledger",
+        lambda: lambda ledger: result,
+    )
+    return result

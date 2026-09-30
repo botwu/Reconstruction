@@ -15,8 +15,8 @@ git lfs install
 git clone git@github.com:botwu/Reconstruction.git
 cd Reconstruction
 git lfs pull
-python3 scripts/restore_debug_data.py
-python3 scripts/restore_debug_data.py --verify-only
+python3.12 scripts/restore_debug_data.py
+python3.12 scripts/restore_debug_data.py --verify-only
 ```
 
 两份输入对应 `return_data/four_batch/by-rubric/R01.jsonl`（search，1,683 条）和
@@ -28,7 +28,7 @@ SHA256、字节数、物理行数及已使用样本的哈希。压缩只改变�
 大小或哈希不同会报错并保留现有文件，不自动覆盖。若压缩包通过其他私有渠道取得：
 
 ```bash
-python3 scripts/restore_debug_data.py --archive-dir /absolute/path/to/archives
+python3.12 scripts/restore_debug_data.py --archive-dir /absolute/path/to/archives
 ```
 
 仅获取代码可用 `GIT_LFS_SKIP_SMUDGE=1 git clone ...`。若看到约百字节的 LFS 指针、
@@ -43,7 +43,8 @@ uv run pytest -m 'not live'
 uv run ruff check src scripts --select F,E9
 ```
 
-`uv.lock` 固定项目的基础开发依赖；普通检查不发起模型请求。完整模型执行还需要
+`uv.lock` 固定项目的基础开发依赖；普通检查不发起模型请求；外部 Harbor 的认证与清理接口使用明确替身，
+不依赖 dev-wj 的绝对路径，也不宣称验证了外部运行时本身。完整模型执行还需要
 Hermes 源码及其依赖，terminal 另需 Harbor/AGS 适配运行时和沙盒权限。
 这些运行时不能由原始 session 的 harness 名称替代，也不属于本项目的基础依赖。
 现有运行时位于 dev-wj：
