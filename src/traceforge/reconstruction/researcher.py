@@ -26,6 +26,7 @@ from traceforge.reconstruction.environment_probe import (
 )
 from traceforge.reconstruction.python_runtime import validate_python_runtime
 from traceforge.reconstruction.search_tools import SearchTools
+from traceforge.reconstruction.session_source import indexed_session
 
 COMPLETION_RESULT_CONTRACT = (
     "文件必须通过写入工具交付；实际写入是文件与来源的唯一依据，最终 JSON 只交付候选元数据，"
@@ -235,7 +236,19 @@ class ReconstructionRuntime:
                         } if op.get("line_numbers") else None,
                     } for op in parsed.get("file_ops", []) if op["kind"] == "read"],
                 })
+            source_line = "SOURCE_SESSION=" + json.dumps(
+                indexed_session(self.source.get("raw_session", {})), ensure_ascii=False,
+            )
+            source_attached = any(
+                source_line in message.get("content", "").splitlines()
+                for message in self.conversation.messages
+                if message.get("role") == "user" and isinstance(message.get("content"), str)
+            )
             values = {
+                "__SOURCE_SESSION__": (
+                    "完整原始 session 已在当前作者会话中；继续利用此前全部原文。"
+                    if source_attached else source_line
+                ),
                 "__TASK__": json.dumps(workspace_task_context(self.task), ensure_ascii=False),
                 "__EVIDENCE_INDEX__": json.dumps(index, ensure_ascii=False),
                 "__SYSTEM_CONTEXT__": json.dumps(

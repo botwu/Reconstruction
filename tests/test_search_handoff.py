@@ -1,5 +1,6 @@
 """搜索交接必须保留来源，并区分历史任务输入与本次答案。"""
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -164,8 +165,14 @@ def test_actual_rollout_gap_returns_to_same_researcher_and_stops_without_change(
         solver_inputs.append(session.evidence)
         args = {"id": "captured:1"}
         result = execute_tool("read_evidence", args, session)
-        session.tool_events.append({"name": "read_evidence", "arguments": args,
-                                    "ok": not result.startswith("error:"), "result": result})
+        event = {"tool_call_id": "fixture-read-b", "name": "read_evidence", "arguments": args,
+                 "ok": not result.startswith("error:"),
+                 "result_sha256": hashlib.sha256(result.encode("utf-8")).hexdigest(),
+                 "result_preview": result[:512]}
+        session.tool_events.append(event)
+        trace = kwargs["output_root"] / "private/tool_events.jsonl"
+        trace.parent.mkdir(parents=True, exist_ok=True)
+        trace.write_text(json.dumps({"status": "FINISHED", **event, "result": result}) + "\n")
         return SimpleNamespace(completed=True, errors=[], turns=[],
                                final_text="缺少 B 的源码" if result.startswith("error:") else "已完成比较")
 
@@ -297,14 +304,25 @@ def test_inline_original_read_is_evidence_but_parser_opinion_is_not(tmp_path, or
         "block_index": 0, "start_line": 1, "end_line": 2},
         "content": "def existing():\n    return 1"}
     parsed = {"reason": "模型声称读过 a.py", "file_ops": [observation] if original_inline else []}
-    source = {"raw_session": {"messages": []}, "tool_timeline": [
-        {"name": "Read", "result_text": "def existing():\n    return 1", "session_parse": parsed}]}
+    source = {"raw_session": {"messages": [
+        {"role": "tool", "content": "def existing():\n    return 1"},
+    ] if original_inline else []}, "tool_timeline": [
+        {"name": "Read", "result_text": "def existing():\n    return 1", "session_parse": parsed,
+         "tool_message_index": 0}]}
 
     def author(**kwargs):
         prompt = json.loads(kwargs["instruction"])
         if "events" in prompt:
-            assert prompt["events"][0]["interpretation"] == parsed
+            interpretation = prompt["events"][0]["interpretation"]
+            assert interpretation["reason"] == parsed["reason"]
+            expected_ops = [
+                {key: value for key, value in observation.items() if key != "content"}
+            ] if original_inline else []
+            assert interpretation["file_ops"] == expected_ops
             assert prompt["events"][0]["evidence_ref_id"] == "captured:0"
+            if original_inline:
+                assert (prompt["SOURCE_SESSION"]["messages"][0]["message"]
+                        == source["raw_session"]["messages"][0])
         return SimpleNamespace(completed=True, errors=[], payload={
             "status": "READY", "requires_live_web": False, "retrieval_reason": "原始源码调查",
             "excluded_events": [], "context_references": [], "missing_inputs": [],

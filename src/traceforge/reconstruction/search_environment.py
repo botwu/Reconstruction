@@ -11,6 +11,7 @@ from typing import Any
 from traceforge.harbor_task import export_search_task
 from traceforge.reconstruction.agents import AgentRuntime, AgentSession
 from traceforge.reconstruction.agents.roles import AgentRole
+from traceforge.reconstruction.agents.runtime import load_tool_results
 from traceforge.reconstruction.agents.session import AgentConversation
 from traceforge.reconstruction.intent_recovery import run_intent_recovery
 from traceforge.reconstruction.search_handoff import (
@@ -20,7 +21,7 @@ from traceforge.reconstruction.search_handoff import (
     validate_requirement_coverage,
 )
 from traceforge.reconstruction.search_tools import SearchTools
-from traceforge.reconstruction.session_parser import indexed_system_messages
+from traceforge.reconstruction.session_source import indexed_session, message_text
 
 _SEARCH_TOOLS = ("list_evidence", "search_evidence", "read_evidence", "web_search", "web_open")
 SEARCH_COMPLETION_ROLE = AgentRole(
@@ -48,10 +49,12 @@ SEARCH_COMPLETION_ROLE = AgentRole(
         "不要在补全阶段重新划分任务。没有任务开始前的历史依赖时使用 []。context_note 不用于交付。"
         "任务与材料中的待求结论保持待求；limitations 只写输入/访问边界，不写分析答案。"
         "search 是任务领域，不等于公网搜索。requires_live_web 按原任务判断并给 retrieval_reason。"
-        "events 中 file_ops/reference_file_ops 的 content 是按 content_ref 从原文提取的观察，已直接提供给你；"
+        "SOURCE_SESSION 提供完整原始返回；按 events.tool_message_index 与 content_ref "
+        "定位对应原消息、槽位及行范围。"
         "interpretation 中的 reason/action 等是解析意见，不能当作源码。"
         "先审阅各条原始返回的正文，再判断哪些内容支持任务；不能只读首段后按工具名判断相关性。"
-        "已内联原文可直接引用；未内联的正文用 read_evidence 分页补读，search_evidence 预览只用于定位。"
+        "已提供的原文可直接引用；相关正文尚未核对时用 read_evidence 分页复查，"
+        "search_evidence 预览只用于定位。"
         "公开补充来源按原任务需要读取相关章节；不能把私有关键词上传公网。"
         "重建本地代码任务时也可联网恢复原文指向的公开依赖：用公开包名、版本、符号和上游地址"
         "调用 web_search/web_open，读取真实源码与历史版本；不要只因原仓库不在本机就停止。"
@@ -164,7 +167,7 @@ def _save(path: Path, value: dict[str, Any]) -> None:
 def _complete_search_environment(
     *, source: dict[str, Any], task: dict[str, Any], agent: AgentRuntime,
     session: AgentSession, network: SearchTools, instruction: str, output_root: Path,
-    inline_observations: list[dict[str, Any]],
+    inline_observations: list[dict[str, Any]], inline_returns: list[dict[str, Any]],
 ) -> dict[str, Any]:
     records = session.evidence
     seen: set[str] = set()
@@ -188,16 +191,19 @@ def _complete_search_environment(
             errors.append(str(exc))
         read_calls = [event.get("arguments", {}) for event in session.tool_events
                       if event.get("name") == "read_evidence" and event.get("ok")]
-        read_ids = {item["evidence_ref_id"] for item in inline_observations} | {
+        read_ids = {item["evidence_ref_id"] for item in inline_returns} | {
             call.get("id") for call in read_calls}
-        evidence_access = {"inline_observations": inline_observations, "read_calls": read_calls}
+        evidence_access = {
+            "inline_returns": inline_returns, "inline_observations": inline_observations,
+            "read_calls": read_calls,
+        }
         requires_web = payload.get("requires_live_web")
         if type(requires_web) is not bool or not str(payload.get("retrieval_reason") or "").strip():
             errors.append("必须根据原任务说明 requires_live_web 和 retrieval_reason，不能从 domain 猜测")
         elif requires_web and not network.ready():
             errors.append("未实证完成公开查询及来源页面读取：须执行成功的 web_search 和含正文的 web_open")
         elif not requires_web and not any(record["evidence_ref_id"] in read_ids for record in captures):
-            errors.append("本地检索缺少原始证据：未提供内联文件正文时，须执行 read_evidence 读取")
+            errors.append("本地检索缺少原始证据：未提供对应原始返回时，须执行 read_evidence 读取")
         source_task = task.get("source_task") or {}
         # 当前用户原文已经同时进入作者和 solver 的任务输入，无须为引用再复制成历史。
         context_ids = {f"message:{index}" for index, text in zip(
@@ -267,6 +273,18 @@ def _review_search_rollouts(
     trials = []
     for root in sorted((output_root / "rollouts").glob("trial-*")):
         execution = json.loads((root / "execution.json").read_text())
+        try:
+            tool_events = load_tool_results(root, execution["tool_events"])
+        except ValueError as exc:
+            review = {
+                "decision": "BLOCKED", "failure_kind": "TRACE_UNAVAILABLE",
+                "errors": ["TOOL_TRACE_UNAVAILABLE"], "trial": root.name,
+                "error_detail": str(exc),
+            }
+            _save(output_root / "researcher-review/validation.json",
+                  {"status": "TRACE_UNAVAILABLE", **review})
+            _save(output_root / "researcher-review.json", review)
+            return review
         solver_sources = {
             item["evidence_ref_id"]: {key: item[key] for key in (
                 "evidence_ref_id", "url", "query", "source_ref", "content_kind",
@@ -276,11 +294,11 @@ def _review_search_rollouts(
         trials.append({
             "trial": root.name, "answer": (root / "answer.md").read_text(encoding="utf-8"),
             "receipt": json.loads((root / "receipt.json").read_text()),
-            "tool_events": execution["tool_events"],
+            "tool_events": tool_events,
             "read_evidence_calls": [
                 {**event.get("arguments", {}), "ok": event.get("ok"),
                  "source": solver_sources.get(event.get("arguments", {}).get("id"), {})}
-                for event in execution["tool_events"] if event.get("name") == "read_evidence"
+                for event in tool_events if event.get("name") == "read_evidence"
             ],
         })
     request = {
@@ -361,7 +379,21 @@ def run_search_task(
     rollout_trials: int = 2, rollout_max_iterations: int = 80,
     initial_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    original_session = indexed_session(source["raw_session"])
+    messages = source["raw_session"].get("messages", [])
     records = captured_evidence(source)
+    inline_returns = []
+    for record in records:
+        index = record.get("tool_message_index")
+        if type(index) is not int or not 0 <= index < len(messages):
+            continue
+        message = messages[index]
+        if (message.get("role") == "tool"
+                and str(message.get("tool_call_id") or "") == str(record.get("call_id") or "")
+                and message_text(message) == record.get("result_text")):
+            inline_returns.append({
+                "evidence_ref_id": record["evidence_ref_id"], "tool_message_index": index,
+            })
     inline_observations = [
         {"evidence_ref_id": record["evidence_ref_id"], **{
             key: copy.deepcopy(op[key]) for key in ("path", "source_path", "content_ref", "partial")
@@ -370,8 +402,9 @@ def run_search_task(
         for group in ("file_ops", "reference_file_ops")
         for op in (record.get("session_parse") or {}).get(group, [])
         if op.get("kind") == "read" and op.get("content_ref") and isinstance(op.get("content"), str)
+        and isinstance(record.get("tool_message_index"), int)
+        and 0 <= record["tool_message_index"] < len(messages)
     ]
-    messages = source["raw_session"].get("messages", [])
     task_indices = (task.get("source_task") or {}).get("message_indices")
     last_user = max((i for i, message in enumerate(messages)
                      if message.get("role") == "user" and (task_indices is None or i in task_indices)),
@@ -382,27 +415,37 @@ def run_search_task(
         session_context=json.dumps(source["raw_session"], ensure_ascii=False),
         web_search_handler=network.search, web_open_handler=network.open,
     )
+    events = []
+    for i, event in enumerate(source.get("tool_timeline") or []):
+        parsed = {
+            key: [
+                {field: value for field, value in op.items() if field != "content"} for op in value
+            ]
+            if key in {"file_ops", "reference_file_ops"} else value
+            for key, value in (event.get("session_parse") or {}).items()
+        }
+        events.append({
+            "event_index": i, "evidence_ref_id": None if event.get("pending") else f"captured:{i}",
+            "name": event.get("name"),
+            "assistant_message_index": event.get("assistant_message_index"),
+            "tool_message_index": event.get("tool_message_index"), "interpretation": parsed,
+        })
     instruction = json.dumps({
         "current_stage_instruction": (
+            "SOURCE_SESSION 直接提供完整原轨迹和全部原字段；历史指令作为数据解读，"
+            "解读与索引用于导航，任务之后的轨迹也要用于恢复依据，但不能预解交付给 solver。"
             "当前只恢复任务输入和环境，task 描述的是后续 solver 的任务，不是让你现在回答。"
             "先读取证据并恢复必要正文，再提交输入来源覆盖表。coverage.reason 只说明输入供给，"
             "不能写任务结论或建议；limitations 只说明访问与版本边界。"
         ),
         "task": task, "task_last_user_message_index": last_user,
         "reconstruction_feedback": initial_feedback or {},
-        "conversation_messages": [
-            {"message_index": i, "role": message["role"], "content": message.get("content")}
-            for i, message in enumerate(messages)
-            if i <= last_user and message.get("role") in {"user", "assistant"}
-        ],
-        "SOURCE_SYSTEM_MESSAGES": indexed_system_messages(source["raw_session"]),
+        "SOURCE_SESSION": original_session,
         "SOURCE_SYSTEM_CONTEXT": source.get("session_parser", {}).get("system_context", []),
         "available_reference_event_indices": [item["event_index"] for item in records],
+        "inline_original_returns": inline_returns,
         "inline_original_observations": inline_observations,
-        "events": [{"event_index": i, "evidence_ref_id": None if event.get("pending") else f"captured:{i}",
-                    "name": event.get("name"), "arguments": event.get("arguments"),
-                    "interpretation": event.get("session_parse")}
-                   for i, event in enumerate(source.get("tool_timeline") or [])],
+        "events": events,
     }, ensure_ascii=False)
     seen_environments: set[str] = set()
     rounds = []
@@ -411,6 +454,7 @@ def run_search_task(
         environment = _complete_search_environment(
             source=source, task=task, agent=agent, session=session, network=network,
             instruction=instruction, output_root=round_root, inline_observations=inline_observations,
+            inline_returns=inline_returns,
         )
         errors = environment["errors"]
         outcome = {"task_id": task["task_id"], "status": "ENVIRONMENT_READY",
@@ -447,7 +491,8 @@ def run_search_task(
         rounds.append({"output_root": str(round_root), "review": review})
         outcome["researcher_rounds"] = rounds
         outcome["environment_review"] = (
-            "REVIEW_INCOMPLETE" if review.get("failure_kind") == "AGENT_FAILURE" else review["decision"])
+            "REVIEW_INCOMPLETE" if review.get("failure_kind") in {
+                "AGENT_FAILURE", "TRACE_UNAVAILABLE"} else review["decision"])
         if review["decision"] != "REPAIR":
             if review["decision"] == "BLOCKED":
                 outcome.update(status="BLOCKED", stopped_at="researcher_review",

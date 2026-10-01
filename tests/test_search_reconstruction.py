@@ -292,9 +292,12 @@ def test_unknown_reference_feedback_keeps_context_and_stops_without_progress(tmp
         prompt = json.loads(kwargs["instruction"])
         assert prompt["available_reference_event_indices"] == [0]
         if len(sessions) == 1:
-            assert prompt["conversation_messages"] == [
-                {"message_index": 0, "role": "assistant", "content": "选题1：原题目"},
-                {"message_index": 1, "role": "user", "content": "选题1投哪个口"},
+            assert prompt["SOURCE_SESSION"]["messages"] == [
+                {"message_index": 0, "message": {"role": "assistant", "content": "选题1：原题目"}},
+                {"message_index": 1, "message": {"role": "user", "content": "选题1投哪个口"}},
+                {"message_index": 2,
+         "message": {"role": "assistant", "content": "不能交给 solver 的原答案"}},
+                {"message_index": 3, "message": {"role": "user", "content": "另一个独立任务"}},
             ]
             assert prompt["task_last_user_message_index"] == 1
         if len(sessions) == 2:

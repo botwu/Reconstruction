@@ -715,6 +715,48 @@ def write_agent_trace(
     return path
 
 
+def load_tool_results(
+    output_root: str | Path, tool_events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """将当前执行摘要与完整工具回执逐条绑定，不从预览猜测实际读取内容。"""
+    if not tool_events:
+        return []
+    path = Path(output_root) / "private/tool_events.jsonl"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"工具完整回执不可读：{path}（{exc}）") from exc
+    finished = []
+    for line_number, line in enumerate(lines, 1):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"工具完整回执 JSON 损坏：{path}:{line_number}") from exc
+        if not isinstance(record, dict):
+            raise ValueError(f"工具完整回执不是对象：{path}:{line_number}")
+        if record.get("status") == "FINISHED":
+            finished.append(record)
+    if len(finished) != len(tool_events):
+        raise ValueError(
+            f"工具完整回执数量不匹配：{path}，执行 {len(tool_events)} 条，完成 {len(finished)} 条")
+    keys = ("tool_call_id", "name", "arguments", "result_sha256", "ok")
+    results = []
+    for index, (event, record) in enumerate(zip(tool_events, finished, strict=True), 1):
+        if (not isinstance(event, dict)
+                or any(key not in event or key not in record for key in keys)):
+            raise ValueError(f"工具完整回执缺少执行绑定字段：{path}，第 {index} 条")
+        result = record.get("result")
+        if not isinstance(result, str):
+            raise ValueError(f"工具完整回执没有原始正文：{path}，第 {index} 条")
+        if hashlib.sha256(result.encode("utf-8")).hexdigest() != record["result_sha256"]:
+            raise ValueError(f"工具完整回执正文哈希不匹配：{path}，第 {index} 条")
+        if any(event[key] != record[key] for key in keys):
+            raise ValueError(
+                f"工具完整回执与当前执行不匹配：{path}，第 {index} 条 {event['tool_call_id']}")
+        results.append({**copy.deepcopy(event), "result": result})
+    return results
+
+
 def _stage_replay_tree(workdir: Path, session: AgentSession) -> None:
     """Copy replayed files into Hermes cwd without inventing new paths."""
 

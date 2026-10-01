@@ -1,6 +1,7 @@
 """原始 session 的消息、工具索引与来源持久化。"""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -11,6 +12,25 @@ from traceforge.reconstruction.env_replay import normalize_file_ops
 
 class ReconstructionSourceError(ValueError):
     """无法从原始 session 构造重建源。"""
+
+
+def indexed_session(raw_session: dict[str, Any]) -> dict[str, Any]:
+    """完整原文主动交付给重建者，外层索引不覆盖原消息中的同名字段。"""
+    if not isinstance(raw_session, dict):
+        raise ReconstructionSourceError("原始 session 必须是对象")
+    messages = raw_session.get("messages", [])
+    if not isinstance(messages, list):
+        raise ReconstructionSourceError("原始 session.messages 必须是列表")
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            raise ReconstructionSourceError(f"原始 session.messages[{index}] 必须是对象")
+    return {
+        "session_fields": copy.deepcopy({
+            key: value for key, value in raw_session.items() if key != "messages"
+        }),
+        "messages": [{"message_index": index, "message": copy.deepcopy(message)}
+                     for index, message in enumerate(messages)],
+    }
 
 
 def message_text(message: dict[str, Any]) -> str:
