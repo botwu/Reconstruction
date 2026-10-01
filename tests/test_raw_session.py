@@ -259,3 +259,17 @@ def test_segmentation_receives_prior_work_and_complete_user_requirements(tmp_pat
     assert payload["messages"][4]["content"] in agent.instruction
     assert '"message_index": 4' in agent.instruction
     assert "context" in agent.instruction
+
+def test_segmentation_api_failure_is_not_a_task_boundary_review(tmp_path: Path) -> None:
+    class FailedAgent:
+        def run(self, **kwargs):
+            return FakeResult({}, completed=False, errors=["MODEL_API_FAILED"],
+                              final_text="HTTP 400: unsupported protocol")
+
+    with pytest.raises(RawSessionSourceError, match="MODEL_API_FAILED"):
+        build_raw_session_source(raw_line=raw_session(), line_number=1, source_ref="fixture",
+                                 agent=FailedAgent(), output_root=tmp_path)
+    receipt = json.loads((tmp_path / "session_task_segmentation.json").read_text())
+    assert receipt["status"] == "SESSION_TASK_AGENT_FAILED"
+    assert receipt["errors"] == ["MODEL_API_FAILED"]
+    assert receipt["model_response_text"] == "HTTP 400: unsupported protocol"

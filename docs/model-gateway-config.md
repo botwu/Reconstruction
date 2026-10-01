@@ -1,6 +1,6 @@
 # 模型网关配置
 
-重建与 AgentRx 的模型调用支持两种后端：默认的 `TOKENHUB_KEY` 环境变量加 Claude Messages API，以及 `config.yaml` 中的 NewAPI channel。配置文件只在进程内读取，密钥不会写入调用回执、响应对象、日志或其他 artifact；`config.yaml` 已被 gitignore，不能提交到仓库。
+重建与 AgentRx 的模型调用支持两种后端：默认的 `TOKENHUB_KEY` 环境变量加 Claude Messages API，以及 `config.yaml` 中的 NewAPI channel。配置文件只在进程内读取，部署密钥不会写入调用回执、响应对象、错误诊断或其他 artifact；`config.yaml` 已被 gitignore，不能提交到仓库。
 
 Gemini 测试示例：
 
@@ -22,7 +22,31 @@ gemini:
   {"_type":"newapi_channel_conn","key":"<secret>","url":"https://tokenhub.sensetime.com"}
 ```
 
-如果网关返回 HTTP 503，应先检查 channel 路由、模型名和服务状态；客户端会保留错误码但不会把响应正文（可能包含敏感信息）写入 artifact。
+如果网关返回 HTTP 503，应先检查 channel 路由、模型名和服务状态；客户端保留 HTTP 状态及服务返回的 error.code/message/param，限制诊断长度并移除本次部署密钥；不复制整段响应正文。真实调试中的模型名错误、输出预算超限因此能直接定位。
+
+## Astra 的实际接入
+
+2026-10-01 的 TokenHub 实测可用 ID 为 `gpt-6-astra/azure/sfa`，响应报告
+`gpt-6-astra-2026-09-03`。简称 `gpt6-astra` 没有可用路由。仅更换模型名不足以完成接入：
+带工具和推理参数的 Agent 调用需要 Responses 协议；现有 Hermes 已有该协议，无需另写工具循环。
+
+```yaml
+gpt:
+  {"_type":"newapi_channel_conn","key":"<secret>","url":"https://tokenhub.sensetime.com","agent_api_mode":"codex_responses"}
+roles:
+  {"session_parser":{"channel":"gpt","model":"gpt-6-astra/azure/sfa"},"reconstruction":{"channel":"gpt","model":"gpt-6-astra/azure/sfa"},"verifier":{"channel":"gpt","model":"gpt-6-astra/azure/sfa"}}
+```
+
+`agent_api_mode` 只指定 Hermes Agent 的协议；不带工具的 session_parser 继续使用
+NewAPI JSON 请求。未配置时沿用既有通道协议。服务实测接受的最大输出预算是
+128000，131072 会被拒绝；输入上下文上限是另一项能力，不能从输出预算推导。
+已真实处理约 6.46 万和 18.99 万输入 token 的完整 session，尚未验证 Astra 的 1M 输入。
+
+HTTP 400 等运行失败记录为 `SESSION_TASK_AGENT_FAILED`，保留实际错误；
+只有 Agent 正常返回但任务覆盖/引用不合约时才记录 `SESSION_TASK_REVIEW`。
+协议探针成功不等于重建或 rollout 验收成功，具体实跑见[当前状态](current-status.md)。
+
+## Session 解析
 
 `reconstruct raw-run` 在 Replay 前调用独立的 `session_parser`。
 默认 channel 为 `deepseek`，模型为 `bailian/deepseek-v4-flash-0731`；使用配置文件的
@@ -52,7 +76,7 @@ Intent 和 Completion 的提示直接携带这份解读，并可按索引读取�
 以原文为准。解读可能遗漏或弱化约束，不能成为唯一信息入口；历史摘要和用户偏好也保留为参考。
 调用与返回的消息编号直接沿用时间线中的结构化配对，不让模型在说明文字中重复抄写。
 同一待返回调用按 ID 配对一次；后续无法匹配的返回单独保留，不覆盖早先结果，也不按 ID 相似度猜配对。
-`max_tokens=65536` 是输出预算，和输入窗口不同；超出服务实际限制会明确失败，不静默截断。
+`max_tokens=128000` 是输出预算，和输入窗口不同；超出服务实际限制会明确失败，不静默截断。
 待返回调用的参数保留用于理解意图，但不能生成初始文件；没有返回只表示执行结果未知。
 
 解析阶段只接入本地输出契约和原始引用校验：模型返回结构不合法、引用不存在或越界时，

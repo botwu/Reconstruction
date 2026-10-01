@@ -115,3 +115,20 @@ def test_timeout_is_normalized_to_gateway_error():
     with pytest.raises(ModelGatewayError, match="超时") as exc_info:
         client.complete(ModelRequest("r", "model", "system", "prompt", "schema"))
     assert exc_info.value.code == "NETWORK_TIMEOUT"
+
+
+@pytest.mark.parametrize("status", [400, 503])
+def test_newapi_http_error_preserves_server_reason_without_credentials(status):
+    client = NewAPIClient(
+        api_key="deployment-secret", base_url="https://gateway.example", max_retries=0,
+        transport=lambda *_: (status, json.dumps({"error": {
+            "code": "invalid_value",
+            "message": "max_tokens supports at most 128000; provided 131072; deployment-secret",
+        }}).encode()),
+    )
+    with pytest.raises(ModelGatewayError) as error:
+        client.complete(_request())
+    assert "128000" in str(error.value)
+    assert "invalid_value" in str(error.value)
+    assert "deployment-secret" not in str(error.value)
+    assert error.value.code == f"HTTP_{status}"

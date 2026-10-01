@@ -276,13 +276,22 @@ class NewAPIClient:
                     raise
                 time.sleep(self.retry_backoff_seconds * (2**attempt))
                 continue
-            if status in {408, 429} or status >= 500:
-                if attempt < self.max_retries:
+            if status < 200 or status >= 300:
+                retryable = status in {408, 429} or status >= 500
+                if retryable and attempt < self.max_retries:
                     time.sleep(self.retry_backoff_seconds * (2**attempt))
                     continue
-                raise ModelGatewayError("模型服务暂时不可用", code=f"HTTP_{status}", retryable=True)
-            if status < 200 or status >= 300:
-                raise ModelGatewayError("模型请求被拒绝", code=f"HTTP_{status}")
+                message = "模型服务暂时不可用" if retryable else "模型请求被拒绝"
+                try:
+                    error = json.loads(raw).get("error")
+                except (ValueError, AttributeError):
+                    error = None
+                if isinstance(error, dict):
+                    detail = "; ".join(
+                        str(error[key]) for key in ("code", "message", "param") if error.get(key)
+                    ).replace(self._api_key, "[部署密钥已省略]")
+                    message += "：" + detail[:1200]
+                raise ModelGatewayError(message, code=f"HTTP_{status}", retryable=retryable)
             try:
                 payload = json.loads(raw)
                 choices = payload.get("choices", [])

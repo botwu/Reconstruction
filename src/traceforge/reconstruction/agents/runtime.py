@@ -34,6 +34,7 @@ from traceforge.reconstruction.agents.session import (
 )
 from traceforge.reconstruction.model_gateway import (
     ModelGatewayError,
+    iter_config_items,
     parse_json_object,
 )
 from traceforge.trajectory.privacy import omit_private_reasoning
@@ -128,6 +129,7 @@ class HermesNativeRuntime:
         api_key: str,
         model_name: str,
         provider: str = "anthropic",
+        api_mode: str | None = None,
     ) -> None:
         if not model_name.strip():
             raise HermesUnavailableError("Hermes Agent 必须配置 model")
@@ -142,6 +144,13 @@ class HermesNativeRuntime:
         self._api_key = api_key
         self.model_name = model_name
         self.provider = provider
+        self.api_mode = api_mode or (
+            "anthropic_messages" if provider == "anthropic" else "chat_completions"
+        )
+        if self.api_mode not in {"anthropic_messages", "chat_completions", "codex_responses"}:
+            raise HermesUnavailableError(f"不支持的 Agent API 协议：{self.api_mode}")
+        if (provider == "anthropic") != (self.api_mode == "anthropic_messages"):
+            raise HermesUnavailableError("Agent API 协议与 Anthropic provider 不一致")
 
     def run(
         self,
@@ -208,11 +217,7 @@ class HermesNativeRuntime:
                     api_key=self._api_key,
                     # gpt 等配置通道名不是 Hermes provider；兼容 API 使用其原生 custom 路由。
                     provider="anthropic" if self.provider == "anthropic" else "custom",
-                    api_mode=(
-                        "anthropic_messages"
-                        if self.provider == "anthropic"
-                        else "chat_completions"
-                    ),
+                    api_mode=self.api_mode,
                     model=self.model_name,
                     # Reconstruction proxy owns tools. Native file/terminal bypass checks.
                     enabled_toolsets=[],
@@ -267,6 +272,12 @@ class HermesNativeRuntime:
                         if attempt:
                             turn["final_response"] = final_text
                             turn["response_sha256"] = hashlib.sha256(final_text.encode()).hexdigest()
+                        if raw.get("error") and not raw.get("completed"):
+                            detail = str(raw["error"]).replace(self._api_key, "[credential removed]")[:2000]
+                            turn["error_detail"] = detail
+                            final_text = final_text or detail
+                            errors.append(classify_hermes_failure(final_text) or "MODEL_API_FAILED")
+                            break
                         infra = classify_hermes_failure(final_text)
                         if infra:
                             errors.append(infra)
@@ -350,6 +361,7 @@ def build_hermes_runtime(
     base_url: str | None = None,
     api_key: str | None = None,
     provider: str | None = None,
+    api_mode: str | None = None,
     hermes_home: str | Path | None = None,
 ) -> HermesNativeRuntime:
     """从 config channel 取出连接信息，把模型配进 Hermes Agent。"""
@@ -371,12 +383,15 @@ def build_hermes_runtime(
         if config_path is None:
             raise HermesUnavailableError("必须提供 config.yaml，以便给 Hermes Agent 配置模型")
         url, key = load_channel_connection(config_path, channel)
+        settings = dict(iter_config_items(config_path)).get(channel, {})
+        api_mode = api_mode or settings.get("agent_api_mode")
     return HermesNativeRuntime(
         factory=resolved_factory,
         base_url=url,
         api_key=key,
         model_name=model_name,
         provider=provider or provider_for_channel(channel, model_name),
+        api_mode=api_mode,
     )
 
 

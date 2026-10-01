@@ -258,7 +258,7 @@ def test_pending_patch_is_visible_for_semantics_but_never_materialized(tmp_path:
     model = _Model(data)
     parsed = parse_session_tools(source=source, model=model, output_root=tmp_path)
     assert patch in model.request.prompt
-    assert model.request.max_tokens == 131072
+    assert model.request.max_tokens == 128000
     assert parsed["tool_timeline"][2]["session_parse"]["file_ops"] == []
     assert source["tool_timeline"][2]["arguments"] == patch
 

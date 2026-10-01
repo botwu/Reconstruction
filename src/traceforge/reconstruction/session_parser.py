@@ -566,8 +566,8 @@ def parse_session_tools(
     }
     request = ModelRequest(
         request_id="session-parser", model=model_name, system=PARSER_SYSTEM,
-        # 实测该模型的推理与正文共用输出预算，64K 会在仅输出数个事件时耗尽。
-        prompt=prompt, response_schema=PARSER_SCHEMA, max_tokens=131072, timeout_seconds=900,
+        # 推理与正文共用预算；TokenHub Astra 的实测上限是十进制 128000，不能用 128 * 1024。
+        prompt=prompt, response_schema=PARSER_SCHEMA, max_tokens=128000, timeout_seconds=900,
     )
 
     def validate(value: dict[str, Any]) -> None:

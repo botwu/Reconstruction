@@ -260,10 +260,10 @@ def build_raw_session_source(
         )
     except (
         Exception
-    ) as exc:  # 运行时异常持久化为 review，不能静默转换为任务
+    ) as exc:  # 运行失败不能误记为原始任务的边界问题
         receipt = {
             "schema_version": SEGMENTATION_SCHEMA,
-            "status": "SESSION_TASK_REVIEW",
+            "status": "SESSION_TASK_AGENT_FAILED",
             "errors": ["AGENT_EXCEPTION", str(exc)],
             "line_number": line_number,
             "line_sha256": line_hash,
@@ -272,11 +272,15 @@ def build_raw_session_source(
         _persist(root, "session_task_segmentation.json", receipt)
         raise RawSessionSourceError("session task 分组 Agent 异常") from exc
     model_payload, agent_errors, completed, final_text = _result_payload(result)
-    task_groups, context_ids, relations, errors = _parse_segmentation(
-        model_payload, spans=spans, span_map=span_map
-    )
-    errors = agent_errors + errors
-    status = "READY" if completed and not errors else "SESSION_TASK_REVIEW"
+    if agent_errors or not completed:
+        task_groups, context_ids, relations = [], [], []
+        errors = agent_errors or ["AGENT_INCOMPLETE"]
+        status = "SESSION_TASK_AGENT_FAILED"
+    else:
+        task_groups, context_ids, relations, errors = _parse_segmentation(
+            model_payload, spans=spans, span_map=span_map
+        )
+        status = "SESSION_TASK_REVIEW" if errors else "READY"
     receipt = {
         "schema_version": SEGMENTATION_SCHEMA,
         "status": status,
@@ -301,6 +305,11 @@ def build_raw_session_source(
         "model_response_text": final_text,
     }
     _persist(root, "session_task_segmentation.json", receipt)
+    if status == "SESSION_TASK_AGENT_FAILED":
+        raise RawSessionSourceError(
+            "任务分组 Agent 运行失败：" + ", ".join(errors)
+            + f"；详情见 {root / 'session_task_segmentation.json'}"
+        )
     if status != "READY":
         raise RawSessionSourceError("原始 session 任务边界需要人工复核")
     source_tasks: list[dict[str, Any]] = []

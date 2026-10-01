@@ -648,3 +648,41 @@ def test_failed_compression_must_not_discard_author_history(tmp_path: Path) -> N
     runtime.run(role=COMPLETION_ROLE, instruction="保留已有诊断继续修复",
                 session=AgentSession(), output_root=tmp_path / "out")
     assert compressor.abort_on_summary_failure is True
+
+def test_runtime_uses_configured_responses_transport(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text('gpt: {"key":"fixture","url":"https://tokenhub.example","agent_api_mode":"codex_responses"}')
+    factory = FakeHermesFactory()
+    runtime = build_hermes_runtime(model_name="gpt-6-astra/azure/sfa", config_path=config,
+                                   channel="gpt", factory=factory)
+    result = runtime.run(role=INTENT_ROLE, instruction="解析", session=AgentSession(),
+                         output_root=tmp_path / "out")
+    assert result.completed
+    assert factory.last_kwargs["api_mode"] == "codex_responses"
+
+
+def test_runtime_rejects_unknown_transport_before_model_call(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text('gpt: {"key":"fixture","url":"https://tokenhub.example","agent_api_mode":"unsupported"}')
+    with pytest.raises(HermesUnavailableError, match="协议"):
+        build_hermes_runtime(model_name="gpt-6-astra/azure/sfa", config_path=config,
+                             channel="gpt", factory=FakeHermesFactory())
+
+
+def test_runtime_preserves_empty_response_api_failure(tmp_path: Path) -> None:
+    class FailedAgent:
+        def __init__(self, **kwargs):
+            pass
+
+        def run_conversation(self, *args, **kwargs):
+            return {"completed": False, "final_response": "",
+                    "error": "HTTP 400: Function tools with reasoning_effort unsupported",
+                    "messages": [], "api_calls": 1}
+
+    runtime = build_hermes_runtime(model_name="fixture", factory=FailedAgent,
+                                   base_url="https://example.test", api_key="fixture", provider="gpt")
+    result = runtime.run(role=INTENT_ROLE, instruction="解析", session=AgentSession(),
+                         output_root=tmp_path / "out")
+    assert result.errors == ["MODEL_API_FAILED"]
+    assert "HTTP 400" in result.final_text
+    assert not result.completed
