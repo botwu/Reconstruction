@@ -8,7 +8,7 @@ Gemini 测试示例：
 PYTHONPATH=src .venv/bin/python -m traceforge failure-analysis agentrx \
   --trajectory-json trajectory.json \
   --output agentrx.json \
-  --config /mnt/afs_toolcall/wujian1/Projects/workspace/RraceRconstruction/config.yaml \
+  --config /mnt/afs_toolcall/wujian1/Projects/workspace/TraceRconstruction/config.yaml \
   --channel gemini \
   --model-name gemini-2.5-pro
 ```
@@ -32,7 +32,7 @@ gemini:
 
 ```yaml
 gpt:
-  {"_type":"newapi_channel_conn","key":"<secret>","url":"https://tokenhub.sensetime.com","agent_api_mode":"codex_responses"}
+  {"_type":"newapi_channel_conn","key":"<secret>","url":"https://tokenhub.sensetime.com","agent_api_mode":"codex_responses","agent_api_max_retries":8}
 roles:
   {"session_parser":{"channel":"gpt","model":"gpt-6-astra/azure/sfa"},"reconstruction":{"channel":"gpt","model":"gpt-6-astra/azure/sfa"},"verifier":{"channel":"gpt","model":"gpt-6-astra/azure/sfa"}}
 ```
@@ -55,7 +55,7 @@ HTTP 400 等运行失败记录为 `SESSION_TASK_AGENT_FAILED`，保留实际错�
 Agent 负责，环境补全与验收沿用各自角色。
 
 `raw-run --domain search|terminal` 直接使用数据已有的领域；R01 指定 search，R04 指定
-terminal。解析请求携带既定 `domain_route`，输出契约 v1.6 不要求模型分类，模型也不能覆盖路由。
+terminal。解析请求携带既定 `domain_route`，当前输出契约不要求模型分类，模型也不能覆盖路由。
 
 解析产物位于 `session_parser/`。默认 DeepSeek 使用模型提供的 1M 上下文能力，
 每次送入完整原始 session，不做摘要或分组替代，也不按字段名删去原数据中的
@@ -106,3 +106,7 @@ Completion 的初次补全和修复轮均可通过 `read_session_message` / `rea
 这些参考不自动成为任务初态：文件写入仍引用初态证据，未返回补丁不作为已执行改动。
 
 参考来源及未采用的策略见 [参考管线接入说明](reference-pipeline-adoption.md)。
+
+通道可用 `agent_api_max_retries` 设置 Hermes 每次模型请求的总尝试数（含首次，正整数）；不配时保留其原生配置。Astra 大上下文实跑曾在默认3次、约2秒起始退避中耗尽预算，本轮设为8，复用原生 Retry-After 与指数退避。它不增加重建或solver轮数，也不重放已完成的工具；仍失败时保留服务错误。该设置不能保证上游配额或批量吞吐。
+
+上游限流和服务错误须与模型语义输出分开：Hermes 的真实失败字段会保留具体原因，token 限流记为 `MODEL_RATE_LIMIT`。search 复核因此停止时保留已有环境和回答，不追加虚假的格式诊断；不要同时启动大量共享同一通道的大上下文任务。

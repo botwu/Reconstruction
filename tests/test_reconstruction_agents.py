@@ -690,3 +690,37 @@ def test_runtime_preserves_empty_response_api_failure(tmp_path: Path, detail: st
     assert result.errors == [code]
     assert detail in result.final_text
     assert not result.completed
+
+
+@pytest.mark.parametrize("configured", [None, 8])
+def test_runtime_applies_configured_native_retry_budget(tmp_path: Path, configured) -> None:
+    config = tmp_path / "config.yaml"
+    settings = {"key": "fixture", "url": "https://tokenhub.example"}
+    if configured is not None:
+        settings["agent_api_max_retries"] = configured
+    config.write_text("gpt: " + json.dumps(settings))
+    agents = []
+    factory = FakeHermesFactory()
+
+    def create(**kwargs):
+        agent = factory(**kwargs)
+        agent._api_max_retries = 3
+        agents.append(agent)
+        return agent
+
+    runtime = build_hermes_runtime(model_name="fixture", config_path=config, channel="gpt", factory=create)
+    result = runtime.run(role=INTENT_ROLE, instruction="解析", session=AgentSession(),
+                         output_root=tmp_path / "out")
+    assert result.completed
+    assert len(agents) == 1
+    assert agents[0]._api_max_retries == (configured or 3)
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, "8"])
+def test_runtime_rejects_invalid_native_retry_budget(tmp_path: Path, invalid) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("gpt: " + json.dumps({"key": "fixture", "url": "https://tokenhub.example",
+                                         "agent_api_max_retries": invalid}))
+    with pytest.raises(HermesUnavailableError, match="重试"):
+        build_hermes_runtime(model_name="fixture", config_path=config, channel="gpt",
+                             factory=FakeHermesFactory())

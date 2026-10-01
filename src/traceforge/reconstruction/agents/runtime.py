@@ -130,6 +130,7 @@ class HermesNativeRuntime:
         model_name: str,
         provider: str = "anthropic",
         api_mode: str | None = None,
+        api_max_retries: int | None = None,
     ) -> None:
         if not model_name.strip():
             raise HermesUnavailableError("Hermes Agent 必须配置 model")
@@ -137,6 +138,9 @@ class HermesNativeRuntime:
             raise HermesUnavailableError("Hermes Agent 必须配置 api_key")
         if not base_url.strip():
             raise HermesUnavailableError("Hermes Agent 必须配置 base_url")
+        if api_max_retries is not None and (type(api_max_retries) is not int or api_max_retries < 1):
+            raise HermesUnavailableError("Agent API 重试预算必须为正整数")
+        self.api_max_retries = api_max_retries
         self.factory = factory
         self.base_url = (
             base_url if provider == "anthropic" else openai_sdk_base_url(base_url)
@@ -228,6 +232,9 @@ class HermesNativeRuntime:
                     skip_memory=True,
                     **({"max_tokens": role.max_output_tokens} if role.max_output_tokens is not None else {}),
                 )
+                if self.api_max_retries is not None:
+                    # 复用 Hermes 每次模型请求的退避，不重放已经完成的工具调用。
+                    agent._api_max_retries = self.api_max_retries
                 if self.provider == "anthropic":
                     apply_anthropic_messages_client(
                         agent, base_url=self.base_url, api_key=self._api_key
@@ -259,6 +266,7 @@ class HermesNativeRuntime:
                         turn = {
                             "messages": len(raw.get("messages") or []),
                             "api_calls": raw.get("api_calls"),
+                            "api_max_retries": getattr(agent, "_api_max_retries", None),
                             "completed": raw.get("completed"),
                             "model": self.model_name,
                             "provider": self.provider,
@@ -380,6 +388,7 @@ def build_hermes_runtime(
             "未找到 run_agent.AIAgent。重建只跑 Hermes Agent，不再使用 ChatModel 工具循环。\n"
             f"请安装本机 Hermes：{hermes_install_hint(home)}"
         )
+    settings: dict[str, Any] = {}
     if base_url and api_key:
         url, key = _messages_base_url(base_url), api_key
     else:
@@ -395,6 +404,7 @@ def build_hermes_runtime(
         model_name=model_name,
         provider=provider or provider_for_channel(channel, model_name),
         api_mode=api_mode,
+        api_max_retries=settings.get("agent_api_max_retries"),
     )
 
 
