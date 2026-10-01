@@ -320,13 +320,6 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
     ]
 
 
-def tool_catalog(names: tuple[str, ...]) -> str:
-    return "\n".join(
-        f"- {item['function']['name']}: {item['function']['description']}"
-        for item in tool_schemas(names)
-    )
-
-
 def execute_tool(name: str, arguments: Any, session: AgentSession) -> str:
     args = arguments if isinstance(arguments, dict) else {}
     if name == "list_user_texts":
@@ -745,10 +738,6 @@ def collect_workspace_writes(session: AgentSession) -> list[dict[str, Any]]:
             if isinstance(item.get("path"), str) and item["path"]
         }.values()
     )
-
-
-def workspace_file_count(session: AgentSession) -> int:
-    return len(_list_paths(session, "."))
 
 
 def workspace_tree_hash(root: Path) -> dict[str, str]:

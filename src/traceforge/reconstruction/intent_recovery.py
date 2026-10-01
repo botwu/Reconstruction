@@ -82,15 +82,6 @@ def _tool_names(source: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(names))
 
 
-def user_text_id(index: int) -> str: return f"user:{index}"
-def user_text_records(texts: list[str], *, message_indices: list[int] | None = None) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    for offset, text in enumerate(texts):
-        index = message_indices[offset] if message_indices and offset < len(message_indices) else offset
-        records.append({"id": user_text_id(index), "message_index": index, "text": text})
-    return records
-
-
 def deepen_requires_file(
     user_blob: str,
     file_binding_paths: list[str] | None,
