@@ -4,7 +4,7 @@
 
 ## 框架与返修方向
 
-目标是恢复原任务及可解的初始环境。重建者读完整轨迹，solver 只获得交付的任务、初态和工具；两者输入边界分别维护。初态以分段后该任务的第一条用户消息为起点，同任务中途答案只供重建参考；独立后续任务可以依赖起点之前的真实产物。
+目标是最大限度利用完整原始 session，恢复合理、忠实的任务及可解的对应环境。重建者首次补全请求直接获得所有消息和顶层字段，timeline 保留来源与时序；solver 获得交付的任务、初态和工具。两者输入边界分别维护。初态以分段后该任务的第一条用户消息为起点，同任务中途答案只供重建参考；独立后续任务可以依赖起点之前的真实产物。
 
 ```mermaid
 flowchart TD
@@ -40,7 +40,7 @@ flowchart TD
 | [cli.py](../src/traceforge/cli.py) | `reconstruct raw-run`、Harbor 计划/执行/读取入口 |
 | [raw_session.py](../src/traceforge/reconstruction/raw_session.py) | 原始 session 的 span 分段、任务覆盖与用户消息引用 |
 | [session_parser.py](../src/traceforge/reconstruction/session_parser.py) | 模型理解完整原文、系统消息和工具协议，校验解析结果的原始引用 |
-| [session_source.py](../src/traceforge/reconstruction/session_source.py) | 原始行读取、消息视图和调用/返回索引 |
+| [session_source.py](../src/traceforge/reconstruction/session_source.py) | 原始行读取、完整作者输入、消息视图和调用/返回索引 |
 | [pipeline.py](../src/traceforge/reconstruction/pipeline.py) | 共用编排：Intent、Replay/路由、候选、充分性、任务拟合、验证与执行门禁 |
 | [session_inventory.py](../src/traceforge/reconstruction/session_inventory.py) | 冻结输入和逐条 inventory 的完整性核对 |
 | [prepare_session_batch.py](../scripts/prepare_session_batch.py)、[run_session_batch.py](../scripts/run_session_batch.py) | 批次准备、顺序执行与最终清单检查 |
@@ -73,7 +73,7 @@ flowchart TD
 | 文件 | 职责 |
 | --- | --- |
 | [agents/roles.py](../src/traceforge/reconstruction/agents/roles.py) | 各 agent 的角色边界与工具权限 |
-| [agents/runtime.py](../src/traceforge/reconstruction/agents/runtime.py)、[agents/session.py](../src/traceforge/reconstruction/agents/session.py) | 角色运行、工作目录、路径转换和工具记录 |
+| [agents/runtime.py](../src/traceforge/reconstruction/agents/runtime.py)、[agents/session.py](../src/traceforge/reconstruction/agents/session.py) | 角色运行、工作目录、路径转换、完整工具记录与执行摘要绑定 |
 | [agents/sandbox.py](../src/traceforge/reconstruction/agents/sandbox.py) | AGS 沙盒绑定和文件操作 |
 | [verifier_recovery.py](../src/traceforge/reconstruction/verifier_recovery.py) | 从任务和环境生成验收候选 |
 | [verifier/synthesis.py](../src/traceforge/verifier/synthesis.py) | Verifier 候选契约、静态检查和迭代反馈 |
@@ -84,6 +84,8 @@ flowchart TD
 | [harbor_ags/response_receipt.py](../src/traceforge/harbor_ags/response_receipt.py) | 从真实最终 assistant 响应绑定 acceptance-report 收据 |
 
 `--sandbox` 用于 AGS 沙盒路径；不能把宿主机代理或离线替身称为沙盒执行。进程启动和运行完成也是两件事，应检查真实结果与清理收据。
+
+Verifier 被语义拒绝后按实际测试、oracle/mutation脚本、覆盖与响应契约比较修订；只改说明或prompt哈希会返回 VERIFIER_NO_PROGRESS 并保留原反例，不重复独立审查。有实际修改才继续审查，不增加固定迭代次数。
 
 Verifier 校准和真实解题复验分开。RED 的初态失败、oracle 成功、mutation 失败用于检验验证器；rollout 的实际任务行为与轨迹用于检验 solver。两者不能互相代替。显式启用人工回答核查时，可以先验证 FILE 行为并执行真实 rollout；未验证的 NON_FILE 义务仍保留 REVIEW，不能进入 SFT。有效 acceptance-report 收据只证明格式与轨迹绑定，不能代替内容验收。
 
