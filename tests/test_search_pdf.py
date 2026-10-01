@@ -36,6 +36,7 @@ def pdf_bytes(texts):
 def response(raw, url):
     stream = io.BytesIO(raw)
     stream.geturl = lambda: url
+    stream.headers = {}
     return stream
 
 
@@ -85,3 +86,41 @@ def test_pdf_redirect_is_checked_before_contacting_destination(monkeypatch):
             None, None, 302, "Found", {}, "http://127.0.0.1/private.pdf",
         )
     assert checked == ["http://127.0.0.1/private.pdf"]
+
+def test_pdf_without_filename_extension_uses_original_response(tmp_path, monkeypatch):
+    from traceforge.reconstruction import search_tools
+
+    raw = pdf_bytes(["Original paper body"])
+    url = "https://example.org/doi/pdf/article-id"
+    resolved = "https://files.example.org/paper.pdf"
+    monkeypatch.setattr(search_tools, "_public_url", lambda value: None)
+    monkeypatch.setattr(search_tools.urllib.request, "build_opener", lambda *args: SimpleNamespace(
+        open=lambda *args, **kwargs: response(raw, resolved),
+    ))
+    tools = SearchTools(tmp_path)
+    monkeypatch.setattr(tools, "_fetch_page", lambda value: pytest.fail("不能仅凭 URL 后缀选择抽取器"))
+    result = tools.open(url)
+    assert result["success"]
+    assert result["resolved_url"] == resolved
+    assert result["content_kind"] == "pdf_text"
+    assert "Original paper body" in result["text"]
+
+
+@pytest.mark.parametrize("direct_failure", [False, True])
+def test_html_or_unavailable_direct_response_keeps_configured_reader(tmp_path, monkeypatch, direct_failure):
+    from traceforge.reconstruction import search_tools
+
+    def open_response(*args, **kwargs):
+        if direct_failure:
+            raise OSError("原站直接访问不可用")
+        return response(b"<html>Dynamic content</html>", "https://example.org/article")
+
+    monkeypatch.setattr(search_tools, "_public_url", lambda value: None)
+    monkeypatch.setattr(search_tools.urllib.request, "build_opener",
+                        lambda *args: SimpleNamespace(open=open_response))
+    tools = SearchTools(tmp_path)
+    monkeypatch.setattr(tools, "_fetch_page", lambda url: {
+        "success": True, "url": url, "text": "真实网页正文", "provider": "configured_reader"})
+    result = tools.open("https://example.org/article")
+    assert result["text"] == "真实网页正文"
+    assert result["provider"] == "configured_reader"

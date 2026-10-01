@@ -76,6 +76,7 @@ def test_provider_results_keep_raw_snapshot_reference(tmp_path, monkeypatch, pro
         (body, "page-hash"),
     ])
     monkeypatch.setattr(tools, "_response", lambda request: next(responses))
+    monkeypatch.setattr(tools, "_fetch_pdf", lambda url: None)
     monkeypatch.setattr("traceforge.reconstruction.search_tools._public_url", lambda url: None)
     search = tools.search("原始任务关键词")
     page = tools.open(search["results"][0]["link"])
@@ -444,6 +445,7 @@ def test_github_source_preserves_bytes_and_rejects_corruption(tmp_path, monkeypa
         return {"text": json.dumps(api)}, "provider-response-sha"
 
     monkeypatch.setattr(tools, "_response", respond)
+    monkeypatch.setattr(tools, "_fetch_pdf", lambda url: None)
     monkeypatch.setattr("traceforge.reconstruction.search_tools._public_url", lambda value: None)
     result = tools.open(url)
     assert requests == ["https://api.github.com/repos/example/project/contents/src/module.py?ref=abc123"]

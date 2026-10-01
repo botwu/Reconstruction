@@ -28,7 +28,10 @@ def _public_url(url: str) -> None:
 class PublicSourceRedirect(urllib.request.HTTPRedirectHandler):
     """逐跳检查公开来源，避免重定向绕过原地址检查。"""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
+    def redirect_request(
+        self, req: urllib.request.Request, fp: Any, code: int,
+        msg: str, headers: Any, newurl: str,
+    ) -> urllib.request.Request | None:
         _public_url(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -92,9 +95,10 @@ class SearchTools:
 
     def _fetch(self, url: str) -> dict[str, Any]:
         _public_url(url)
+        pdf = self._fetch_pdf(url)
+        if pdf is not None:
+            return pdf
         parsed = urllib.parse.urlsplit(url)
-        if parsed.path.lower().endswith(".pdf"):
-            return self._fetch_pdf(url)
         parts = parsed.path.strip("/").split("/")
         if parsed.hostname == "raw.githubusercontent.com" and len(parts) >= 4:
             owner, repo, ref, *file_parts = parts
@@ -118,19 +122,30 @@ class SearchTools:
                 "content_kind": "source_file", "content_sha256": hashlib.sha256(raw).hexdigest(),
                 "git_blob_sha1": blob, "source_ref": urllib.parse.unquote(ref)}
 
-    def _fetch_pdf(self, url: str) -> dict[str, Any]:
-        # 已复现网页抓取服务丢弃中文正文；PDF 必须读取原文件的文本层。
-        from pypdf import PdfReader, __version__
-
+    def _fetch_pdf(self, url: str) -> dict[str, Any] | None:
+        # 文献链接可能无后缀或经重定向；依据实际响应识别，普通网页仍交给既定读取服务。
+        pdf_expected = urllib.parse.urlsplit(url).path.lower().endswith(".pdf")
         request = urllib.request.Request(url, headers={"User-Agent": "TraceForge/0.3"})
         opener = urllib.request.build_opener(PublicSourceRedirect())
-        with opener.open(request, timeout=90) as response:
-            raw = response.read(32_000_001)
-            resolved_url = response.geturl()
+        try:
+            with opener.open(request, timeout=90 if pdf_expected else 20) as response:
+                prefix = response.read(5)
+                pdf_expected = pdf_expected or "application/pdf" in response.headers.get("Content-Type", "").lower()
+                if prefix != b"%PDF-":
+                    if pdf_expected:
+                        raise ValueError("来源没有返回 PDF 原文件，不能把登录页或错误页面当正文")
+                    return None
+                pdf_expected = True
+                raw = prefix + response.read(32_000_001 - len(prefix))
+                resolved_url = response.geturl()
+        except OSError:
+            if pdf_expected:
+                raise
+            return None
         if len(raw) > 32_000_000:
             raise ValueError("PDF 超过 32 MB，未采用不完整下载")
-        if not raw.startswith(b"%PDF-"):
-            raise ValueError("来源没有返回 PDF 原文件，不能把登录页或错误页面当正文")
+        from pypdf import PdfReader, __version__
+
         digest = hashlib.sha256(raw).hexdigest()
         (self.root / f"{digest}.pdf").write_bytes(raw)
         reader = PdfReader(io.BytesIO(raw))
