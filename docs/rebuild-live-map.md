@@ -2,6 +2,37 @@
 
 本页只维护模块导航和契约。运行状态见 [当前状态](current-status.md)，逐阶段流程见 [原始会话流程](raw-session-pipeline.md)。开发约束以 [AGENTS.md](../AGENTS.md) 为准。
 
+## 框架与返修方向
+
+目标是恢复原任务及可解的初始环境。重建者读完整轨迹，solver 只获得交付的任务、初态和工具；两者输入边界分别维护。初态以分段后该任务的第一条用户消息为起点，同任务中途答案只供重建参考；独立后续任务可以依赖起点之前的真实产物。
+
+```mermaid
+flowchart TD
+  A[完整原始 session 与显式 domain] --> B[任务分段与全量工具语义解析]
+  B --> C[恢复原用户要求和对应任务起点]
+  C --> D{domain}
+  D -->|search| E[恢复历史与证据语料\n沿原线索检索真实来源]
+  D -->|terminal| F[按读写时序回放初态\n补齐文件与真实依赖]
+  E --> G[检查交接与实际读取\n导出 Harbor 检索任务]
+  F --> H[执行入口与行为检查\n校准隐藏测试并导出 Harbor]
+  G --> I[真实 solver 与逐项结果复核]
+  H --> I
+  I -->|有实证的环境缺口| J[带具体来源或执行错误的返修]
+  J --> D
+  I -->|solver 错误或基础设施故障| K[保留失败归属\n不借此改写初态或原任务]
+```
+
+共享的是原文、来源契约和错误记录，不是同一套环境判定。search 的缺口是资料、版本、历史或检索能力；terminal 的缺口是初态文件、依赖、接口或运行行为。每次修改后重新执行受影响的检查；相同候选和同一诊断不重复生成。格式错误回到对应模型修正，服务拒绝需保留具体参数/模型原因，不能伪装成“语义不合格”。通道重试复用Hermes原有退避；恢复失败阶段时保留既有作者会话和产物，不重放已完成的阶段。
+
+研究者给出的 READY/COMPLETE 是阶段意见。环境恢复程度、Harbor 包可运行、solver 回答正确分别记录；当前未闭合的部分只以[真实运行状态](current-status.md)为准。
+
+## 参考依据与取舍
+
+- AgenticFoundry 的 researcher 在读完轨迹后持续编写、执行并修订原生任务包，值得借鉴的是保留研究状态与真实执行反馈。本项目恢复原任务，不引入其新题生成、难度与新颖性目标；本地参考目录保持只读。
+- [Harbor 官方任务结构](https://docs.harborframework.com/core-concepts/tasks/overview)明确分离 instruction、environment、solution 和 tests；沿用交付契约，导出成功与实际 trial 分别记录。
+- [SWE-smith](https://arxiv.org/abs/2504.21798)从真实代码库建立执行环境并通过测试构造任务。这里参考真实环境和执行证据的约束，不移植自动制造缺陷的流程。
+- [Open Deep Research 实现](https://github.com/huggingface/smolagents/blob/main/examples/open_deep_research/run.py)区分网页浏览与文件读取；本轮真实缺陷也要求将 PDF 从普通网页抓取路径分开。[pypdf 的提取边界](https://pypdf.readthedocs.io/en/stable/user/extract-text.html)说明文本层读取不包含 OCR 和视觉语义，因此交付保留空页与范围声明。
+
 ## 入口与编排
 
 | 文件 | 职责 |
@@ -62,4 +93,4 @@ Verifier 校准和真实解题复验分开。RED 的初态失败、oracle 成功
 - [Harbor/AGS 适配](harbor-ags-boundary-adapter.md)
 - [失败分析复用](failure-analysis-reuse.md)
 
-原始数据、凭据、运行产物不进入 Git。历史诊断路径和已知缺口只在 [当前状态](current-status.md) 维护，避免阅读地图混入过期单次运行记录。
+原始数据仅按 AGENTS.md 的两份 Git LFS 发布特例处理；凭据和运行产物不进入 Git。历史诊断路径和已知缺口只在 [当前状态](current-status.md) 维护，避免阅读地图混入过期单次运行记录。
