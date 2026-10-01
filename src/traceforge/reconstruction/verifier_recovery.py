@@ -176,6 +176,18 @@ def _pytest_red_ok(runs: list[dict[str, Any]], candidate: Any) -> bool:
     return all(all(status == "PASS" for status in statuses) for statuses in protective)
 
 
+def _verifier_behavior(payload: dict[str, Any]) -> dict[str, Any]:
+    """比较实际测试和脚本，说明文字或提示哈希变化不构成修订。"""
+    return {
+        **{key: payload.get(key) for key in (
+            "test_outputs_py", "missing_capability_tests", "protective_tests",
+            "obligation_coverage", "response_contract",
+        )},
+        **{key: [item.get("script") for item in payload.get(key, [])]
+           for key in ("oracle_solutions", "mutation_solutions")},
+    }
+
+
 def run_verifier_recovery(
     *,
     task: dict[str, Any],
@@ -361,11 +373,19 @@ def run_verifier_recovery(
             errors.append("SANDBOX_PYTEST_RED_REQUIRED")
     semantic_review = None
     if candidate is not None and not errors:
-        semantic_review = review_verifier_candidate(
-            task={**effective_task, "task_instruction": render_task_instruction(effective_task)},
-            workspace=workspace, candidate=candidate, agent=agent, output_root=root / "semantic-review",
-            manual_response_review=manual_response_review,
-        )
+        previous = (feedback or {}).get("previous_candidate")
+        rejected = (feedback or {}).get("semantic_review") or {}
+        if (rejected.get("status") == "REVISE" and isinstance(previous, dict)
+                and _verifier_behavior(payload) == _verifier_behavior(previous)):
+            semantic_review = {**rejected, "reused_rejection": True}
+            errors.append("VERIFIER_NO_PROGRESS")
+        else:
+            semantic_review = review_verifier_candidate(
+                task={**effective_task,
+                      "task_instruction": render_task_instruction(effective_task)},
+                workspace=workspace, candidate=candidate, agent=agent,
+                output_root=root / "semantic-review", manual_response_review=manual_response_review,
+            )
         errors.extend(semantic_review["errors"])
     blocking_errors = [item for item in errors if item != "AGENT_TEST_BYTES_NORMALIZED"]
     status = "READY" if candidate is not None and not blocking_errors else "REVIEW"

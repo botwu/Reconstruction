@@ -42,11 +42,17 @@ class _Agent:
                 "obligation_reviews": [
                     {"obligation_id": "o", "covered": not revise, "reason": "反馈编排单测审查替身"}]})
         self.calls.append(instruction)
+        payload = dict(PAYLOAD)
+        if self.intermediate_review and len(self.calls) >= 3:
+            payload["oracle_solutions"] = [
+                {**item, "script": item["script"] + " adjusted"}
+                for item in PAYLOAD["oracle_solutions"]
+            ]
         return AgentResult(
             role=role.name,
             backend="fake",
-            payload=dict(PAYLOAD),
-            final_text=json.dumps(PAYLOAD),
+            payload=payload,
+            final_text=json.dumps(payload),
             completed=True,
         )
 

@@ -96,3 +96,47 @@ def test_file_review_cannot_certify_unreviewed_response_obligation_mapping(tmp_p
     assert candidate is None
     assert result["status"] == "REVIEW"
     assert "VERIFIER_REVIEW_INVALID" in result["errors"]
+
+
+@pytest.mark.parametrize("changed_script,service_failed", [
+    (False, False), (True, False), (False, True),
+])
+def test_rejected_verifier_must_change_program_before_another_review(
+    tmp_path, changed_script, service_failed,
+):
+    import copy
+
+    runtime = ReviewRuntime("REVISE", covered=False)
+    first, _ = _run(tmp_path, runtime)
+    feedback = copy.deepcopy(first["feedback"])
+    if service_failed:
+        feedback["semantic_review"]["status"] = "AGENT_FAILED"
+    proposed = copy.deepcopy(feedback["previous_candidate"])
+    proposed["oracle_solutions"][0]["justification"] = "只更新说明不能修复测试"
+    if changed_script:
+        proposed["oracle_solutions"][0]["script"] = "echo changed"
+
+    class NextRuntime(ReviewRuntime):
+        def run(self, **kwargs):
+            if kwargs["role"].result_schema == "traceforge.verifier-semantic-review.v1":
+                return super().run(**kwargs)
+            self.calls.append((kwargs["role"], kwargs["session"], kwargs["instruction"]))
+            return AgentResult(
+                role=kwargs["role"].name, backend="fixture", completed=True, payload=proposed,
+            )
+
+    next_runtime = NextRuntime("REVISE", covered=False)
+    result, candidate = run_verifier_recovery(
+        task={"task_instruction": "Review input.py and write review.md",
+              "acceptance_obligations": [{"id": "output", "text": "Write a correct review"}],
+              "environment_bindings": [{
+                  "obligation_id": "output", "verifier_kind": "FILE", "output_paths": ["review.md"],
+              }]},
+        workspace_root=tmp_path / "workspace", agent=next_runtime,
+        output_root=tmp_path / "second", feedback=feedback, round_number=2,
+    )
+    assert candidate is None
+    no_progress = not changed_script and not service_failed
+    assert len(next_runtime.calls) == (1 if no_progress else 2)
+    assert ("VERIFIER_NO_PROGRESS" in result["errors"]) is no_progress
+    assert result["feedback"]["semantic_review"]["issues"][0]["counterexample"]
