@@ -79,8 +79,11 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
         raise ValueError("只有任务和必要上下文完整的检索初态才能导出 Harbor")
     tool_source = Path(__file__).parent / "reconstruction/search_tools.py"
     requires_web = environment.get("requires_live_web", True)
+    from importlib.metadata import version
+
+    pdf_dependencies = [f"{name}=={version(name)}" for name in ("pypdf", "fonttools")] if requires_web else []
     digest = hashlib.sha256(json.dumps({
-        "search_delivery_version": 4,
+        "search_delivery_version": 5, "pdf_dependencies": pdf_dependencies,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),
     }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
@@ -133,12 +136,15 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
         write_container_environment(root, separate_verifier=False)
         if requires_web:
             shutil.copyfile(tool_source, root / "environment/search_tools.py")
+            (root / "environment/requirements.txt").write_text("\n".join(pdf_dependencies) + "\n")
             (root / "environment/traceforge-search").write_text(
                 '#!/bin/sh\nexec python3 /opt/traceforge-environment/search_tools.py "$@"\n',
                 encoding="utf-8",
             )
             (root / "environment/setup.sh").write_text(
-                '#!/bin/sh\nset -eu\nchmod 755 /opt/traceforge-environment/traceforge-search\n'
+                '#!/bin/sh\nset -eu\n'
+                'python3 -m pip install --no-cache-dir -r /opt/traceforge-environment/requirements.txt\n'
+                'chmod 755 /opt/traceforge-environment/traceforge-search\n'
                 'ln -s /opt/traceforge-environment/traceforge-search /usr/local/bin/traceforge-search\n',
                 encoding="utf-8",
             )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import ipaddress
+import io
 import json
 import os
 import socket
@@ -22,6 +23,14 @@ def _public_url(url: str) -> None:
     addresses = socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
     if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
         raise ValueError("来源不能指向本机或私有网络")
+
+
+class PublicSourceRedirect(urllib.request.HTTPRedirectHandler):
+    """逐跳检查公开来源，避免重定向绕过原地址检查。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _public_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 class SearchTools:
@@ -84,6 +93,8 @@ class SearchTools:
     def _fetch(self, url: str) -> dict[str, Any]:
         _public_url(url)
         parsed = urllib.parse.urlsplit(url)
+        if parsed.path.lower().endswith(".pdf"):
+            return self._fetch_pdf(url)
         parts = parsed.path.strip("/").split("/")
         if parsed.hostname == "raw.githubusercontent.com" and len(parts) >= 4:
             owner, repo, ref, *file_parts = parts
@@ -106,6 +117,38 @@ class SearchTools:
         return {**page, "url": url, "resolved_url": api_url, "text": raw.decode("utf-8"),
                 "content_kind": "source_file", "content_sha256": hashlib.sha256(raw).hexdigest(),
                 "git_blob_sha1": blob, "source_ref": urllib.parse.unquote(ref)}
+
+    def _fetch_pdf(self, url: str) -> dict[str, Any]:
+        # 已复现网页抓取服务丢弃中文正文；PDF 必须读取原文件的文本层。
+        from pypdf import PdfReader, __version__
+
+        request = urllib.request.Request(url, headers={"User-Agent": "TraceForge/0.3"})
+        opener = urllib.request.build_opener(PublicSourceRedirect())
+        with opener.open(request, timeout=90) as response:
+            raw = response.read(32_000_001)
+            resolved_url = response.geturl()
+        if len(raw) > 32_000_000:
+            raise ValueError("PDF 超过 32 MB，未采用不完整下载")
+        if not raw.startswith(b"%PDF-"):
+            raise ValueError("来源没有返回 PDF 原文件，不能把登录页或错误页面当正文")
+        digest = hashlib.sha256(raw).hexdigest()
+        (self.root / f"{digest}.pdf").write_bytes(raw)
+        reader = PdfReader(io.BytesIO(raw))
+        pages = [page.extract_text() or "" for page in reader.pages]
+        if not any(text.strip() for text in pages):
+            raise ValueError("PDF 没有可读取的文本层，需要 OCR 或其他真实来源；未生成正文")
+        return {
+            "success": True, "url": url, "resolved_url": resolved_url,
+            "title": str((reader.metadata or {}).get("/Title") or ""),
+            "text": "\n\n".join(f"[PDF 第 {i + 1} 页]\n{text}" for i, text in enumerate(pages)),
+            "page_count": len(pages),
+            "empty_text_pages": [i + 1 for i, text in enumerate(pages) if not text.strip()],
+            "extraction_scope": "text_layer",
+            "limitations": ["仅提取 PDF 文本层；图片、图表布局与公式未通过视觉核对，空文本页未做 OCR。"],
+            "raw_sha256": digest, "provider": "direct_pdf", "extractor": f"pypdf/{__version__}",
+            "source_mode": "live_page", "content_kind": "pdf_text",
+            "retrieved_at": datetime.now(UTC).isoformat(),
+        }
 
     def _fetch_page(self, url: str) -> dict[str, Any]:
         if self._fetch_provider == "serper":

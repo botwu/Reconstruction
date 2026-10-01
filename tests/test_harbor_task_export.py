@@ -37,6 +37,9 @@ def test_search_delivery_preserves_evidence_without_inventing_a_verifier(tmp_pat
     assert (task / "environment/Dockerfile").is_file()
     assert (task / "environment/docker-compose.yaml").is_file()
     assert (task / "environment/search_tools.py").is_file()
+    requirements = (task / "environment/requirements.txt").read_text()
+    assert "pypdf==" in requirements and "fonttools==" in requirements
+    assert "-r /opt/traceforge-environment/requirements.txt" in (task / "environment/setup.sh").read_text()
     assert "live_references" in (task / "instruction.md").read_text()
     assert not (task / "solution").exists()
     assert not (task / "tests/test.sh").exists()

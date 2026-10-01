@@ -8,7 +8,9 @@ search 包含本地代码、文档检索。补全 agent 根据原任务声明 `r
 
 实时工具记录查询、URL、抓取时间、页面原始字节摘要与分页快照。旧搜索片段仍标为捕获证据，不能冒充网页全文；新抓取的网页也不声称与历史时点等价。
 
-公开查询使用 Serper，来源读取默认使用 Jina Reader，仅依赖 Python 标准库。凭据从环境变量 `SERPER_API_KEY`、`JINA_API_KEY` 或私有 `~/.config/traceforge/search.json` 的同义小写字段加载。可用 `TRACEFORGE_SEARCH_CONFIG` 指定私有配置位置；网络无法访问 Jina 时，可明确设置 `fetch_provider: "serper"`（或环境变量 `TRACEFORGE_FETCH_PROVIDER`）使用同一 Serper 账户的网页读取接口。实际 provider 会记录在每条返回中，不静默切换。
+公开查询使用 Serper，普通网页读取默认使用 Jina Reader。显式 PDF 链接下载原文件，用 `pypdf[fonts]` 读取文本层；这项依赖已纳入 `pyproject.toml` 和锁文件。凭据从环境变量 `SERPER_API_KEY`、`JINA_API_KEY` 或私有 `~/.config/traceforge/search.json` 的同义小写字段加载。可用 `TRACEFORGE_SEARCH_CONFIG` 指定私有配置位置；网络无法访问 Jina 时，可明确设置 `fetch_provider: "serper"`（或环境变量 `TRACEFORGE_FETCH_PROVIDER`）使用同一 Serper 账户的网页读取接口。实际 provider 会记录在每条返回中，不静默切换。
+
+PDF 返回保留原文件 SHA256、物理页码、提取器版本、空文本页和提取范围。文本层可读不表示图片、图表、公式已经核实；扫描件或无文本层的文件明确返回缺口，不生成替代正文。Harbor 包固定与作者相同的 PDF 库版本，在镜像构建阶段安装。
 
 凭据不进入任务、请求正文或产物。网络失败、登录页或缺失来源不能假称已取得完整论文；需按真实工具返回判断并保留限制。
 
