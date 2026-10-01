@@ -307,6 +307,14 @@ def _review_search_rollouts(
             role=SEARCH_REVIEW_ROLE, session=session, output_root=attempt_root,
             instruction=json.dumps(request, ensure_ascii=False),
         )
+        if result.errors or not result.completed:
+            review = {
+                "decision": "BLOCKED", "failure_kind": "AGENT_FAILURE",
+                "errors": result.errors or ["AGENT_INCOMPLETE"],
+                "error_detail": getattr(result, "final_text", "")[:2000],
+            }
+            _save(attempt_root / "validation.json", {"status": "AGENT_FAILED", **review})
+            break
         review = result.payload or {}
         checks = review.get("requirements")
         valid = (isinstance(checks, list)
@@ -331,13 +339,13 @@ def _review_search_rollouts(
                                              for item in checks)):
             errors.append("存在 ENVIRONMENT_GAP 或 NOT_EXERCISED 时不能返回 COMPLETE")
         _save(attempt_root / "validation.json", {
-            "status": "INVALID" if errors or result.errors or not result.completed else "VALID",
-            "errors": [*result.errors, *errors],
+            "status": "INVALID" if errors else "VALID",
+            "errors": errors,
         })
         signature = tuple(errors)
-        if not result.completed or result.errors or (errors and signature in seen_errors):
+        if errors and signature in seen_errors:
             review = {**review, "decision": "BLOCKED", "errors": [
-                *result.errors, *errors, "复核未完成或相同格式错误重复出现，保留既有环境和 rollout"]}
+                *errors, "相同格式错误重复出现，保留既有环境和 rollout"]}
             break
         if not errors:
             break
@@ -438,7 +446,8 @@ def run_search_task(
         )
         rounds.append({"output_root": str(round_root), "review": review})
         outcome["researcher_rounds"] = rounds
-        outcome["environment_review"] = review["decision"]
+        outcome["environment_review"] = (
+            "REVIEW_INCOMPLETE" if review.get("failure_kind") == "AGENT_FAILURE" else review["decision"])
         if review["decision"] != "REPAIR":
             if review["decision"] == "BLOCKED":
                 outcome.update(status="BLOCKED", stopped_at="researcher_review",

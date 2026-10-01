@@ -491,3 +491,37 @@ def test_intermediate_answer_is_input_only_for_a_new_task(independent_revision):
     else:
         with pytest.raises(ValueError, match="任务初态"):
             restore_context(messages, task, references)
+
+
+def test_review_api_failure_does_not_become_format_or_material_gap(tmp_path):
+    from traceforge.reconstruction.agents import AgentSession
+    from traceforge.reconstruction.search_environment import _review_search_rollouts
+
+    trial = tmp_path / "rollouts/trial-01"
+    trial.mkdir(parents=True)
+    (trial / "answer.md").write_text("已有真实回答")
+    (trial / "execution.json").write_text(json.dumps({"tool_events": []}))
+    (trial / "receipt.json").write_text(json.dumps({"completed": True}))
+    (trial / "input.json").write_text(json.dumps({"evidence": []}))
+    calls = []
+
+    def review(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(completed=False, errors=["MODEL_RATE_LIMIT"], payload={},
+                               final_text="Your requests have exceeded token rate limit.")
+
+    result = _review_search_rollouts(
+        task={"acceptance_obligations": [{"id": "compare"}]},
+        environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
+                     "context_messages": []},
+        agent=SimpleNamespace(run=review), session=AgentSession(), output_root=tmp_path,
+    )
+    assert len(calls) == 1
+    assert result["decision"] == "BLOCKED"
+    assert result["failure_kind"] == "AGENT_FAILURE"
+    assert result["errors"] == ["MODEL_RATE_LIMIT"]
+    assert "exceeded token rate limit" in result["error_detail"]
+    validation = json.loads((tmp_path / "researcher-review/validation.json").read_text())
+    assert validation["status"] == "AGENT_FAILED"
+    assert validation["errors"] == ["MODEL_RATE_LIMIT"]
+    assert (trial / "answer.md").read_text() == "已有真实回答"

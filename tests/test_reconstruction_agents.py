@@ -669,20 +669,24 @@ def test_runtime_rejects_unknown_transport_before_model_call(tmp_path: Path) -> 
                              channel="gpt", factory=FakeHermesFactory())
 
 
-def test_runtime_preserves_empty_response_api_failure(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("detail", "code"), [
+    ("HTTP 400: Function tools with reasoning_effort unsupported", "MODEL_API_FAILED"),
+    ("Your requests to gpt-6-astra have exceeded token rate limit.", "MODEL_RATE_LIMIT"),
+])
+def test_runtime_preserves_empty_response_api_failure(tmp_path: Path, detail: str, code: str) -> None:
     class FailedAgent:
         def __init__(self, **kwargs):
             pass
 
         def run_conversation(self, *args, **kwargs):
             return {"completed": False, "final_response": "",
-                    "error": "HTTP 400: Function tools with reasoning_effort unsupported",
+                    "error": detail,
                     "messages": [], "api_calls": 1}
 
     runtime = build_hermes_runtime(model_name="fixture", factory=FailedAgent,
                                    base_url="https://example.test", api_key="fixture", provider="gpt")
     result = runtime.run(role=INTENT_ROLE, instruction="解析", session=AgentSession(),
                          output_root=tmp_path / "out")
-    assert result.errors == ["MODEL_API_FAILED"]
-    assert "HTTP 400" in result.final_text
+    assert result.errors == [code]
+    assert detail in result.final_text
     assert not result.completed

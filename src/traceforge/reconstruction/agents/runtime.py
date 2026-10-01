@@ -276,7 +276,10 @@ class HermesNativeRuntime:
                             detail = str(raw["error"]).replace(self._api_key, "[credential removed]")[:2000]
                             turn["error_detail"] = detail
                             final_text = final_text or detail
-                            errors.append(classify_hermes_failure(final_text) or "MODEL_API_FAILED")
+                            code = ("MODEL_RATE_LIMIT" if "rate limit" in detail.lower()
+                                    or "ratelimit" in detail.lower()
+                                    else classify_hermes_failure(final_text) or "MODEL_API_FAILED")
+                            errors.append(code)
                             break
                         infra = classify_hermes_failure(final_text)
                         if infra:
