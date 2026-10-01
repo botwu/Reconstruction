@@ -651,9 +651,13 @@ def run_reconstruction_verification(
     agent: Any | None = None,
     source: dict[str, Any] | None = None,
     env_root: str | Path | None = None,
+    initial_feedback: dict[str, Any] | None = None,
+    start_round: int = 1,
 ) -> dict[str, Any]:
-    """RED 记录校准通过；请求 rollout 后仅完整验收可 READY，否则 REVIEW。"""
+    """在已绑定初态上校准并复验；支持带既有反馈从失败轮次继续。"""
     config.validate()
+    if isinstance(start_round, bool) or not isinstance(start_round, int) or start_round < 1:
+        raise ValueError("Verifier 起始轮次必须是正整数")
     root, workspace = Path(output_root), Path(workspace_root)
     task = verifier_task(task)
     files = _workspace_files(workspace)
@@ -692,8 +696,8 @@ def run_reconstruction_verification(
                 env_root=Path(env_root) if env_root is not None else None,
             )
             iterations: list[dict[str, Any]] = []
-            feedback: dict[str, Any] | None = None
-            for round_number in range(1, config.max_rounds + 1):
+            feedback = dict(initial_feedback) if initial_feedback is not None else None
+            for round_number in range(start_round, start_round + config.max_rounds):
                 recovered, generated = run_verifier_recovery(
                     task=task,
                     workspace_root=workspace,

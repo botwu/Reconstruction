@@ -129,3 +129,43 @@ def test_verifier_recovery_does_not_return_candidate_with_errors(tmp_path: Path)
     assert candidate is None
     assert report["status"] == "REVIEW"
     assert "AGENT_POLICY_ERROR" in report["errors"]
+
+
+def test_verifier_stage_resumes_with_saved_feedback(monkeypatch, tmp_path: Path):
+    agent = _Agent()
+    executor = _Executor(root=tmp_path)
+    executor.calls = 1
+    monkeypatch.setattr(verification_module, "HarborCalibrationExecutor", lambda **kwargs: executor)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "input.txt").write_text("x", encoding="utf-8")
+    feedback = {"failed_cases": ["oracle_returns_wrong_shape"]}
+    result = run_reconstruction_verification(
+        task={"task_instruction": "do x", "acceptance_obligations": [{"id": "o", "text": "output"}]},
+        workspace_root=workspace, model=None, agent=agent,
+        output_root=tmp_path / "resumed",
+        config=VerificationConfig(
+            harbor_root=tmp_path / "harbor", model_name="fake", rollout_model="anthropic/fake",
+            execute_red=True, max_rounds=2,
+        ),
+        source={"selected_span_has_file_ops": True},
+        initial_feedback=feedback, start_round=7,
+    )
+    assert result["status"] == "READY"
+    assert [item["round"] for item in result["iterations"]] == [7]
+    assert "CALIBRATION_ROUND: 7" in agent.calls[0]
+    supplied = json.loads(agent.calls[0].split("PREVIOUS_CALIBRATION_FEEDBACK:\n")[1])
+    assert supplied == feedback == {"failed_cases": ["oracle_returns_wrong_shape"]}
+    assert (tmp_path / "resumed/agent/round-07/verifier.json").is_file()
+
+
+@pytest.mark.parametrize("start_round", [0, -1, True])
+def test_verifier_stage_rejects_invalid_resume_round(tmp_path: Path, start_round):
+    with pytest.raises(ValueError, match="起始轮次"):
+        run_reconstruction_verification(
+            task={}, workspace_root=tmp_path, model=None, output_root=tmp_path / "output",
+            config=VerificationConfig(
+                harbor_root=tmp_path, model_name="fake", rollout_model="anthropic/fake",
+            ),
+            start_round=start_round,
+        )
