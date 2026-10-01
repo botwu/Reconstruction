@@ -218,7 +218,7 @@ def test_execution_errors_and_empty_answers_are_not_completed_rollouts(tmp_path,
     from traceforge.reconstruction.search_environment import run_search_rollouts
 
     result = run_search_rollouts(
-        environment={"schema_version": "traceforge.search-environment.v4", "status": "READY",
+        environment={"schema_version": "traceforge.search-environment.v5", "status": "READY",
                      "task": {"task_id": "q", "task_instruction": "比较源码"},
                      "captures": [], "context_messages": [], "limitations": []},
         rollout_agent=SimpleNamespace(model_name="fixture", run=lambda **kwargs: SimpleNamespace(
@@ -472,3 +472,22 @@ def test_review_resolves_solver_reads_from_its_own_input_not_author_inventory(tm
                          "evidence_ref_ids": ["https://example.org/a", "https://example.org/b"]}]},
         agent=SimpleNamespace(run=review),
         session=AgentSession(conversation=AgentConversation()), output_root=tmp_path)
+
+@pytest.mark.parametrize("independent_revision", [False, True])
+def test_intermediate_answer_is_input_only_for_a_new_task(independent_revision):
+    from traceforge.reconstruction.search_handoff import restore_context
+
+    messages = [
+        {"role": "system", "content": "环境说明"},
+        {"role": "user", "content": "分析两个方向的核心科学问题"},
+        {"role": "assistant", "content": "旧分析答案：共同问题是 X，方向 A 与 B 最接近。"},
+        {"role": "user", "content": "使用综述式段落，不要罗列"},
+    ]
+    task = {"source_task": {"message_indices": [3] if independent_revision else [1, 3]}}
+    references = [{"message_index": 2, "used_by_user_message_index": 3}]
+    if independent_revision:
+        restored = restore_context(messages, task, references)
+        assert restored[0]["content"] == messages[2]["content"]
+    else:
+        with pytest.raises(ValueError, match="任务初态"):
+            restore_context(messages, task, references)

@@ -8,7 +8,7 @@ from typing import Any
 from traceforge.reconstruction.session_source import message_text
 from traceforge.trajectory.privacy import omit_private_reasoning
 
-SEARCH_ENVIRONMENT_SCHEMA = "traceforge.search-environment.v4"
+SEARCH_ENVIRONMENT_SCHEMA = "traceforge.search-environment.v5"
 
 
 def deliver_captures(
@@ -82,6 +82,12 @@ def restore_context(
                 f"历史引用 message_index={index} → used_by_user_message_index={user} 无效。"
                 f"来源不能晚于所支持的用户请求；本任务用户索引为 {sorted(task_users)}。"
                 "原用户要求可以作为输入，但之后的回答不能倒置为该问题的输入。"
+            )
+        if messages[index].get("role") == "assistant" and index >= min(task_users):
+            raise ValueError(
+                f"message:{index} 属于本任务开始后的助手输出，不能交付为任务初态。"
+                f"本任务从 user:{min(task_users)} 开始；继续和格式纠正不改变初态。"
+                "这些原文仍供重建者参考；只有任务开始前的依赖可交付，用户约束已由任务正文保留。"
             )
         original = omit_private_reasoning(messages[index])
         content = copy.deepcopy(original.get("content"))

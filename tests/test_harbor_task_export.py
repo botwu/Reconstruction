@@ -9,7 +9,7 @@ from traceforge.harbor_task import export_search_task, write_container_environme
 
 
 def search_environment():
-    return {"schema_version": "traceforge.search-environment.v4",
+    return {"schema_version": "traceforge.search-environment.v5",
         "status": "READY", "errors": [], "missing_inputs": [],
         "task": {"task_id": "search-1", "task_instruction": "比较两种处理方式。",
                  "source_task": {"user_texts": ["保留出处。"]}},
