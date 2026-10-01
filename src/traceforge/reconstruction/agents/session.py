@@ -31,7 +31,7 @@ class AgentSession:
     workspace: Path | None = None
     user_texts: list[str] = field(default_factory=list)
     user_records: list[dict[str, Any]] = field(default_factory=list)
-    # 完整 raw session 只通过分页工具提供，避免把超大 capture 拼进初始 prompt。
+    # 原文保留分页复查入口；首次作者输入由重建编排完整提供。
     session_context: str | None = None
     tool_names: list[str] = field(default_factory=list)
     evidence: list[dict[str, Any]] = field(default_factory=list)
