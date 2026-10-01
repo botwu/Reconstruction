@@ -61,3 +61,32 @@ harbor run --path /path/to/search/task --agent nop --env docker \
 ```
 
 生产 rollout 将 `nop` 替换为已配置的求解 agent 和模型，并保留 `--disable-verification`。环境可查询与回答内容正确分别记录，不能以网页或本地工具调用成功代替内容核查。
+
+
+### AGS 执行
+
+已部署的 `harbor_ags.environment:AGSPrebuiltEnvironment` 本身是原生 Harbor 后端，
+直接创建云端预置沙盒，无需执行机安装 Docker。search 使用本仓库的
+`traceforge.harbor_ags.search:SearchAGSEnvironment`，保留任务显式声明的检索变量，
+继续剥离模型凭据；初始化脚本按实际上传目录定位，不依赖 Docker 中的安装路径。
+
+在已配置的 Harbor/AGS 运行时目录执行，令 `SEARCH_TASK` 指向本次新导出的任务目录，
+`HARBOR_JOBS` 指向本次结果目录。项目 `src` 必须在 `PYTHONPATH` 中：
+
+```bash
+.venv/bin/harbor run -c configs/hermes-batch.yaml -p "$SEARCH_TASK" \
+  --env traceforge.harbor_ags.search:SearchAGSEnvironment \
+  --disable-verification --n-concurrent 1 --n-concurrent-agents 1 \
+  --ak max_iterations=80 --ek sandbox_timeout_sec=3600 \
+  --ek request_timeout_sec=3600 --jobs-dir "$HARBOR_JOBS" --yes
+```
+
+运行方从私有配置向进程注入 AGS、模型以及任务声明的检索凭据；不要把凭据值写入命令、
+任务包、模型提示或日志。环境变量是运行时传递方式，不提供对有终端权限的进程的密钥隔离。
+模型 ID 与 `expected_commit` 必须匹配实际通道和 AGS 模板中的 Hermes 版本。
+`--print-config` 只核对配置，不能替代实际创建、工具执行、回答、轨迹收集和沙盒清理。
+正式入口使用 `harbor-ags prepare-rollout` / `execute-rollout`，复用冻结、执行和清理回执；
+原始会话管线也调用同一执行层。计划根据显式 search metadata 和完整 `delivery.json`
+哈希识别任务，自动选择此环境并禁用评分。无需生成 `solution/` 或 `tests/control/`。
+上述直接 Harbor 命令仅供诊断。原生结果须完成请求/响应对账、任务输入绑定和沙盒清理，
+才记录执行完成；没有 reward 的自由文本回答始终标记 `NOT_ASSESSED`，不能视为 PASS。

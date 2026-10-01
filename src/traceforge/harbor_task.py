@@ -83,7 +83,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
 
     pdf_dependencies = [f"{name}=={version(name)}" for name in ("pypdf", "fonttools")] if requires_web else []
     digest = hashlib.sha256(json.dumps({
-        "search_delivery_version": 5, "pdf_dependencies": pdf_dependencies,
+        "search_delivery_version": 6, "pdf_dependencies": pdf_dependencies,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),
     }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
@@ -138,14 +138,17 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
             shutil.copyfile(tool_source, root / "environment/search_tools.py")
             (root / "environment/requirements.txt").write_text("\n".join(pdf_dependencies) + "\n")
             (root / "environment/traceforge-search").write_text(
-                '#!/bin/sh\nexec python3 /opt/traceforge-environment/search_tools.py "$@"\n',
+                '#!/bin/sh\nset -eu\n'
+                'script_dir=$(dirname -- "$(readlink -f -- "$0")")\n'
+                'exec python3 "$script_dir/search_tools.py" "$@"\n',
                 encoding="utf-8",
             )
             (root / "environment/setup.sh").write_text(
                 '#!/bin/sh\nset -eu\n'
-                'python3 -m pip install --no-cache-dir -r /opt/traceforge-environment/requirements.txt\n'
-                'chmod 755 /opt/traceforge-environment/traceforge-search\n'
-                'ln -s /opt/traceforge-environment/traceforge-search /usr/local/bin/traceforge-search\n',
+                'script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
+                'python3 -m pip install --no-cache-dir -r "$script_dir/requirements.txt"\n'
+                'chmod 755 "$script_dir/traceforge-search"\n'
+                'ln -sf "$script_dir/traceforge-search" /usr/local/bin/traceforge-search\n',
                 encoding="utf-8",
             )
         (root / "tests").mkdir()

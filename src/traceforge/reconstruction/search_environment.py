@@ -6,8 +6,15 @@ import copy
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from traceforge.harbor_ags.results import HarborResultError, read_rollout_results
+from traceforge.harbor_ags.rollout import (
+    HarborRolloutConfig,
+    HarborRolloutError,
+    build_rollout_plan,
+    execute_rollout_plan,
+)
 from traceforge.harbor_task import export_search_task
 from traceforge.reconstruction.agents import AgentRuntime, AgentSession
 from traceforge.reconstruction.agents.roles import AgentRole
@@ -22,6 +29,9 @@ from traceforge.reconstruction.search_handoff import (
 )
 from traceforge.reconstruction.search_tools import SearchTools
 from traceforge.reconstruction.session_source import indexed_session, message_text
+
+if TYPE_CHECKING:
+    from traceforge.reconstruction.verification import VerificationConfig
 
 _SEARCH_TOOLS = ("list_evidence", "search_evidence", "read_evidence", "web_search", "web_open")
 SEARCH_COMPLETION_ROLE = AgentRole(
@@ -269,9 +279,11 @@ def _complete_search_environment(
 def _review_search_rollouts(
     *, task: dict[str, Any], environment: dict[str, Any], agent: AgentRuntime,
     session: AgentSession, output_root: Path,
+    native_trials: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    trials = []
-    for root in sorted((output_root / "rollouts").glob("trial-*")):
+    trials = list(native_trials) if native_trials is not None else []
+    for root in (() if native_trials is not None else
+                 sorted((output_root / "rollouts").glob("trial-*"))):
         execution = json.loads((root / "execution.json").read_text())
         try:
             tool_events = load_tool_results(root, execution["tool_events"])
@@ -378,6 +390,7 @@ def run_search_task(
     output_root: Path, rollout_agent: AgentRuntime | None = None,
     rollout_trials: int = 2, rollout_max_iterations: int = 80,
     initial_feedback: dict[str, Any] | None = None,
+    verification_config: VerificationConfig | None = None,
 ) -> dict[str, Any]:
     original_session = indexed_session(source["raw_session"])
     messages = source["raw_session"].get("messages", [])
@@ -476,17 +489,25 @@ def run_search_task(
         harbor_task = export_search_task(environment, round_root / "harbor")
         outcome["harbor_task"] = str(harbor_task.resolve())
         outcome["harbor_rollout_args"] = ["--disable-verification"]
-        if rollout_agent is None:
+        native_trials = None
+        if verification_config is not None and verification_config.execute_rollout:
+            execution, native_trials = run_native_search_rollouts(
+                harbor_task=harbor_task, config=verification_config, output_root=round_root,
+            )
+            outcome.update(execution)
+        elif rollout_agent is not None:
+            outcome.update(run_search_rollouts(
+                environment=environment, rollout_agent=rollout_agent, output_root=round_root,
+                rollout_trials=rollout_trials, rollout_max_iterations=rollout_max_iterations,
+            ))
+        else:
             break
-        outcome.update(run_search_rollouts(
-            environment=environment, rollout_agent=rollout_agent, output_root=round_root,
-            rollout_trials=rollout_trials, rollout_max_iterations=rollout_max_iterations,
-        ))
         if outcome["status"] != "ROLLOUT_COMPLETED":
             outcome["environment_review"] = "ROLLOUT_INCOMPLETE"
             break
         review = _review_search_rollouts(
             task=task, environment=environment, agent=agent, session=session, output_root=round_root,
+            native_trials=native_trials,
         )
         rounds.append({"output_root": str(round_root), "review": review})
         outcome["researcher_rounds"] = rounds
@@ -507,6 +528,57 @@ def run_search_task(
     outcome["researcher_rounds"] = rounds
     _save(output_root / "result.json", outcome)
     return outcome
+
+
+
+def run_native_search_rollouts(
+    *, harbor_task: Path, config: VerificationConfig, output_root: Path,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """执行实际交付的 Harbor 包，返回经原生请求/响应对账的复核输入。"""
+    record: dict[str, Any] = {"plan": None, "execution": None, "results": None}
+    trials: list[dict[str, Any]] = []
+    errors = []
+    try:
+        plan_dir = build_rollout_plan(HarborRolloutConfig(
+            task_dir=harbor_task, harbor_root=config.harbor_root,
+            output_root=output_root / "native-rollout/plans",
+            jobs_root=output_root / "native-rollout/jobs",
+            model=config.rollout_model, trials=config.rollout_trials,
+            timeout_seconds=config.timeout_seconds,
+            agent_max_iterations=config.rollout_max_iterations,
+        ))
+        record["plan"] = str(plan_dir)
+        record["execution"] = execute_rollout_plan(
+            plan_dir, config_path=config.config_path, channel=config.channel,
+        )
+        plan = json.loads((plan_dir / "rollout_plan.json").read_text())
+        dataset = plan["dataset"]
+        expected_task = Path(dataset["dataset_root"]) / dataset["task_relative_paths"][0]
+        job_dir = Path(plan["jobs_root"]) / (plan.get("job_name") or plan["run_id"])
+        results = read_rollout_results(
+            job_dir, expected_trial_count=config.rollout_trials, domain="search",
+            expected_task=expected_task, harbor_root=config.harbor_root,
+        )
+        record["results"] = results
+        trials = [row["native_trial"] for row in results.get("trials", [])
+                  if "native_trial" in row]
+        if record["execution"].get("status") != "COMPLETED":
+            errors.append("NATIVE_HARBOR_EXECUTION_INCOMPLETE")
+        if results.get("execution_completed") is not True:
+            errors.extend((results.get("quality_gate") or {}).get("reasons") or
+                          ["NATIVE_HARBOR_TRACE_INCOMPLETE"])
+    except (HarborRolloutError, HarborResultError, OSError, ValueError) as exc:
+        errors.append(f"{type(exc).__name__}: {exc}")
+    record["errors"] = errors
+    receipt = output_root / "native-rollout.json"
+    _save(receipt, record)
+    return {
+        "status": "ROLLOUT_INCOMPLETE" if errors else "ROLLOUT_COMPLETED",
+        "errors": errors, "acceptance": "NOT_ASSESSED",
+        "rollout_backend": "native_harbor", "rollout_record": str(receipt),
+        "rollouts": [{key: item[key] for key in ("trial", "model", "completed", "errors")}
+                     for item in trials],
+    }, trials
 
 
 def run_search_rollouts(
@@ -577,6 +649,7 @@ def run_search_reconstruction(
     *, source: dict[str, Any], agent: AgentRuntime, output_root: Path,
     rollout_agent: AgentRuntime | None = None, rollout_trials: int = 2,
     rollout_max_iterations: int = 80,
+    verification_config: VerificationConfig | None = None,
 ) -> Path:
     intent = run_intent_recovery(
         source=source, agent=agent, output_root=output_root / "intent",
@@ -594,6 +667,7 @@ def run_search_reconstruction(
             output_root=output_root / "tasks" / task["task_id"],
             rollout_agent=rollout_agent, rollout_trials=rollout_trials,
             rollout_max_iterations=rollout_max_iterations,
+            verification_config=verification_config,
         ))
     path = output_root / "manifest.json"
     _save(path, {"schema_version": "traceforge.search-reconstruction.v1",

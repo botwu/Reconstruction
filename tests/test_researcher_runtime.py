@@ -194,12 +194,19 @@ class ReconstructionTests(unittest.TestCase):
     def test_prepared_entry_routes_search_without_terminal_execution(self) -> None:
         source = {"session_parser": {"status": "READY"}, "tasks": [{"task_id": "t"}],
                   "domain_route": "retrieval"}
+        from traceforge.reconstruction.verification import VerificationConfig
+
+        config = VerificationConfig(
+            harbor_root=self.root, model_name="author", rollout_model="anthropic/solver",
+            execute_rollout=True,
+        )
         with patch("traceforge.reconstruction.search_environment.run_search_task",
-                   return_value={"status": "ENVIRONMENT_READY"}) as search:
+                   return_value={"status": "ROLLOUT_COMPLETED"}) as search:
             result = run_prepared_task(source=source, task=source["tasks"][0],
-                                       agent=Mock(), output_root=self.root)
+                                       agent=Mock(), output_root=self.root, verification_config=config)
         search.assert_called_once()
-        self.assertEqual(result["status"], "ENVIRONMENT_READY")
+        self.assertIs(search.call_args.kwargs["verification_config"], config)
+        self.assertEqual(result["status"], "ROLLOUT_COMPLETED")
         source["session_parser"]["status"] = "ERROR"
         with self.assertRaisesRegex(ReconstructionError, "Session Parser"):
             run_prepared_task(source=source, task=source["tasks"][0], agent=Mock(), output_root=self.root)

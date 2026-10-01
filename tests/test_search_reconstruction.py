@@ -168,42 +168,30 @@ def test_solver_plaintext_is_not_retried_as_invalid_json(tmp_path, completed):
 
 
 @pytest.mark.parametrize("execute_rollout", [False, True])
-def test_search_entry_does_not_enter_file_replay_or_sandbox(tmp_path, monkeypatch, execute_rollout):
+def test_search_entry_passes_native_config_without_file_replay(tmp_path, monkeypatch, execute_rollout):
     from traceforge.reconstruction import agents, search_environment
     from traceforge.reconstruction.pipeline import run_reconstruction
     from traceforge.reconstruction.verification import VerificationConfig
 
     agent = object()
     calls = []
-    runtime_calls = []
-    solver = object()
-
-    def build_solver(**kwargs):
-        runtime_calls.append(kwargs)
-        return solver
-
-    def run_search(**kwargs):
-        calls.append(kwargs)
-        return tmp_path / "manifest.json"
-
-    monkeypatch.setattr(search_environment, "run_search_reconstruction", run_search)
-    monkeypatch.setattr(agents, "build_hermes_runtime", build_solver)
+    config = VerificationConfig(
+        harbor_root=tmp_path, model_name="author", rollout_model="anthropic/solver",
+        execute_rollout=execute_rollout, hermes_home=tmp_path / "hermes-source",
+    )
+    monkeypatch.setattr(search_environment, "run_search_reconstruction",
+                        lambda **kwargs: calls.append(kwargs) or tmp_path / "manifest.json")
+    monkeypatch.setattr(agents, "build_hermes_runtime",
+                        lambda **kwargs: pytest.fail("正式 search 使用 Harbor 内的 solver"))
     result = run_reconstruction(
-        agent=agent,
-        output_root=tmp_path,
+        agent=agent, output_root=tmp_path,
         source={"domain_route": "retrieval", "raw_session": {"messages": []}},
-        container_runtime_factory=lambda: pytest.fail("search 不应启动文件沙箱"),
-        verification_config=VerificationConfig(
-            harbor_root=tmp_path, model_name="author", rollout_model="claude/solver",
-            execute_rollout=execute_rollout, hermes_home=tmp_path / "hermes-source",
-        ),
+        container_runtime_factory=lambda: pytest.fail("search 不应进入文件重建沙箱"),
+        verification_config=config,
     )
     assert result == tmp_path / "manifest.json"
     assert calls[0]["agent"] is agent
-    assert calls[0]["rollout_agent"] is (solver if execute_rollout else None)
-    assert len(runtime_calls) == int(execute_rollout)
-    if execute_rollout:
-        assert runtime_calls[0]["hermes_home"] == tmp_path / "hermes-source"
+    assert calls[0]["verification_config"] is config
 
 
 def test_ready_search_environment_can_resume_with_captured_and_live_evidence(tmp_path):
@@ -462,3 +450,53 @@ def test_github_source_preserves_bytes_and_rejects_corruption(tmp_path, monkeypa
     else:
         assert url not in tools.pages
         assert "哈希" in result["error"]
+
+
+@pytest.mark.parametrize("executed,trace_complete", [(True, True), (True, False), (False, True)])
+def test_native_search_requires_both_execution_and_trace(tmp_path, monkeypatch, executed, trace_complete):
+    from types import SimpleNamespace
+
+    from traceforge.reconstruction import search_environment as search
+
+    plan_dir = tmp_path / "plan"
+    plan_dir.mkdir()
+    expected_task = tmp_path / "dataset/task"
+    plan = {
+        "dataset": {"dataset_root": str(expected_task.parent), "task_relative_paths": ["task"]},
+        "jobs_root": str(tmp_path / "jobs"), "job_name": "actual-job", "run_id": "stable-id",
+    }
+    (plan_dir / "rollout_plan.json").write_text(json.dumps(plan))
+    config = SimpleNamespace(
+        harbor_root=tmp_path / "harbor", rollout_model="anthropic/solver", rollout_trials=2,
+        timeout_seconds=14400, rollout_max_iterations=500, config_path=None, channel="claude",
+    )
+    trial = {"trial": "trial-1", "model": "solver", "completed": trace_complete,
+             "errors": [] if trace_complete else ["MISSING_RETURN"],
+             "tool_events": [{"name": "terminal", "result": "完整正文"}], "answer": "实际回答"}
+
+    def build(value):
+        assert value.trials == 2
+        assert value.agent_max_iterations == 500
+        return plan_dir
+
+    def read(job, **kwargs):
+        assert job == tmp_path / "jobs/actual-job"
+        assert kwargs == {"domain": "search", "expected_trial_count": 2,
+                          "expected_task": expected_task, "harbor_root": config.harbor_root}
+        return {"trials": [{"native_trial": trial}], "execution_completed": trace_complete,
+                "quality_gate": {"reasons": [] if trace_complete else ["MISSING_RETURN"]}}
+
+    monkeypatch.setattr(search, "build_rollout_plan", build)
+    monkeypatch.setattr(search, "execute_rollout_plan", lambda *args, **kwargs: {
+        "status": "COMPLETED" if executed else "FAILED",
+    })
+    monkeypatch.setattr(search, "read_rollout_results", read)
+    outcome, reviews = search.run_native_search_rollouts(
+        harbor_task=expected_task, config=config, output_root=tmp_path,
+    )
+    assert (outcome["status"] == "ROLLOUT_COMPLETED") is (executed and trace_complete)
+    assert outcome["acceptance"] == "NOT_ASSESSED"
+    assert reviews == [trial]
+    assert ("MISSING_RETURN" in outcome["errors"]) is not trace_complete
+    saved = json.loads((tmp_path / "native-rollout.json").read_text())
+    assert saved["results"]["trials"][0]["native_trial"]["tool_events"] == trial["tool_events"]

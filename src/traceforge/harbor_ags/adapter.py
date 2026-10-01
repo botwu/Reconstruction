@@ -7,8 +7,8 @@ Task Bundle 的业务正确性仍由独立 verifier 负责。
 from __future__ import annotations
 
 import hashlib
-import json
 import importlib
+import json
 import sys
 import tomllib
 from collections.abc import Iterable, Mapping
@@ -54,11 +54,65 @@ def _tree(root: Path) -> dict[str, Any]:
     return {"files": files, "tree_sha256": hashlib.sha256(canonical_json_bytes(files)).hexdigest()}
 
 
+def validate_search_delivery(task_dir: Path | str) -> dict[str, Any]:
+    """核对显式 search 任务及其完整交付哈希，不附加文件评分器。"""
+    root = Path(task_dir).resolve()
+    try:
+        config = tomllib.loads((root / "task.toml").read_text(encoding="utf-8"))
+        delivery_path = root.parent / "delivery.json"
+        delivery = json.loads(delivery_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise HarborAgsAdapterError("search 交付配置或 delivery.json 无法读取") from exc
+    metadata = config.get("metadata")
+    task = config.get("task")
+    if not isinstance(delivery, dict) or not isinstance(metadata, dict) or not isinstance(task, dict):
+        raise HarborAgsAdapterError("search 交付配置必须为对象")
+    if (metadata.get("domain") != "search"
+            or config.get("schema_version") != "1.4"
+            or delivery.get("schema_version") != "traceforge.harbor-delivery.v1"
+            or delivery.get("domain") != "search"
+            or delivery.get("response_acceptance") != "NOT_ASSESSED"
+            or delivery.get("rollout_args") != ["--disable-verification"]):
+        raise HarborAgsAdapterError("search 交付必须显式声明领域与未自动验收状态")
+    for name in ("instruction.md", "workspace/evidence.json"):
+        if not (root / name).is_file():
+            raise HarborAgsAdapterError(f"search 交付缺少 {name}")
+    for name in ("environment", "tests"):
+        if not (root / name).is_dir():
+            raise HarborAgsAdapterError(f"search 交付缺少 {name}/")
+    instruction = (root / "instruction.md").read_text(encoding="utf-8")
+    name = task.get("name")
+    if not instruction.strip() or not isinstance(name, str) or not name.strip():
+        raise HarborAgsAdapterError("search 任务名称或说明为空")
+    files = _tree(root)["files"]
+    actual = {entry["path"]: entry["sha256"] for entry in files}
+    if actual != delivery.get("task_file_sha256"):
+        raise HarborAgsAdapterError("search 交付文件与 delivery.json 哈希不一致")
+    return {
+        "domain": "search", "task_bundle_root": str(root), "task_name": name,
+        "schema_version": "traceforge.search-harbor-input.v1",
+        "task_toml_sha256": actual["task.toml"],
+        "instruction_sha256": actual["instruction.md"],
+        "delivery_sha256": _sha256(delivery_path),
+        "workspace": _tree(root / "workspace"),
+        "environment": _tree(root / "environment"),
+        "tests": _tree(root / "tests"),
+        "response_acceptance": "NOT_ASSESSED",
+    }
+
+
 def validate_bundle_layout(task_dir: Path | str) -> dict[str, Any]:
     """执行不依赖 Harbor 安装的 Task Bundle 结构检查。"""
     root = Path(task_dir).resolve()
     if not root.is_dir():
         raise HarborAgsAdapterError(f"Task Bundle 目录不存在: {root}")
+    try:
+        config = tomllib.loads((root / "task.toml").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise HarborAgsAdapterError("task.toml 无法解析") from exc
+    metadata = config.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("domain") == "search":
+        return validate_search_delivery(root)
     for name in _REQUIRED_FILES:
         path = root / name
         if not path.is_file() or path.is_symlink():
@@ -159,6 +213,9 @@ def validate_harbor_bundle(
 ) -> dict[str, Any]:
     """调用 Harbor 校验；测试替身缺少 Harbor 源码时只返回本地摘要。"""
     root = Path(task_dir).resolve()
+    layout = validate_bundle_layout(root)
+    if layout.get("domain") == "search":
+        return layout
     external_root = Path(harbor_root).resolve() if harbor_root is not None else None
     if external_root is None or not (external_root / "src").is_dir():
         return _local_bundle_contract(root)
@@ -200,6 +257,8 @@ def build_boundary_plan(
     root = Path(task_dir).resolve()
     refs = tuple(sorted(set(str(item) for item in source_refs if str(item))))
     layout = validate_bundle_layout(root)
+    if layout.get("domain") == "search":
+        raise HarborAgsAdapterError("search 请使用 prepare-rollout，边界计划仅适用于文件评分任务")
     harbor_validation = None
     validation_status = "LOCAL_LAYOUT_ONLY"
     if harbor_root is not None:
@@ -286,4 +345,5 @@ __all__ = [
     "HarborAgsAdapterError",
     "build_boundary_plan",
     "validate_bundle_layout",
+    "validate_search_delivery",
 ]

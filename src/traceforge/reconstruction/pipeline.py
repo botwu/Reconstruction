@@ -868,6 +868,7 @@ def run_prepared_task(
             source=source, task=task, agent=agent,
             output_root=root / "tasks" / task["task_id"],
             rollout_agent=search_rollout_agent,
+            verification_config=verification_config,
             rollout_trials=verification_config.rollout_trials if verification_config else 2,
             rollout_max_iterations=(
                 verification_config.rollout_max_iterations if verification_config else 80
@@ -1008,22 +1009,11 @@ def run_reconstruction(
         source["session_parser"] = {"status": "NOT_RUN", "reason": "未提供会话解析模型"}
     write_reconstruction_source(source, root)
     if _domain_route({}, source) == "retrieval":
-        from traceforge.reconstruction.agents import build_hermes_runtime
         from traceforge.reconstruction.search_environment import run_search_reconstruction
 
-        rollout_agent = None
-        if verification_config is not None and verification_config.execute_rollout:
-            rollout_agent = build_hermes_runtime(
-                config_path=verification_config.config_path,
-                channel=verification_config.channel,
-                model_name=verification_config.rollout_model,
-                hermes_home=verification_config.hermes_home,
-            )
         return run_search_reconstruction(
-            source=source, agent=agent, output_root=root, rollout_agent=rollout_agent,
-            rollout_trials=verification_config.rollout_trials if verification_config else 2,
-            rollout_max_iterations=(verification_config.rollout_max_iterations
-                                    if verification_config else 80),
+            source=source, agent=agent, output_root=root,
+            verification_config=verification_config,
         )
     native_agent, native_verifier = agent, verifier_agent
     if container_runtime_factory is not None:

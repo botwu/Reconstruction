@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import yaml
+
 from traceforge.harbor_task import WORKSPACE_SNAPSHOT_HOOK
 from traceforge.reconstruction.model_gateway import (
     ModelGatewayError,
@@ -151,6 +153,9 @@ def _materialize_dataset(
         raise HarborRolloutError(f"Dataset 目标已存在，拒绝覆盖：{destination}")
     destination.mkdir(parents=True)
     task_name = _task_name(task_dir)
+    search = validate_bundle_layout(task_dir).get("domain") == "search"
+    if search:
+        shutil.copyfile(task_dir.parent / "delivery.json", destination / "delivery.json")
     task_slug = _safe_name(task_name.replace("/", "_")) or "task"
     task_targets: list[str] = []
     task_hashes: dict[str, str] = {}
@@ -159,7 +164,8 @@ def _materialize_dataset(
         suffix = f"--trial-{index:03d}" if trials > 1 else ""
         task_target = destination / f"{task_slug}{suffix}"
         shutil.copytree(task_dir, task_target, symlinks=False)
-        _ensure_workspace_snapshot_hook(task_target / "task.toml")
+        if not search:
+            _ensure_workspace_snapshot_hook(task_target / "task.toml")
         bundle_contract = validate_harbor_bundle(task_target, harbor_root=harbor_root)
         relative = task_target.relative_to(destination).as_posix()
         task_targets.append(relative)
@@ -198,6 +204,7 @@ def _materialize_dataset(
         "task_hashes": task_hashes,
         "dataset_toml_sha256": _sha256_file(destination / "dataset.toml"),
         "compile_manifest_sha256": _sha256_file(compile_path),
+        **({"delivery_sha256": _sha256_file(destination / "delivery.json")} if search else {}),
     }
 
 def _ensure_workspace_snapshot_hook(task_toml: Path) -> None:
@@ -601,6 +608,8 @@ def publish_rollout_bundle(plan_dir: Path | str, destination: Path | str) -> Pat
     try:
         task_target = workspace.staging_path / "task"
         shutil.copytree(source, task_target, symlinks=False)
+        if plan.get("domain") == "search":
+            shutil.copyfile(dataset_root / "delivery.json", workspace.staging_path / "delivery.json")
         validate_bundle_layout(task_target)
         shutil.copy2(dataset_root / "dataset.toml", workspace.staging_path / "dataset.toml")
         compile_manifest = dataset_root / "compile-manifest.json"
@@ -684,8 +693,14 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
     config.validate()
     task_dir = config.task_dir.resolve()
     harbor_root = config.harbor_root.resolve()
-    reconstruction_gate = _reconstruction_rollout_gate(task_dir)
     layout = validate_bundle_layout(task_dir)
+    search = layout.get("domain") == "search"
+    reconstruction_gate = (
+        {"status": "NOT_APPLICABLE", "reason": "SEARCH_DELIVERY_VERIFIED"}
+        if search else _reconstruction_rollout_gate(task_dir)
+    )
+    if search and config.agent_mode == "oracle":
+        raise HarborRolloutError("search 未提供参考解，不能运行 oracle")
     config_name = {
         "hermes": "hermes-batch.yaml",
         "oracle": "oracle.yaml",
@@ -736,6 +751,14 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
             agent_max_iterations=config.agent_max_iterations,
             expected_hermes_commit=config.expected_hermes_commit,
         )
+        if search:
+            rendered = yaml.safe_load(rendered_config)
+            rendered["environment"]["import_path"] = (
+                "traceforge.harbor_ags.search:SearchAGSEnvironment"
+            )
+            rendered["environment"].pop("type", None)
+            rendered.setdefault("verifier", {})["disable"] = True
+            rendered_config = yaml.safe_dump(rendered, allow_unicode=True, sort_keys=False)
         (workspace.staging_path / "harbor-config.yaml").write_text(
             rendered_config, encoding="utf-8"
         )
@@ -754,6 +777,7 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
             "job_name": run_id,
             "status": "READY",
             "task_name": task_name,
+            "domain": "search" if search else "terminal",
             "source_bundle": str(task_dir),
             "bundle_sha256": bundle_digest,
             "dataset": dataset_meta,
@@ -778,9 +802,11 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
             },
             "reconstruction_gate": reconstruction_gate,
             "verifier": {
-                "environment_mode": "separate",
-                "network_mode": "no-network",
-                "artifact_manifest_required": config.agent_mode == "hermes",
+                "enabled": not search,
+                "environment_mode": None if search else "separate",
+                "network_mode": None if search else "no-network",
+                "response_acceptance": "NOT_ASSESSED" if search else "AUTOMATED",
+                "artifact_manifest_required": config.agent_mode == "hermes" and not search,
                 "sandbox_cleanup_required": True,
             },
             "credentials": _credential_status(config.agent_mode),
@@ -791,6 +817,10 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
             },
             "external_execution": False,
         }
+        if search:
+            plan["harbor_runtime"]["search_environment_sha256"] = _sha256_file(
+                Path(__file__).with_name("search.py")
+            )
         entries = [write_json_artifact(workspace.staging_path, "rollout_plan.json", plan)]
         manifest_entry = write_json_artifact(
             workspace.staging_path,
@@ -902,6 +932,10 @@ def _assert_plan_integrity(plan_dir: Path, plan: dict[str, Any]) -> None:
             or compile_hash != _sha256_file(compile_manifest)
         ):
             raise HarborRolloutError("compile-manifest.json hash 与 plan 不一致")
+    if dataset_meta.get("delivery_sha256"):
+        delivery = dataset / "delivery.json"
+        if not delivery.is_file() or _sha256_file(delivery) != dataset_meta["delivery_sha256"]:
+            raise HarborRolloutError("search delivery.json hash 与 plan 不一致")
     materialized = plan.get("harbor_config")
     published = (
         Path(materialized["materialized"]).resolve()
@@ -928,6 +962,9 @@ def validate_rollout_runtime(plan: dict[str, Any]) -> None:
 
     runtime = plan.get("harbor_runtime")
     if isinstance(runtime, dict):
+        search_hash = runtime.get("search_environment_sha256")
+        if search_hash and search_hash != _sha256_file(Path(__file__).with_name("search.py")):
+            raise HarborRolloutError("Search AGS adapter changed after plan creation")
         runtime_files = runtime.get("files")
         if isinstance(runtime_files, dict):
             harbor_root = Path(str(plan.get("harbor_root"))).resolve()
@@ -1026,6 +1063,25 @@ def execute_rollout_plan(
                 f"{reviewed_iterations}"
             )
     env = _prepare_execution_env(str(mode), config_path=config_path, channel=channel)
+    if plan.get("domain") == "search":
+        search_config = Path(env.get(
+            "TRACEFORGE_SEARCH_CONFIG", str(Path.home() / ".config/traceforge/search.json")
+        ))
+        try:
+            search_values = json.loads(search_config.read_text()) if search_config.is_file() else {}
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise HarborRolloutError("检索运行配置无法读取") from exc
+        if not isinstance(search_values, dict):
+            raise HarborRolloutError("检索运行配置必须是对象")
+        for name, field in (("SERPER_API_KEY", "serper_api_key"), ("JINA_API_KEY", "jina_api_key"),
+                            ("TRACEFORGE_FETCH_PROVIDER", "fetch_provider")):
+            value = env.get(name) or search_values.get(field)
+            if value:
+                env[name] = str(value)
+        env["PYTHONPATH"] = os.pathsep.join(filter(None, (
+            str(Path(__file__).resolve().parents[2]),
+            str(Path(plan["harbor_root"]) / "src"), env.get("PYTHONPATH"),
+        )))
     missing = _missing_execution_credentials(env, str(mode))
     if missing:
         raise HarborRolloutError(f"执行 Harbor 前缺少凭据环境变量：{', '.join(missing)}")

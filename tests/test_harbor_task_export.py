@@ -1,7 +1,11 @@
 """任务导出保留真实初态，供原生 Harbor 独立加载。"""
 
 import json
+import os
+import subprocess
+import sys
 import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -39,7 +43,7 @@ def test_search_delivery_preserves_evidence_without_inventing_a_verifier(tmp_pat
     assert (task / "environment/search_tools.py").is_file()
     requirements = (task / "environment/requirements.txt").read_text()
     assert "pypdf==" in requirements and "fonttools==" in requirements
-    assert "-r /opt/traceforge-environment/requirements.txt" in (task / "environment/setup.sh").read_text()
+    assert '-r "$script_dir/requirements.txt"' in (task / "environment/setup.sh").read_text()
     assert "live_references" in (task / "instruction.md").read_text()
     assert not (task / "solution").exists()
     assert not (task / "tests/test.sh").exists()
@@ -101,3 +105,56 @@ def test_container_python_matches_frozen_binary_wheels(tmp_path):
     (wheels / "uvloop-0.22.1-cp312-cp312-manylinux_2_17_x86_64.whl").touch()
     with pytest.raises(ValueError, match="ABI"):
         write_container_environment(tmp_path, separate_verifier=True)
+
+
+
+@pytest.mark.parametrize("install_exit", [0, 7])
+def test_search_setup_uses_its_uploaded_directory(tmp_path, install_exit):
+    task = export_search_task(search_environment(), tmp_path / "export")
+    relocated = tmp_path / "ags uploaded environment"
+    (task / "environment").rename(relocated)
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    log = tmp_path / "setup-arguments.jsonl"
+    recorder = (
+        "#!/usr/bin/env python3\n"
+        "import json, os, pathlib, sys\n"
+        "with open(os.environ['SETUP_TEST_LOG'], 'a') as out:\n"
+        "    out.write(json.dumps(sys.argv) + '\\n')\n"
+        "raise SystemExit(int(os.environ['SETUP_TEST_EXIT']) "
+        "if pathlib.Path(sys.argv[0]).name == 'python3' else 0)\n"
+    )
+    # 使用固定解释器，避免录制 python3 调用时递归进入自身。
+    recorder = recorder.replace("#!/usr/bin/env python3", "#!" + sys.executable)
+    for name in ("python3", "chmod", "ln"):
+        command = commands / name
+        command.write_text(recorder)
+        command.chmod(0o755)
+    result = subprocess.run(
+        ["sh", str(relocated / "setup.sh")], cwd=tmp_path,
+        env={**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"],
+             "SETUP_TEST_LOG": str(log), "SETUP_TEST_EXIT": str(install_exit)},
+        capture_output=True, text=True,
+    )
+    assert result.returncode == install_exit, result.stderr
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert calls[0][-2:] == ["-r", str(relocated / "requirements.txt")]
+    assert len(calls) == (3 if install_exit == 0 else 1)
+    if install_exit == 0:
+        assert calls[-1][-2:] == [
+            str(relocated / "traceforge-search"), "/usr/local/bin/traceforge-search"]
+
+
+def test_search_command_follows_its_installed_symlink(tmp_path):
+    task = export_search_task(search_environment(), tmp_path / "export")
+    command = task / "environment/traceforge-search"
+    command.chmod(0o755)
+    installed = tmp_path / "traceforge-search"
+    installed.symlink_to(command)
+    result = subprocess.run(
+        [str(installed), "--help"], capture_output=True, text=True,
+        env={**os.environ, "PATH": str(Path(sys.executable).parent)
+             + os.pathsep + os.environ["PATH"]},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "search" in result.stdout and "open" in result.stdout

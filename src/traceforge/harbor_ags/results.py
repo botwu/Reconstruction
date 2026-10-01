@@ -263,14 +263,138 @@ def rollout_passed(rollout: dict[str, Any] | None, expected_trials: int) -> bool
     )
 
 
+def read_search_trial(
+    trial_dir: Path | str, *, expected_task: Path | str | None = None,
+    harbor_root: Path | str | None = None,
+) -> dict[str, Any]:
+    """读取并对账原生检索轨迹，完成状态不代表回答内容通过。"""
+    root = Path(trial_dir).resolve()
+    output: dict[str, Any] = {
+        "trial": root.name, "answer": "", "tool_events": [], "model": None,
+        "errors": [], "completed": False, "final_stop_reason": None,
+        "receipt": {"backend": "native_harbor", "acceptance": "NOT_ASSESSED",
+                    "evidence_files": {}, "input_task": None, "source_binding": False},
+    }
+    try:
+        if harbor_root is not None:
+            runtime_source = str(Path(harbor_root).resolve() / "src")
+            if runtime_source not in sys.path:
+                sys.path.insert(0, runtime_source)
+        evidence = importlib.import_module("harbor_ags.evidence")
+        if harbor_root is not None and not Path(evidence.__file__).resolve().is_relative_to(
+            Path(harbor_root).resolve()
+        ):
+            raise HarborResultError("NATIVE_EVIDENCE_RUNTIME_MISMATCH")
+        result = _read_json(root / "result.json")
+        if result.get("exception_info") or not result.get("finished_at"):
+            raise HarborResultError("NATIVE_TRIAL_NOT_COMPLETED")
+        full = _read_json(root / "agent/trajectory.full.json")
+        if full.get("schema_version") != "traceforge-lossless-trajectory-v1":
+            raise HarborResultError("NATIVE_TRAJECTORY_SCHEMA_INVALID")
+        rebuilt = evidence.build_full_trajectory(root / "agent", metadata=full.get("metadata"))
+        for field in ("messages", "anthropic_calls", "tools", "system_prompt",
+                      "task_input", "hashes", "harness_drift"):
+            if full.get(field) != rebuilt.get(field):
+                raise HarborResultError(f"NATIVE_CAPTURE_BINDING_MISMATCH:{field}")
+        atif = _read_json(root / "agent/trajectory.json")
+        reconciliation = evidence.reconcile_evidence(full, atif)
+        if reconciliation.get("ok") is not True:
+            codes = [str(item.get("code")) for item in reconciliation.get("issues", [])]
+            raise HarborResultError("NATIVE_RECONCILIATION_FAILED:" + ",".join(codes))
+        calls = full.get("anthropic_calls")
+        if not isinstance(calls, list) or not calls:
+            raise HarborResultError("NATIVE_MODEL_CALLS_MISSING")
+        events: dict[str, dict[str, Any]] = {}
+        results: dict[str, tuple[int, dict[str, Any]]] = {}
+        for index, call in enumerate(calls):
+            for block in call.get("response", {}).get("content", []):
+                if block.get("type") == "tool_use":
+                    identity = block.get("id")
+                    if not isinstance(identity, str) or identity in events:
+                        raise HarborResultError("NATIVE_TOOL_CALL_ID_INVALID")
+                    events[identity] = {
+                        "tool_call_id": identity, "name": block["name"],
+                        "arguments": block["input"],
+                        "source": {"response_call_index": index},
+                    }
+            for message in call.get("request", {}).get("messages", []):
+                content = message.get("content")
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if block.get("type") == "tool_result":
+                        results.setdefault(block["tool_use_id"], (index, block))
+        for identity, event in events.items():
+            if identity not in results:
+                raise HarborResultError(f"NATIVE_TOOL_RESULT_MISSING:{identity}")
+            index, block = results[identity]
+            value = block.get("content")
+            event.update(result=value, ok=block.get("is_error") is not True,
+                         result_sha256=hashlib.sha256(json.dumps(
+                             value, ensure_ascii=False, sort_keys=True).encode()).hexdigest())
+            event["source"]["result_request_call_index"] = index
+        response = calls[-1].get("response", {})
+        final = response.get("content", [])
+        answer = "\n".join(block["text"] for block in final
+                           if block.get("type") == "text" and isinstance(block.get("text"), str))
+        output.update(answer=answer, tool_events=list(events.values()),
+                      model=full.get("model"), final_stop_reason=response.get("stop_reason"))
+        task_input = full.get("task_input") or {}
+        if expected_task is not None:
+            from .adapter import validate_search_delivery
+
+            task = Path(expected_task).resolve()
+            validate_search_delivery(task)
+            original = (task / "instruction.md").read_text(encoding="utf-8")
+            component = task_input.get("instruction", {}).get("task_instruction", {})
+            if component.get("content") != original:
+                raise HarborResultError("NATIVE_TASK_INSTRUCTION_MISMATCH")
+            observed = {item["path"]: item["sha256"]
+                        for item in task_input.get("workspace", {}).get("files", [])}
+            expected = {p.relative_to(task / "workspace").as_posix():
+                        hashlib.sha256(p.read_bytes()).hexdigest()
+                        for p in (task / "workspace").rglob("*") if p.is_file()}
+            if observed != expected:
+                raise HarborResultError("NATIVE_INITIAL_WORKSPACE_MISMATCH")
+            output["receipt"].update(input_task=str(task), source_binding=True)
+        sources = [
+            root / "result.json", root / "agent/trajectory.full.json",
+            root / "agent/trajectory.json", root / "agent/anthropic-exchanges.jsonl",
+            root / "agent/anthropic-sse.jsonl", root / "agent/hermes-session.jsonl",
+            root / "agent/task-input.json", root / "agent/workspace-initial-manifest.json",
+        ]
+        output["receipt"]["evidence_files"] = {
+            path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sources
+        }
+        if output["final_stop_reason"] in {"max_tokens", "length", "model_context_window_exceeded"}:
+            raise HarborResultError("NATIVE_FINAL_RESPONSE_TRUNCATED")
+        if any(block.get("type") == "tool_use" for block in final):
+            raise HarborResultError("NATIVE_FINAL_RESPONSE_PENDING_TOOL")
+        if output["final_stop_reason"] in {"pause_turn", "tool_use"}:
+            raise HarborResultError("NATIVE_FINAL_RESPONSE_INCOMPLETE")
+        if not answer.strip():
+            raise HarborResultError("NATIVE_FINAL_RESPONSE_EMPTY")
+        output["completed"] = True
+    except (OSError, ValueError, KeyError, TypeError, ImportError, RuntimeError, AttributeError) as exc:
+        output["errors"] = [str(exc) if isinstance(exc, HarborResultError) else type(exc).__name__]
+    return output
+
+
 def read_rollout_results(
     job_dir: Path | str,
     *,
     agent_mode: str = "hermes",
     expected_trial_count: int | None = None,
+    domain: str = "terminal",
+    expected_task: Path | str | None = None,
+    harbor_root: Path | str | None = None,
 ) -> dict[str, Any]:
     """读取 Job 下每个 trial 的 reward/verdict/trajectory 并聚合指标。"""
 
+    if domain not in {"terminal", "search"}:
+        raise HarborResultError("domain 必须是 terminal 或 search")
+    search = domain == "search"
     root = Path(job_dir).resolve()
     if not root.is_dir():
         raise HarborResultError(f"Job 目录不存在：{root}")
@@ -313,12 +437,21 @@ def read_rollout_results(
             "cache": agent_result.get("n_cache_tokens"),
             "output": agent_result.get("n_output_tokens"),
         }
-        content_valid, content_errors = _validate_hermes_artifacts(trial_dir) if hermes_artifacts else (True, [])
+        native = (read_search_trial(trial_dir, expected_task=expected_task, harbor_root=harbor_root)
+                  if search else None)
+        if native is not None:
+            content_valid, content_errors = native["completed"], native["errors"]
+        else:
+            content_valid, content_errors = (
+                _validate_hermes_artifacts(trial_dir) if hermes_artifacts else (True, [])
+            )
         diagnostic = _trial_diagnostic(trial_dir, result)
         trials.append(
             {
                 "trial_name": trial_dir.name,
-                "status": _trial_status(result, verdict),
+                "status": ("COMPLETED" if content_valid else "INFRA_ERROR")
+                if search else _trial_status(result, verdict),
+                **({"acceptance": "NOT_ASSESSED", "native_trial": native} if search else {}),
                 "reward": rewards.get("task") if isinstance(rewards, dict) else None,
                 "verdict_status": verdict.get("status") if verdict else None,
                 "trajectory_present": trajectory_path.is_file(),
@@ -357,7 +490,7 @@ def read_rollout_results(
                 }
             )
     total = len(trials)
-    completed = sum(item["status"] in {"PASS", "FAIL"} for item in trials)
+    completed = sum(item["status"] in {"PASS", "FAIL", "COMPLETED"} for item in trials)
     passed = sum(item["status"] == "PASS" for item in trials)
     trajectory_count = sum(item["trajectory_present"] for item in trials)
     artifact_manifest_count = sum(item["artifact_manifest_present"] for item in trials)
@@ -369,19 +502,23 @@ def read_rollout_results(
         for key in ("input", "cache", "output")
     }
     cleanup = _cleanup_ok(root / "_control/ags-sandbox-ledger.jsonl")
-    artifact_missing = hermes_artifacts and artifact_manifest_count != total
+    artifact_missing = hermes_artifacts and not search and artifact_manifest_count != total
     trajectory_missing = hermes_artifacts and trajectory_count != total
     content_invalid = hermes_artifacts and any(not item.get("content_valid") for item in trials)
     return {
         "schema_version": ROLLOUT_RESULTS_SCHEMA,
         "job_dir": str(root),
         "agent_mode": agent_mode,
+        **({"domain": "search", "acceptance": "NOT_ASSESSED",
+            "execution_completed": bool(total and completed == total and cleanup is True
+                                        and not trial_count_mismatch and not content_invalid)}
+           if search else {}),
         "trial_count": total,
         "expected_trial_count": expected_trial_count,
         "trials": trials,
         "metrics": {
             "completion_rate": completed / total if total else 0.0,
-            "pass_rate": passed / total if total else 0.0,
+            "pass_rate": None if search else (passed / total if total else 0.0),
             "trajectory_capture_rate": trajectory_count / total if total else 0.0,
             "artifact_manifest_rate": artifact_manifest_count / total if total else 0.0,
             "cleanup_rate": 1.0 if cleanup is True else 0.0,
@@ -390,6 +527,7 @@ def read_rollout_results(
         },
         "cleanup": {"ok": cleanup},
         "quality_gate": {
+            **({"scope": "EXECUTION"} if search else {}),
             "ok": bool(
                 total
                 and completed == total
@@ -421,5 +559,6 @@ __all__ = [
     "HarborResultError",
     "certify_hermes_job",
     "read_rollout_results",
+    "read_search_trial",
     "rollout_passed",
 ]

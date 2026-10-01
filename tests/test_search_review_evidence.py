@@ -216,3 +216,39 @@ def test_trace_failure_is_reported_as_review_incomplete_by_pipeline(tmp_path):
     assert result["stopped_at"] == "researcher_review"
     assert result["errors"] == ["TOOL_TRACE_UNAVAILABLE"]
     assert json.loads((tmp_path / "environment.json").read_text())["status"] == "READY"
+
+
+def test_native_review_keeps_harness_tool_names_and_full_blocks(tmp_path):
+    from types import SimpleNamespace
+
+    from traceforge.reconstruction.search_environment import _review_search_rollouts
+
+    trial = {
+        "trial": "native-1", "completed": True, "answer": "引用后的回答",
+        "receipt": {"backend": "native_harbor", "acceptance": "NOT_ASSESSED"},
+        "tool_events": [{
+            "tool_call_id": "native-tool-1", "name": "terminal",
+            "arguments": {"command": "traceforge-search open https://example.org/paper"},
+            "result": [{"type": "text", "text": "原始工具返回" * 4000}], "ok": True,
+        }],
+    }
+
+    def review(**kwargs):
+        received = json.loads(kwargs["instruction"])["trials"]
+        assert received == [trial]
+        assert "read_evidence_calls" not in received[0]
+        return SimpleNamespace(completed=True, errors=[], payload={
+            "decision": "COMPLETE", "requirements": [{
+                "obligation_id": "inspect", "status": "SOLVER_ERROR",
+                "reason": "来源已读完整，但最终回答的引用不支持结论",
+            }],
+        })
+
+    result = _review_search_rollouts(
+        task={"acceptance_obligations": [{"id": "inspect"}]},
+        environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
+                     "context_messages": []},
+        agent=SimpleNamespace(run=review), session=AgentSession(), output_root=tmp_path,
+        native_trials=[trial],
+    )
+    assert result["requirements"][0]["status"] == "SOLVER_ERROR"
