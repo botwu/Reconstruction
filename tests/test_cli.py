@@ -138,3 +138,34 @@ def test_prepare_rollout_rejects_budget_downgrade(tmp_path, monkeypatch, capsys,
     ]) == 2
     assert calls == []
     assert "lower than reviewed config budget" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("override,expected", [
+    (None, "anthropic/anthropic/claude-opus-4-8/awsb_L/sfa"),
+    ("anthropic/explicit-model", "anthropic/explicit-model"),
+])
+def test_raw_run_preserves_configured_gateway_model_id(tmp_path, monkeypatch, override, expected):
+    import traceforge.cli as cli
+
+    source = tmp_path / "session.jsonl"
+    source.write_text(json.dumps({"messages": [{"role": "user", "content": "执行任务"}]}) + "\n")
+    config = tmp_path / "config.yaml"
+    config.write_text('roles:\n  {"rollout":{"channel":"claude",'
+                      '"model":"anthropic/claude-opus-4-8/awsb_L/sfa"}}\n')
+    monkeypatch.setattr(cli, "build_hermes_runtime", lambda **kwargs: object())
+    monkeypatch.setattr(cli, "build_chat_model", lambda **kwargs: object())
+    received = []
+
+    def reconstruct(**kwargs):
+        received.append(kwargs["verification_config"])
+        path = tmp_path / "manifest.json"
+        path.write_text(json.dumps({"status": "COMPLETED"}))
+        return path
+
+    monkeypatch.setattr(cli, "run_raw_session_reconstruction", reconstruct)
+    args = ["reconstruct", "raw-run", "--input", str(source), "--domain", "search",
+            "--line-number", "1", "--output", str(tmp_path / "out"), "--config", str(config)]
+    if override is not None:
+        args += ["--rollout-model", override]
+    assert cli.main(args) == 0
+    assert received[0].rollout_model == expected

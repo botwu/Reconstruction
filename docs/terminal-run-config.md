@@ -25,6 +25,12 @@ roles:
 | verifier | gpt | `gpt-5` | 生成隐藏 pytest 和 RED 证据 |
 | rollout | claude | `anthropic/claude-opus-4-8/awsb_L/sfa` | Harbor 解题复验；必须与 reconstruction 模型不同 |
 
+roles 中的 model 是网关的完整模型 ID，斜杠和路由后缀原样保留。
+转接 Harbor 时另外加一层 provider；例如上面的 rollout 在 Harbor 计划中为
+anthropic/anthropic/claude-opus-4-8/awsb_L/sfa，实际发给网关的仍是
+anthropic/claude-opus-4-8/awsb_L/sfa。CLI 显式 --rollout-model 接受 Harbor 的
+provider/model；需要上述同一模型时应包含两层前缀。
+
 实际报告中的 `roles` 只包含 role/channel/model，不包含 key。CLI 的 `--channel`、`--model-name`、`--verifier-channel`、`--verifier-model`、`--rollout-channel`、`--rollout-model` 只做显式覆盖，覆盖值不会写入配置。
 
 ## 本地静态预检

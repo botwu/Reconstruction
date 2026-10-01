@@ -445,7 +445,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             verifier_role = matrix["verifier"]
             rollout_role = matrix["rollout"]
             resolved_rollout = resolve_rollout_model(
-                rollout_role.model,
+                arguments.rollout_model,
                 channel=rollout_role.channel,
                 model_name=rollout_role.model,
             )
