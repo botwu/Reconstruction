@@ -7,23 +7,38 @@
 R01 使用 search，R04 使用 terminal。会话未结束、工具返回缺失、内容损坏不作为初始淘汰条件。
 问题记入对应阶段的证据缺口，重建环境和任务是否合格由实际产物及执行结果判断。
 
-## 角色 JSON
+## 角色配置
 
-在本地 `config.yaml` 的 `roles` 项中放一个 JSON 对象。每个角色至少指定 `channel` 和 `model`；模型网关仍从对应 channel 读取凭据。
+通道连接及 `roles` 均支持标准 YAML 或 JSON，显式配置的空值和错误类型会报错，
+不会静默退回默认模型。下面是当前真实调试使用的角色示例，网关连接与凭据配置见
+[模型通道](model-gateway-config.md)。在 `gpt` 通道连接对象中声明
+`agent_api_mode: codex_responses` 和 `agent_context_length: 1000000`。
 
 ```yaml
 roles:
-  {"session_parser":{"channel":"deepseek","model":"bailian/deepseek-v4-flash-0731"},"reconstruction":{"channel":"gpt","model":"gpt-5"},"verifier":{"channel":"gpt","model":"gpt-5"},"rollout":{"channel":"claude","model":"claude-opus-4-8/awsb_L/sfa"}}
+  session_parser:
+    channel: gpt
+    model: gpt-6-astra/azure/sfa
+  reconstruction:
+    channel: gpt
+    model: gpt-6-astra/azure/sfa
+  verifier:
+    channel: gpt
+    model: gpt-6-astra/azure/sfa
+  rollout:
+    channel: claude
+    model: claude-opus-4-8/awsb_L/sfa
+    timeout_seconds: 14400
+    max_iterations: 500
 ```
 
-这组值表示当前 terminal 运行矩阵：
+session_parser 解释工具语义与返回引用；reconstruction 承担 Intent、Completion、
+Sufficiency 及编排；verifier 生成和校准文件行为测试；rollout 在 Harbor 中独立解题。
+重建与 rollout 使用不同模型。上述 1M 是显式窗口配置，14400 秒与 500 次是当前
+单次 solver 预算，均不等于已验证对应容量，也不限制整个重建工作的修正次数。
 
-| 角色 | channel | model | 作用 |
-| --- | --- | --- | --- |
-| session_parser | deepseek | `bailian/deepseek-v4-flash-0731` | Replay 前理解工具语义和返回引用；此角色有默认值，可在 roles 中覆盖 |
-| reconstruction | gpt | `gpt-5` | Intent、Completion、Sufficiency 和编排代理 |
-| verifier | gpt | `gpt-5` | 生成隐藏 pytest 和 RED 证据 |
-| rollout | claude | `claude-opus-4-8/awsb_L/sfa` | Harbor 解题复验；必须与 reconstruction 模型不同 |
+未覆盖的角色仍使用源码默认配置（解析为 DeepSeek，重建和验证为 gpt-5），
+不能把默认值与本轮实际 Astra 调用混为一谈。部署时应明确配置全部四个角色。
 
 roles 中的 model 是网关的完整模型 ID，斜杠和路由后缀原样保留。
 转接 Harbor 时另外加一层 provider；例如上面的 rollout 在 Harbor 计划中为
