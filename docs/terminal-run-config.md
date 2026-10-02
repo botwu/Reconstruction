@@ -88,6 +88,7 @@ PYTHONPATH=src python scripts/preflight_terminal_environment.py \
 
 ```bash
 export HERMES_HOME=/mnt/afs_toolcall/wujian1/Projects/tokenhub_data_model_eval/R01/hermes-agent
+export TRACEFORGE_MODEL_TIMEOUT_SECONDS=300
 PYTHONPATH=src python -m traceforge reconstruct raw-run \
   --input <完整 R04 或 R05 JSONL> \
   --domain terminal \
