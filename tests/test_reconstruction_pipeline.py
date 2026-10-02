@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,11 +17,9 @@ from traceforge.reconstruction.pipeline import (
 )
 from traceforge.reconstruction.env_replay import replay_from_timeline
 from traceforge.reconstruction.intent_recovery import run_intent_recovery
-from traceforge.reconstruction.session_source import load_raw_line
 from traceforge.reconstruction.verification import VerificationConfig
 from traceforge.reconstruction.workspace_completion import run_workspace_completion
 from traceforge.reconstruction.workspace_sufficiency import run_workspace_sufficiency
-from traceforge.reconstruction.session_spans import build_spans
 
 
 def test_known_search_domain_cannot_be_overridden_by_task_or_files() -> None:
@@ -677,3 +674,75 @@ def test_cli_raw_run_writes_manifest(
     assert task_result["verification"]["sft_eligible"] is False
     assert (task_root / "replay.json").is_file()
     assert Path(task_result["workspace"]).joinpath("foo.py").is_file()
+
+
+@pytest.mark.parametrize("context_source", ["runtime", "completion"])
+def test_prepared_terminal_passes_only_baseline_facts_to_verifier(
+    monkeypatch, tmp_path: Path, context_source,
+):
+    from traceforge.reconstruction import pipeline
+    from traceforge.reconstruction.pipeline import run_prepared_task
+
+    agent = _sandboxed_agent(tmp_path)
+    source = _record(json.dumps(_session(), ensure_ascii=False))
+    intent = run_intent_recovery(source=source, agent=agent, output_root=tmp_path / "intent")
+    task = intent["task"]
+    source["session_parser"] = {"status": "READY"}
+    observations = [{"finding": "原始故障", "source_message_indices": [2]}]
+    context = {"baseline_observations": observations, "repair_instruction": "只给环境补全者的修复要求"}
+    if context_source == "runtime":
+        agent.initial_feedback = context
+    captured = []
+
+    def verify(**kwargs):
+        captured.append(kwargs["initial_feedback"])
+        return {"status": "READY", "errors": []}
+
+    monkeypatch.setattr(pipeline, "run_reconstruction_verification", verify)
+    config = VerificationConfig(
+        harbor_root=tmp_path / "harbor", model_name="fake", rollout_model="anthropic/fake",
+    )
+    if context_source == "completion":
+        initial = run_prepared_task(
+            source=source, task=task, agent=agent, output_root=tmp_path / "initial",
+            verification_config=config,
+        )
+        candidate = initial["completion"]["candidates"][initial["selected_index"]]
+        captured.clear()
+        kwargs = {"completion_seed": candidate, "completion_feedback": context}
+    else:
+        kwargs = {}
+    result = run_prepared_task(
+        source=source, task=task, agent=agent, output_root=tmp_path / "prepared",
+        verification_config=config, **kwargs,
+    )
+    assert result["status"] == "READY"
+    assert captured == [{"baseline_observations": observations}]
+
+
+
+def test_raw_terminal_keeps_baseline_facts_when_wrapping_task_runtime(monkeypatch, tmp_path: Path):
+    from traceforge.reconstruction import pipeline
+
+    agent = _agent()
+    observations = [{"finding": "原始故障", "source_message_indices": [2]}]
+    agent.initial_feedback = {
+        "baseline_observations": observations, "repair_instruction": "仅给环境补全者",
+    }
+    captured = []
+
+    def verify(**kwargs):
+        captured.append(kwargs["initial_feedback"])
+        return {"status": "READY", "errors": []}
+
+    monkeypatch.setattr(pipeline, "run_reconstruction_verification", verify)
+    manifest = run_reconstruction(
+        source=_record(json.dumps(_session(), ensure_ascii=False)),
+        agent=agent, output_root=tmp_path / "raw",
+        container_runtime_factory=lambda: LocalExecRuntime(tmp_path / "ags"),
+        verification_config=VerificationConfig(
+            harbor_root=tmp_path / "harbor", model_name="fake", rollout_model="anthropic/fake",
+        ),
+    )
+    assert json.loads(manifest.read_text())["status"] == "READY"
+    assert captured == [{"baseline_observations": observations}]

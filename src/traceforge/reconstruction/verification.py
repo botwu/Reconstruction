@@ -697,7 +697,10 @@ def run_reconstruction_verification(
             )
             iterations: list[dict[str, Any]] = []
             feedback = dict(initial_feedback) if initial_feedback is not None else None
+            baseline_observations = (initial_feedback or {}).get("baseline_observations")
             for round_number in range(start_round, start_round + config.max_rounds):
+                if baseline_observations is not None:
+                    feedback = {**(feedback or {}), "baseline_observations": baseline_observations}
                 recovered, generated = run_verifier_recovery(
                     task=task,
                     workspace_root=workspace,
@@ -833,6 +836,7 @@ def run_reconstruction_verification(
                 agent=agent,
                 output_root=root / "agent" / "round-01",
                 source=source,
+                feedback=initial_feedback,
                 manual_response_review=config.manual_response_review,
             )
             audit = recovered

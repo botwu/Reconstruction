@@ -16,7 +16,7 @@ from traceforge.reconstruction.model_gateway import (
     parse_json_object,
 )
 
-VERIFIER_PROMPT_VERSION = "terminal-universe-verifier-adaptation-v5-task-scope"
+VERIFIER_PROMPT_VERSION = "terminal-universe-verifier-adaptation-v6-baseline-scope"
 VERIFIER_SYSTEM = """你是独立的 code/file 任务验证器构建者。参照 Terminal-Universe 附录 D：
 只测试用户明确规定的接口和功能。期望值必须在测试中独立计算；不得运行待测实现
 来产生 gold。至少一个 missing-capability 测试必须在当前完成态 workspace（bE）上失败；

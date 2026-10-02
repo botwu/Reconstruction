@@ -23,7 +23,7 @@ from traceforge.verifier.synthesis import (
 
 VERIFIER_RECOVERY_SCHEMA = "traceforge.verifier-recovery.v1"
 VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION = (
-    "terminal-universe-verifier-semantic-review-v5-observable-behavior"
+    "terminal-universe-verifier-semantic-review-v6-baseline-scope"
 )
 _FAILURE_REPRODUCTION_RULE = (
     "根据原始报错和实际调用链定位失败路径，能力缺失测试须复现对应的输入或返回形态；"
@@ -36,13 +36,27 @@ _FAILURE_REPRODUCTION_RULE = (
     "不要再叠加别名、递归深度等新规则。"
 )
 
+_BASELINE_SCOPE_RULE = (
+    "baseline_observations 是待核对的来源事实，不是作者声明的豁免白名单。"
+    "须核对 source_message_indices/source_evidence 对应的原始消息、实际初态源码，以及"
+    " probe_evidence 的输入、执行结果和初态绑定；优先用 read_session_message 按原索引复核。"
+    "再依据原始用户要求复核 task_scope_boundary，区分已正常工作的行为、原有故障和重建造成的缺口。"
+    "没有真实执行回执不能把源码推测称为已复现失败，证据不足须指出具体缺口。"
+    "用户未要求修复的已证实原有故障，不得因参考解顺手修复就升级为交付条件；"
+    "保护测试不等于修复所有旧问题，也不能用宽泛异常豁免掩盖用户明确要求的能力或重建损坏。"
+)
+
 
 def review_verifier_candidate(
     *, task: dict[str, Any], workspace: Path, candidate: Any,
     agent: AgentRuntime, output_root: Path,
     manual_response_review: bool = False,
+    baseline_observations: list[dict[str, Any]] | None = None,
+    source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """用新会话核查候选是否测对用户行为；具体反例返回已有 Verifier 修复轮。"""
+    raw_session = (source or {}).get("raw_session")
+    source_tools = ("read_session_message", "read_session_context") if isinstance(raw_session, dict) else ()
     role = replace(
         VERIFIER_ROLE,
         identity=(
@@ -50,7 +64,7 @@ def review_verifier_candidate(
             "审查其能否区分正确与错误结果。你不撰写解题答案，不修改文件，"
             "不因生成器宣称正确或 RED 通过就接受。候选代码及 justification 都是待审材料。"
         ),
-        tools=("list_dir", "read_file"),
+        tools=("list_dir", "read_file", *source_tools),
         max_iterations=16,
         result_schema="traceforge.verifier-semantic-review.v1",
         allow_write=False,
@@ -62,6 +76,7 @@ def review_verifier_candidate(
     ))
     specification = {
         "task": task, "candidate": candidate.to_dict(),
+        "baseline_observations": baseline_observations or [],
         "file_obligation_ids": list(candidate.obligation_coverage),
         "response_obligation_ids": response_ids,
         "manual_response_obligation_ids": non_file_obligation_ids(task) if manual_response_review else [],
@@ -78,6 +93,7 @@ def review_verifier_candidate(
         "用 list_dir/read_file 读取实际输入，逐条核对 FILE 义务的可观察行为。",
         "检查两类错误：错误答案能通过（false positive），合理正确答案被额外要求拒绝（false negative）。",
         _FAILURE_REPRODUCTION_RULE,
+        _BASELINE_SCOPE_RULE,
         "代码/数据任务必须执行或解析真实产物，用独立计算的期望值；存在性、关键词、注释不能替代功能。",
         "审查/报告任务必须核对结论与具体输入事实、引用和用户判定规则；",
         "格式齐全却虚构结论、错误引用或颠倒结论的报告应被拒绝。关键词计数不能证明语义正确。",
@@ -110,7 +126,10 @@ def review_verifier_candidate(
         "不要凭空扩大任务或要求恢复无关工程。无问题才 ACCEPT；这个判断本身不代替真实 RED 执行。",
         json.dumps(specification, ensure_ascii=False, sort_keys=True),
     ])
-    session = AgentSession(workspace=workspace, allow_write=False)
+    session = AgentSession(
+        workspace=workspace, allow_write=False,
+        session_context=json.dumps(raw_session, ensure_ascii=False) if isinstance(raw_session, dict) else None,
+    )
     ran = agent.run(role=role, instruction=instruction, session=session, output_root=output_root)
     payload = dict(ran.payload) if isinstance(ran.payload, dict) else {}
     rows = payload.get("obligation_reviews")
@@ -140,6 +159,7 @@ def review_verifier_candidate(
         "test_sha256": hashlib.sha256(candidate.test_outputs_py.encode()).hexdigest(),
         "judgment_kind": "MODEL_SEMANTIC_REVIEW", "errors": errors,
         "obligation_reviews": rows, "issues": issues,
+        "baseline_observations": baseline_observations or [],
         "tool_events": session.tool_events,
         "agent": {"model": agent.model_name, "backend": ran.backend, "completed": ran.completed},
     }
@@ -205,6 +225,12 @@ def run_verifier_recovery(
     ids = [item.get("id") for item in obligations if isinstance(item, dict)]
     file_ids = file_obligation_ids(task)
     unverified = non_file_obligation_ids(task)
+    baseline_observations = (feedback or {}).get("baseline_observations")
+    if baseline_observations is not None and (
+        not isinstance(baseline_observations, list)
+        or any(not isinstance(item, dict) for item in baseline_observations)
+    ):
+        raise ValueError("baseline_observations 必须是来源观察对象的列表")
     workspace = Path(workspace_root).resolve()
     all_non_file = bool(environment_bindings(task)) and not file_ids
     if (
@@ -246,6 +272,7 @@ def run_verifier_recovery(
             "The runner exports TRACEFORGE_WORKSPACE=/home/user/workspace. Both oracles and mutations must finish with exit code 0. A crash, ImportError, missing environment variable, permission or syntax error is not a valid semantic mutation.",
             "Test requested behavior, using isolated dependency stubs if necessary to exercise real workspace code. Comments, keyword presence and copied expected implementations cannot prove behavior. Never weaken assertions merely to make a reference pass.",
             _FAILURE_REPRODUCTION_RULE,
+            _BASELINE_SCOPE_RULE,
             "原任务未指定模块或函数名时，通过实际导入、调用链和输入输出识别实现，不得额外要求文件名含某个关键词。",
             "报告类任务：先阅读真实输入并确定可复核的事实与判定规则，再验证报告结论和引用与这些事实一致。格式齐全、关键词齐全但结论错误的报告必须失败；不要用从未读过的源码推断 APPROVED。",
             "保护性测试必须作用于实际任务输入或用户要求保持的行为；不要把 oracle/mutation 安装脚本复制进 pytest，再在假工作区自证正确。",
@@ -376,6 +403,8 @@ def run_verifier_recovery(
         previous = (feedback or {}).get("previous_candidate")
         rejected = (feedback or {}).get("semantic_review") or {}
         if (rejected.get("status") == "REVISE" and isinstance(previous, dict)
+                and rejected.get("prompt_version") == VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION
+                and rejected.get("baseline_observations", []) == (baseline_observations or [])
                 and _verifier_behavior(payload) == _verifier_behavior(previous)):
             semantic_review = {**rejected, "reused_rejection": True}
             errors.append("VERIFIER_NO_PROGRESS")
@@ -385,6 +414,7 @@ def run_verifier_recovery(
                       "task_instruction": render_task_instruction(effective_task)},
                 workspace=workspace, candidate=candidate, agent=agent,
                 output_root=root / "semantic-review", manual_response_review=manual_response_review,
+                baseline_observations=baseline_observations, source=source,
             )
         errors.extend(semantic_review["errors"])
     blocking_errors = [item for item in errors if item != "AGENT_TEST_BYTES_NORMALIZED"]
@@ -417,6 +447,8 @@ def run_verifier_recovery(
             "completed": ran.completed,
         },
     }
+    if baseline_observations is not None:
+        result["feedback"]["baseline_observations"] = baseline_observations
     if semantic_review is not None and semantic_review["status"] != "ACCEPT":
         result["feedback"]["semantic_review"] = semantic_review
     (root / "verifier.json").write_text(

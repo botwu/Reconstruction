@@ -183,7 +183,7 @@ def test_verifier_completes_missing_summary_before_same_semantic_review(tmp_path
     assert context["response_evidence"] == "真实 rollout 的 trajectory.full.json"
     assert result["unverified_obligations"] == ["obl-002", "obl-003"]
     assert result["semantic_review"]["prompt_version"] == (
-        "terminal-universe-verifier-semantic-review-v5-observable-behavior"
+        "terminal-universe-verifier-semantic-review-v6-baseline-scope"
     )
     assert not list((tmp_path / "workspace").rglob("trajectory.full.json"))
 

@@ -812,6 +812,10 @@ def _task_result(
             result["stopped_at"] = "verification"
             result["errors"] = execution_blockers
             return result
+    baseline_feedback = {}
+    for context in (getattr(agent, "initial_feedback", None), completion_feedback):
+        if isinstance(context, dict) and "baseline_observations" in context:
+            baseline_feedback["baseline_observations"] = context["baseline_observations"]
     verification = run_reconstruction_verification(
         task=task_for_verification,
         workspace_root=chosen["workspace"],
@@ -821,6 +825,7 @@ def _task_result(
         config=verification_config,
         source=task_source,
         env_root=chosen.get("env_root"),
+        initial_feedback=baseline_feedback or None,
     )
     result["verification"] = verification
     sandbox_errors = _sandbox_init_errors(verification.get("errors"))
@@ -976,7 +981,11 @@ def _run_task_loop(
         seen.add(state)
         row["action"] = "REPAIR_INITIAL_ENVIRONMENT"
         completion_seed = candidate
-        completion_feedback = {**diagnosis, "downstream_failure": feedback}
+        preserved = {
+            key: value for key, value in (completion_feedback or {}).items()
+            if key == "baseline_observations"
+        }
+        completion_feedback = {**diagnosis, "downstream_failure": feedback, **preserved}
         _write_stage_json(diagnosis_root, "repair_feedback.json", completion_feedback)
         _write_stage_json(root / "tasks" / str(task["task_id"]), "task_repair_audit.json", {"attempts": audit})
     result["task_repair_audit"] = audit
@@ -1121,9 +1130,14 @@ def run_reconstruction(
         _source_task, task_source, replay, support = routed_task
         task_agent, task_verifier = agent, verifier_agent
         if container_runtime_factory is not None:
+            initial_context = getattr(native_agent, "initial_feedback", None)
+            baseline_feedback = {
+                "baseline_observations": copy.deepcopy(initial_context["baseline_observations"]),
+            } if isinstance(initial_context, dict) and "baseline_observations" in initial_context else None
             task_agent = ReconstructionRuntime(
                 native_agent, source=task_source, task=item["task"],
                 runtime_factory=container_runtime_factory,
+                initial_feedback=baseline_feedback,
             )
             task_verifier = task_agent
             if native_verifier is not None and native_verifier is not native_agent:
