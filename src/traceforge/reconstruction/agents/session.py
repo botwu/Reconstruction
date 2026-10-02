@@ -259,8 +259,10 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
             ["query"],
         ),
         "web_open": (
-            "读取公开来源正文；使用 offset/limit 继续读取同一页面快照。",
-            {"url": text, **page},
+            "读取公开来源正文；offset/limit 分页。PDF 文本层不可读时可显式传 ocr_page"
+            "（从 1 开始）识别单页；返回带坐标/置信度的原检测序列，公式和双栏顺序未经核实。"
+            "需已配置本地 OCR；不会自动 OCR 所有 PDF。",
+            {"url": text, **page, "ocr_page": {"type": "integer", "minimum": 1}},
             ["url"],
         ),
         "write_test": (
@@ -434,6 +436,7 @@ def execute_tool(name: str, arguments: Any, session: AgentSession) -> str:
         return _dump(session.web_open_handler(
             str(args.get("url") or ""), offset=args.get("offset", 0),
             limit=args.get("limit", MAX_TOOL_RESULT_CHARS),
+            **({"ocr_page": args["ocr_page"]} if "ocr_page" in args else {}),
         ))
     if name == "write_test":
         return _write_test(session, args)
@@ -621,6 +624,7 @@ def _edit_candidate_file(session: AgentSession, args: dict[str, Any]) -> str:
 def _restore_dependency_source(session: AgentSession, args: dict[str, Any]) -> str:
     """原成员正文与全部初态观察合并后，仍经过已有候选写入保护。"""
     import zipfile
+
     from traceforge.reconstruction.python_runtime import read_locked_wheel_member
 
     path = workspace_relpath(session, str(args.get("path") or ""))

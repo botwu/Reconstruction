@@ -334,7 +334,7 @@ def test_result_points_to_latest_review_checkpoint_including_new_sources(
         return {"decision": decision, "errors": ["明确反馈缺口"] if decision == "BLOCKED" else []}
 
     monkeypatch.setattr(search_environment, "_complete_search_environment", complete)
-    monkeypatch.setattr(search_environment, "export_search_task", lambda *args: tmp_path / "harbor")
+    monkeypatch.setattr(search_environment, "export_search_task", lambda *args, **kwargs: tmp_path / "harbor")
     monkeypatch.setattr(search_environment, "run_search_rollouts", lambda **kwargs: {
         "status": "ROLLOUT_COMPLETED", "errors": [], "rollouts": [],
     })

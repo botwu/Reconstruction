@@ -32,7 +32,9 @@ from traceforge.reconstruction.search_handoff import (
 )
 from traceforge.reconstruction.search_tools import SearchTools
 from traceforge.reconstruction.session_source import (
-    indexed_session, message_text, source_session_message_indices,
+    indexed_session,
+    message_text,
+    source_session_message_indices,
 )
 
 if TYPE_CHECKING:
@@ -82,7 +84,9 @@ SEARCH_COMPLETION_ROLE = AgentRole(
         "requires_live_web 表示 solver 是否需要继续公网研究，不限制重建者获取有依据的公开补充材料。"
         "补充的公开源码以实际打开的 URL 引用并随 live_references 交付。"
         "公开资料任务实际搜索并打开相关来源，核对所需章节是否可读；访问成功不等于正文完整。"
-        "乱码、正文漏字、仅目录或摘要不能当作已读全文；沿 DOI、期刊网页和公开版本继续取证，"
+        "乱码、正文漏字、仅目录或摘要不能当作已读全文；PDF 可用 web_open 的 ocr_page 显式识别单页，"
+        "需本地 OCR 能力已配置；保留坐标、置信度及页图，公式和双栏顺序未核实，不能宣称精确恢复。"
+        "沿 DOI、期刊网页和公开版本继续取证，"
         "必要时找同一问题的其他真实文献，保留原来源并说明覆盖边界，不生成替代正文。"
         "captured 中的历史搜索和原助手说过的行动，不是你本轮执行的 web_search；"
         "必须依据本轮工具回执区分已查询、只打开已有链接和从未查询。"
@@ -464,7 +468,7 @@ def save_search_checkpoint(
         encoding="utf-8",
     )
     network_root = getattr(network, "root", output_root / "completion/web")
-    for path in [*network_root.glob("*.raw"), *network_root.glob("*.pdf")]:
+    for path in [*network_root.glob("*.raw"), *network_root.glob("*.pdf"), *network_root.glob("*.png")]:
         shutil.copyfile(path, web / path.name)
     manifest = {
         "schema_version": "traceforge.search-checkpoint.v1",
@@ -561,7 +565,8 @@ def run_search_task(
     last_user = max((i for i, message in enumerate(messages)
                      if message.get("role") == "user" and (task_indices is None or i in task_indices)),
                     default=-1)
-    network = SearchTools(output_root / "completion" / "web")
+    network_root = output_root / "completion" / "web"
+    network = SearchTools(network_root)
     conversation = (AgentConversation() if checkpoint_path is None else
                     _restore_search_checkpoint(
                         checkpoint_path, source=source, task=task, network=network))
@@ -609,7 +614,8 @@ def run_search_task(
             "task": task, "reconstruction_feedback": initial_feedback or {},
             "restored_reference_catalog": [
                 {"url": url, "title": page.get("title"), "content_kind": page.get("content_kind"),
-                 "retrieved_at": page.get("retrieved_at"), "total_chars": len(page["text"])}
+                 "retrieved_at": page.get("retrieved_at"), "total_chars": len(page["text"]),
+                 **({"ocr_pages": list(page["ocr_pages"])} if page.get("ocr_pages") else {})}
                 for url, page in network.pages.items()
             ],
         }, ensure_ascii=False)
@@ -642,7 +648,7 @@ def run_search_task(
                            errors=["SEARCH_RECONSTRUCTION_NO_PROGRESS"])
             break
         seen_environments.add(state)
-        harbor_task = export_search_task(environment, round_root / "harbor")
+        harbor_task = export_search_task(environment, round_root / "harbor", evidence_root=network_root)
         outcome["harbor_task"] = str(harbor_task.resolve())
         outcome["harbor_rollout_args"] = ["--disable-verification"]
         native_trials = None

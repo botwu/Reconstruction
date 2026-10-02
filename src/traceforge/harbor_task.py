@@ -129,6 +129,13 @@ def _write_search_sources(public: Path, environment: dict[str, Any]) -> None:
                 **{key: original[key] for key in
                    ("evidence_ref_id", "url", "query", "title", "content_kind") if key in original},
             }
+            if record.get("ocr_pages"):
+                entry["ocr_pages"] = [
+                    {"page": item["page_number"], "record_key": f"ocr_pages.{number}",
+                     "raw_path": f"source-assets/{item['ocr_raw_sha256']}.ocr.raw",
+                     "image_path": f"source-assets/{item['image_sha256']}.png"}
+                    for number, item in record["ocr_pages"].items()
+                ]
             if isinstance(record.get(field), str):
                 body = record.pop(field)
                 raw = body.encode("utf-8")
@@ -149,7 +156,9 @@ def _write_search_sources(public: Path, environment: dict[str, Any]) -> None:
     )
 
 
-def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
+def export_search_task(
+    environment: dict[str, Any], output_root: Path, *, evidence_root: Path | None = None,
+) -> Path:
     """封装已补全的检索初态；未提供内容验证器时使用 Harbor 的跳过验证模式。"""
     from traceforge.reconstruction.search_handoff import SEARCH_ENVIRONMENT_SCHEMA
 
@@ -161,6 +170,14 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
             or environment.get("missing_inputs")
             or not isinstance(instruction, str) or not instruction.strip()):
         raise ValueError("只有任务和必要上下文完整的检索初态才能导出 Harbor")
+    from traceforge.reconstruction.search_tools import pdf_ocr_assets
+
+    assets: set[Path] = set()
+    for page in environment.get("live_references", []):
+        if page.get("ocr_pages"):
+            if evidence_root is None:
+                raise ValueError("OCR 交付缺少原 PDF、页图和识别原始返回所在目录")
+            assets.update(pdf_ocr_assets(page, evidence_root))
     tool_source = Path(__file__).parent / "reconstruction/search_tools.py"
     requires_web = environment.get("requires_live_web", True)
     dependency_lock = json.loads(
@@ -169,7 +186,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
     pdf_dependencies = [f"{item['name']}=={item['version']}"
                         for item in dependency_lock.get("wheels", [])]
     digest = hashlib.sha256(json.dumps({
-        "search_delivery_version": 12, "pdf_dependencies": pdf_dependencies,
+        "search_delivery_version": 13, "pdf_dependencies": pdf_dependencies,
         "dependency_sources": dependency_lock,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),
@@ -186,6 +203,10 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
             "live_references": environment.get("live_references", []),
         })
         _write_search_sources(public, environment)
+        if assets:
+            (public / "source-assets").mkdir()
+            for asset in sorted(assets):
+                shutil.copyfile(asset, public / "source-assets" / asset.name)
         context = {
             "original_user_texts": (task.get("source_task") or {}).get("user_texts", []),
             "context_messages": environment.get("context_messages", []),
@@ -211,6 +232,14 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
             "文件路径和行号来自原始观察；公开上游版本与原仓库分开引用，未捕获不等于不存在。"
             "按原任务要求给出最终回答，Harbor 会保存执行轨迹。\n"
         )
+        if assets:
+            instruction += (
+                "\nPDF 的 ocr_pages 为按页保存的 OCR 原检测块，含 bbox 像素坐标和置信度。"
+                "source-assets 中 source_pdf_sha256.pdf 是原文件，image_sha256.png 是原页图，"
+                "ocr_raw_sha256.ocr.raw 是带版本、模型哈希的识别原始返回；字段值替换对应文件名前缀。"
+                "原 text 文本层保留不变；OCR 检测顺序不是双栏阅读顺序，公式/上下标/表格可能误识别，"
+                "未经核对不能声称精确恢复。solver 无需安装或运行 OCR。\n"
+            )
         if requires_web:
             instruction += (
                 '\n公开网页工具：traceforge-search search "查询内容"；'

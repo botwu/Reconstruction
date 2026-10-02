@@ -15,7 +15,7 @@ search 包含本地代码、文档检索。补全 agent 根据原任务声明 `r
 
 公开查询使用 Serper，普通网页读取默认使用 Jina Reader。先根据实际 HTTP 响应识别 PDF，支持无后缀地址及重定向；下载原文件后用 `pypdf[fonts]` 读取文本层；这项依赖已纳入 `pyproject.toml` 和锁文件。凭据从环境变量 `SERPER_API_KEY`、`JINA_API_KEY` 或私有 `~/.config/traceforge/search.json` 的同义小写字段加载。可用 `TRACEFORGE_SEARCH_CONFIG` 指定私有配置位置；网络无法访问 Jina 时，可明确设置 `fetch_provider: "serper"`（或环境变量 `TRACEFORGE_FETCH_PROVIDER`）使用同一 Serper 账户的网页读取接口。实际 provider 会记录在每条返回中，不静默切换。
 
-PDF 返回保留原文件 SHA256、物理页码、提取器版本、空文本页和提取范围。文本层可读不表示图片、图表、公式已经核实；扫描件或无文本层的文件明确返回缺口，不生成替代正文。Harbor 包固定与作者相同的 PDF 库版本，在镜像构建阶段安装。
+PDF 返回保留原文件 SHA256、物理页码、提取器版本、空文本页和提取范围。文本层可读不表示图片、图表、公式已经核实；扫描件或无文本层的文件默认明确返回缺口，不生成替代正文。Harbor 包固定与作者相同的 PDF 库版本，在镜像构建阶段安装。
 
 凭据不进入任务、请求正文或产物。网络失败、登录页或缺失来源不能假称已取得完整论文；需按真实工具返回判断并保留限制。
 
@@ -28,3 +28,13 @@ PDF 返回保留原文件 SHA256、物理页码、提取器版本、空文本页
 READY 初态同时导出 `harbor/<digest>/task/`，`result.json.harbor_task` 返回可交给下游的原生任务路径。该目录包含任务说明、捕获证据和可执行检索工具；使用原生 Harbor 时仍须 `--disable-verification`，内容留待核查。详见 [Harbor 任务交付](harbor-task-delivery.md)。
 
 重建角色的工具调用在 `private/tool_events.jsonl` 逐次落盘。`STARTED` 后没有 `FINISHED` 表示该工具尚未返回；相邻工具之间的空档可能是模型请求，不能只凭运行时长推断死循环。
+
+## 显式单页 OCR
+
+补全者可调用 \`web_open(url, ocr_page=1, offset=0, limit=8000)\`。页号从 1 开始；未传页号仍读取原 PDF 文本层。配置 \`TRACEFORGE_OCR_PYTHON\` 或私有 \`search.json\` 的 \`ocr_python\` 指定已有 OCR 解释器，未配置或版本/模型哈希不符时明确失败，不自动安装、换引擎或切到远端模型。
+
+工作进程按 \`pdf_ocr_lock.json\` 核对实际包版本和 RapidOCR 模型/配置哈希。当前锁定的是已完成五页真实诊断的 Python 3.10 环境；其中 OpenCV 5 的依赖元数据要求 numpy>=2，而已安装 numpy1.26.4，因此它仅是现有诊断能力记录，**不是另一台机器的推荐安装方案**。独立且依赖相容的 Python 3.12 安装尚待授权和验证；不能声称公开 clone 后 OCR 可直接运行。
+
+OCR 返回带像素坐标和置信度的原检测块，保留检测順序。双栏段落未经重排，公式、上下标、表格和署名可能误识别；不得据此宣称精确恢复。原 PDF 和原文本层保留不变，原文件、页图、识别原始 JSON 分别以 SHA256 绑定。默认最多返回 8000 字符，余下用同一页号和 offset 续读。
+
+检查点保存这三种资产；Harbor 的来源索引列出可用 OCR 页号及文件位置，\`source-assets/\` 中交付 PDF、PNG 与 \`.ocr.raw\`。来源的 TXT 仍是原文本层，JSON 中的 \`ocr_pages\` 保存独立识别结果。solver 不安装 OCR 包，只读取已经取得的真实材料。OCR 成功不自动改变环境的 READY 状态，仍由原 researcher 逐项判断资料是否足够。

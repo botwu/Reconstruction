@@ -1,0 +1,21 @@
+{
+  "python": [
+    3,
+    10
+  ],
+  "versions": {
+    "rapidocr-onnxruntime": "1.4.4",
+    "PyMuPDF": "1.28.0",
+    "onnxruntime": "1.23.2",
+    "opencv-python": "5.0.0.93",
+    "numpy": "1.26.4"
+  },
+  "model_sha256": {
+    "models/ch_PP-OCRv4_det_infer.onnx": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9",
+    "models/ch_PP-OCRv4_rec_infer.onnx": "48fc40f24f6d2a207a2b1091d3437eb3cc3eb6b676dc3ef9c37384005483683b",
+    "models/ch_ppocr_mobile_v2.0_cls_infer.onnx": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c",
+    "config.yaml": "bf94a1da4cba828e67b1d61e27cee14d9e7da27c9f272e04048a17e41ae97332"
+  },
+  "validation_scope": "仅固定现有 Python3.10 诊断环境；opencv-python 声明 numpy>=2 而实际1.26.4，有依赖元数据冲突。已实跑5页，不作为标准安装推荐。",
+  "package_index": "https://pypi.org/simple"
+}
