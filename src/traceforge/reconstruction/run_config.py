@@ -1,9 +1,7 @@
-"""Role-based model and runtime configuration for live reconstruction.
+"""重建各角色的模型与运行配置。
 
-The local config may keep API credentials in channel entries and define a
-one-line JSON roles mapping that selects models for each pipeline role.
-Only public role metadata is returned to callers; credentials stay in the
-existing model gateway.
+YAML/JSON 中的 channel 条目可包含凭据，roles 映射选择各阶段的模型；
+对外仅返回角色元数据，凭据保留在模型网关内存中。
 """
 
 from __future__ import annotations
@@ -17,7 +15,6 @@ from traceforge.reconstruction.model_gateway import (
     iter_config_items,
     load_channel_model,
 )
-
 
 ROLE_DEFAULTS: dict[str, tuple[str, str]] = {
     "session_parser": ("deepseek", "bailian/deepseek-v4-flash-0731"),
@@ -41,7 +38,9 @@ def _role_entries(path: str | Path | None) -> dict[str, Any]:
     if path is None:
         return {}
     for name, value in iter_config_items(path):
-        if name == "roles" and isinstance(value, dict):
+        if name == "roles":
+            if not isinstance(value, dict):
+                raise ModelGatewayError("roles 配置必须为对象", code="ROLE_CONFIG_INVALID")
             return value
     return {}
 
@@ -58,13 +57,11 @@ def load_role_settings(
     if role not in ROLE_DEFAULTS:
         raise ValueError(f"unknown model role: {role}")
     default_channel, default_model = ROLE_DEFAULTS[role]
-    entry = _role_entries(path).get(role)
-    if entry is None:
-        entry = {}
+    entry = _role_entries(path).get(role, {})
     if not isinstance(entry, dict):
         raise ModelGatewayError(f"role config must be an object: {role}", code="ROLE_CONFIG_INVALID")
     configured_channel = entry.get("channel")
-    if configured_channel is not None and not isinstance(configured_channel, str):
+    if "channel" in entry and not isinstance(configured_channel, str):
         raise ModelGatewayError(f"role channel must be a string: {role}", code="ROLE_CONFIG_INVALID")
     if isinstance(configured_channel, str) and not configured_channel.strip():
         raise ModelGatewayError(f"role channel is empty: {role}", code="ROLE_CONFIG_INVALID")
@@ -72,7 +69,7 @@ def load_role_settings(
         raise ModelGatewayError(f"role channel override is empty: {role}", code="ROLE_CONFIG_INVALID")
     channel = (channel_override if channel_override is not None else configured_channel or default_channel).strip()
     configured_model = entry["model"] if "model" in entry else entry.get("model_name")
-    if configured_model is not None and not isinstance(configured_model, str):
+    if ("model" in entry or "model_name" in entry) and not isinstance(configured_model, str):
         raise ModelGatewayError(f"role model must be a string: {role}", code="ROLE_CONFIG_INVALID")
     if isinstance(configured_model, str) and not configured_model.strip():
         raise ModelGatewayError(f"role model is empty: {role}", code="ROLE_CONFIG_INVALID")

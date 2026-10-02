@@ -16,6 +16,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import yaml
+
 # OpenAI 兼容端点上的推理模型（gpt-5 类）把隐藏推理 token 计入 max_tokens 预算：
 # nominal 4096 会在产出任何正文前被推理耗尽，端点返回空 content 且 finish_reason=length，
 # 历史网关只能抛不透明的 EMPTY_RESPONSE，既跑不通也无法辨识根因。这里为送往 OpenAI 兼容
@@ -94,49 +96,31 @@ _SANDBOX_KEY_ALIASES = frozenset(
 )
 
 
-def _parse_config_value(raw: str) -> Any:
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return raw.strip().strip("'\"")
-
-
 def iter_config_items(path: str | os.PathLike[str]) -> list[tuple[str, Any]]:
-    """解析顶层 key / 一行 JSON 或标量，结果只留在进程内存。"""
+    """解析标准 YAML/JSON 顶层映射，凭据只保留在进程内存。"""
 
     try:
         with open(path, encoding="utf-8") as config_file:
-            raw_lines = config_file.read().splitlines()
+            config = yaml.safe_load(config_file)
     except OSError as exc:
         raise ModelGatewayError("无法读取模型配置", code="CONFIG_READ_ERROR") from exc
-    items: list[tuple[str, Any]] = []
-    current: str | None = None
-    for line in raw_lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        indented = line.startswith((" ", "\t"))
-        if not indented and ":" in stripped:
-            name, _, rest = stripped.partition(":")
-            current = name.strip()
-            rest = rest.strip()
-            if rest:
-                items.append((current, _parse_config_value(rest)))
-                current = None
-            continue
-        if current is None:
-            continue
-        items.append((current, _parse_config_value(stripped)))
-        current = None
-    return items
+    except (yaml.YAMLError, UnicodeError):
+        # YAML 异常包含输入行，可能暴露配置中的凭据。
+        raise ModelGatewayError(
+            "模型配置不是有效的 YAML/JSON", code="CONFIG_PARSE_ERROR"
+        ) from None
+    if not isinstance(config, dict) or any(not isinstance(key, str) for key in config):
+        raise ModelGatewayError(
+            "模型配置顶层必须是字符串键映射", code="CONFIG_PARSE_ERROR"
+        )
+    return list(config.items())
 
 
 def _config_channels(path: str | os.PathLike[str]) -> dict[str, dict[str, Any]]:
     """读取 ``newapi_channel_conn`` 配置而不将密钥写入日志或 artifact。
 
-    当前 TokenHub 配置是顶层 channel 名加一行 JSON 对象的 YAML 子集；这里
-    不依赖 PyYAML，并且只把解析结果保存在进程内存中。对普通 YAML 映射也
-    做了最小兼容，便于测试配置迁移。
+    使用同一标准 YAML/JSON 解析入口，嵌套配置与旧行内 JSON 具有相同语义。
+    解析结果只保存在进程内存中。
     """
 
     channels: dict[str, dict[str, Any]] = {}
