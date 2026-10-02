@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -525,7 +526,11 @@ def test_verifier_sandbox_requires_red_then_accepts_matching_runs(tmp_path: Path
     assert "SANDBOX_PYTEST_RED_REQUIRED" in recovered["errors"]
     assert candidate is None
 
-    digest = __import__("hashlib").sha256(payload["test_outputs_py"].encode()).hexdigest()
+    digest = hashlib.sha256(payload["test_outputs_py"].encode()).hexdigest()
+    input_digest = hashlib.sha256(json.dumps([
+        ("foo.py", hashlib.sha256((workspace / "foo.py").read_bytes()).hexdigest()),
+    ]).encode()).hexdigest()
+    binding = {"test_sha256": digest, "input_sha256": input_digest, "input_unchanged": True}
 
     recovered, candidate = run_verifier_recovery(
         task=_task(),
@@ -533,8 +538,8 @@ def test_verifier_sandbox_requires_red_then_accepts_matching_runs(tmp_path: Path
         agent=SandboxVerifier(
             payload,
             pytest_runs=[
-                {"name": "test_missing", "status": "FAIL", "test_sha256": digest},
-                {"name": "test_protective", "status": "PASS", "test_sha256": digest},
+                {"name": "test_missing", "status": "FAIL", **binding},
+                {"name": "test_protective", "status": "PASS", **binding},
             ],
         ),
         output_root=tmp_path / "ok",

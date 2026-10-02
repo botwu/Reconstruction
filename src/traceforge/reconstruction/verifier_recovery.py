@@ -89,6 +89,7 @@ def review_verifier_candidate(
     source_tools = ("read_session_message", "read_session_context") if isinstance(raw_session, dict) else ()
     role = replace(
         VERIFIER_ROLE,
+        name="verifier_semantic_review",
         identity=(
             "你是 TraceForge 验证器语义审查员。独立阅读用户任务、实际工作区和候选测试，"
             "审查其能否区分正确与错误结果。你不撰写解题答案，不修改文件，"

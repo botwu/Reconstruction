@@ -1143,8 +1143,10 @@ class SandboxedAgentRuntime:
         session: AgentSession,
         output_root: Path,
     ) -> AgentResult:
-        # 文件语义审查只读已绑定的宿主快照；不能误建未上传证据的空沙箱。
-        if role.name in {"intent", "session_tasks", "file_artifact_review"}:
+        # 独立语义审查只读已绑定的宿主输入，不需要作者的执行沙箱。
+        if role.name in {
+            "intent", "session_tasks", "file_artifact_review", "verifier_semantic_review",
+        }:
             return self.inner.run(
                 role=role,
                 instruction=instruction,

@@ -316,3 +316,72 @@ def test_no_progress_facts_distinguish_changed_case_or_execution(field, value):
            "test_sha256": "test", "input_sha256": "input", "input_unchanged": True}
     assert _pytest_run_facts([run]) != _pytest_run_facts([{**run, field: value}])
     assert _pytest_run_facts([run, {**run, "stdout": "different elapsed time"}]) == _pytest_run_facts([run])
+
+
+@pytest.mark.parametrize("outside_read", [False, True])
+def test_readonly_verifier_review_keeps_author_in_sandbox(tmp_path, outside_read):
+    import json
+
+    from traceforge.reconstruction.agents.runtime import HermesNativeRuntime, SandboxedAgentRuntime
+    from traceforge.reconstruction.agents.sandbox import LocalExecRuntime
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    original = "def get_value(): return 1\n"
+    (workspace / "input.py").write_text(original)
+    (tmp_path / "outside.txt").write_text("不能读取的宿主正文")
+    calls, sandboxes = [], []
+
+    class NativeAgent:
+        def __init__(self, **kwargs):
+            assert kwargs["model"] == "configured-verifier"
+            assert kwargs["enabled_toolsets"] == []
+
+        def run_conversation(self, instruction, system_message=None, task_id=None, **kwargs):
+            assert "conversation_history" not in kwargs
+            calls.append(task_id)
+            names = {item["function"]["name"] for item in self.tools}
+            if task_id == "verifier":
+                assert {"write_test", "run_pytest"} <= names
+                payload = _payload("echo first")
+            else:
+                assert task_id == "verifier_semantic_review"
+                assert names == {"list_dir", "read_file"}
+                assert "input.py" in self._invoke_tool("list_dir", {}, task_id)
+                observed = self._invoke_tool("read_file", {"path": "input.py"}, task_id)
+                assert original.strip() in observed
+                if outside_read:
+                    rejected = self._invoke_tool("read_file", {"path": "../outside.txt"}, task_id)
+                    assert rejected.startswith("error:")
+                    assert "不能读取的宿主正文" not in rejected
+                payload = {
+                    "decision": "ACCEPT", "issues": [],
+                    "obligation_reviews": [{"obligation_id": "output", "covered": True,
+                                            "reason": "确定性替身核对角色路由和实际读权限"}],
+                }
+            return {"completed": True, "messages": [], "final_response": json.dumps(payload)}
+
+    def runtime_factory():
+        sandboxes.append(LocalExecRuntime(tmp_path / f"ags-{len(sandboxes)}"))
+        return sandboxes[-1]
+
+    runtime = SandboxedAgentRuntime(
+        HermesNativeRuntime(factory=NativeAgent, base_url="https://example.test", api_key="fixture",
+                            model_name="configured-verifier", provider="custom"),
+        runtime_factory,
+    )
+    result, candidate = run_verifier_recovery(
+        task={"task_instruction": "Review input.py and write review.md", "acceptance_obligations": [
+            {"id": "output", "text": "Write a correct review"}], "environment_bindings": [
+            {"obligation_id": "output", "verifier_kind": "FILE", "output_paths": ["review.md"]}]},
+        workspace_root=workspace, agent=runtime, output_root=tmp_path / "verifier",
+    )
+    assert result["status"] == "READY"
+    assert candidate is not None
+    assert calls == ["verifier", "verifier_semantic_review"]
+    assert len(sandboxes) == 1
+    runs = result["semantic_review"]["pytest_evidence"]["runs"]
+    assert {run["status"] for run in runs} == {"PASS", "FAIL"}
+    assert not (tmp_path / "verifier/semantic-review/pytest_vendor_runtime").exists()
+    assert (workspace / "input.py").read_text() == original
+    assert (tmp_path / "outside.txt").read_text() == "不能读取的宿主正文"
