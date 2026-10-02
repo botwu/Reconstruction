@@ -18,6 +18,7 @@ from traceforge.reconstruction.verification import (
 from traceforge.verifier.bundle import compile_bundle
 from traceforge.verifier.red_check import evaluate_red_check
 from traceforge.verifier.synthesis import VerifierCandidate, SolutionVariant
+from traceforge.workspace_snapshot import collect_workspace
 
 TASK = {
     "task_id": "extract", "task_instruction": "将计算提取为新模块，由主程序调用，行为保持一致。",
@@ -56,9 +57,11 @@ def trial_fixture(tmp_path, final_files=None):
     verdict = {"exit_code": 0, "tests": [{"name": "test_preserved", "status": "PASS"}]}
     (trial / "verifier/verdict.json").write_text(json.dumps(verdict))
     final = trial / "artifacts/logs/artifacts/traceforge/workspace"
-    shutil.copytree(task / "workspace", final)
+    solved = tmp_path / "solved"
+    shutil.copytree(task / "workspace", solved)
     for name, content in (final_files or {}).items():
-        (final / name).write_text(content)
+        (solved / name).write_bytes(content if isinstance(content, bytes) else content.encode())
+    collect_workspace(solved, final, initial_paths=["main.py"], output_paths=[])
     row = {"status": "PASS", "reward": 1.0, "content_valid": True,
            "result_path": str(trial / "result.json"), "verdict_path": str(trial / "verifier/verdict.json")}
     run = {"execution": {"status": "COMPLETED"}, "file_semantic_checks": CHECKS,
@@ -180,9 +183,7 @@ def test_semantic_pending_requires_a_reviewed_mechanism_and_stays_unverified():
 
 
 def test_binary_difference_is_a_hash_change_not_replacement_text(tmp_path):
-    trial, _, _ = trial_fixture(tmp_path)
-    final = trial / "artifacts/logs/artifacts/traceforge/workspace"
-    (final / "binary.dat").write_bytes(b"\xff\x00\xfe")
+    trial, _, _ = trial_fixture(tmp_path, {"binary.dat": b"\xff\x00\xfe"})
     snapshot = build_file_artifact_snapshot(trial)
     output = tmp_path / "review"
     receipt = review_file_artifact(snapshot=snapshot, task=TASK, checks=CHECKS, agent=Reviewer(),

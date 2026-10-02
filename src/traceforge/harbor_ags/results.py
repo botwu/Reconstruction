@@ -446,6 +446,27 @@ def build_file_artifact_snapshot(
     if result_task.get("path") and Path(result_task["path"]).resolve() != task:
         raise HarborResultError("FILE_SNAPSHOT_TASK_MISMATCH")
     collection_manifest = "artifacts/logs/artifacts/traceforge/workspace-collection.json"
+    collection_path = root / collection_manifest
+    try:
+        requires_collection = "TraceForge workspace snapshot hook v2" in (task / "task.toml").read_text()
+    except OSError as exc:
+        raise HarborResultError(f"FILE_SNAPSHOT_INPUT_MISSING:{exc.filename}") from exc
+    if collection_path.is_symlink():
+        raise HarborResultError("FILE_SNAPSHOT_COLLECTION_UNSAFE")
+    if requires_collection and not collection_path.is_file():
+        raise HarborResultError("FILE_SNAPSHOT_COLLECTION_MISSING")
+    if collection_path.exists():
+        collection = _read_json(collection_path)
+        rows = collection.get("files")
+        if (collection.get("schema_version") != "traceforge.workspace-collection.v1"
+                or collection.get("status") != "COLLECTED" or collection.get("errors") != []
+                or not isinstance(rows, list)
+                or any(not isinstance(row, dict) or not isinstance(row.get("path"), str)
+                       or not isinstance(row.get("sha256"), str) for row in rows)):
+            raise HarborResultError("FILE_SNAPSHOT_COLLECTION_INCOMPLETE")
+        collected_files = {row["path"]: row["sha256"] for row in rows}
+        if len(collected_files) != len(rows) or collected_files != final_files:
+            raise HarborResultError("FILE_SNAPSHOT_COLLECTION_FILES_MISMATCH")
     execution_files = ["config.json", "result.json", "verifier/verdict.json"]
     execution_files.extend(name for name in (
         "agent/trajectory.full.json", "agent/trajectory.json", "agent/hermes-result.json",

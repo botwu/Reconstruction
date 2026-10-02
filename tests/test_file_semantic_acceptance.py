@@ -240,15 +240,43 @@ def test_workspace_collection_manifest_is_visible_and_bound_when_present(tmp_pat
     legacy = build_file_artifact_snapshot(trial)
     assert "verifier/workspace-collection.json" not in legacy["evidence_files"]
     path = trial / "artifacts/logs/artifacts/traceforge/workspace-collection.json"
-    _write(path, {
-        "status": "COMPLETE",
+    collection = {
+        "schema_version": "traceforge.workspace-collection.v1", "status": "COLLECTED", "errors": [],
+        "files": [{"path": name, "sha256": value} for name, value in legacy["final_files"].items()],
         "excluded": [{"path": ".venv", "reason": "新增虚拟环境"}],
-    })
+    }
+    _write(path, collection)
     snapshot = build_file_artifact_snapshot(trial)
     assert snapshot["evidence_files"]["verifier/workspace-collection.json"] == str(path)
     assert snapshot["binding"]["execution_sha256"] != legacy["binding"]["execution_sha256"]
     receipt = _receipt(snapshot)
-    _write(path, {"status": "COMPLETE", "excluded": []})
+    _write(path, {**collection, "excluded": []})
     assert validate_file_semantic_receipt(
         receipt, build_file_artifact_snapshot(trial), contract["file_semantic_checks"],
     ) == ["FILE_SEMANTIC_BINDING_MISMATCH"]
+
+
+@pytest.mark.parametrize("defect", ["missing", "error", "mismatch"])
+def test_new_collection_hook_requires_complete_matching_receipt(tmp_path, defect):
+    from traceforge.harbor_task import workspace_snapshot_hook
+
+    trial, task, _ = _trial(tmp_path)
+    (task / "task.toml").write_text('schema_version = "1.4"\n' + workspace_snapshot_hook(task))
+    final = trial / "artifacts/logs/artifacts/traceforge/workspace"
+    receipt = {
+        "schema_version": "traceforge.workspace-collection.v1", "status": "COLLECTED", "errors": [],
+        "files": [{"path": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                  for path in final.iterdir()],
+    }
+    manifest = final.parent / "workspace-collection.json"
+    _write(manifest, receipt)
+    assert build_file_artifact_snapshot(trial)["final_files"]
+    if defect == "missing":
+        manifest.unlink()
+    elif defect == "error":
+        receipt.update(status="ERROR", errors=["收集失败，目录可能来自上一次运行"])
+        _write(manifest, receipt)
+    else:
+        (final / "business.py").write_text("未记入收集清单的内容")
+    with pytest.raises(HarborResultError, match="COLLECTION"):
+        build_file_artifact_snapshot(trial)
