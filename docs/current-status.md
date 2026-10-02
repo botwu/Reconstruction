@@ -2,7 +2,7 @@
 
 更新：2026-10-02。这里只记录实际执行和产物核查结果。
 
-目标是充分利用完整原始 session，恢复忠实的任务和可解的初始环境，交付标准 Harbor 任务包，最后用真实 solver 验证。**R01:38 的任务和环境已有一份通过独立内容核查的 Astra 答卷；两份最新原生 Claude 答卷仍有作者错引。R04:1 首个任务已通过真实组合校准，正在执行两次最终 rollout；第二个任务正在重新恢复初态。冷启动仍有检索服务阻塞，尚不具备批量生产条件。**
+目标是充分利用完整原始 session，恢复忠实的任务和可解的初始环境，交付标准 Harbor 任务包，最后用真实 solver 验证。**R01:38 的任务和环境已有一份通过独立内容核查的 Astra 答卷；两份最新原生 Claude 答卷仍有作者错引。R04:1 首个任务已通过真实组合校准并完成两次 rollout：第二份文件义务通过，分析回答仍需修正；第二个任务的新初态恢复和独立充分性检查已通过。冷启动仍有检索服务阻塞，尚不具备批量生产条件。**
 
 ## 重建框架与模块预期
 
@@ -51,7 +51,7 @@ run08 的两份错引均属于已有资料被漏读或误用，没有据此补�
 4. 运行依赖问题是控制端未安装已经锁定的 pypdf/fonttools。已在项目私有运行目录离线安装相同 wheel；同一真实 PDF 重试成功，10 页、13,492 字符，原文件与正文已保留哈希。
 5. 外部服务仍阻塞：Serper 实际返回 HTTP 400 / Not enough credits；Jina 单次重试仍为 Network is unreachable。PDF 恢复成功不能证明搜索服务恢复。
 
-正在从 run02 的原 researcher 检查点继续补全。已有资料恢复与真实在线能力分别记录，不把旧 warm 缓存冒充冷启动的新查询结果。
+从 run02 原 researcher 检查点恢复的一轮补全已完成：18 次新 web_open，8 份真实 PDF；原 5 条捕获逐值不变，没有导入旧 warm 缓存。作者实际阅读后仍为 BLOCKED：7 份正文可读，群组间隔防护 PDF 却缺 Unicode 映射，无法从文本层核查控制方法。原 PDF 5 页已用已有本地 OCR 恢复并绑定页图、框坐标与置信度；公式下标和双栏顺序仍有限制。正在把显式逐页 OCR 接入原 web_open，再由同一 researcher 判断材料是否充分，不把 OCR 诊断直接改写为 READY。
 
 ## R04:1：terminal
 
@@ -74,13 +74,20 @@ run06 复用相同已审候选，初态、测试与判据未变。真实组合 R
 | 参考解 2 | 9 项 PASS | ACCEPT | 接受 |
 | 错误变体：清空成功指纹 | 持久化测试 FAIL | REVISE | 正确拒绝 |
 
-当前正在进行两次最终 Claude rollout。代码质量分析是独立的 NON_FILE 义务，按用户同意的方式逐份核查；尚未核查前不宣称整个任务通过。
+两次最终 Claude rollout 已完成，结果分别核查：
+
+- 第一份代码和轨迹已产生，但新增 .venv 的符号链接被旧收集器一起打包，AGS 拒绝下载，后续表现为缺少 reward。28 个业务文件可从成功工具记录精确恢复并对上真实终态哈希，但这不改变原生回收失败的事实。分析报告有 3 项确定问题，包括错误描述缺 cookie 的失败路径、混淆去重终止与请求节流，以及误判同级模块导入依赖当前目录。
+- 第二份完整回收，9 项行为测试通过。原全局质量 gate 被第一份失败拉低，曾错误地跳过这份独立 FILE 审查；修正后，对相同实际文件和执行证据的独立审查 ACCEPT。分析报告仍需修正：把查询/并发上限当成远端时段配额，又把累计无新增页数写成连续页数；后者已用原方法和受控响应实际复现。
+- collector 已改为记录并排除新增虚拟环境与 Python 缓存，保护初态和显式交付路径，其他符号链接仍明确失败。真实带链接的 venv 已在 AGS 完成安全下载，业务字节不变；结果端要求新收集回执成功且文件哈希完整匹配。
+- 每条 trial 依据各自真实执行和捕获证据审查，整体两次复验要求保留。旧 run06 和两份原答卷均未回写；12 个所属沙箱的清理已核对。
+
+正在用新收集器、同一初态和同一不可变验收候选准备下一次正式验证。代码质量分析是独立 NON_FILE 义务；FILE 通过与分析正确分别记录，不把当前结果宣称为整项任务通过。
 
 ### 第二个任务：DeadlineExceeded
 
 旧初态虽然标记 READY，实际不忠实：原轨迹使用 GET/query params 和整数 userId，旧补全者生成 POST/JSON/string，并消除了待解异常路径。其实际工具轨迹未读取关键原始消息，属于有效材料未利用后产生的不实推断。
 
-新恢复使用全部 97 条原始消息及真实观察：原文件前缀、main 的调用方式、成功补丁和首次修复补丁的旧侧。原创建参数中确有 8,947 个连续占位字符，不能声称整个文件能逐字复原。正在以新 researcher 会话恢复并检查初态，必须保留原 DeadlineExceeded 触发行为；尚无该任务的新 rollout 通过证据。
+新恢复使用全部 97 条原始消息及真实观察：原文件前缀、main 的调用方式、成功补丁和首次修复补丁的旧侧。原创建参数中确有 8,947 个连续占位字符，不能声称整个文件能逐字复原。新 researcher 恢复已完成：completion READY，独立充分性 READY/SUFFICIENT，环境 READY/PROBED，必需缺口为空。真实 AGS 已验证原 GET、整数 userId、分页接口及 main 调用，也验证首页、后续页、部分数据后的 DeadlineExceeded 仍触发原故障，未预装重试修复。仅恢复阶段当前状态是 PENDING_EXECUTION；随后接正式验证器和 rollout，尚无该任务的 solver 通过证据。
 
 ## 长会话、批量和迁移边界
 
@@ -94,4 +101,4 @@ run06 复用相同已审候选，初态、测试与判据未变。真实组合 R
 
 实现入口见[流程](raw-session-pipeline.md)、[源码地图](rebuild-live-map.md)、[Harbor 交付](harbor-task-delivery.md)和[批量运行](batch-reconstruction.md)。密钥、私有配置和运行产物不进入 Git。
 
-私有实证在 artifacts/pipeline-debug-20261002/：native-harbor-search38/run08、native-harbor-search38/astra-solvability-run01、cold-batch-search38-run01/02、cold-search-runtime-recovery-run01、cold-search-context-recovery-run01、terminal-environment-recovery/run06。旧失败、原答卷和清理回执保留，不被新成功覆盖。
+私有实证在 artifacts/pipeline-debug-20261002/：native-harbor-search38/run08、native-harbor-search38/astra-solvability-run01、cold-batch-search38-run01/02、cold-search-runtime-recovery-run01、cold-search-context-recovery-run01、terminal-environment-recovery/run06、terminal-task2-initial-state-run02、cold-pdf-cmap-diagnostic-run01。旧失败、原答卷和清理回执保留，不被新成功覆盖。
