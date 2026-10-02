@@ -14,8 +14,10 @@ from typing import Any
 
 from traceforge.reconstruction.agents import AgentRuntime, AgentSession
 from traceforge.reconstruction.agents.roles import SESSION_TASK_ROLE
+from traceforge.reconstruction.agents.session import AgentConversation
 from traceforge.reconstruction.env_replay import normalize_file_ops
 from traceforge.reconstruction.session_source import (
+    indexed_session,
     message_text,
     span_records,
     tool_timeline,
@@ -24,6 +26,7 @@ from traceforge.reconstruction.session_spans import build_spans
 
 RAW_SOURCE_SCHEMA = "traceforge.reconstruction-source.raw-session.v1"
 SEGMENTATION_SCHEMA = "traceforge.session-task-segmentation.v1"
+SEGMENTATION_PROMPT_VERSION = "session-boundaries-v3-validation-feedback"
 
 
 class RawSessionSourceError(ValueError):
@@ -53,26 +56,25 @@ def _user_records(raw_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def _segmentation_prompt(
-    *, spans: list[Any], user_records: list[dict[str, Any]],
-    raw_messages: list[dict[str, Any]],
-) -> str:
-    entries = []
-    for span in spans:
-        entries.append(
-            {
-                "span_id": span.span_id,
-                "message_start": span.message_start,
-                "message_end": span.message_end,
-                "user_message_indices": list(span.user_message_indices),
-            }
-        )
+def _span_catalog(spans: list[Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "span_id": span.span_id,
+            "message_start": span.message_start,
+            "message_end": span.message_end,
+            "user_message_indices": list(span.user_message_indices),
+        }
+        for span in spans
+    ]
+
+
+def _segmentation_prompt(*, spans: list[Any], raw_messages: list[dict[str, Any]]) -> str:
     previous_responses = [
-        {"before_span_id": span.span_id, "message_index": index, "text": text}
+        {"before_span_id": span.span_id, "message_index": index}
         for position, span in enumerate(spans)
         for index in range(spans[position - 1].message_start if position else 0, span.message_start)
         if raw_messages[index].get("role") == "assistant"
-        if (text := message_text(raw_messages[index]))
+        if message_text(raw_messages[index])
     ]
     return "\n".join(
         [
@@ -88,7 +90,7 @@ def _segmentation_prompt(
                 "Group spans by one coherent user goal. A continuation or correction "
                 "stays with its parent task when it clearly refers to it. "
                 "Do not merge unrelated goals. "
-                "任务边界还取决于请求开始时已有的工作。先核对 PREVIOUS_RESPONSES 中的原始助手回复；"
+                "任务边界还取决于请求开始时已有的工作。先按 PREVIOUS_RESPONSES 索引核对 SOURCE_SESSION 中的原始助手回复；"
                 "若新请求以此前已交付产物为起点，提出新的行为或修复目标，应建立独立任务，"
                 "用 context 关系保留前置依赖；不能仅因项目或文件相同就合并。"
                 "对尚未完成目标的格式纠正、补充约束及继续执行仍合并，不按成功或报错词汇机械切分。"
@@ -105,8 +107,7 @@ def _segmentation_prompt(
                 "that task's spans. Do not copy assistant/tool actions into user "
                 "evidence. Do not invent ids or paths."
             ),
-            "SPAN_CATALOG=" + json.dumps(entries, ensure_ascii=False),
-            "USER_MESSAGES=" + json.dumps(user_records, ensure_ascii=False),
+            "SPAN_CATALOG=" + json.dumps(_span_catalog(spans), ensure_ascii=False),
             "PREVIOUS_RESPONSES=" + json.dumps(previous_responses, ensure_ascii=False),
         ]
     )
@@ -248,63 +249,89 @@ def build_raw_session_source(
     spans, span_meta = build_spans(raw_messages)
     span_map = span_records(spans, raw_messages)
     users = _user_records(raw_messages)
-    prompt = _segmentation_prompt(spans=spans, user_records=users, raw_messages=raw_messages)
+    prompt = _segmentation_prompt(spans=spans, raw_messages=raw_messages)
+    prompt += "\nSOURCE_SESSION=" + json.dumps(indexed_session(payload), ensure_ascii=False)
     session = AgentSession(
+        conversation=AgentConversation(),
         user_records=users,
-        user_texts=[item["text"] for item in users],
         session_context=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
     )
-    try:
-        result = agent.run(
-            role=SESSION_TASK_ROLE, instruction=prompt, session=session, output_root=root
-        )
-    except (
-        Exception
-    ) as exc:  # 运行失败不能误记为原始任务的边界问题
+    attempts: list[dict[str, Any]] = []
+    seen_errors: set[tuple[str, ...]] = set()
+    attempt_index = max(
+        (int(path.name) for path in (root / "attempts").glob("*") if path.name.isdigit()),
+        default=0,
+    )
+    while True:
+        attempt_index += 1
+        attempt_root = root / "attempts" / f"{attempt_index:04d}"
+        attempt_root.mkdir(parents=True)
+        (attempt_root / "instruction.txt").write_text(prompt, encoding="utf-8")
+        result = None
+        try:
+            result = agent.run(
+                role=SESSION_TASK_ROLE, instruction=prompt, session=session,
+                output_root=attempt_root,
+            )
+            model_payload, agent_errors, completed, final_text = _result_payload(result)
+        except Exception as exc:  # 运行失败不能误记为原始任务的边界问题。
+            model_payload, completed, final_text = {}, False, None
+            agent_errors = ["AGENT_EXCEPTION", str(exc)]
+        if agent_errors or not completed:
+            task_groups, context_ids, relations = [], [], []
+            errors = agent_errors or ["AGENT_INCOMPLETE"]
+            status, stop_reason = "SESSION_TASK_AGENT_FAILED", "AGENT_FAILED"
+        else:
+            task_groups, context_ids, relations, errors = _parse_segmentation(
+                model_payload, spans=spans, span_map=span_map
+            )
+            status = "SESSION_TASK_REVIEW" if errors else "READY"
+            error_state = tuple(sorted(set(errors)))
+            stop_reason = (
+                "VALIDATED" if not errors
+                else "NO_VALIDATION_PROGRESS" if error_state in seen_errors else None
+            )
+            seen_errors.add(error_state)
         receipt = {
             "schema_version": SEGMENTATION_SCHEMA,
-            "status": "SESSION_TASK_AGENT_FAILED",
-            "errors": ["AGENT_EXCEPTION", str(exc)],
+            "status": status,
             "line_number": line_number,
+            "source_ref": source_ref,
+            "prompt_version": SEGMENTATION_PROMPT_VERSION,
             "line_sha256": line_hash,
             "span_count": len(spans),
+            "assigned_span_count": len(
+                {sid for item in task_groups for sid in item["span_ids"]} | set(context_ids)
+            ),
+            "task_count": len(task_groups),
+            "context_span_ids": context_ids,
+            "errors": errors,
+            "agent": {
+                "role": SESSION_TASK_ROLE.name,
+                "backend": getattr(result, "backend", "unknown"),
+                "completed": completed,
+                "turns": len(getattr(result, "turns", []) or []),
+            },
+            "model_payload": model_payload,
+            "model_response_text": final_text,
+            "repair_stop_reason": stop_reason,
         }
-        _persist(root, "session_task_segmentation.json", receipt)
-        raise RawSessionSourceError("session task 分组 Agent 异常") from exc
-    model_payload, agent_errors, completed, final_text = _result_payload(result)
-    if agent_errors or not completed:
-        task_groups, context_ids, relations = [], [], []
-        errors = agent_errors or ["AGENT_INCOMPLETE"]
-        status = "SESSION_TASK_AGENT_FAILED"
-    else:
-        task_groups, context_ids, relations, errors = _parse_segmentation(
-            model_payload, spans=spans, span_map=span_map
-        )
-        status = "SESSION_TASK_REVIEW" if errors else "READY"
-    receipt = {
-        "schema_version": SEGMENTATION_SCHEMA,
-        "status": status,
-        "line_number": line_number,
-        "source_ref": source_ref,
-        "prompt_version": "session-boundaries-v2-prior-state",
-        "line_sha256": line_hash,
-        "span_count": len(spans),
-        "assigned_span_count": len(
-            {sid for item in task_groups for sid in item["span_ids"]} | set(context_ids)
-        ),
-        "task_count": len(task_groups),
-        "context_span_ids": context_ids,
-        "errors": errors,
-        "agent": {
-            "role": SESSION_TASK_ROLE.name,
-            "backend": getattr(result, "backend", "unknown"),
-            "completed": completed,
-            "turns": len(getattr(result, "turns", []) or []),
-        },
-        "model_payload": model_payload,
-        "model_response_text": final_text,
-    }
-    _persist(root, "session_task_segmentation.json", receipt)
+        attempt_path = _persist(attempt_root, "result.json", receipt)
+        attempts.append({
+            "result_path": str(attempt_path.relative_to(root)),
+            "status": status, "errors": errors,
+        })
+        _persist(root, "session_task_segmentation.json", {**receipt, "attempts": attempts})
+        if stop_reason:
+            break
+        prompt = "\n".join([
+            "上一条分段结果未通过结构校验。请在同一原始会话上修正，返回完整分段 JSON。",
+            "只使用下列合法 span ID，保留全部用户目标、约束、上下文和依赖；"
+            "不得通过删除任务或遗漏 span 消除错误。需要时复查已交付原文和工具返回。",
+            "VALIDATION_ERRORS=" + json.dumps(errors, ensure_ascii=False),
+            "SPAN_CATALOG=" + json.dumps(_span_catalog(spans), ensure_ascii=False),
+            "PREVIOUS_OUTPUT=" + json.dumps(model_payload, ensure_ascii=False),
+        ])
     if status == "SESSION_TASK_AGENT_FAILED":
         raise RawSessionSourceError(
             "任务分组 Agent 运行失败：" + ", ".join(errors)

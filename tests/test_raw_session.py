@@ -273,3 +273,152 @@ def test_segmentation_api_failure_is_not_a_task_boundary_review(tmp_path: Path) 
     assert receipt["status"] == "SESSION_TASK_AGENT_FAILED"
     assert receipt["errors"] == ["MODEL_API_FAILED"]
     assert receipt["model_response_text"] == "HTTP 400: unsupported protocol"
+
+
+class SegmentationSequenceAgent:
+    def __init__(self, results):
+        self.results = iter(results)
+        self.calls = []
+
+    def run(self, *, role, instruction, session, output_root):
+        self.calls.append((instruction, session, output_root))
+        assert session.conversation is not None
+        session.conversation.messages.append({"role": "user", "content": instruction})
+        result = next(self.results)
+        if isinstance(result, Exception):
+            raise result
+        session.conversation.messages.append(
+            {"role": "assistant", "content": json.dumps(result.payload)}
+        )
+        return result
+
+
+def test_segmentation_repairs_unknown_span_with_same_full_source_conversation(tmp_path):
+    line = raw_session()
+    valid = segmentation_payload(line)
+    invalid = json.loads(json.dumps(valid))
+    real_id = invalid["tasks"][1]["span_ids"][0]
+    invalid["tasks"][1]["span_ids"][0] = "span_e4d6b_PLACEHOLDER"
+    agent = SegmentationSequenceAgent([FakeResult(invalid), FakeResult(valid)])
+
+    source = build_raw_session_source(
+        raw_line=line, line_number=38, source_ref="R01", agent=agent, output_root=tmp_path
+    )
+
+    assert source["raw_session"] == json.loads(line)
+    first, correction = agent.calls
+    assert first[1] is correction[1]
+    assert json.loads(first[1].session_context) == json.loads(line)
+    indexed = json.loads(next(
+        row.removeprefix("SOURCE_SESSION=")
+        for row in first[0].splitlines() if row.startswith("SOURCE_SESSION=")
+    ))
+    assert [item["message"] for item in indexed["messages"]] == json.loads(line)["messages"]
+    assert [item["message_index"] for item in indexed["messages"]] == list(range(9))
+    assert "SOURCE_SESSION=" not in correction[0]
+    assert "UNKNOWN_SPAN:span_e4d6b_PLACEHOLDER" in correction[0]
+    assert real_id in correction[0]
+    catalog = json.loads(next(
+        line.removeprefix("SPAN_CATALOG=")
+        for line in correction[0].splitlines() if line.startswith("SPAN_CATALOG=")
+    ))
+    assert len(catalog) == 4
+    assert first[1].conversation.messages[0]["content"] == first[0]
+    receipts = [json.loads((call[2] / "result.json").read_text()) for call in agent.calls]
+    assert [item["status"] for item in receipts] == ["SESSION_TASK_REVIEW", "READY"]
+    receipt = json.loads((tmp_path / "session_task_segmentation.json").read_text())
+    assert receipt["prompt_version"] == "session-boundaries-v3-validation-feedback"
+    assert receipt["repair_stop_reason"] == "VALIDATED"
+    assert len(receipt["attempts"]) == 2
+
+
+def test_segmentation_stops_repeated_error_without_guessing_or_dropping_spans(tmp_path):
+    line = raw_session()
+    invalid = segmentation_payload(line)
+    invalid["tasks"][0]["span_ids"][0] = "span_PLACEHOLDER"
+    agent = SegmentationSequenceAgent([FakeResult(invalid), FakeResult(invalid)])
+
+    with pytest.raises(RawSessionSourceError, match="任务边界"):
+        build_raw_session_source(
+            raw_line=line, line_number=1, source_ref="R01", agent=agent, output_root=tmp_path
+        )
+
+    assert len(agent.calls) == 2
+    receipt = json.loads((tmp_path / "session_task_segmentation.json").read_text())
+    assert receipt["status"] == "SESSION_TASK_REVIEW"
+    assert receipt["repair_stop_reason"] == "NO_VALIDATION_PROGRESS"
+    assert any(error.startswith("UNASSIGNED_SPANS:") for error in receipt["errors"])
+    assert receipt["model_payload"] == invalid
+    assert all((call[2] / "result.json").is_file() for call in agent.calls)
+
+
+@pytest.mark.parametrize("failure", [
+    FakeResult({}, completed=False, errors=["MODEL_CONNECTION_ERROR"]),
+    RuntimeError("connection interrupted"),
+])
+def test_segmentation_does_not_retry_transport_failure_during_repair(tmp_path, failure):
+    line = raw_session()
+    invalid = segmentation_payload(line)
+    invalid["tasks"][0]["span_ids"][0] = "span_PLACEHOLDER"
+    agent = SegmentationSequenceAgent([FakeResult(invalid), failure])
+
+    with pytest.raises(RawSessionSourceError, match="Agent"):
+        build_raw_session_source(
+            raw_line=line, line_number=1, source_ref="R01", agent=agent, output_root=tmp_path
+        )
+
+    assert len(agent.calls) == 2
+    receipt = json.loads((tmp_path / "session_task_segmentation.json").read_text())
+    assert receipt["status"] == "SESSION_TASK_AGENT_FAILED"
+    assert receipt["repair_stop_reason"] == "AGENT_FAILED"
+    assert len(receipt["attempts"]) == 2
+    assert all((call[2] / "result.json").is_file() for call in agent.calls)
+
+
+def test_segmentation_continues_changed_errors_even_with_same_count(tmp_path):
+    line = raw_session()
+    valid = segmentation_payload(line)
+    first = json.loads(json.dumps(valid))
+    second = json.loads(json.dumps(valid))
+    first["tasks"][0]["evidence_refs"]["message_indices"] = [5]
+    second["tasks"][1]["evidence_refs"]["message_indices"] = [1]
+    agent = SegmentationSequenceAgent([
+        FakeResult(first), FakeResult(second), FakeResult(valid),
+    ])
+
+    source = build_raw_session_source(
+        raw_line=line, line_number=1, source_ref="R01", agent=agent, output_root=tmp_path
+    )
+
+    assert len(agent.calls) == 3
+    assert source["raw_session"] == json.loads(line)
+    receipts = [json.loads((call[2] / "result.json").read_text()) for call in agent.calls]
+    assert receipts[0]["errors"] == ["TASK_0_EVIDENCE_SCOPE_MISMATCH"]
+    assert receipts[1]["errors"] == ["TASK_1_EVIDENCE_SCOPE_MISMATCH"]
+    assert receipts[2]["status"] == "READY"
+
+
+def test_segmentation_stops_seen_error_cycle_and_preserves_older_attempts(tmp_path):
+    line = raw_session()
+    first = segmentation_payload(line)
+    second = segmentation_payload(line)
+    first["tasks"][0]["evidence_refs"]["message_indices"] = [5]
+    second["tasks"][1]["evidence_refs"]["message_indices"] = [1]
+    old = tmp_path / "attempts" / "0001" / "result.json"
+    old.parent.mkdir(parents=True)
+    old.write_text('{"status":"old-evidence"}')
+    agent = SegmentationSequenceAgent([
+        FakeResult(first), FakeResult(second), FakeResult(first),
+    ])
+
+    with pytest.raises(RawSessionSourceError, match="任务边界"):
+        build_raw_session_source(
+            raw_line=line, line_number=1, source_ref="R01", agent=agent, output_root=tmp_path
+        )
+
+    assert len(agent.calls) == 3
+    assert old.read_text() == '{"status":"old-evidence"}'
+    assert [call[2].name for call in agent.calls] == ["0002", "0003", "0004"]
+    receipt = json.loads((tmp_path / "session_task_segmentation.json").read_text())
+    assert receipt["repair_stop_reason"] == "NO_VALIDATION_PROGRESS"
+    assert receipt["errors"] == ["TASK_0_EVIDENCE_SCOPE_MISMATCH"]
