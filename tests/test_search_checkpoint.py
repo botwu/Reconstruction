@@ -301,3 +301,54 @@ def test_native_cli_cache_is_bound_to_complete_terminal_stdout(
     assert output["decision"] == ("BLOCKED" if tampered else "COMPLETE")
     if tampered:
         assert output["failure_kind"] == "TRACE_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("decision", ["COMPLETE", "BLOCKED"])
+def test_result_points_to_latest_review_checkpoint_including_new_sources(
+    tmp_path, monkeypatch, decision,
+):
+    from types import SimpleNamespace
+
+    from traceforge.reconstruction import search_environment
+
+    network, _, _ = recorded_network(tmp_path / "active-web", monkeypatch)
+    monkeypatch.setattr(search_environment, "SearchTools", lambda root: network)
+    source = {"line_sha256": "fixed-source", "raw_session": {"messages": []}, "tool_timeline": []}
+    task = {"task_id": "q1"}
+    environment = {
+        "task": task, "captures": [], "context_messages": [], "live_references": [],
+        "tools": [], "limitations": [], "errors": [], "missing_inputs": [],
+    }
+
+    def complete(**kwargs):
+        kwargs["session"].conversation.messages.append({
+            "role": "user", "content": kwargs["instruction"],
+        })
+        return environment
+
+    def review(**kwargs):
+        kwargs["session"].conversation.messages.append({
+            "role": "user", "content": "真实review阶段反馈",
+        })
+        kwargs["network"].open("https://example.org/new-review-paper")
+        return {"decision": decision, "errors": ["明确反馈缺口"] if decision == "BLOCKED" else []}
+
+    monkeypatch.setattr(search_environment, "_complete_search_environment", complete)
+    monkeypatch.setattr(search_environment, "export_search_task", lambda *args: tmp_path / "harbor")
+    monkeypatch.setattr(search_environment, "run_search_rollouts", lambda **kwargs: {
+        "status": "ROLLOUT_COMPLETED", "errors": [], "rollouts": [],
+    })
+    monkeypatch.setattr(search_environment, "_review_search_rollouts", review)
+    outcome = search_environment.run_search_task(
+        source=source, task=task, agent=object(), output_root=tmp_path / "run",
+        rollout_agent=SimpleNamespace(),
+    )
+    stored = json.loads((tmp_path / "run/result.json").read_text())
+    assert stored["researcher_checkpoint"] == outcome["researcher_checkpoint"]
+    restored = SearchTools(tmp_path / "restored")
+    session = search_environment._restore_search_checkpoint(
+        Path(stored["researcher_checkpoint"]), source=source, task=task, network=restored,
+    )
+    assert session.messages[-1]["content"] == "真实review阶段反馈"
+    assert "https://example.org/new-review-paper" in restored.pages
+    assert outcome["environment_review"] == decision

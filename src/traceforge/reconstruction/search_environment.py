@@ -672,8 +672,8 @@ def run_search_task(
             task=task, environment=environment, agent=agent, session=session, output_root=round_root,
             native_trials=native_trials, network=network,
         )
-        save_search_checkpoint(
-            source=source, task=task, session=session, network=network, output_root=output_root)
+        outcome["researcher_checkpoint"] = str(save_search_checkpoint(
+            source=source, task=task, session=session, network=network, output_root=output_root))
         rounds.append({"output_root": str(round_root), "review": review})
         outcome["researcher_rounds"] = rounds
         outcome["environment_review"] = (
