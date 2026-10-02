@@ -179,6 +179,7 @@ class SearchTools:
             return {"success": True, "url": url, "text": data["text"],
                     "title": (data.get("metadata") or {}).get("title", ""),
                     "metadata": data.get("metadata", {}), "raw_sha256": digest,
+                    **({"jsonld": data["jsonld"]} if "jsonld" in data else {}),
                     "provider": "serper", "source_mode": "live_page", "content_kind": "page_text",
                     "retrieved_at": datetime.now(UTC).isoformat()}
         if self._fetch_provider != "jina":
