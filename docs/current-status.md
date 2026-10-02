@@ -2,7 +2,7 @@
 
 更新：2026-10-02。这里只记录实际执行和产物核查结果。
 
-目标是充分利用完整原始 session，恢复忠实的任务和可解的初始环境，交付标准 Harbor 任务包，最后用真实 solver 验证。**R01:38 的任务和环境已有一份通过独立内容核查的 Astra 答卷；两份最新原生 Claude 答卷仍有作者错引。R04:1 首个任务已通过真实组合校准并完成两次 rollout：第二份文件义务通过，分析回答仍需修正；第二个任务的新初态恢复和独立充分性检查已通过。冷启动仍有检索服务阻塞，尚不具备批量生产条件。**
+目标是充分利用完整原始 session，恢复忠实的任务和可解的初始环境，交付标准 Harbor 任务包，最后用真实 solver 验证。**R01:38 的任务和环境已有一份通过独立内容核查的 Astra 答卷；两份最新原生 Claude 答卷仍有作者错引。R04:1 首个任务的新一轮两次原生 rollout 均完整回收，行为和文件语义验收全部通过，分析回答仍需修正；第二个任务的新初态恢复和独立充分性检查已通过，验证器交接已修复，正在重新审查与执行。冷启动仍有检索服务阻塞，尚不具备批量生产条件。**
 
 ## 重建框架与模块预期
 
@@ -51,7 +51,7 @@ run08 的两份错引均属于已有资料被漏读或误用，没有据此补�
 4. 运行依赖问题是控制端未安装已经锁定的 pypdf/fonttools。已在项目私有运行目录离线安装相同 wheel；同一真实 PDF 重试成功，10 页、13,492 字符，原文件与正文已保留哈希。
 5. 外部服务仍阻塞：Serper 实际返回 HTTP 400 / Not enough credits；Jina 单次重试仍为 Network is unreachable。PDF 恢复成功不能证明搜索服务恢复。
 
-从 run02 原 researcher 检查点恢复的一轮补全已完成：18 次新 web_open，8 份真实 PDF；原 5 条捕获逐值不变，没有导入旧 warm 缓存。作者实际阅读后仍为 BLOCKED：7 份正文可读，群组间隔防护 PDF 却缺 Unicode 映射，无法从文本层核查控制方法。原 PDF 5 页已用已有本地 OCR 恢复并绑定页图、框坐标与置信度；公式下标和双栏顺序仍有限制。正在把显式逐页 OCR 接入原 web_open，再由同一 researcher 判断材料是否充分，不把 OCR 诊断直接改写为 READY。
+从 run02 原 researcher 检查点恢复的一轮补全已完成：18 次新 web_open，8 份真实 PDF；原 5 条捕获逐值不变，没有导入旧 warm 缓存。作者实际阅读后仍为 BLOCKED：7 份正文可读，群组间隔防护 PDF 却缺 Unicode 映射，无法从文本层核查控制方法。原 PDF 5 页已用已有本地 OCR 恢复并绑定页图、框坐标与置信度；公式下标和双栏顺序仍有限制。显式逐页 OCR 已接入原 web_open；原 researcher 实际读取五页全部分页，原 PDF、页图和识别原返回都已绑定并随检查点恢复。作者正确区分城轨虚拟编组与重载群组，仍保留后者论文正文缺口，没有因 OCR 成功改成 READY。当前助手沿原始专利页面找到了两条真实 PDF 链接，再由原作者抓取并完整阅读；外部导航介入单独记录，不把它称为无人干预冷启动成功，也不把专利替代为同行评议论文。随后沿公开线索实际取得 J-STAGE 两篇重载列车期刊全文（10 页 / 12 页），生产抓取已通过；已从同一检查点启动实际阅读与后续两次原生 trial 的正式链路，尚待作者充分性判断和执行结果。首轮作者虽判材料充分，却把文献任务属性误当成 solver 必须继续在线检索，触发额度不足门禁后改为 BLOCKED。已澄清既有字段和反馈语义，保留确需在线时的能力门禁；第二轮正由同一作者重新核对，不由程序修改 READY。
 
 ## R04:1：terminal
 
@@ -81,24 +81,29 @@ run06 复用相同已审候选，初态、测试与判据未变。真实组合 R
 - collector 已改为记录并排除新增虚拟环境与 Python 缓存，保护初态和显式交付路径，其他符号链接仍明确失败。真实带链接的 venv 已在 AGS 完成安全下载，业务字节不变；结果端要求新收集回执成功且文件哈希完整匹配。
 - 每条 trial 依据各自真实执行和捕获证据审查，整体两次复验要求保留。旧 run06 和两份原答卷均未回写；12 个所属沙箱的清理已核对。
 
-正在用新收集器、同一初态和同一不可变验收候选准备下一次正式验证。代码质量分析是独立 NON_FILE 义务；FILE 通过与分析正确分别记录，不把当前结果宣称为整项任务通过。
+run07 已使用新收集器、同一初态与同一不可变候选，重新完成独立审查、组合 RED 和两次真实 Claude rollout。两次均 9 项行为 PASS、FILE ACCEPT、捕获完整；分别回收 28 / 27 个文件，收集回执无错误，12 个沙箱全部清理。没有修改旧 run06 的失败记录。
+
+两份新 NON_FILE 答卷仍为 SOLVER_ERROR/REVISE：第一份错误建议增大已默认无限的 limit，并误称安装包与保留原观察差异的 vendor 完全一致；第二份把累计重复页写成连续重复页，又误称推送失败条目直接丢弃。后者已用实际函数体执行交错重复页和 HTTP 500→200 跨轮请求核对。正式 verification.json 仅剩 obl-002 人工回答义务，状态 REVIEW、sft_eligible=false；FILE 通过不等于整项任务内容已验收。
 
 ### 第二个任务：DeadlineExceeded
 
 旧初态虽然标记 READY，实际不忠实：原轨迹使用 GET/query params 和整数 userId，旧补全者生成 POST/JSON/string，并消除了待解异常路径。其实际工具轨迹未读取关键原始消息，属于有效材料未利用后产生的不实推断。
 
-新恢复使用全部 97 条原始消息及真实观察：原文件前缀、main 的调用方式、成功补丁和首次修复补丁的旧侧。原创建参数中确有 8,947 个连续占位字符，不能声称整个文件能逐字复原。新 researcher 恢复已完成：completion READY，独立充分性 READY/SUFFICIENT，环境 READY/PROBED，必需缺口为空。真实 AGS 已验证原 GET、整数 userId、分页接口及 main 调用，也验证首页、后续页、部分数据后的 DeadlineExceeded 仍触发原故障，未预装重试修复。仅恢复阶段当前状态是 PENDING_EXECUTION；随后接正式验证器和 rollout，尚无该任务的 solver 通过证据。
+新恢复使用全部 97 条原始消息及真实观察：原文件前缀、main 的调用方式、成功补丁和首次修复补丁的旧侧。原创建参数中确有 8,947 个连续占位字符，不能声称整个文件能逐字复原。新 researcher 恢复已完成：completion READY，独立充分性 READY/SUFFICIENT，环境 READY/PROBED，必需缺口为空。真实 AGS 已验证原 GET、整数 userId、分页接口及 main 调用，也验证首页、后续页、部分数据后的 DeadlineExceeded 仍触发原故障，未预装重试修复。仅恢复阶段当前状态是 PENDING_EXECUTION；正式验证器生成与独立审查已启动，尚无该任务的 solver 通过证据。实跑进一步发现作者的真实 pytest 回执没有进入独立审查输入，导致已执行结果被当成无证据声明；现已将受控执行的完整回执交付独立审查，绑定候选、测试与初态，不要求作者另造回执文件；旧第四轮 4 PASS / 4 FAIL 的执行来源和初态摘要已重新核对。真实复审不再报告执行回执缺失，仍指出部分错误页处理、HTTP 参数编码方式等候选误拒；已回到同一作者反馈循环修正，不扩大原任务。
+
+R04:1 的标准冷运行已冻结到 a00f0eb 并启动：仅输入原始物理第 1 条、terminal domain 与配置，不导入旧解析、初态、测试、检查点或样本纠正信息。使用默认不限制验证轮数及正式 RED / 两次原生 rollout；当前从解析开始，尚未形成新的全程结果。
 
 ## 长会话、批量和迁移边界
 
 - 1M 窗口配置已传入主角色和辅助压缩器；完整 SOURCE_SESSION 的前缀按原文匹配保护。真实压缩后已逐值验证 97 条 terminal 消息和 15 条 search 消息仍完整，不将累计 token 数冒充单次 1M 输入。
+- 标准入口已取消默认固定验证轮数，显式正整数预算仍可配置；相同实际候选与相同诊断停止为 NO_PROGRESS，仅改说明不算修复。同类错误下代码确有变化仍可继续；未完成的审查和基础设施失败保留原因。
 - 单次模型请求采用 300 秒预算，客户端存在重试；该值不是整个阶段的墙钟时限。历史约 38.5 万输入 tokens 的摘要在 120 秒超时、300 秒配置下实际成功。
 - 批次冻结、逐条独立进程、原子进度、失败保留和续跑已实现；一次单条 batch 调用不等于随机样本批量成功。需要继续完成两 domain 的冷运行和小批次实证。
 - R01:559 的 47 条原返回现已完整交付，公开源码真实抓取并核对 Git blob；私有分支缺失实现仍有具体缺口，不能生成同名源码冒充。
-- PDF 当前恢复文本层；图表、复杂公式与空文本页须按任务需要另行检查。
+- PDF 默认读取文本层；显式 OCR 保留原始检测块与页图，图表、复杂公式和双栏顺序仍须按任务需要核查。当前 OCR 锁仅验证现有诊断环境，独立且依赖相容的 Python 3.12 安装仍待批准与实测。
 - 公开仓库 [botwu/Reconstruction](https://github.com/botwu/Reconstruction) 已发布用户授权的完整 R01/R04 数据：1,683 + 6,535 条。8,218 条完成的是字节/JSON 盘点，不是重建。
 - 新机器仍需私有模型、检索及 AGS 配置，以及兼容 Hermes/Harbor 运行时。自定义 harbor_ags 的来源/归属和镜像构建信息尚未完整交付，不能声称公开 clone 后即可一键复现。见[跨机器调试](cross-machine-debug.md)。
 
 实现入口见[流程](raw-session-pipeline.md)、[源码地图](rebuild-live-map.md)、[Harbor 交付](harbor-task-delivery.md)和[批量运行](batch-reconstruction.md)。密钥、私有配置和运行产物不进入 Git。
 
-私有实证在 artifacts/pipeline-debug-20261002/：native-harbor-search38/run08、native-harbor-search38/astra-solvability-run01、cold-batch-search38-run01/02、cold-search-runtime-recovery-run01、cold-search-context-recovery-run01、terminal-environment-recovery/run06、terminal-task2-initial-state-run02、cold-pdf-cmap-diagnostic-run01。旧失败、原答卷和清理回执保留，不被新成功覆盖。
+私有实证在 artifacts/pipeline-debug-20261002/：native-harbor-search38/run08、native-harbor-search38/astra-solvability-run01、cold-batch-search38-run01/02、cold-search-runtime-recovery-run01、cold-search-context-recovery-run01、terminal-environment-recovery/run06/07、terminal-task2-initial-state-run02、terminal-task2-verification-run01、cold-search-completion-ocr-run01、cold-search-completion-public-sources-run01、cold-search-journal-native-run01/02、terminal-task2-verification-run02、terminal-raw-cold-run01。旧失败、原答卷和清理回执保留，不被新成功覆盖。
