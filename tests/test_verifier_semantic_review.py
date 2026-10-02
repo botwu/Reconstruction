@@ -54,6 +54,7 @@ def test_semantic_review_runs_with_fresh_session_and_binds_candidate(tmp_path):
     assert len(runtime.calls) == 2
     assert runtime.calls[0][1] is not runtime.calls[1][1]
     assert result["semantic_review"]["candidate_id"] == candidate.candidate_id
+    assert result["semantic_review"]["pytest_evidence"]["runs"] == []
     assert (tmp_path / "verifier/semantic-review/review.json").is_file()
     from traceforge.reconstruction.verifier_recovery import verifier_input_binding
     binding = result["input_binding"]
@@ -103,12 +104,12 @@ def test_file_review_cannot_certify_unreviewed_response_obligation_mapping(tmp_p
     assert "VERIFIER_REVIEW_INVALID" in result["errors"]
 
 
-@pytest.mark.parametrize("changed_script,service_failed,stale_review", [
-    (False, False, False), (True, False, False), (False, True, False),
-    (False, False, True),
+@pytest.mark.parametrize("changed_script,service_failed,stale_review,changed_evidence", [
+    (False, False, False, False), (True, False, False, False), (False, True, False, False),
+    (False, False, True, False), (False, False, False, True),
 ])
 def test_rejected_verifier_must_change_program_before_another_review(
-    tmp_path, changed_script, service_failed, stale_review,
+    tmp_path, changed_script, service_failed, stale_review, changed_evidence,
 ):
     import copy
 
@@ -129,6 +130,25 @@ def test_rejected_verifier_must_change_program_before_another_review(
             if kwargs["role"].result_schema == "traceforge.verifier-semantic-review.v1":
                 return super().run(**kwargs)
             self.calls.append((kwargs["role"], kwargs["session"], kwargs["instruction"]))
+            if changed_evidence:
+                import hashlib
+                import shlex
+                import subprocess
+
+                from traceforge.reconstruction.container_verification import (
+                    _workspace_digest_command,
+                )
+
+                digest = subprocess.check_output(
+                    shlex.split(_workspace_digest_command(str(kwargs["session"].workspace))),
+                    text=True,
+                ).strip()
+                kwargs["session"].pytest_runs.append({
+                    "name": "test_missing", "status": "FAIL", "stdout": "真实初态执行",
+                    "stderr": "", "test_sha256": hashlib.sha256(
+                        proposed["test_outputs_py"].encode()).hexdigest(),
+                    "input_sha256": digest, "input_unchanged": True,
+                })
             return AgentResult(
                 role=kwargs["role"].name, backend="fixture", completed=True, payload=proposed,
             )
@@ -144,7 +164,7 @@ def test_rejected_verifier_must_change_program_before_another_review(
         output_root=tmp_path / "second", feedback=feedback, round_number=2,
     )
     assert candidate is None
-    no_progress = not changed_script and not service_failed and not stale_review
+    no_progress = not (changed_script or service_failed or stale_review or changed_evidence)
     assert len(next_runtime.calls) == (1 if no_progress else 2)
     assert ("VERIFIER_NO_PROGRESS" in result["errors"]) is no_progress
     assert result["feedback"]["semantic_review"]["issues"][0]["counterexample"]
@@ -184,3 +204,66 @@ def test_semantic_candidate_still_requires_matching_executed_protection():
     assert not _pytest_red_ok([], candidate)
     assert not _pytest_red_ok([{**row, "test_sha256": "previous"} for row in runs], candidate)
     assert not _pytest_red_ok([{**row, "status": "FAIL"} for row in runs], candidate)
+
+
+class ExecutedRuntime(ReviewRuntime):
+    def __init__(self, stale_field=None):
+        super().__init__()
+        self.stale_field = stale_field
+        self.runs = []
+
+    def run(self, **kwargs):
+        import hashlib
+        import json
+        import shlex
+        import subprocess
+
+        from traceforge.reconstruction.container_verification import _workspace_digest_command
+
+        role, session = kwargs["role"], kwargs["session"]
+        if role.result_schema == "traceforge.verifier-semantic-review.v1":
+            supplied = json.loads(kwargs["instruction"].splitlines()[-1])["pytest_evidence"]
+            assert supplied["runs"] == self.runs
+            assert supplied["test_sha256"] == self.runs[0]["test_sha256"]
+            return super().run(**kwargs)
+        result = super().run(**kwargs)
+        test_sha = hashlib.sha256(result.payload["test_outputs_py"].encode()).hexdigest()
+        input_sha = subprocess.check_output(
+            shlex.split(_workspace_digest_command(str(session.workspace))), text=True,
+        ).strip()
+        self.runs = [
+            {"name": name, "status": status, "stdout": "真实完整输出\n" * 200,
+             "stderr": "", "error_code": None, "test_sha256": test_sha,
+             "input_sha256": input_sha, "input_unchanged": True}
+            for name, status in [("test_protective", "PASS"), ("test_missing", "FAIL")]
+        ]
+        if self.stale_field == "workspace":
+            (session.workspace / "input.py").write_text("def get_value(): return 2\n")
+        elif self.stale_field:
+            self.runs[0][self.stale_field] = (
+                False if self.stale_field == "input_unchanged" else "old"
+            )
+        session.pytest_runs.extend(self.runs)
+        return result
+
+
+def test_semantic_review_receives_complete_executed_pytest_results(tmp_path):
+    runtime = ExecutedRuntime()
+    result, candidate = _run(tmp_path, runtime)
+    evidence = result["semantic_review"]["pytest_evidence"]
+    assert result["status"] == "READY" and candidate is not None
+    assert evidence["candidate_id"] == candidate.candidate_id
+    assert evidence["runs"] == runtime.runs
+    assert (
+        evidence["input_binding"]["workspace_sha256"]
+        == result["input_binding"]["workspace_sha256"]
+    )
+    assert len(evidence["runs"][0]["stdout"]) > 512
+
+
+@pytest.mark.parametrize("field", ["test_sha256", "input_sha256", "input_unchanged", "workspace"])
+def test_semantic_review_rejects_expired_or_changed_pytest_evidence(tmp_path, field):
+    runtime = ExecutedRuntime(stale_field=field)
+    with pytest.raises(ValueError, match="VERIFIER_PYTEST_EVIDENCE_MISMATCH"):
+        _run(tmp_path, runtime)
+    assert len(runtime.calls) == 1

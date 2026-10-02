@@ -24,7 +24,7 @@ from traceforge.verifier.synthesis import (
 
 VERIFIER_RECOVERY_SCHEMA = "traceforge.verifier-recovery.v1"
 VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION = (
-    "terminal-universe-verifier-semantic-review-v9-baseline-scope"
+    "terminal-universe-verifier-semantic-review-v10-executed-evidence"
 )
 _FAILURE_REPRODUCTION_RULE = (
     "根据原始报错和实际调用链定位失败路径，能力缺失测试须复现对应的输入或返回形态；"
@@ -75,6 +75,7 @@ def review_verifier_candidate(
     manual_response_review: bool = False,
     baseline_observations: list[dict[str, Any]] | None = None,
     source: dict[str, Any] | None = None,
+    pytest_runs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """用新会话核查候选是否测对用户行为；具体反例返回已有 Verifier 修复轮。"""
     raw_session = (source or {}).get("raw_session")
@@ -96,8 +97,28 @@ def review_verifier_candidate(
         check["obligation_id"] for check in contract.get("checks", [])
         if isinstance(check, dict) and isinstance(check.get("obligation_id"), str)
     ))
+    test_sha256 = hashlib.sha256(candidate.test_outputs_py.encode()).hexdigest()
+    # 与真实 pytest runner 的目录/文件/符号链接快照逐字采用同一摘要协议。
+    rows = [
+        (path.relative_to(workspace).as_posix(),
+         "link:" + str(path.readlink()) if path.is_symlink() else
+         hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "dir")
+        for path in sorted(workspace.rglob("*"))
+    ]
+    input_sha256 = hashlib.sha256(json.dumps(rows).encode()).hexdigest()
+    for run in pytest_runs or []:
+        if (not isinstance(run, dict) or run.get("test_sha256") != test_sha256
+                or run.get("input_sha256") != input_sha256
+                or run.get("input_unchanged") is not True):
+            raise ValueError("VERIFIER_PYTEST_EVIDENCE_MISMATCH")
+    pytest_evidence = {
+        "candidate_id": candidate.candidate_id, "test_sha256": test_sha256,
+        "input_binding": verifier_input_binding(task, workspace, source),
+        "runner_input_sha256": input_sha256, "runs": pytest_runs or [],
+    }
     specification = {
         "task": task, "candidate": candidate.to_dict(),
+        "pytest_evidence": pytest_evidence,
         "baseline_observations": baseline_observations or [],
         "file_obligation_ids": list(candidate.obligation_coverage),
         "file_semantic_checks": candidate.file_semantic_checks,
@@ -118,6 +139,10 @@ def review_verifier_candidate(
         "检查两类错误：错误答案能通过（false positive），合理正确答案被额外要求拒绝（false negative）。",
         _FAILURE_REPRODUCTION_RULE,
         _BASELINE_SCOPE_RULE,
+        "pytest_evidence 是受控 run_pytest 的完整只读回执，已绑定当前候选测试和实际初态；"
+        "按逐项 stdout/stderr 核查实际结果，不能把它当作作者的口头自测声明。"
+        "runs 为空则没有交付该阶段执行证据；历史观察仍需按各自来源核对。"
+        "这不替代行为/语义审查，也不证明尚未执行的参考解、变异或 solver 已通过。",
         "代码/数据任务必须执行或解析真实产物，用独立计算的期望值；存在性、关键词、注释不能替代功能。",
         "审查/报告任务必须核对结论与具体输入事实、引用和用户判定规则；",
         "格式齐全却虚构结论、错误引用或颠倒结论的报告应被拒绝。关键词计数不能证明语义正确。",
@@ -189,6 +214,7 @@ def review_verifier_candidate(
         "judgment_kind": "MODEL_SEMANTIC_REVIEW", "errors": errors,
         "obligation_reviews": rows, "issues": issues,
         "baseline_observations": baseline_observations or [],
+        "pytest_evidence": pytest_evidence,
         "tool_events": session.tool_events,
         "agent": {"model": agent.model_name, "backend": ran.backend, "completed": ran.completed},
     }
@@ -435,21 +461,27 @@ def run_verifier_recovery(
             errors.append("SANDBOX_PYTEST_RED_REQUIRED")
     semantic_review = None
     if candidate is not None and not errors:
+        review_task = {
+            **effective_task, "task_instruction": render_task_instruction(effective_task),
+        }
         previous = (feedback or {}).get("previous_candidate")
         rejected = (feedback or {}).get("semantic_review") or {}
         if (rejected.get("status") == "REVISE" and isinstance(previous, dict)
                 and rejected.get("prompt_version") == VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION
                 and rejected.get("baseline_observations", []) == (baseline_observations or [])
+                and (rejected.get("pytest_evidence") or {}).get("runs", []) == session.pytest_runs
+                and (rejected.get("pytest_evidence") or {}).get("input_binding")
+                == verifier_input_binding(review_task, workspace, source)
                 and _verifier_behavior(payload) == _verifier_behavior(previous)):
             semantic_review = {**rejected, "reused_rejection": True}
             errors.append("VERIFIER_NO_PROGRESS")
         else:
             semantic_review = review_verifier_candidate(
-                task={**effective_task,
-                      "task_instruction": render_task_instruction(effective_task)},
+                task=review_task,
                 workspace=workspace, candidate=candidate, agent=agent,
                 output_root=root / "semantic-review", manual_response_review=manual_response_review,
                 baseline_observations=baseline_observations, source=source,
+                pytest_runs=list(session.pytest_runs),
             )
         errors.extend(semantic_review["errors"])
     blocking_errors = [item for item in errors if item != "AGENT_TEST_BYTES_NORMALIZED"]
