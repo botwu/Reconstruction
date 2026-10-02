@@ -770,6 +770,7 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
             str(published_config_path),
             "-p",
             str(dataset_root),
+            "--yes",
         ]
         plan = {
             "schema_version": ROLLOUT_BRIDGE_SCHEMA,
@@ -953,7 +954,10 @@ def _assert_plan_integrity(plan_dir: Path, plan: dict[str, Any]) -> None:
     if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
         raise HarborRolloutError("rollout plan command 非法")
     expected = [*_harbor_command(root), "run", "-c", str(config_path), "-p", str(dataset)]
-    if _normalize_command(command) != _normalize_command(expected):
+    # 旧冻结计划没有 --yes；两种形式都必须完整绑定到同一配置与 dataset。
+    if _normalize_command(command) not in (
+        _normalize_command(expected), _normalize_command([*expected, "--yes"]),
+    ):
         raise HarborRolloutError("rollout plan command 未绑定到本 plan 的 harbor run")
 
 

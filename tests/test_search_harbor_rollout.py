@@ -48,6 +48,7 @@ def test_search_plan_preserves_delivery_and_disables_only_grading(tmp_path):
     plan_dir = _plan(tmp_path)
     plan = load_verified_rollout_plan(plan_dir)
     assert plan["domain"] == "search"
+    assert plan["command"][-1] == "--yes"
     assert plan["verifier"]["enabled"] is False
     assert plan["verifier"]["response_acceptance"] == "NOT_ASSESSED"
     config = yaml.safe_load((plan_dir / "harbor-config.yaml").read_text())
@@ -62,6 +63,27 @@ def test_search_plan_preserves_delivery_and_disables_only_grading(tmp_path):
             delivery["task_file_sha256"]["task.toml"])
     published = publish_rollout_bundle(plan_dir, tmp_path / "published")
     assert (published / "delivery.json").read_bytes() == (dataset / "delivery.json").read_bytes()
+
+
+
+@pytest.mark.parametrize("suffix, valid", [([], True), (["--yes"], True), (["--yes", "--quiet"], False)])
+def test_plan_accepts_only_exact_legacy_or_noninteractive_command(tmp_path, suffix, valid):
+    plan_dir = _plan(tmp_path)
+    plan_path = plan_dir / "rollout_plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan["command"] = [*plan["command"][:-1], *suffix]
+    plan_path.write_text(json.dumps(plan))
+    manifest_path = plan_dir / "artifact_manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    for item in manifest["files"]:
+        if item["relative_path"] == "rollout_plan.json":
+            item["sha256"] = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    manifest_path.write_text(json.dumps(manifest))
+    if valid:
+        assert load_verified_rollout_plan(plan_dir)["command"] == plan["command"]
+    else:
+        with pytest.raises(HarborRolloutError, match="绑定"):
+            load_verified_rollout_plan(plan_dir)
 
 
 def test_search_delivery_tampering_is_rejected_before_plan(tmp_path):
