@@ -3,6 +3,8 @@
 代码远程为 `git@github.com:botwu/Reconstruction.git`，在 dev-wj 上名为
 `reconstruction`；原有 `origin` 和 `upstream` 保留。迁移不改变 search /
 terminal 的处理策略，也不表示现有真实回答全部通过，见[当前状态](current-status.md)。
+公开仓库提供代码和原始数据；完整实跑仍依赖私有 Hermes 源码、自定义 Harbor/AGS 运行时
+及 AGS 模板访问权限，不能仅凭公开 clone 在新机器上直接执行。
 
 ## 代码与完整数据
 
@@ -45,18 +47,31 @@ uv run ruff check src scripts --select F,E9
 
 `uv.lock` 固定项目的基础开发依赖；普通检查不发起模型请求；外部 Harbor 的认证与清理接口使用明确替身，
 不依赖 dev-wj 的绝对路径，也不宣称验证了外部运行时本身。完整模型执行还需要
-Hermes 源码及其依赖，terminal 另需 Harbor/AGS 适配运行时和沙盒权限。
+Hermes 源码及其依赖；search 和 terminal 的原生 rollout 都需要 Harbor/AGS 适配运行时。
 这些运行时不能由原始 session 的 harness 名称替代，也不属于本项目的基础依赖。
-Hermes 对应仓库为 `SenseTime-FVG/hermes-agent`，固定提交
-`83c2ca5b2e250d69ce301c751ea83fd425eb2de1`；已核对当前实跑的入口、依赖声明、
-锁文件和上下文压缩模块与该提交一致。Harbor/AGS 是现有适配源码，仍需通过 dev-wj
-私有同步。当前兼容快照包含 src/resources、配置、pyproject、uv.lock 和 version-lock，
-保存在下面的项目内固定路径；逐文件哈希位于快照内 source-manifest.json，
-导入检查位于快照上层的 import-verification.json。它支持项目使用的 preserve_source_literals 认证参数。
-旧 repository-transfer-20261001 快照不支持该参数，不能作为当前运行时。
-新快照已完成本地导入与接口检查，真实端到端验证仍以当前状态记录为准。
 
-在仓库根目录执行以下步骤；需要已有的 dev-wj SSH 访问权限：
+已核实的运行依赖如下：
+
+| 依赖 | 固定来源与迁移前提 |
+| --- | --- |
+| Harbor 核心 | [PyPI Harbor 0.22.0](https://pypi.org/project/harbor/0.22.0/)，对应源码提交 `4407eb5227a2ff4f0d3f16b2eb48849382fdf276`；现有 335 个 Python 文件与官方 wheel 一致，无须复制或修改核心源码。 |
+| 宿主 Hermes | `git@github.com:SenseTime-FVG/hermes-agent.git`，固定提交 `83c2ca5b2e250d69ce301c751ea83fd425eb2de1`，需要该私有仓库访问权限；当前选取的 842 个运行源码文件均与提交匹配。 |
+| 自定义 `harbor_ags` | 原目录为 `/mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags`；原源码仓库及代码归属尚待确认，未纳入本仓库。它与公开 Harbor 核心是两份不同代码，不能只安装 `harbor==0.22.0` 替代。 |
+| AGS 模板 | 需要北京 AGS 服务 `ap-beijing.tencentags.com` 的凭据及 `node-python-hermes` 模板使用权限；当前原生 rollout 核对的模板内 Hermes 提交为 `3c231eb3979ab9c57d5cd6d02f1d577a3b718b43`，与宿主 Hermes 分别固定。模板镜像构建定义和 digest 尚未随仓库交付。 |
+
+官方 `harbor-0.22.0-py3-none-any.whl` 的 SHA256 为
+`4c4c6571b3d160ed0cb45b82918136751fb08e7b8596412723ac00dde12eeabb`。
+
+自定义运行时目前只能通过已有 dev-wj 权限私有同步。兼容快照包含 src/resources、配置、
+pyproject、uv.lock 和 version-lock，逐文件哈希在 `source-manifest.json`，
+导入检查在快照上层的 `import-verification.json`。该快照支持项目使用的
+`preserve_source_literals` 认证参数；旧 `repository-transfer-20261001` 快照不支持，不能替代。
+本仓库 `docs/harbor_ags/` 的历史补丁也不足以恢复完整的当前运行时。
+已完成的本地导入与接口检查不等于新机器安装验证；真实端到端状态见[当前状态](current-status.md)。
+
+以下是已有私有源码和 dev-wj SSH 权限时的迁移步骤，尚未完成全新机器实测。
+其中 `uv pip install` 不读取项目或复制的运行时 `uv.lock`；该命令不保证整套传递依赖
+与现有实跑环境一致，统一锁定安装仍待补齐。
 
 ```bash
 mkdir -p .runtime
