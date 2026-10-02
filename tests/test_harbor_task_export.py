@@ -1,5 +1,6 @@
 """任务导出保留真实初态，供原生 Harbor 独立加载。"""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -10,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from traceforge.harbor_task import export_search_task, write_container_environment
+from traceforge.trajectory.json_codec import canonical_json_bytes
 
 
 def search_environment():
@@ -269,3 +271,62 @@ def test_search_guidance_preserves_history_and_publication_evidence(tmp_path):
     assert "必须取得全文" not in instruction
     assert "作者甲" not in instruction
     assert "单值作者" not in instruction
+
+
+def test_search_source_files_round_trip_original_records(tmp_path):
+    source = search_environment()
+    source["requires_live_web"] = False
+    source["captures"][0]["unknown_field"] = {"原值": ["保留", None]}
+    source["live_references"] = [
+        {
+            "url": "https://example.org/paper",
+            "title": "真实来源",
+            "text": "第1页\r\n\t正文\n第2页\r\n",
+            "metadata": {"citation_author": ["作者一", "作者二"]},
+            "jsonld": {"@graph": [{"@id": "作者节点", "name": "作者一"}]},
+            "unknown_field": {"keep": [1, None, "中文"]},
+        },
+        {"url": "https://example.org/empty", "text": "", "metadata": {}},
+        {"query": "原检索", "results": [{"snippet": "原片段"}], "text": None},
+    ]
+    original = json.loads(json.dumps(source))
+    task = export_search_task(source, tmp_path)
+    public = task / "workspace"
+    expected = {key: original[key] for key in ("captures", "live_references")}
+    assert (public / "evidence.json").read_bytes() == canonical_json_bytes(expected) + b"\n"
+    index = json.loads((public / "evidence-index.json").read_text())
+    assert len(index["sources"]) == 4
+    for entry in index["sources"]:
+        record_file = public / entry["record_path"]
+        record_raw = record_file.read_bytes()
+        assert hashlib.sha256(record_raw).hexdigest() == entry["record_sha256"]
+        restored = json.loads(record_raw)
+        original_record = expected[entry["collection"]][entry["index"]]
+        if entry["body_path"] is not None:
+            raw = (public / entry["body_path"]).read_bytes()
+            assert hashlib.sha256(raw).hexdigest() == entry["body_sha256"]
+            assert raw == original_record[entry["body_field"]].encode("utf-8")
+            restored[entry["body_field"]] = raw.decode("utf-8")
+        assert restored == original_record
+    empty = index["sources"][2]
+    assert (public / empty["body_path"]).read_bytes() == b""
+    assert index["sources"][3]["body_path"] is None
+    assert source == original
+
+
+def test_search_source_index_guides_native_file_reading_and_is_hashed(tmp_path):
+    source = search_environment()
+    source["requires_live_web"] = False
+    task = export_search_task(source, tmp_path)
+    instruction = (task / "instruction.md").read_text()
+    assert "evidence-index.json" in instruction
+    assert "read_file/search_files" in instruction
+    assert "前缀截取不能等同于已读摘要或相关章节" in instruction
+    index = json.loads((task / "workspace/evidence-index.json").read_text())
+    assert index["sources"][1]["url"] == source["live_references"][0]["url"]
+    receipt = json.loads((task.parent / "delivery.json").read_text())
+    for path in (task / "workspace").rglob("*"):
+        if path.is_file():
+            assert receipt["task_file_sha256"][str(path.relative_to(task))] == (
+                hashlib.sha256(path.read_bytes()).hexdigest()
+            )

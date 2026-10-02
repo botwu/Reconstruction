@@ -96,6 +96,37 @@ def _copy_search_runtime(environment: Path, lock: dict[str, Any]) -> None:
         json.dumps(lock, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _write_search_sources(public: Path, environment: dict[str, Any]) -> None:
+    """按来源分开原文与其余字段，保留规范证据文件用于完整对账。"""
+    (public / "sources").mkdir()
+    sources = []
+    for collection, prefix, field in (
+        ("captures", "captured", "result_text"), ("live_references", "live", "text"),
+    ):
+        for index, original in enumerate(environment.get(collection, [])):
+            record = dict(original)
+            stem = f"sources/{prefix}-{index:04d}"
+            entry = {
+                "collection": collection, "index": index, "record_path": f"{stem}.json",
+                "body_field": None, "body_path": None, "body_sha256": None,
+                **{key: original[key] for key in
+                   ("evidence_ref_id", "url", "query", "title", "content_kind") if key in original},
+            }
+            if isinstance(record.get(field), str):
+                body = record.pop(field)
+                raw = body.encode("utf-8")
+                (public / f"{stem}.txt").write_bytes(raw)
+                entry.update(
+                    body_field=field, body_path=f"{stem}.txt",
+                    body_sha256=hashlib.sha256(raw).hexdigest(),
+                    body_bytes=len(raw), body_lines=len(body.splitlines()),
+                )
+            written = write_json_artifact(public, f"{stem}.json", record)
+            entry["record_sha256"] = written.sha256
+            sources.append(entry)
+    write_json_artifact(public, "evidence-index.json", {"sources": sources})
+
+
 def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
     """封装已补全的检索初态；未提供内容验证器时使用 Harbor 的跳过验证模式。"""
     from traceforge.reconstruction.search_handoff import SEARCH_ENVIRONMENT_SCHEMA
@@ -116,7 +147,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
     pdf_dependencies = [f"{item['name']}=={item['version']}"
                         for item in dependency_lock.get("wheels", [])]
     digest = hashlib.sha256(json.dumps({
-        "search_delivery_version": 10, "pdf_dependencies": pdf_dependencies,
+        "search_delivery_version": 11, "pdf_dependencies": pdf_dependencies,
         "dependency_sources": dependency_lock,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),
@@ -132,6 +163,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
             "captures": environment.get("captures", []),
             "live_references": environment.get("live_references", []),
         })
+        _write_search_sources(public, environment)
         context = {
             "original_user_texts": (task.get("source_task") or {}).get("user_texts", []),
             "context_messages": environment.get("context_messages", []),
@@ -139,8 +171,12 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
         }
         instruction += "\n\n任务所需历史上下文：\n" + json.dumps(context, ensure_ascii=False, indent=2)
         instruction += (
-            "\n\n工作目录为 /home/user/workspace。evidence.json 保留原始资料及捕获来源；"
-            "可使用 Python 读取 JSON：captures 中的 result_blocks 和 session_parse 保存原始观察；"
+            "\n\n工作目录为 /home/user/workspace。先从 evidence-index.json 定位每个来源的文件路径；"
+            "sources 中的 JSON 保存该来源除正文外的全部字段，同名 txt 保留未改写的正文。"
+            "使用 read_file/search_files 定位全文关键词并分页核对相关内容；"
+            "前缀截取不能等同于已读摘要或相关章节。"
+            "evidence.json 仍完整保留原始资料及捕获来源；也可使用 Python 读取 JSON："
+            "captures 中的 result_blocks 和 session_parse 保存原始观察；"
             "live_references 中的 results/text 保存补全时取得的检索返回与源码或网页正文，"
             "按 url、title、source_ref 定位并核对所需内容。"
             "用户确实依赖的原会话历史回答或方案是任务输入，用于恢复已有文献、比较或执行对象；"
