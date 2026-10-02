@@ -267,3 +267,52 @@ def test_semantic_review_rejects_expired_or_changed_pytest_evidence(tmp_path, fi
     with pytest.raises(ValueError, match="VERIFIER_PYTEST_EVIDENCE_MISMATCH"):
         _run(tmp_path, runtime)
     assert len(runtime.calls) == 1
+
+
+@pytest.mark.parametrize("new_case", [False, True])
+def test_no_progress_uses_stable_execution_facts_and_keeps_full_logs(tmp_path, new_case):
+    import copy
+    import json
+
+    first_runtime = ExecutedRuntime()
+    first_runtime.decision, first_runtime.covered = "REVISE", False
+    first, _ = _run(tmp_path, first_runtime)
+    feedback = copy.deepcopy(first["feedback"])
+    for run in feedback["semantic_review"]["pytest_evidence"]["runs"]:
+        run["stdout"] = "/tmp/traceforge-verifier-old at 0x1234; 0.01 seconds"
+        run["stderr"] = "old random path"
+    task = json.loads(first_runtime.calls[-1][2].splitlines()[-1])["task"]
+
+    class NextRuntime(ExecutedRuntime):
+        def run(self, **kwargs):
+            result = super().run(**kwargs)
+            if new_case and kwargs["role"].result_schema != "traceforge.verifier-semantic-review.v1":
+                row = {**self.runs[0], "name": "test_output"}
+                self.runs.append(row)
+                kwargs["session"].pytest_runs.append(row)
+            return result
+
+    next_runtime = NextRuntime()
+    result, _ = run_verifier_recovery(
+        task=task, workspace_root=tmp_path / "workspace", agent=next_runtime,
+        output_root=tmp_path / "second", feedback=feedback, round_number=2,
+    )
+    assert len(next_runtime.calls) == (2 if new_case else 1)
+    assert ("VERIFIER_NO_PROGRESS" in result["errors"]) is (not new_case)
+    if new_case:
+        assert result["semantic_review"]["pytest_evidence"]["runs"] == next_runtime.runs
+        assert next_runtime.runs[0]["stdout"] == "真实完整输出\n" * 200
+
+
+@pytest.mark.parametrize("field,value", [
+    ("name", "test_new_case"), ("status", "PASS"), ("error_code", "NEW_ERROR"),
+    ("test_sha256", "new_test"), ("input_sha256", "new_input"),
+    ("input_unchanged", False), ("exit_code", 2),
+])
+def test_no_progress_facts_distinguish_changed_case_or_execution(field, value):
+    from traceforge.reconstruction.verifier_recovery import _pytest_run_facts
+
+    run = {"name": "test_missing", "status": "FAIL", "error_code": None,
+           "test_sha256": "test", "input_sha256": "input", "input_unchanged": True}
+    assert _pytest_run_facts([run]) != _pytest_run_facts([{**run, field: value}])
+    assert _pytest_run_facts([run, {**run, "stdout": "different elapsed time"}]) == _pytest_run_facts([run])

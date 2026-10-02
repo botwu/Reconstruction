@@ -53,6 +53,13 @@ _BASELINE_SCOPE_RULE = (
 )
 
 
+def _pytest_run_facts(runs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """同名测试取最近稳定执行事实；完整日志仍交付审查，不参与无进展缓存。"""
+    fields = ("name", "status", "error_code", "test_sha256", "input_sha256",
+              "input_unchanged", "exit_code")
+    return {run["name"]: {key: run.get(key) for key in fields} for run in runs}
+
+
 def verifier_input_binding(
     task: dict[str, Any], workspace: Path, source: dict[str, Any] | None,
 ) -> dict[str, str]:
@@ -469,7 +476,8 @@ def run_verifier_recovery(
         if (rejected.get("status") == "REVISE" and isinstance(previous, dict)
                 and rejected.get("prompt_version") == VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION
                 and rejected.get("baseline_observations", []) == (baseline_observations or [])
-                and (rejected.get("pytest_evidence") or {}).get("runs", []) == session.pytest_runs
+                and _pytest_run_facts((rejected.get("pytest_evidence") or {}).get("runs", []))
+                == _pytest_run_facts(session.pytest_runs)
                 and (rejected.get("pytest_evidence") or {}).get("input_binding")
                 == verifier_input_binding(review_task, workspace, source)
                 and _verifier_behavior(payload) == _verifier_behavior(previous)):
