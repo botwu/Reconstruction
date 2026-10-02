@@ -37,6 +37,12 @@ class ReconstructionTests(unittest.TestCase):
         self.assertIn("read_session_message", role.tools)
         self.assertFalse(role.allow_write)
         self.assertIn("task_start_message_index", native.run.call_args.kwargs["instruction"])
+        author_session = AgentSession()
+        adapter.run(role=COMPLETION_REPLAYED_ROLE, instruction="恢复任务", session=author_session,
+                    output_root=self.root / "author")
+        # 作者也须携带权威原文，压缩保护不能只拿独立 reviewer 的上下文。
+        self.assertEqual(json.loads(author_session.session_context), source["raw_session"])
+        self.assertIs(author_session.conversation, adapter.conversation)
 
     def test_probe_history_is_readable_but_not_a_current_candidate_check(self) -> None:
         probe = {"probe_id": "old", "executions": [{"stdout": "完整旧输出"}]}

@@ -26,7 +26,7 @@ from traceforge.reconstruction.environment_probe import (
 )
 from traceforge.reconstruction.python_runtime import validate_python_runtime
 from traceforge.reconstruction.search_tools import SearchTools
-from traceforge.reconstruction.session_source import indexed_session
+from traceforge.reconstruction.session_source import indexed_session, source_session_message_indices
 
 COMPLETION_RESULT_CONTRACT = (
     "文件必须通过写入工具交付；实际写入是文件与来源的唯一依据，最终 JSON 只交付候选元数据，"
@@ -194,6 +194,8 @@ class ReconstructionRuntime:
         author = role.name != "sufficiency" and role.result_schema != "traceforge.verifier-semantic-review.v1"
         if author:
             session.conversation = self.conversation
+            if "raw_session" in self.source:
+                session.session_context = json.dumps(self.source["raw_session"], ensure_ascii=False)
             role = replace(role, identity=(
                 "你是同一个任务重建研究者，持续负责从原始会话恢复完整任务包：任务初态、"
                 "依赖、原任务说明、隐藏验证和参考解。阶段切换只改变工具权限与输出格式，"
@@ -247,11 +249,9 @@ class ReconstructionRuntime:
             source_line = "SOURCE_SESSION=" + json.dumps(
                 indexed_session(self.source.get("raw_session", {})), ensure_ascii=False,
             )
-            source_attached = any(
-                source_line in message.get("content", "").splitlines()
-                for message in self.conversation.messages
-                if message.get("role") == "user" and isinstance(message.get("content"), str)
-            )
+            source_attached = bool(source_session_message_indices(
+                self.conversation.messages, self.source.get("raw_session", {}),
+            ))
             values = {
                 "__SOURCE_SESSION__": (
                     "完整原始 session 已在当前作者会话中；继续利用此前全部原文。"

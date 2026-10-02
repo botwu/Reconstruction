@@ -68,6 +68,12 @@ Hermes Agent 可在通道连接对象中增加 `"agent_context_length":1000000`�
 的预压缩阈值，避免网关别名被识别为较小窗口而提前摘要完整轨迹。
 每轮 `agent_trace.json` 记录 `agent_context_length`、`resolved_context_length`、
 `compression_threshold_tokens`、`compression_threshold_percent` 和 `compression_count`。
+运行时逐值核对 terminal 行或 search JSON 中的完整 `SOURCE_SESSION`，并用 Hermes
+原生 `protect_first_n` 保护包含它的历史前缀；其后的旧工具记录仍可压缩。
+`source_history_protection` 记录输入位置、保护范围和返回会话中的原文位置；缺少原文或
+原始上下文时明确标记，不以磁盘仍有原文代替当前模型持有原文。
+`native_usage` 只保存 Hermes 实际返回的累计和末次主请求字段，不包含辅助摘要用量，
+也不以粗估 token 数充当上游 usage。受保护前缀过大时，一次压缩未必降至阈值。
 此配置只控制本地窗口判断，不扩充上游能力；1M 输入仍须真实请求验证。
 独立的 session_parser JSON 请求不使用 Hermes 压缩器，也不受该字段控制。
 

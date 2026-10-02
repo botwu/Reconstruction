@@ -37,6 +37,7 @@ from traceforge.reconstruction.model_gateway import (
     iter_config_items,
     parse_json_object,
 )
+from traceforge.reconstruction.session_source import source_session_message_indices
 from traceforge.reconstruction.tls import pin_process_tls
 from traceforge.trajectory.privacy import omit_private_reasoning
 
@@ -273,7 +274,17 @@ class HermesNativeRuntime:
                 ), _scoped_hermes_dispatch(agent, role=role):
                     current_instruction = instruction
                     history = copy.deepcopy(session.conversation.messages) if session.conversation is not None else None
+                    try:
+                        source_session = json.loads(session.session_context or "null")
+                    except json.JSONDecodeError:
+                        source_session = None
+                    if not isinstance(source_session, dict) or "messages" not in source_session:
+                        source_session = None
                     for attempt in range(2):
+                        protection = protect_source_history(
+                            compressor, [*(history or []), {"role": "user", "content": current_instruction}],
+                            source_session,
+                        )
                         kwargs = {"conversation_history": history} if history else {}
                         raw = agent.run_conversation(
                             current_instruction, system_message=role.identity,
@@ -304,6 +315,20 @@ class HermesNativeRuntime:
                                 agent, "_aux_compression_context_length_config", None),
                             "compression_request_timeout_seconds": request_timeout if compressor else None,
                             "continued_messages": len(history or []),
+                            "source_history_protection": {
+                                **protection,
+                                "returned_source_message_indices": list(source_session_message_indices(
+                                    raw.get("messages") or [], source_session,
+                                )) if source_session is not None else [],
+                            },
+                            "native_usage": {
+                                "scope": "Hermes 原生会话累计及末次主请求字段，不含辅助摘要请求用量",
+                                **{key: raw[key] for key in (
+                                    "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+                                    "reasoning_tokens", "prompt_tokens", "completion_tokens",
+                                    "total_tokens", "last_prompt_tokens",
+                                ) if key in raw},
+                            },
                         }
                         turns.append(turn)
                         if attempt:
@@ -554,6 +579,30 @@ def pin_hermes_timeout_env(default_timeout: float = 120.0) -> Iterator[float]:
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
+
+
+def protect_source_history(
+    compressor: Any, messages: list[dict[str, Any]], raw_session: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """仅在输入逐值包含原轨迹时扩大原生保护前缀，不替换或生成摘要。"""
+    indices = source_session_message_indices(messages, raw_session) if raw_session is not None else ()
+    receipt: dict[str, Any] = {
+        "status": "SOURCE_NOT_PRESENT" if raw_session is not None else "SOURCE_CONTEXT_UNKNOWN",
+        "source_message_indices": list(indices),
+        "source_prefix_end": max(indices) + 1 if indices else None,
+        "native_protect_first_n": getattr(compressor, "protect_first_n", None),
+    }
+    if indices:
+        if compressor is None or not hasattr(compressor, "protect_first_n"):
+            receipt["status"] = "NATIVE_COMPRESSOR_UNAVAILABLE"
+        else:
+            # 原生 protect_first_n 不含首条 system；Hermes 可能在无 system 的输入前补一条。
+            system_head = int(bool(messages) and messages[0].get("role") == "system")
+            compressor.protect_first_n = max(
+                compressor.protect_first_n, max(indices) + 1 - system_head,
+            )
+            receipt.update(status="PROTECTED", native_protect_first_n=compressor.protect_first_n)
+    return receipt
 
 
 @contextmanager

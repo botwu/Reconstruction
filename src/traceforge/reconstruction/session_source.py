@@ -33,6 +33,38 @@ def indexed_session(raw_session: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def source_session_message_indices(
+    messages: list[dict[str, Any]], raw_session: dict[str, Any],
+) -> tuple[int, ...]:
+    """逐值核对完整原轨迹，兼容 terminal 行和 search JSON 两种交付封装。"""
+    expected = indexed_session(raw_session)
+    found: list[int] = []
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            raise ReconstructionSourceError("作者会话含无效消息")
+        if message.get("role") != "user":
+            continue
+        content = message_text(message)
+        candidates = [line.removeprefix("SOURCE_SESSION=")
+                      for line in content.splitlines() if line.startswith("SOURCE_SESSION=")]
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict) and payload.get("SOURCE_SESSION") == expected:
+            found.append(index)
+            continue
+        for value in candidates:
+            try:
+                matched = json.loads(value) == expected
+            except json.JSONDecodeError:
+                matched = False
+            if matched:
+                found.append(index)
+                break
+    return tuple(found)
+
+
 def message_text(message: dict[str, Any]) -> str:
     content = message.get("content")
     if isinstance(content, str):

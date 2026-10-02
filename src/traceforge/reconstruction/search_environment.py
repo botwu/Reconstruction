@@ -31,7 +31,9 @@ from traceforge.reconstruction.search_handoff import (
     validate_requirement_coverage,
 )
 from traceforge.reconstruction.search_tools import SearchTools
-from traceforge.reconstruction.session_source import indexed_session, message_text
+from traceforge.reconstruction.session_source import (
+    indexed_session, message_text, source_session_message_indices,
+)
 
 if TYPE_CHECKING:
     from traceforge.reconstruction.verification import VerificationConfig
@@ -503,21 +505,9 @@ def _restore_search_checkpoint(
         messages = json.loads((checkpoint.parent / "conversation.json").read_text())
         if not isinstance(messages, list):
             raise ValueError(f"检查点会话不是消息列表：{checkpoint}")
-        original = indexed_session(source["raw_session"])
-        source_present = False
-        for message in messages:
-            if not isinstance(message, dict):
-                raise ValueError(f"检查点会话含无效消息：{checkpoint}")
-            if message.get("role") != "user":
-                continue
-            try:
-                payload = json.loads(message_text(message))
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict) and payload.get("SOURCE_SESSION") == original:
-                source_present = True
-                break
-        if not source_present:
+        if any(not isinstance(message, dict) for message in messages):
+            raise ValueError(f"检查点会话含无效消息：{checkpoint}")
+        if not source_session_message_indices(messages, source["raw_session"]):
             raise ValueError(f"检查点会话没有当前完整 SOURCE_SESSION：{checkpoint}")
         network.restore(
             checkpoint.parent / "web", origin="researcher_checkpoint",
