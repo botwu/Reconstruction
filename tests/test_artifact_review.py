@@ -277,3 +277,23 @@ def test_readonly_artifact_review_uses_bound_snapshot_through_real_runtime_wrapp
     assert receipt["status"] == "ACCEPT"
     assert (tmp_path / "outside.txt").read_text() == "不可读取的宿主材料"
     assert author.conversation.messages == [{"role": "user", "content": "作者历史不能进入独立审查"}]
+
+
+def test_completed_trial_is_reviewed_when_another_trial_fails_capture(tmp_path):
+    valid_dir, valid, _ = trial_fixture(tmp_path / "valid")
+    _, invalid, _ = trial_fixture(tmp_path / "invalid")
+    invalid_row = invalid["results"]["trials"][0]
+    invalid_row.update(status="INFRA_ERROR", reward=None, content_valid=False,
+                       content_errors=["FINAL_WORKSPACE_MISSING"])
+    valid["results"]["trials"].append(invalid_row)
+    valid["results"]["quality_gate"] = {"ok": False, "reasons": ["TRIAL_INCOMPLETE_OR_INFRA_ERROR"]}
+    reviewer = Reviewer()
+    worker = executor(tmp_path / "valid", reviewer)
+    worker._review_artifacts(valid)
+    assert len(reviewer.sessions) == 1
+    assert [row["status"] for row in valid["file_semantic_reviews"]] == ["ACCEPT", "REVIEW"]
+    assert [row["status"] for row in valid["combined_verdicts"]] == ["PASS", "REVIEW"]
+    assert "FINAL_WORKSPACE_MISSING" in valid["file_semantic_reviews"][1]["errors"][0]
+    assert valid["results"]["quality_gate"]["ok"] is False
+    assert invalid_row["reward"] is None
+    assert (valid_dir / "verifier/file-semantic-review.json").is_file()

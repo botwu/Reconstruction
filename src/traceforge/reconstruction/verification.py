@@ -374,9 +374,11 @@ class HarborCalibrationExecutor:
         for trial in trials:
             receipt: dict[str, Any] = {"status": "REVIEW", "errors": []}
             try:
-                if ((run.get("execution") or {}).get("status") != "COMPLETED"
-                        or (results.get("quality_gate") or {}).get("ok") is not True):
-                    raise HarborResultError("实际执行或捕获证据不完整")
+                if trial.get("status") not in {"PASS", "FAIL"} or trial.get("content_valid") is not True:
+                    detail = json.dumps({
+                        "status": trial.get("status"), "content_errors": trial.get("content_errors") or [],
+                    }, ensure_ascii=False)
+                    raise HarborResultError(f"本次 trial 的执行或捕获证据不完整: {detail}")
                 trial_dir = Path(trial["result_path"]).parent
                 snapshot = build_file_artifact_snapshot(trial_dir)
                 receipt = review_file_artifact(
