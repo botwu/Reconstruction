@@ -23,7 +23,7 @@ from traceforge.verifier.synthesis import (
 
 VERIFIER_RECOVERY_SCHEMA = "traceforge.verifier-recovery.v1"
 VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION = (
-    "terminal-universe-verifier-semantic-review-v8-file-semantics"
+    "terminal-universe-verifier-semantic-review-v9-baseline-scope"
 )
 _FAILURE_REPRODUCTION_RULE = (
     "根据原始报错和实际调用链定位失败路径，能力缺失测试须复现对应的输入或返回形态；"
@@ -44,8 +44,11 @@ _BASELINE_SCOPE_RULE = (
     "再依据原始用户要求复核 task_scope_boundary，区分已正常工作的行为、原有故障和重建造成的缺口。"
     "没有真实执行回执不能把源码推测称为已复现失败，证据不足须指出具体缺口。"
     "用户未要求修复的已证实原有故障，不得因参考解顺手修复就升级为交付条件。"
-    "入口被该故障阻断时，核对故障前可观察行为；被其遮蔽的必需保护项调用真实组件验证，"
-    "不用局部变量布局、逐字源码或宽泛异常豁免代替行为检查，也不能掩盖重建损坏。"
+    "入口被该故障阻断时，核对故障前可观察行为；已保留接口的真实组件保护测试仍须执行。"
+    "接口合法迁移时，可结合绑定初态的真实行为回执与完成态实际实现、调用接线的独立FILE审查验证；"
+    "明确哪些完成态行为未重新动态执行，不要求只读审查者调用未知接口，也不能虚构执行回执。"
+    "源码和执行证据不足以支持判定时返回REVIEW。不得用命名、局部布局、逐字源码或宽泛异常豁免"
+    "代替实质核查，也不能掩盖重建损坏。"
 )
 
 

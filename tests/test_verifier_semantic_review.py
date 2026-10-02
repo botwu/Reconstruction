@@ -98,11 +98,12 @@ def test_file_review_cannot_certify_unreviewed_response_obligation_mapping(tmp_p
     assert "VERIFIER_REVIEW_INVALID" in result["errors"]
 
 
-@pytest.mark.parametrize("changed_script,service_failed", [
-    (False, False), (True, False), (False, True),
+@pytest.mark.parametrize("changed_script,service_failed,stale_review", [
+    (False, False, False), (True, False, False), (False, True, False),
+    (False, False, True),
 ])
 def test_rejected_verifier_must_change_program_before_another_review(
-    tmp_path, changed_script, service_failed,
+    tmp_path, changed_script, service_failed, stale_review,
 ):
     import copy
 
@@ -111,6 +112,8 @@ def test_rejected_verifier_must_change_program_before_another_review(
     feedback = copy.deepcopy(first["feedback"])
     if service_failed:
         feedback["semantic_review"]["status"] = "AGENT_FAILED"
+    if stale_review:
+        feedback["semantic_review"]["prompt_version"] = "previous-review-version"
     proposed = copy.deepcopy(feedback["previous_candidate"])
     proposed["oracle_solutions"][0]["justification"] = "只更新说明不能修复测试"
     if changed_script:
@@ -136,7 +139,7 @@ def test_rejected_verifier_must_change_program_before_another_review(
         output_root=tmp_path / "second", feedback=feedback, round_number=2,
     )
     assert candidate is None
-    no_progress = not changed_script and not service_failed
+    no_progress = not changed_script and not service_failed and not stale_review
     assert len(next_runtime.calls) == (1 if no_progress else 2)
     assert ("VERIFIER_NO_PROGRESS" in result["errors"]) is no_progress
     assert result["feedback"]["semantic_review"]["issues"][0]["counterexample"]
