@@ -23,13 +23,14 @@ from traceforge.verifier.synthesis import (
 
 VERIFIER_RECOVERY_SCHEMA = "traceforge.verifier-recovery.v1"
 VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION = (
-    "terminal-universe-verifier-semantic-review-v7-api-behavior"
+    "terminal-universe-verifier-semantic-review-v8-file-semantics"
 )
 _FAILURE_REPRODUCTION_RULE = (
     "根据原始报错和实际调用链定位失败路径，能力缺失测试须复现对应的输入或返回形态；"
     "应用层错误响应不能用同名的网络异常替代。参考解必须处理该路径，不能只通过替身。"
     "优先以小输入执行实际入口、观察返回和副作用，独立计算期望值；"
-    "涉及模块提取时，验证该模块独立 API 的真实输入输出及主程序对结果的消费。"
+    "涉及模块提取而用户未规定接口时，pytest核对可观察行为；真正迁移业务及原入口消费关系"
+    "由file_semantic_checks交给真实前后源码审查，不构造动态猜接口、回调重放或栈层级适配框架。"
     "隔离外部网络、账户和时钟，不替换待验证的本地实现。"
     "调用栈只用于定位 API，不能单独证明业务已提取；AST 只核对用户明确要求的结构。"
     "不得约束用户未指定的局部变量名、函数签名、导入写法或辅助函数层级。"
@@ -79,11 +80,13 @@ def review_verifier_candidate(
         "task": task, "candidate": candidate.to_dict(),
         "baseline_observations": baseline_observations or [],
         "file_obligation_ids": list(candidate.obligation_coverage),
+        "file_semantic_checks": candidate.file_semantic_checks,
         "response_obligation_ids": response_ids,
         "manual_response_obligation_ids": non_file_obligation_ids(task) if manual_response_review else [],
         "verification_context": {
             "phase": "RECONSTRUCTION",
             "file_verifier": "candidate.test_outputs_py",
+            "file_semantic_verifier": "实际初态及每次参考解、变异、solver执行后的文件与证据独立语义审查",
             "response_verifier": "traceforge.harbor_ags.response_receipt.evaluate_response_contract",
             "response_execution_status": "NOT_RUN",
             "response_evidence": "真实 rollout 的 trajectory.full.json",
@@ -105,7 +108,12 @@ def review_verifier_candidate(
         "mutation 必须在正确输出路径/接口保持合法格式、正常执行，仅破坏实质行为；",
         "写到另一个路径、漏掉整个输出、崩溃或故意去掉标题，只能证明基础格式检查，不足以校准语义。",
         "当前是 RECONSTRUCTION 阶段的验收机制审查，真实解题 rollout 及最终响应尚未执行。",
-        "FILE 义务由候选 test_outputs_py 验证；声明响应检查的 NON_FILE 义务由",
+        "FILE义务由test_outputs_py的行为检查与file_semantic_checks的产物语义检查共同覆盖。",
+        "语义判据须逐项受原用户要求支持、足以识别真正完成与表面包装，不固定用户未规定的接口。",
+        "可以直接执行验证的业务不能全部挪到模型审查。纯重构初态的业务测试允许通过；",
+        "真正未提取须在同一语义机制的NOP审查中拒绝，两份实际参考解须接受，有效变异须拒绝。",
+        "本轮只审查这一组合机制是否完整，不冒称尚未执行的文件语义检查已经通过。",
+        "声明响应检查的 NON_FILE 义务由",
         "traceforge.harbor_ags.response_receipt.evaluate_response_contract 在取得真实 rollout 的",
         "trajectory.full.json 后验最终 assistant 响应。这里审查该机制，不执行最终响应验收。",
         "acceptance_report 检查响应结构、编号和字段类型；basic_summary 检查摘要及其与报告的一致性。",
@@ -192,7 +200,7 @@ def _pytest_red_ok(runs: list[dict[str, Any]], candidate: Any) -> bool:
         return False
     if any(status not in {"PASS", "FAIL"} for statuses in missing + protective for status in statuses):
         return False
-    if not any("FAIL" in statuses for statuses in missing):
+    if not candidate.file_semantic_checks and not any("FAIL" in statuses for statuses in missing):
         return False
     return all(all(status == "PASS" for status in statuses) for statuses in protective)
 
@@ -202,7 +210,7 @@ def _verifier_behavior(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         **{key: payload.get(key) for key in (
             "test_outputs_py", "missing_capability_tests", "protective_tests",
-            "obligation_coverage", "response_contract",
+            "obligation_coverage", "file_semantic_checks", "response_contract",
         )},
         **{key: [item.get("script") for item in payload.get(key, [])]
            for key in ("oracle_solutions", "mutation_solutions")},
@@ -265,7 +273,9 @@ def run_verifier_recovery(
             "每轮使用新沙箱；对话历史不代表文件或执行回执仍在。工具用于试验和修正，最终候选由管线补齐本轮测试执行。",
             "Tests must resolve the workspace from os.environ['TRACEFORGE_WORKSPACE']; never use host paths.",
             "TRACEFORGE_WORKSPACE 是只读的待测源码，仅用于导入和读取。生成的输入、输出和临时文件使用 pytest tmp_path 或 tempfile.TemporaryDirectory；不要写入该目录，也不要为绕过权限而替换 Path.mkdir、文件读写或真实业务 I/O。",
-            "Iterate tests from actual tool feedback until at least one missing-capability test FAILs and every protective test PASSes on the current completed workspace (bE).",
+            "根据实际工具结果修正行为测试，初态保护测试必须通过。可观察功能缺口须有missing测试失败；"
+            "纯重构的业务可能初态已正确，声明file_semantic_checks时允许missing_capability_tests为空，"
+            "不为制造失败而猜测新模块API或限定调用栈。实际初态未完成须在后续组合RED的语义审查中证明。",
             "Do not write existence-only missing tests; asserting that a binding file exists is not a missing capability.",
             "Reference scripts must implement only the task obligations and preserve user prohibitions.",
             "Each oracle is an independent COMPLETE solution of ALL FILE obligations, not a component of a combined solution. The name is a label, not a destination filename.",
@@ -274,7 +284,9 @@ def run_verifier_recovery(
             "Test requested behavior, using isolated dependency stubs if necessary to exercise real workspace code. Comments, keyword presence and copied expected implementations cannot prove behavior. Never weaken assertions merely to make a reference pass.",
             _FAILURE_REPRODUCTION_RULE,
             _BASELINE_SCOPE_RULE,
-            "原任务未指定模块或函数名时，通过实际导入、调用链和输入输出识别实现，不得额外要求文件名含某个关键词。",
+            "file_semantic_checks是FILE义务ID到原任务所支持判据的映射，用于真实前后文件的独立审查。"
+            "用户未指定接口时，不为通吃任意API生成gc/profile或回调重放框架；业务提取与实际调用关系"
+            "由语义审查判断，pytest通过实际入口核对已明确的行为。不得指定新函数名或目录关键词。",
             "报告类任务：先阅读真实输入并确定可复核的事实与判定规则，再验证报告结论和引用与这些事实一致。格式齐全、关键词齐全但结论错误的报告必须失败；不要用从未读过的源码推断 APPROVED。",
             "保护性测试必须作用于实际任务输入或用户要求保持的行为；不要把 oracle/mutation 安装脚本复制进 pytest，再在假工作区自证正确。",
             "mutation 必须写入与合法参考解相同的目标文件/接口，保留合法输出格式但破坏一项核心语义；不得靠改输出路径、删除输出、遗漏标题或执行崩溃让 mutation 失败。",
@@ -301,9 +313,10 @@ def run_verifier_recovery(
                 if unverified else
                 "本任务只有 FILE 义务，response_contract 必须为 null 或省略。不得添加原任务未要求的响应格式、报告、结论等级或验收报文。",
             ]),
-            "If no FILE obligation can be observed by file-based pytest, return status=REVIEW with open_questions.",
+            "每条FILE义务必须有行为测试或具体file_semantic_checks判据，不能借语义声明绕过可执行行为验证。"
+            "无法提供完整组合机制时返回REVIEW及具体缺口。",
             "Finish with a JSON object only. status must be exactly READY or REVIEW.",
-            "READY schema: {status: 'READY', test_outputs_py: <exact bytes last passed to write_test>, oracle_solutions: [{name, script, justification}, {name, script, justification}], mutation_solutions: [{name, script, justification}], missing_capability_tests: [<bare test name>], protective_tests: [<bare test name>], obligation_coverage: {<each FILE obligation id>: [<test name>]}, expected_value_strategy: <independent calculation explanation>, response_contract: <完整响应验收契约，纯FILE任务可省略>, open_questions: []}.",
+            "READY schema: {status: 'READY', test_outputs_py: <exact bytes last passed to write_test>, oracle_solutions: [{name, script, justification}, {name, script, justification}], mutation_solutions: [{name, script, justification}], missing_capability_tests: [<bare test name>], protective_tests: [<bare test name>], obligation_coverage: {<each FILE obligation id>: [<test name>; 仅另有语义判据时可空]}, file_semantic_checks: {<FILE obligation id>: <原要求支持的具体语义判据>}, expected_value_strategy: <independent calculation explanation>, response_contract: <完整响应验收契约，纯FILE任务可省略>, open_questions: []}.",
             "Provide exactly two distinct valid reference scripts and exactly one meaningful incorrect implementation script, all starting from the initial workspace. Scripts execute in the workspace and may not access /tests or /solution.",
             "REVIEW schema: {status: 'REVIEW', open_questions: [<specific unresolved problem>]}.",
             "TASK:",
@@ -435,7 +448,10 @@ def run_verifier_recovery(
         "feedback": {"generation_errors": list(errors), "previous_candidate": payload} if errors else {},
         "semantic_review": semantic_review,
         "response_contract": response_contract if candidate is not None else None,
-        "unverified_obligations": list(unverified),
+        "unverified_obligations": list(dict.fromkeys([
+            *unverified, *(candidate.file_semantic_checks if candidate else []),
+        ])),
+        "pending_file_semantic_obligations": list(candidate.file_semantic_checks) if candidate else [],
         "manual_response_review": manual_response_review,
         "warnings": audit_warnings,
         "pytest_runs": list(session.pytest_runs),

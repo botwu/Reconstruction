@@ -6,7 +6,7 @@ import ast
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -16,11 +16,15 @@ from traceforge.reconstruction.model_gateway import (
     parse_json_object,
 )
 
-VERIFIER_PROMPT_VERSION = "terminal-universe-verifier-adaptation-v7-api-behavior"
+VERIFIER_PROMPT_VERSION = "terminal-universe-verifier-adaptation-v8-file-semantics"
 VERIFIER_SYSTEM = """你是独立的 code/file 任务验证器构建者。参照 Terminal-Universe 附录 D：
 只测试用户明确规定的接口和功能。期望值必须在测试中独立计算；不得运行待测实现
-来产生 gold。至少一个 missing-capability 测试必须在当前完成态 workspace（bE）上失败；
-禁止只断言文件/目录存在的 missing 测试。保护性测试必须通过。
+来产生 gold。可观察功能缺口由 missing-capability 测试在初态证明；保护性测试必须通过。
+纯重构的业务行为可能原本就正确，不能为了制造初态失败而限定用户未规定的接口或调用栈。
+此时用 file_semantic_checks 声明原义务中须对真实前后源码判定的要求，
+允许 missing_capability_tests 为空；初态未完成、两参考解完成及错误变体未完成，
+仍须由独立模型在各次真实执行归档上校准，不能靠声明直接通过。
+可测试的行为继续用 pytest；语义判定不能代替这些行为。禁止存在性或关键词充当功能验证。
 oracle 可写用户明确要求的任务文件；不得写入受保护的注入器实现文件（如 injector.cpp、loader.cpp、robloxdll.cpp）。不得把历史失败轨迹的实现当成正确参考解。
 生成自足 pytest 文件，测试中的 workspace 根路径必须通过环境变量
 TRACEFORGE_WORKSPACE 获取。测试文件只在独立 verifier 中可见。
@@ -40,7 +44,9 @@ repr 字符串写入文件；安装时不要导入目标程序的 ROS/仿真依�
 输出严格 JSON，字段：status(READY/REVIEW)、test_outputs_py、oracle_solutions
 ([{name,script,justification}])、mutation_solutions(同结构)、missing_capability_tests
 ([pytest函数名])、protective_tests([pytest函数名])、obligation_coverage
-({用户验收义务ID:[pytest函数名]})、expected_value_strategy、open_questions。
+({每个FILE义务ID:[pytest函数名]})、file_semantic_checks
+({需要产物语义判定的FILE义务ID:原任务支持的具体判据})、expected_value_strategy、open_questions。
+仅另有语义判据的义务可以没有对应pytest；不得把FILE改为NON_FILE或删掉义务。
 证据不足时 status=REVIEW，列出缺口。生成不是通过校准，不得声称测试已执行。
 """
 
@@ -421,6 +427,7 @@ class VerifierCandidate:
     prompt_version: str
     prompt_sha256: str
     response_sha256: str
+    file_semantic_checks: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -540,15 +547,19 @@ def candidate_from_payload(
         for n in ast.walk(tree)
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test_")
     }
+    semantic = payload.get("file_semantic_checks", {})
+    if (not isinstance(semantic, dict) or not set(semantic) <= set(obligation_ids)
+            or any(not isinstance(value, str) or not value.strip() for value in semantic.values())):
+        raise VerifierSynthesisError("file_semantic_checks 必须是已知FILE义务到非空判据的映射")
     missing = _strings(
-        payload.get("missing_capability_tests"), "missing_capability_tests", required=True
+        payload.get("missing_capability_tests"), "missing_capability_tests", required=not semantic
     )
     protective = _strings(payload.get("protective_tests"), "protective_tests", required=True)
     coverage = payload.get("obligation_coverage")
     if not isinstance(coverage, dict) or set(coverage) != set(obligation_ids):
         raise VerifierSynthesisError("测试覆盖必须与用户验收义务完全对应")
     normalized = {
-        key: _strings(value, "obligation_coverage", required=True)
+        key: _strings(value, "obligation_coverage", required=key not in semantic)
         for key, value in coverage.items()
     }
     all_refs = (
@@ -591,6 +602,7 @@ def candidate_from_payload(
             VERIFIER_PROMPT_VERSION,
             prompt_sha256,
             response_sha256,
+            dict(semantic),
         ),
         extra,
     )

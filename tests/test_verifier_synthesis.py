@@ -124,3 +124,40 @@ def test_solution_rejects_explicit_hidden_root_literals(field, script):
     payload[field][0]["script"] = script
     with pytest.raises(VerifierSynthesisError, match="隐藏"):
         synthesize_verifier(task=_task(), workspace_files={}, model=FakeModel(payload))
+
+
+def test_refactor_can_defer_structure_to_calibrated_file_semantics():
+    payload = _payload()
+    payload["missing_capability_tests"] = []
+    payload["obligation_coverage"] = {"output": []}
+    payload["file_semantic_checks"] = {
+        "output": "实际业务移入新增模块，原入口消费该模块结果；空包装不满足要求。",
+    }
+    candidate, _ = synthesize_verifier(task=_task(), workspace_files={}, model=FakeModel(payload))
+    assert candidate.missing_capability_tests == ()
+    assert candidate.file_semantic_checks == payload["file_semantic_checks"]
+    assert candidate.to_dict()["file_semantic_checks"] == payload["file_semantic_checks"]
+
+
+@pytest.mark.parametrize("checks", [None, [], {"unknown": "检查"}, {"output": ""}, {"output": 1}])
+def test_file_semantics_require_known_obligation_and_nonempty_criterion(checks):
+    payload = _payload()
+    payload["file_semantic_checks"] = checks
+    with pytest.raises(VerifierSynthesisError, match="file_semantic_checks"):
+        synthesize_verifier(task=_task(), workspace_files={}, model=FakeModel(payload))
+
+
+def test_uncovered_obligation_cannot_use_another_obligations_semantics():
+    task = {"acceptance_obligations": [{"id": "output"}, {"id": "other"}]}
+    payload = _payload()
+    payload["file_semantic_checks"] = {"output": "核对真正的模块提取"}
+    payload["obligation_coverage"] = {"output": [], "other": []}
+    with pytest.raises(VerifierSynthesisError, match="obligation_coverage"):
+        synthesize_verifier(task=task, workspace_files={}, model=FakeModel(payload))
+
+
+def test_behavior_only_candidate_still_requires_observable_missing_test():
+    payload = _payload()
+    payload["missing_capability_tests"] = []
+    with pytest.raises(VerifierSynthesisError, match="missing_capability_tests"):
+        synthesize_verifier(task=_task(), workspace_files={}, model=FakeModel(payload))

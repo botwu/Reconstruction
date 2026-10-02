@@ -140,3 +140,39 @@ def test_rejected_verifier_must_change_program_before_another_review(
     assert len(next_runtime.calls) == (1 if no_progress else 2)
     assert ("VERIFIER_NO_PROGRESS" in result["errors"]) is no_progress
     assert result["feedback"]["semantic_review"]["issues"][0]["counterexample"]
+
+
+def test_file_semantic_mechanism_ready_keeps_actual_obligation_unverified(tmp_path):
+    class CombinedRuntime(ReviewRuntime):
+        def run(self, **kwargs):
+            result = super().run(**kwargs)
+            if kwargs["role"].result_schema != "traceforge.verifier-semantic-review.v1":
+                result.payload["missing_capability_tests"] = []
+                result.payload["file_semantic_checks"] = {"output": "报告结论逐项符合实际输入"}
+            return result
+
+    result, candidate = _run(tmp_path, CombinedRuntime())
+    assert candidate is not None and result["status"] == "READY"
+    assert result["unverified_obligations"] == ["output"]
+    assert result["pending_file_semantic_obligations"] == ["output"]
+
+
+def test_semantic_candidate_still_requires_matching_executed_protection():
+    import hashlib
+    from traceforge.reconstruction.verifier_recovery import _pytest_red_ok
+    from traceforge.verifier.synthesis import candidate_from_payload
+
+    payload = _payload("echo first")
+    payload["missing_capability_tests"] = []
+    payload["file_semantic_checks"] = {"output": "核查真实源码业务迁移"}
+    candidate, _ = candidate_from_payload(
+        payload, obligation_ids=["output"], model_name="fixture",
+        prompt_sha256="request", response_sha256="response",
+    )
+    digest = hashlib.sha256(candidate.test_outputs_py.encode()).hexdigest()
+    runs = [{"name": name, "status": "PASS", "test_sha256": digest}
+            for name in candidate.protective_tests]
+    assert _pytest_red_ok(runs, candidate)
+    assert not _pytest_red_ok([], candidate)
+    assert not _pytest_red_ok([{**row, "test_sha256": "previous"} for row in runs], candidate)
+    assert not _pytest_red_ok([{**row, "status": "FAIL"} for row in runs], candidate)
