@@ -12,7 +12,10 @@ from traceforge.reconstruction.verification import (
     VerificationConfig,
     run_reconstruction_verification,
 )
-from traceforge.reconstruction.verifier_recovery import run_verifier_recovery
+from traceforge.reconstruction.verifier_recovery import (
+    VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION,
+    run_verifier_recovery,
+)
 from traceforge.task_instruction import grounded_response_contract
 from traceforge.verifier.bundle import compile_bundle
 
@@ -182,9 +185,7 @@ def test_verifier_completes_missing_summary_before_same_semantic_review(tmp_path
     assert context["response_execution_status"] == "NOT_RUN"
     assert context["response_evidence"] == "真实 rollout 的 trajectory.full.json"
     assert result["unverified_obligations"] == ["obl-002", "obl-003"]
-    assert result["semantic_review"]["prompt_version"] == (
-        "terminal-universe-verifier-semantic-review-v6-baseline-scope"
-    )
+    assert result["semantic_review"]["prompt_version"] == VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION
     assert not list((tmp_path / "workspace").rglob("trajectory.full.json"))
 
 

@@ -23,17 +23,17 @@ from traceforge.verifier.synthesis import (
 
 VERIFIER_RECOVERY_SCHEMA = "traceforge.verifier-recovery.v1"
 VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION = (
-    "terminal-universe-verifier-semantic-review-v6-baseline-scope"
+    "terminal-universe-verifier-semantic-review-v7-api-behavior"
 )
 _FAILURE_REPRODUCTION_RULE = (
     "根据原始报错和实际调用链定位失败路径，能力缺失测试须复现对应的输入或返回形态；"
     "应用层错误响应不能用同名的网络异常替代。参考解必须处理该路径，不能只通过替身。"
     "优先以小输入执行实际入口、观察返回和副作用，独立计算期望值；"
+    "涉及模块提取时，验证该模块独立 API 的真实输入输出及主程序对结果的消费。"
     "隔离外部网络、账户和时钟，不替换待验证的本地实现。"
-    "AST 只核对用户明确要求的结构，不能用不断扩展的静态调用图代替行为测试。"
+    "调用栈只用于定位 API，不能单独证明业务已提取；AST 只核对用户明确要求的结构。"
     "不得约束用户未指定的局部变量名、函数签名、导入写法或辅助函数层级。"
-    "审查员给出的修复建议也须遵守这些边界；发现静态规则误拒绝时转为实际调用验证，"
-    "不要再叠加别名、递归深度等新规则。"
+    "审查修复建议也须遵守这些边界，不得叠加静态调用图或栈帧规则代替行为验证。"
 )
 
 _BASELINE_SCOPE_RULE = (
@@ -42,8 +42,9 @@ _BASELINE_SCOPE_RULE = (
     " probe_evidence 的输入、执行结果和初态绑定；优先用 read_session_message 按原索引复核。"
     "再依据原始用户要求复核 task_scope_boundary，区分已正常工作的行为、原有故障和重建造成的缺口。"
     "没有真实执行回执不能把源码推测称为已复现失败，证据不足须指出具体缺口。"
-    "用户未要求修复的已证实原有故障，不得因参考解顺手修复就升级为交付条件；"
-    "保护测试不等于修复所有旧问题，也不能用宽泛异常豁免掩盖用户明确要求的能力或重建损坏。"
+    "用户未要求修复的已证实原有故障，不得因参考解顺手修复就升级为交付条件。"
+    "入口被该故障阻断时，核对故障前可观察行为；被其遮蔽的必需保护项调用真实组件验证，"
+    "不用局部变量布局、逐字源码或宽泛异常豁免代替行为检查，也不能掩盖重建损坏。"
 )
 
 
