@@ -52,3 +52,12 @@ def test_candidate_reuses_only_matching_intact_dependency_bundle(tmp_path):
     next((root / "wheels").iterdir()).write_bytes(b"changed")
     with pytest.raises(ValueError, match="PYTHON_RUNTIME_CHANGED"):
         reuse_python_runtime(root, requirements.parent, tmp_path / "tampered_runtime")
+
+
+def test_private_installer_is_locked_without_relaxing_default_contract(tmp_path):
+    root, requirements = frozen_runtime(tmp_path)
+    private = "#!/bin/sh\nset -eu\n"
+    freeze_wheels(root, requirements, install_script=private)
+    assert validate_python_runtime(root, requirements, install_script=private)
+    with pytest.raises(ValueError, match="INSTALLER_CHANGED"):
+        validate_python_runtime(root, requirements)

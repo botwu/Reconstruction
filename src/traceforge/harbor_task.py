@@ -9,6 +9,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from traceforge.reconstruction.python_runtime import freeze_wheels, validate_python_runtime
 from traceforge.trajectory.artifacts import ArtifactWorkspace, write_json_artifact
 
 CONTAINER_VERSION = "traceforge.harbor-container.v3"
@@ -65,6 +66,36 @@ def write_container_environment(task: Path, *, separate_verifier: bool) -> None:
         )
 
 
+_SEARCH_INSTALL_SCRIPT = '''#!/bin/sh
+set -eu
+bundle=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+python3 -m pip install --disable-pip-version-check --no-index --no-deps --require-hashes \\
+    --no-compile --target "$bundle/../python" \\
+    --find-links "$bundle/wheels" -r "$bundle/requirements.lock"
+'''
+
+
+def _copy_search_runtime(environment: Path, lock: dict[str, Any]) -> None:
+    """复用现有 wheel 哈希冻结，离线安装到检索工具私有目录。"""
+    runtime = environment / "python_runtime"
+    wheels = runtime / "wheels"
+    wheels.mkdir(parents=True)
+    vendor = Path(__file__).parent / "reconstruction/search_vendor"
+    for item in lock["wheels"]:
+        name = item["filename"]
+        if Path(name).name != name or not name.endswith("-py3-none-any.whl"):
+            raise ValueError("search 依赖必须为跨平台纯 Python wheel")
+        raw = (vendor / name).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != item["sha256"]:
+            raise ValueError(f"search 依赖 wheel 哈希不匹配：{name}")
+        (wheels / name).write_bytes(raw)
+    requirements = environment / "requirements.txt"
+    freeze_wheels(runtime, requirements, install_script=_SEARCH_INSTALL_SCRIPT)
+    validate_python_runtime(runtime, requirements, install_script=_SEARCH_INSTALL_SCRIPT)
+    (environment / "dependency-sources.json").write_text(
+        json.dumps(lock, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
     """封装已补全的检索初态；未提供内容验证器时使用 Harbor 的跳过验证模式。"""
     from traceforge.reconstruction.search_handoff import SEARCH_ENVIRONMENT_SCHEMA
@@ -79,11 +110,14 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
         raise ValueError("只有任务和必要上下文完整的检索初态才能导出 Harbor")
     tool_source = Path(__file__).parent / "reconstruction/search_tools.py"
     requires_web = environment.get("requires_live_web", True)
-    from importlib.metadata import version
-
-    pdf_dependencies = [f"{name}=={version(name)}" for name in ("pypdf", "fonttools")] if requires_web else []
+    dependency_lock = json.loads(
+        (Path(__file__).parent / "reconstruction/search_vendor_lock.json").read_text()
+    ) if requires_web else {}
+    pdf_dependencies = [f"{item['name']}=={item['version']}"
+                        for item in dependency_lock.get("wheels", [])]
     digest = hashlib.sha256(json.dumps({
-        "search_delivery_version": 7, "pdf_dependencies": pdf_dependencies,
+        "search_delivery_version": 8, "pdf_dependencies": pdf_dependencies,
+        "dependency_sources": dependency_lock,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),
     }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
@@ -137,6 +171,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
         if requires_web:
             shutil.copyfile(tool_source, root / "environment/search_tools.py")
             (root / "environment/requirements.txt").write_text("\n".join(pdf_dependencies) + "\n")
+            _copy_search_runtime(root / "environment", dependency_lock)
             (root / "environment/traceforge-search").write_text(
                 '#!/bin/sh\nset -eu\n'
                 'script_dir=$(dirname -- "$(readlink -f -- "$0")")\n'
@@ -147,8 +182,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
             (root / "environment/setup.sh").write_text(
                 '#!/bin/sh\nset -eu\n'
                 'script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
-                'python3 -m pip install --no-cache-dir --target "$script_dir/python" '
-                '-r "$script_dir/requirements.txt"\n'
+                'sh "$script_dir/python_runtime/install.sh"\n'
                 'chmod 755 "$script_dir/traceforge-search"\n'
                 'ln -sf "$script_dir/traceforge-search" /usr/local/bin/traceforge-search\n',
                 encoding="utf-8",

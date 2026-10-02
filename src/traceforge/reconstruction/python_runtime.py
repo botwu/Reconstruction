@@ -32,7 +32,9 @@ def _hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def freeze_wheels(root: Path, requirements: Path) -> dict[str, Any]:
+def freeze_wheels(
+    root: Path, requirements: Path, *, install_script: str = INSTALL_SCRIPT,
+) -> dict[str, Any]:
     """保留原声明，锁定由目标 Python 下载的全部直接和间接依赖。"""
     entries, locked = [], []
     for wheel in sorted((root / "wheels").glob("*.whl")):
@@ -51,7 +53,7 @@ def freeze_wheels(root: Path, requirements: Path) -> dict[str, Any]:
         raise ValueError("PYTHON_WHEELS_MISSING")
     shutil.copyfile(requirements, root / "requirements.source.txt")
     (root / "requirements.lock").write_text("\n".join(locked) + "\n")
-    (root / "install.sh").write_text(INSTALL_SCRIPT)
+    (root / "install.sh").write_text(install_script)
     manifest = {"schema_version": "traceforge.python-runtime.v1",
                 "requirements_sha256": _hash(requirements),
                 "files": entries + [{"file": name, "sha256": _hash(root / name)} for name in
@@ -60,7 +62,9 @@ def freeze_wheels(root: Path, requirements: Path) -> dict[str, Any]:
     return manifest
 
 
-def validate_python_runtime(root: Path, requirements: Path) -> dict[str, Any]:
+def validate_python_runtime(
+    root: Path, requirements: Path, *, install_script: str = INSTALL_SCRIPT,
+) -> dict[str, Any]:
     manifest = json.loads((root / "manifest.json").read_text())
     if (manifest.get("schema_version") != "traceforge.python-runtime.v1"
             or manifest.get("requirements_sha256") != _hash(requirements)):
@@ -74,7 +78,7 @@ def validate_python_runtime(root: Path, requirements: Path) -> dict[str, Any]:
         if (path.is_symlink() or root.resolve() not in path.resolve().parents
                 or _hash(path) != item["sha256"]):
             raise ValueError("PYTHON_RUNTIME_CHANGED")
-    if (root / "install.sh").read_text() != INSTALL_SCRIPT:
+    if (root / "install.sh").read_text() != install_script:
         raise ValueError("PYTHON_RUNTIME_INSTALLER_CHANGED")
     return manifest
 

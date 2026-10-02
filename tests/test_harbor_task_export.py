@@ -43,7 +43,10 @@ def test_search_delivery_preserves_evidence_without_inventing_a_verifier(tmp_pat
     assert (task / "environment/search_tools.py").is_file()
     requirements = (task / "environment/requirements.txt").read_text()
     assert "pypdf==" in requirements and "fonttools==" in requirements
-    assert '-r "$script_dir/requirements.txt"' in (task / "environment/setup.sh").read_text()
+    assert 'sh "$script_dir/python_runtime/install.sh"' in (task / "environment/setup.sh").read_text()
+    installer = (task / "environment/python_runtime/install.sh").read_text()
+    assert "--no-index --no-deps --require-hashes" in installer
+    assert len(json.loads((task / "environment/dependency-sources.json").read_text())["wheels"]) == 2
     assert "live_references" in (task / "instruction.md").read_text()
     assert not (task / "solution").exists()
     assert not (task / "tests/test.sh").exists()
@@ -138,8 +141,10 @@ def test_search_setup_uses_its_uploaded_directory(tmp_path, install_exit):
     )
     assert result.returncode == install_exit, result.stderr
     calls = [json.loads(line) for line in log.read_text().splitlines()]
-    assert calls[0][-4:] == ["--target", str(relocated / "python"),
-                              "-r", str(relocated / "requirements.txt")]
+    assert calls[0][-4:] == ["--find-links", str(relocated / "python_runtime/wheels"),
+                              "-r", str(relocated / "python_runtime/requirements.lock")]
+    assert Path(calls[0][calls[0].index("--target") + 1]).resolve() == relocated / "python"
+    assert "--no-index" in calls[0] and "--require-hashes" in calls[0]
     assert len(calls) == (3 if install_exit == 0 else 1)
     if install_exit == 0:
         assert calls[-1][-2:] == [
@@ -182,3 +187,17 @@ def test_search_command_imports_private_dependencies_after_relocation(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "private-dependency"
+
+
+def test_search_export_rejects_corrupt_vendored_dependency(tmp_path, monkeypatch):
+    read = Path.read_bytes
+
+    def corrupt(path):
+        if path.parent.name == "search_vendor":
+            return b"corrupt"
+        return read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", corrupt)
+    with pytest.raises(ValueError, match="wheel 哈希"):
+        export_search_task(search_environment(), tmp_path)
+    assert not any(tmp_path.iterdir())

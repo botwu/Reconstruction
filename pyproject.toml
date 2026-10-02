@@ -8,7 +8,7 @@ version = "0.3.0"
 description = "从真实回流 session 重建可验证任务与环境"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["pypdf[fonts]==6.19.0"]
+dependencies = ["pypdf[fonts]==6.19.0", "fonttools==4.66.1"]
 
 [project.scripts]
 traceforge = "traceforge.cli:main"
@@ -20,7 +20,7 @@ dev = [
 ]
 
 [tool.setuptools.package-data]
-"traceforge.reconstruction" = ["researcher_instruction.md"]
+"traceforge.reconstruction" = ["researcher_instruction.md", "search_vendor/*.whl", "search_vendor_lock.json"]
 "traceforge.failure_analysis" = ["assets/**/*.py", "assets/**/*.md", "reference_assets/*.json", "reference_assets/*.txt", "reference_assets/*.md"]
 "traceforge.verifier" = ["vendor/*.whl", "vendor_lock.json"]
 

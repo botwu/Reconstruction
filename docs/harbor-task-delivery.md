@@ -65,6 +65,13 @@ harbor run --path /path/to/search/task --agent nop --env docker \
 
 ### AGS 执行
 
+检索依赖随交付包离线提供。项目固定 pypdf 6.19.0 与 fonttools 4.66.1 的官方
+`py3-none-any` wheel，适用当前 AGS Python 3.11 与 Docker Python 3.12；
+来源 URL、许可证和 SHA256 记录于
+`src/traceforge/reconstruction/search_vendor_lock.json`，许可证原文保留在 wheel 内。
+导出复用既有 Python runtime 的哈希锁；setup 以 `--no-index --require-hashes`
+安装到任务环境的私有目录，避免系统 Python 限制和每个沙箱重复下载。
+
 已部署的 `harbor_ags.environment:AGSPrebuiltEnvironment` 本身是原生 Harbor 后端，
 直接创建云端预置沙盒，无需执行机安装 Docker。search 使用本仓库的
 `traceforge.harbor_ags.search:SearchAGSEnvironment`，保留任务显式声明的检索变量，

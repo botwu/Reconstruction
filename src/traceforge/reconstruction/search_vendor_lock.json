@@ -1,0 +1,27 @@
+{
+  "schema_version": "traceforge.search-python-vendor.v1",
+  "target_python": ">=3.11",
+  "wheel_tag": "py3-none-any",
+  "wheels": [
+    {
+      "name": "pypdf",
+      "version": "6.19.0",
+      "filename": "pypdf-6.19.0-py3-none-any.whl",
+      "sha256": "7e5d6e730e7dae87d560a2cee218b852f6498c8be61966f3cd02ead971e48d14",
+      "url": "https://files.pythonhosted.org/packages/3c/2c/c43c03eaf630435f023f1dc61ec4a4a78951ad5530a62c71cc89bde307b7/pypdf-6.19.0-py3-none-any.whl",
+      "metadata_url": "https://pypi.org/pypi/pypdf/6.19.0/json",
+      "requires_python": ">=3.9",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "name": "fonttools",
+      "version": "4.66.1",
+      "filename": "fonttools-4.66.1-py3-none-any.whl",
+      "sha256": "7234ae9e28db64273fbbfa72caebd0a97e3bdba6b05064114741b9539ef339d0",
+      "url": "https://files.pythonhosted.org/packages/f6/10/d45b74135d5d642cb3a4fb0a957c1613ef93de4c8548671dfc3a5bf38299/fonttools-4.66.1-py3-none-any.whl",
+      "metadata_url": "https://pypi.org/pypi/fonttools/4.66.1/json",
+      "requires_python": ">=3.11",
+      "license": "MIT"
+    }
+  ]
+}
