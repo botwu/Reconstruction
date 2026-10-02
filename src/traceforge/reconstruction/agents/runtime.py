@@ -453,8 +453,10 @@ def load_channel_connection(config_path: str | Path, channel: str) -> tuple[str,
 
 
 def provider_for_channel(channel: str, model_name: str) -> str:
-    if "/" in model_name:
-        return model_name.split("/", 1)[0]
+    # 仅识别已知 provider；网关模型自身的路由斜杠不能充当 provider 分隔符。
+    prefix, separator, _ = model_name.partition("/")
+    if separator and prefix in {"anthropic", "openai", "deepseek", "vol", "bailian", "google", "gemini", "gpt"}:
+        return prefix
     if channel in {"claude", "anthropic"} or model_name.startswith("claude-"):
         return "anthropic"
     if channel in {"deepseek", "vol"} or model_name.startswith("vol"):

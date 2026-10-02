@@ -690,6 +690,19 @@ def test_resolve_rollout_model_uses_channel_not_forged_anthropic() -> None:
     )
 
 
+@pytest.mark.parametrize("channel,wire_id,provider", [
+    ("claude", "claude-opus-4-8/awsb_L/sfa", "anthropic"),
+    ("gpt", "gpt-6-astra/azure/sfa", "gpt"),
+])
+def test_routed_gateway_model_does_not_become_provider(channel, wire_id, provider):
+    from traceforge.reconstruction.agents.runtime import provider_for_channel
+
+    assert provider_for_channel(channel, wire_id) == provider
+    assert resolve_rollout_model(None, channel=channel, model_name=wire_id) == (
+        f"{provider}/{wire_id}"
+    )
+
+
 def test_openai_root_endpoint_adds_v1():
     from traceforge.reconstruction.agents.runtime import HermesNativeRuntime, openai_sdk_base_url
     assert openai_sdk_base_url("https://tokenhub.example") == "https://tokenhub.example/v1"
