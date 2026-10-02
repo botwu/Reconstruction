@@ -1170,10 +1170,11 @@ def merge_completion_files(payload: dict[str, Any], session: AgentSession) -> di
             if item.get("evidence_ref_ids"):
                 existing["evidence_ref_ids"] = item.get("evidence_ref_ids")
             # 采集修复声明与实际工具写入绑定，JSON 不能替换或丢弃其审计来源。
-            if "capture_repairs" in item:
-                existing["capture_repairs"] = item["capture_repairs"]
-            else:
-                existing.pop("capture_repairs", None)
+            for key in ("capture_repairs", "dependency_source"):
+                if key in item:
+                    existing[key] = item[key]
+                else:
+                    existing.pop(key, None)
             continue
         merged.append(item)
         by_path[path] = item

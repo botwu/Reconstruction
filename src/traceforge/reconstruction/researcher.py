@@ -180,10 +180,17 @@ class ReconstructionRuntime:
         receipt = root / "python-runtime-receipt.json"
         if receipt.is_file() and json.loads(receipt.read_text()).get("status") == "READY":
             self.python_runtime = root / "python_runtime"
+            kwargs["session"].dependency_bundle = self.python_runtime
         return result
 
     def run(self, *, role: AgentRole, instruction: str, session: AgentSession,
             output_root: Path) -> AgentResult:
+        role = replace(role, tools=tuple(dict.fromkeys((*role.tools, "read_probe_output"))))
+        prior_probes = (session.repair_feedback or self.initial_feedback or {}).get("environment_probes", [])
+        # 旧探针仅供续读，不计入当前候选的已执行检查。
+        session.probe_output_history = [
+            item for item in prior_probes if isinstance(item, dict) and item.get("probe_id")
+        ]
         author = role.name != "sufficiency" and role.result_schema != "traceforge.verifier-semantic-review.v1"
         if author:
             session.conversation = self.conversation
@@ -211,6 +218,7 @@ class ReconstructionRuntime:
             reuse_python_runtime(self.python_runtime, session.workspace,
                                  session.workspace.parent / "python_runtime")
         if role.name == "completion":
+            session.dependency_bundle = self.python_runtime
             if self.public_sources is None:
                 self.public_sources = SearchTools(output_root / "public-sources")
             session.web_search_handler = self.public_sources.search
@@ -268,7 +276,7 @@ class ReconstructionRuntime:
             rendered.mkdir(parents=True, exist_ok=True)
             (rendered / "instruction.md").write_text(instruction)
             role = replace(role, tools=(*role.tools, "restore_observed_file", "edit_candidate_file",
-                                        "run_candidate", "web_search", "web_open"))
+                                        "run_candidate", "restore_dependency_source", "web_search", "web_open"))
         if author:
             instruction = f"同一研究者继续；当前阶段：{role.name}。\n" + instruction
         baseline = None

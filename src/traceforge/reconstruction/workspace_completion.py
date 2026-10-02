@@ -926,6 +926,8 @@ def _run_completion(
                     "provenance": item.get("provenance", "MODEL_COMPLETED"),
                     **({"capture_repairs": item["capture_repairs"]}
                        if "capture_repairs" in item else {}),
+                    **({"dependency_source": item["dependency_source"]}
+                       if "dependency_source" in item else {}),
                 }
                 for item in candidate.get("files", [])
                 if isinstance(item, dict)

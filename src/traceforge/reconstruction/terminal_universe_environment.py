@@ -708,6 +708,7 @@ def materialize_environment(
             "evidence_ref_ids": list(item.get("evidence_ref_ids", [])),
             "content_sha256": hashlib.sha256(item["content"].encode("utf-8")).hexdigest(),
             **({"capture_repairs": item["capture_repairs"]} if "capture_repairs" in item else {}),
+            **({"dependency_source": item["dependency_source"]} if "dependency_source" in item else {}),
         }
     if excerpts["files"]:
         excerpt_texts[SOURCE_EXCERPTS_PATH] = json.dumps(excerpts, ensure_ascii=False, indent=2) + "\n"

@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shlex
 import shutil
 import zipfile
 from email.parser import Parser
 from pathlib import Path
 from typing import Any
+
+from traceforge.reconstruction.agents.session import safe_relpath
 
 RUNTIME_NAME = "python_runtime"
 REMOTE_RUNTIME = "/opt/traceforge-python-runtime"
@@ -81,6 +84,43 @@ def validate_python_runtime(
     if (root / "install.sh").read_text() != install_script:
         raise ValueError("PYTHON_RUNTIME_INSTALLER_CHANGED")
     return manifest
+
+
+def read_locked_wheel_member(
+    bundle: Path, requirements: str, *, distribution: str, version: str, member: str,
+) -> tuple[str, dict[str, Any]]:
+    """仅从已校验的运行时锁读取指定依赖成员，不接受模型提供的宿主路径。"""
+    manifest = validate_python_runtime(bundle, bundle / "requirements.source.txt")
+    if hashlib.sha256(requirements.encode()).hexdigest() != manifest["requirements_sha256"]:
+        raise ValueError("PYTHON_RUNTIME_REQUIREMENTS_CHANGED")
+    if not isinstance(member, str) or safe_relpath(member) != member:
+        raise ValueError("依赖成员路径无效")
+    normalize = lambda value: re.sub(r"[-_.]+", "-", str(value)).lower()
+    matches = []
+    for entry in manifest["files"]:
+        if not entry["file"].endswith(".whl"):
+            continue
+        with zipfile.ZipFile(bundle / entry["file"]) as archive:
+            metadata = [name for name in archive.namelist()
+                        if name.count("/") == 1 and name.endswith(".dist-info/METADATA")]
+            if len(metadata) != 1:
+                raise ValueError("PYTHON_WHEEL_METADATA_INVALID")
+            package = Parser().parsestr(archive.read(metadata[0]).decode())
+            if (normalize(package["Name"]) != normalize(distribution)
+                    or package["Version"] != version):
+                continue
+            entries = [item for item in archive.infolist() if item.filename == member]
+            if len(entries) != 1 or entries[0].is_dir() or entries[0].external_attr >> 16 & 0o170000 == 0o120000:
+                raise ValueError("依赖成员不存在、不唯一或不是普通文件")
+            raw = archive.read(member)
+            matches.append((raw.decode("utf-8"), {
+                "distribution": package["Name"], "version": package["Version"],
+                "wheel": entry["file"], "wheel_sha256": entry["sha256"],
+                "member": member, "member_sha256": hashlib.sha256(raw).hexdigest(),
+            }))
+    if len(matches) != 1:
+        raise ValueError("锁定依赖中没有唯一的指定包版本")
+    return matches[0]
 
 
 async def prepare_python_runtime(

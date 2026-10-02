@@ -38,6 +38,24 @@ class ReconstructionTests(unittest.TestCase):
         self.assertFalse(role.allow_write)
         self.assertIn("task_start_message_index", native.run.call_args.kwargs["instruction"])
 
+    def test_probe_history_is_readable_but_not_a_current_candidate_check(self) -> None:
+        probe = {"probe_id": "old", "executions": [{"stdout": "完整旧输出"}]}
+        adapter = ReconstructionRuntime(Mock(model_name="test"), source={}, task={},
+                                        runtime_factory=Mock(), python_runtime=self.root / "locked",
+                                        initial_feedback={"environment_probes": [probe]})
+        adapter.agent = Mock()
+        adapter.agent.run.return_value = AgentResult(role="completion", backend="test",
+                                                     completed=True, payload={})
+        state = AgentSession()
+        adapter.run(role=COMPLETION_REPLAYED_ROLE, instruction="", session=state,
+                    output_root=self.root / "author")
+        self.assertEqual(state.environment_probes, [])
+        self.assertEqual(execute_tool("read_probe_output", {"probe_id": "old"}, state), "完整旧输出")
+        self.assertEqual(state.dependency_bundle, self.root / "locked")
+        role = adapter.agent.run.call_args.kwargs["role"]
+        self.assertIn("read_probe_output", role.tools)
+        self.assertIn("restore_dependency_source", role.tools)
+
     def test_snapshot_checks_latest_write_without_mutating_seed(self) -> None:
         session = AgentSession(replay_files={"src/a.py": "seed"}, writes=[
             {"path": "src/a.py", "content": "first"},

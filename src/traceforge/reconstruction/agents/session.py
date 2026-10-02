@@ -46,6 +46,7 @@ class AgentSession:
     web_search_handler: Any = None
     web_open_handler: Any = None
     candidate_check_handler: Callable[..., dict[str, Any]] | None = None
+    dependency_bundle: Path | None = None
     repair_feedback: dict[str, Any] | None = None
     allow_write: bool = False
     allow_tests: bool = False
@@ -57,6 +58,7 @@ class AgentSession:
     test_outputs_py: str | None = None
     pytest_runs: list[dict[str, Any]] = field(default_factory=list)
     environment_probes: list[dict[str, Any]] = field(default_factory=list)
+    probe_output_history: list[dict[str, Any]] = field(default_factory=list)
     tool_events: list[dict[str, Any]] = field(default_factory=list)
     policy_errors: list[str] = field(default_factory=list)
     sandbox_started: bool = False
@@ -271,6 +273,20 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
             {"names": {"type": "array", "items": text, "minItems": 1}},
             ["names"],
         ),
+        "read_probe_output": (
+            "按当前会话已保存的 probe_id 分页读取完整 stdout/stderr，不重新执行，不接受宿主路径。",
+            {"probe_id": text, "execution_index": {"type": "integer", "minimum": 0},
+             "stream": {"type": "string", "enum": ["stdout", "stderr"]}, **page},
+            ["probe_id"],
+        ),
+        "restore_dependency_source": (
+            "从已校验的锁定 wheel 原成员恢复 UTF-8 源码，按行保留全部原始观察及占位。"
+            "仅恢复当前任务必要依赖，不代表原机器完整快照；返回 wheel、成员和候选哈希。"
+            "仍执行原文件保护与 capture_repairs 校验；无需模型抄写正文。",
+            {"distribution": text, "version": text, "member": text, "path": text,
+             "evidence_ref_ids": {"type": "array", "items": text, "minItems": 1}},
+            ["distribution", "version", "member", "path", "evidence_ref_ids"],
+        ),
         "run_candidate": (
             "冻结当前候选，在独立 AGS 只读环境中准备依赖并运行 Python 检查。"
             "返回实际退出码、日志及候选哈希；修改源码后需要重新检查。"
@@ -423,6 +439,18 @@ def execute_tool(name: str, arguments: Any, session: AgentSession) -> str:
         return _write_test(session, args)
     if name == "run_pytest":
         return _run_pytest(session, args)
+    if name == "read_probe_output":
+        matches = [item for item in [*session.environment_probes, *session.probe_output_history]
+                   if item.get("probe_id") == args.get("probe_id")]
+        index, stream = args.get("execution_index", 0), args.get("stream", "stdout")
+        if len(matches) != 1:
+            return "error: 当前会话没有唯一的指定 probe_id"
+        executions = matches[0].get("executions") or []
+        if type(index) is not int or not 0 <= index < len(executions) or stream not in {"stdout", "stderr"}:
+            return "error: 执行编号或输出流无效"
+        return _window(str(executions[index].get(stream) or ""), args)
+    if name == "restore_dependency_source":
+        return _restore_dependency_source(session, args)
     if name == "run_candidate":
         if session.candidate_check_handler is None:
             return "error: 当前会话没有配置候选执行后端"
@@ -588,6 +616,89 @@ def _edit_candidate_file(session: AgentSession, args: dict[str, Any]) -> str:
     if not count or (count != 1 and args.get("replace_all") is not True):
         return f"error: 当前候选中 old_text 匹配 {count} 次；请读取后唯一定位或明确 replace_all"
     return _write_candidate_edit(session, args, content.replace(old, new), reason)
+
+
+def _restore_dependency_source(session: AgentSession, args: dict[str, Any]) -> str:
+    """原成员正文与全部初态观察合并后，仍经过已有候选写入保护。"""
+    import zipfile
+    from traceforge.reconstruction.python_runtime import read_locked_wheel_member
+
+    path = workspace_relpath(session, str(args.get("path") or ""))
+    refs = args.get("evidence_ref_ids")
+    known = {str(item.get("evidence_ref_id")) for item in session.evidence}
+    if not session.allow_write or not path:
+        return "error: 没有写入权限或目标路径无效"
+    if (not isinstance(refs, list) or not refs
+            or any(not isinstance(ref, str) or ref not in known for ref in refs)):
+        return "error: 必须提供已交付的原始 evidence_ref_ids"
+    if session.dependency_bundle is None:
+        return "error: 尚无已锁定依赖；先用 run_candidate 准备并检查依赖"
+    requirements = next((item["content"] for item in reversed(session.writes)
+                         if item["path"] == "requirements.txt"), session.replay_files.get("requirements.txt"))
+    if requirements is None and session.workspace is not None:
+        target = session.workspace / "requirements.txt"
+        if target.is_file() and target.resolve().is_relative_to(session.workspace.resolve()):
+            requirements = target.read_text()
+    if not isinstance(requirements, str):
+        return "error: 当前候选没有 requirements.txt"
+    try:
+        content, provenance = read_locked_wheel_member(
+            session.dependency_bundle, requirements, distribution=args.get("distribution"),
+            version=args.get("version"), member=args.get("member"),
+        )
+        observed: dict[int, str] = {}
+        observation_refs = []
+        for event in session.evidence:
+            for op in (event.get("session_parse") or {}).get("file_ops", []):
+                if op.get("kind") != "read" or op.get("path") != path:
+                    continue
+                numbers, lines = op.get("line_numbers"), op.get("line_contents")
+                if op.get("partial") is False and isinstance(op.get("content"), str):
+                    lines = op["content"].splitlines()
+                    numbers = list(range(1, len(lines) + 1))
+                if (not isinstance(numbers, list) or not isinstance(lines, list)
+                        or len(numbers) != len(lines) or not numbers):
+                    raise ValueError("原始观察缺少可验证行号，不能覆盖")
+                observation_refs.append(str(event["evidence_ref_id"]))
+                for number, line in zip(numbers, lines):
+                    if type(number) is not int or number < 1 or not isinstance(line, str):
+                        raise ValueError("原始观察行号或正文无效")
+                    if number in observed and observed[number] != line:
+                        raise ValueError("原始观察在同一行冲突，不能自动选择")
+                    observed[number] = line
+        original = session.complete_files.get(path, session.partial_files.get(path))
+        if original is not None and not observed:
+            raise ValueError("已有捕获缺少对应行号观察，不能用上游覆盖")
+        lines = content.splitlines(keepends=True)
+        changed = []
+        for number, line in sorted(observed.items()):
+            if number > len(lines):
+                raise ValueError("上游成员短于原始已观察行")
+            prior = lines[number - 1]
+            if prior.rstrip("\r\n") != line:
+                ending = prior[len(prior.rstrip("\r\n")):]
+                lines[number - 1] = line + ending
+                changed.append(number)
+        content = "".join(lines)
+        if path in session.complete_files and content != session.complete_files[path]:
+            raise ValueError("完整原始文件不能用上游扩写或替换")
+        provenance.update(
+            scope="LOCKED_DEPENDENCY_WITH_SOURCE_OBSERVATIONS",
+            content_sha256=hashlib.sha256(content.encode()).hexdigest(),
+            observed_line_count=len(observed), overlaid_line_numbers=changed,
+            observation_evidence_ref_ids=sorted(set(observation_refs)),
+            observations_sha256=hashlib.sha256(json.dumps(observed, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
+        )
+        write_args = {**args, "path": path, "evidence_ref_ids": list(dict.fromkeys([*refs, *observation_refs]))}
+        reason = "从锁定依赖恢复缺失正文并保留全部初态观察：" + json.dumps(provenance, ensure_ascii=False)
+        result = (_write_candidate_edit(session, write_args, content, reason)
+                  if original else _write_file(session, {**write_args, "content": content}))
+        if not result.startswith("error:"):
+            session.writes[-1]["dependency_source"] = provenance
+            return json.dumps({"status": "RESTORED", "path": path, "dependency_source": provenance}, ensure_ascii=False)
+        return result
+    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
+        return f"error: 无法恢复锁定依赖源码：{exc}"
 
 
 def _repair_capture(session: AgentSession, args: dict[str, Any]) -> str:
