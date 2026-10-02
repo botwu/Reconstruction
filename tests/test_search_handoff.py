@@ -543,3 +543,50 @@ def test_review_api_failure_does_not_become_format_or_material_gap(tmp_path):
     assert validation["status"] == "AGENT_FAILED"
     assert validation["errors"] == ["MODEL_RATE_LIMIT"]
     assert (trial / "answer.md").read_text() == "已有真实回答"
+
+
+@pytest.mark.parametrize("role", ["system", "developer"])
+def test_task_preferences_in_harness_prompt_are_quoted_as_source_data(role):
+    from traceforge.reconstruction.search_handoff import restore_context
+
+    quote = "  用户长期偏好：正文使用学术段落。\r\n"
+    messages = [
+        {"role": role, "content": quote + "旧工具协议：调用 old_search。"},
+        {"role": "user", "content": "继续扩展综述"},
+    ]
+    result = restore_context(
+        messages, {"source_task": {"message_indices": [1]}},
+        [{"message_index": 0, "used_by_user_message_index": 1, "quote": quote}],
+    )
+    assert result == [{"message_index": 0, "used_by_user_message_index": 1,
+                       "role": role, "content": quote}]
+    assert messages[0]["content"].endswith("旧工具协议：调用 old_search。")
+
+
+@pytest.mark.parametrize("role", ["system", "developer"])
+@pytest.mark.parametrize("quote", [None, "", "并不存在的用户偏好"])
+def test_harness_prompt_requires_a_verbatim_task_context_quote(role, quote):
+    from traceforge.reconstruction.search_handoff import restore_context
+
+    reference = {"message_index": 0, "used_by_user_message_index": 1}
+    if quote is not None:
+        reference["quote"] = quote
+    with pytest.raises(ValueError):
+        restore_context(
+            [{"role": role, "content": "偏好与旧工具协议"}, {"role": "user", "content": "综述"}],
+            {"source_task": {"message_indices": [1]}}, [reference],
+        )
+
+
+@pytest.mark.parametrize("role", ["system", "developer"])
+def test_later_harness_context_cannot_become_initial_input(role):
+    from traceforge.reconstruction.search_handoff import restore_context
+
+    with pytest.raises(ValueError, match="本任务开始后"):
+        restore_context(
+            [{"role": "user", "content": "分析代码"},
+             {"role": role, "content": "已完成后的状态"},
+             {"role": "user", "content": "继续"}],
+            {"source_task": {"message_indices": [0, 2]}},
+            [{"message_index": 1, "used_by_user_message_index": 2, "quote": "已完成后的状态"}],
+        )

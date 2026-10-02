@@ -77,18 +77,21 @@ def restore_context(
         user = ref.get("used_by_user_message_index") if isinstance(ref, dict) else None
         if (type(index) is not int or type(user) is not int or user not in task_users
                 or not 0 <= index <= user or (index, user) in seen
-                or messages[index].get("role") not in {"user", "assistant"}):
+                or messages[index].get("role") not in {"system", "developer", "user", "assistant"}):
             raise ValueError(
                 f"历史引用 message_index={index} → used_by_user_message_index={user} 无效。"
                 f"来源不能晚于所支持的用户请求；本任务用户索引为 {sorted(task_users)}。"
                 "原用户要求可以作为输入，但之后的回答不能倒置为该问题的输入。"
             )
-        if messages[index].get("role") == "assistant" and index >= min(task_users):
+        role = messages[index]["role"]
+        if role != "user" and index >= min(task_users):
             raise ValueError(
-                f"message:{index} 属于本任务开始后的助手输出，不能交付为任务初态。"
+                f"message:{index} 属于本任务开始后的非用户消息，不能交付为任务初态。"
                 f"本任务从 user:{min(task_users)} 开始；继续和格式纠正不改变初态。"
                 "这些原文仍供重建者参考；只有任务开始前的依赖可交付，用户约束已由任务正文保留。"
             )
+        if role in {"system", "developer"} and "quote" not in ref:
+            raise ValueError("原 system/developer 中的任务依赖必须逐字摘录 quote，不能整份交付旧工具协议")
         original = omit_private_reasoning(messages[index])
         content = copy.deepcopy(original.get("content"))
         if "quote" in ref:
