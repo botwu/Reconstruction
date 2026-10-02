@@ -8,7 +8,8 @@ import pytest
 
 from traceforge.harbor_ags.results import build_file_artifact_snapshot
 from traceforge.harbor_ags.response_acceptance import apply_file_semantic_receipts
-from traceforge.reconstruction.agents.runtime import AgentResult
+from traceforge.reconstruction.agents.runtime import AgentResult, HermesNativeRuntime
+from traceforge.reconstruction.researcher import ReconstructionRuntime
 from traceforge.reconstruction.agents.session import execute_tool
 from traceforge.reconstruction.artifact_review import review_file_artifact
 from traceforge.reconstruction.verification import (
@@ -223,3 +224,56 @@ def test_semantic_candidate_without_reviewer_fails_before_cloud_execution(tmp_pa
     result = worker.run(candidate())
     assert result["status"] == "INFRA_ERROR"
     assert "FILE_SEMANTIC_REVIEW_AGENT_MISSING" in result["feedback"]
+
+
+@pytest.mark.parametrize("outside_read", [False, True])
+def test_readonly_artifact_review_uses_bound_snapshot_through_real_runtime_wrappers(tmp_path, outside_read):
+    trial, run, _ = trial_fixture(tmp_path)
+    (trial / "agent").mkdir()
+    (trial / "agent/oracle.txt").write_text("真实执行日志替身")
+    calls = []
+
+    class NativeAgent:
+        def __init__(self, **kwargs):
+            assert kwargs["enabled_toolsets"] == []
+
+        def run_conversation(self, instruction, system_message=None, task_id=None, **kwargs):
+            assert "conversation_history" not in kwargs
+            calls.append(task_id)
+            assert task_id == "file_artifact_review"
+            assert {item["function"]["name"] for item in self.tools} == {"list_dir", "read_file"}
+            assert "initial" in self._invoke_tool("list_dir", {}, task_id)
+            for path, expected in {
+                "initial/main.py": "def calculate",
+                "final/main.py": "def main",
+                "execution/verifier/test_outputs.py": "test_preserved",
+                "execution/agent/oracle.txt": "真实执行日志替身",
+                "execution.json": "PASS",
+            }.items():
+                assert expected in self._invoke_tool("read_file", {"path": path}, task_id)
+            if outside_read:
+                assert self._invoke_tool("read_file", {"path": "../outside.txt"}, task_id).startswith("error:")
+            return {"completed": True, "messages": [], "final_response": json.dumps({
+                "decision": "ACCEPT", "obligations": [{
+                    "obligation_id": "extract", "covered": True,
+                    "reason": "确定性替身仅验证真实代理接线及读权限。",
+                    "evidence": [{"path": "final/main.py", "quote": "def main()"}],
+                }],
+            })}
+
+    def sandbox_forbidden():
+        pytest.fail("只读受控快照审查不应创建 AGS")
+
+    native = HermesNativeRuntime(factory=NativeAgent, base_url="https://example.test",
+                               api_key="fixture", model_name="fixture", provider="custom")
+    author = ReconstructionRuntime(native, source={}, task=TASK, runtime_factory=sandbox_forbidden)
+    author.conversation.messages = [{"role": "user", "content": "作者历史不能进入独立审查"}]
+    (tmp_path / "outside.txt").write_text("不可读取的宿主材料")
+    worker = executor(tmp_path, author)
+    assert worker.review_agent is author.agent
+    worker._review_artifacts(run)
+    receipt = json.loads((trial / "verifier/file-semantic-review.json").read_text())
+    assert calls == ["file_artifact_review"]
+    assert receipt["status"] == "ACCEPT"
+    assert (tmp_path / "outside.txt").read_text() == "不可读取的宿主材料"
+    assert author.conversation.messages == [{"role": "user", "content": "作者历史不能进入独立审查"}]
