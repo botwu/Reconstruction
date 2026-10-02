@@ -818,3 +818,70 @@ def test_unrequested_report_does_not_inherit_legacy_required_fields(tmp_path):
     apply_response_receipts(result, rollout, {}, 1)
     assert result["status"] == "READY"
     assert result["response_receipts"][0]["verification_scope"] == "REPORT_BINDING_ONLY"
+
+
+@pytest.mark.parametrize("defect", [None, "test", "criteria", "oracle", "missing_review", "stale_review", "incomplete_review"])
+def test_reviewed_candidate_resume_reuses_exact_candidate_or_regenerates(tmp_path, monkeypatch, defect):
+    from copy import deepcopy
+    from test_artifact_review import candidate as fixture_candidate, TASK
+    from traceforge.reconstruction import verifier_recovery
+
+    seed = fixture_candidate()
+    review = {
+        "status": "ACCEPT", "errors": [], "candidate_id": seed.candidate_id,
+        "prompt_version": verifier_recovery.VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION,
+        "test_sha256": hashlib.sha256(seed.test_outputs_py.encode()).hexdigest(),
+        "agent": {"completed": True},
+    }
+    audit = {"status": "READY", "errors": [], "verifier": json.loads(json.dumps(seed.to_dict())),
+             "semantic_review": review, "agent": {"completed": True},
+             "unverified_obligations": ["extract"], "pending_file_semantic_obligations": ["extract"]}
+    frozen = deepcopy(audit)
+    if defect == "test":
+        audit["verifier"]["test_outputs_py"] += "# changed"
+    elif defect == "criteria":
+        audit["verifier"]["file_semantic_checks"]["extract"] = "changed"
+    elif defect == "oracle":
+        audit["verifier"]["oracle_solutions"][0]["script"] = "print(0)"
+    elif defect == "missing_review":
+        audit.pop("semantic_review")
+    elif defect == "stale_review":
+        review["prompt_version"] = "old"
+    elif defect == "incomplete_review":
+        review["agent"]["completed"] = False
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.py").write_text("print(1)")
+    calls = []
+
+    def generate(**kwargs):
+        calls.append(("generate", kwargs.get("feedback")))
+        return frozen, seed
+
+    class Calibration:
+        def __init__(self, **kwargs):
+            self.bundle = tmp_path / "bundle"
+            self.attempts = []
+
+        def run(self, candidate):
+            calls.append(("calibrate", candidate))
+            self.attempts.append({"status": "FAIL"})
+            # 校准失败仍使用既有返修反馈，第二次停止以免执行真实 rollout。
+            return {"status": "FAIL", "feedback": json.dumps({"failure": "真实校准替身反例"})}
+
+    monkeypatch.setattr(verifier_recovery, "run_verifier_recovery", generate)
+    monkeypatch.setattr(verification, "HarborCalibrationExecutor", Calibration)
+    result = run_reconstruction_verification(
+        task=TASK, workspace_root=workspace, model=None, output_root=tmp_path / "out",
+        agent=object(), config=VerificationConfig(
+            harbor_root=tmp_path, model_name="fixture", rollout_model="test/model",
+            execute_red=True, max_rounds=2,
+        ), reviewed_candidate=(seed, audit),
+    )
+    assert result["candidate_resume"]["status"] == ("RESTORED" if defect is None else "REGENERATE")
+    assert calls[0][0] == ("calibrate" if defect is None else "generate")
+    assert calls[-2][0] == "generate"
+    assert calls[-2][1]["failure"] == "真实校准替身反例"
+    assert calls[-2][1]["previous_candidate"] == seed.to_dict()
+    assert result["calibration_runs"] == [{"status": "FAIL"}, {"status": "FAIL"}]
+    assert result["status"] == "REVIEW"

@@ -744,6 +744,7 @@ def run_reconstruction_verification(
     env_root: str | Path | None = None,
     initial_feedback: dict[str, Any] | None = None,
     start_round: int = 1,
+    reviewed_candidate: tuple[VerifierCandidate, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """在已绑定初态上校准并复验；支持带既有反馈从失败轮次继续。"""
     config.validate()
@@ -778,7 +779,32 @@ def run_reconstruction_verification(
             _write_verification(root, result, config)
             return result
         if agent is not None and config.should_run_red():
-            from traceforge.reconstruction.verifier_recovery import run_verifier_recovery
+            from traceforge.reconstruction.verifier_recovery import (
+                VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION, run_verifier_recovery,
+            )
+            resume = None
+            if reviewed_candidate is not None:
+                saved, saved_audit = reviewed_candidate
+                review = saved_audit.get("semantic_review") or {}
+                matched = (
+                    saved_audit.get("status") == "READY" and not saved_audit.get("errors")
+                    and (saved_audit.get("agent") or {}).get("completed") is True
+                    and review.get("status") == "ACCEPT" and not review.get("errors")
+                    and (review.get("agent") or {}).get("completed") is True
+                    and review.get("prompt_version") == VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION
+                    and review.get("candidate_id") == saved.candidate_id
+                    and review.get("test_sha256") == hashlib.sha256(
+                        saved.test_outputs_py.encode("utf-8")).hexdigest()
+                    and json.dumps(saved_audit.get("verifier"), sort_keys=True)
+                    == json.dumps(saved.to_dict(), sort_keys=True)
+                )
+                result["candidate_resume"] = {
+                    "status": "RESTORED" if matched else "REGENERATE",
+                    "candidate_id": saved.candidate_id,
+                }
+                if matched:
+                    resume = (saved_audit, saved)
+                    _write(root / "resumed-candidate.json", saved_audit)
             executor = HarborCalibrationExecutor(
                 task=task,
                 workspace=workspace,
@@ -794,16 +820,20 @@ def run_reconstruction_verification(
             for round_number in range(start_round, start_round + config.max_rounds):
                 if baseline_observations is not None:
                     feedback = {**(feedback or {}), "baseline_observations": baseline_observations}
-                recovered, generated = run_verifier_recovery(
-                    task=task,
-                    workspace_root=workspace,
-                    agent=agent,
-                    output_root=root / "agent" / f"round-{round_number:02d}",
-                    source=source,
-                    feedback=feedback,
-                    round_number=round_number,
-                    manual_response_review=config.manual_response_review,
-                )
+                if resume is not None:
+                    recovered, generated = resume
+                    resume = None
+                else:
+                    recovered, generated = run_verifier_recovery(
+                        task=task,
+                        workspace_root=workspace,
+                        agent=agent,
+                        output_root=root / "agent" / f"round-{round_number:02d}",
+                        source=source,
+                        feedback=feedback,
+                        round_number=round_number,
+                        manual_response_review=config.manual_response_review,
+                    )
                 audit = recovered
                 task = _adopt_reviewed_response_contract(task, recovered, generated, result)
                 executor.task = task
