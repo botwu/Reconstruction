@@ -37,8 +37,8 @@ from traceforge.reconstruction.model_gateway import (
     iter_config_items,
     parse_json_object,
 )
-from traceforge.trajectory.privacy import omit_private_reasoning
 from traceforge.reconstruction.tls import pin_process_tls
+from traceforge.trajectory.privacy import omit_private_reasoning
 
 HermesFactory = Callable[..., Any]
 # Hermes 在一轮对话内会使用进程级 cwd、认证环境变量和模块 dispatcher。
@@ -268,7 +268,9 @@ class HermesNativeRuntime:
                 # Hermes native dispatch must use the role-scoped proxy.
                 trace_path = Path(output_root) / "private" / "tool_events.jsonl"
                 _bind_agent_tools(agent, role=role, session=session, trace_path=trace_path)
-                with _scoped_hermes_dispatch(agent, role=role):
+                with pin_hermes_compression(
+                    agent, context_length=self.agent_context_length, timeout_seconds=request_timeout,
+                ), _scoped_hermes_dispatch(agent, role=role):
                     current_instruction = instruction
                     history = copy.deepcopy(session.conversation.messages) if session.conversation is not None else None
                     for attempt in range(2):
@@ -298,6 +300,9 @@ class HermesNativeRuntime:
                             "compression_threshold_tokens": getattr(compressor, "threshold_tokens", None),
                             "compression_threshold_percent": getattr(compressor, "threshold_percent", None),
                             "compression_count": getattr(compressor, "compression_count", None),
+                            "aux_compression_context_length": getattr(
+                                agent, "_aux_compression_context_length_config", None),
+                            "compression_request_timeout_seconds": request_timeout if compressor else None,
                             "continued_messages": len(history or []),
                         }
                         turns.append(turn)
@@ -547,6 +552,42 @@ def pin_hermes_timeout_env(default_timeout: float = 120.0) -> Iterator[float]:
                 os.environ.pop(name, None)
             else:
                 os.environ[name] = value
+
+
+@contextmanager
+def pin_hermes_compression(
+    agent: Any, *, context_length: int | None, timeout_seconds: float,
+) -> Iterator[None]:
+    """在现有进程锁内绑定摘要预算，退出时恢复原生辅助超时读取。"""
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None:
+        yield
+        return
+    auxiliary = importlib.import_module("agent.auxiliary_client")
+    if context_length is not None:
+        client, model = auxiliary.get_text_auxiliary_client(
+            "compression", main_runtime={
+                key: getattr(compressor, key)
+                for key in ("model", "provider", "base_url", "api_key", "api_mode")
+            },
+        )
+        # 辅助模型单独解析窗口；只有同模型、同端点才能继承显式主窗口。
+        if (client is not None and model == compressor.model
+                and str(getattr(client, "base_url", "")).rstrip("/")
+                == compressor.base_url.rstrip("/")):
+            agent._aux_compression_context_length_config = context_length
+    original_timeout = auxiliary._get_task_timeout
+
+    def task_timeout(task: str, *args: Any, **kwargs: Any) -> float:
+        if task == "compression":
+            return timeout_seconds
+        return original_timeout(task, *args, **kwargs)
+
+    auxiliary._get_task_timeout = task_timeout
+    try:
+        yield
+    finally:
+        auxiliary._get_task_timeout = original_timeout
 
 
 def _traceforge_model_timeout_seconds(default: float = 120.0) -> float:

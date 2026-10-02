@@ -7,8 +7,8 @@ import types
 from pathlib import Path
 
 import pytest
-
 from hermes_fakes import FakeHermesFactory, raw_source
+
 from traceforge.reconstruction.agents import (
     COMPLETION_ROLE,
     DEFAULT_HERMES_HOME,
@@ -23,10 +23,10 @@ from traceforge.reconstruction.agents import (
 from traceforge.reconstruction.agents.runtime import (
     _load_hermes_factory,
     anthropic_sdk_base_url,
-    classify_hermes_failure,
     apply_anthropic_messages_client,
-    merge_completion_files,
+    classify_hermes_failure,
     is_fatal_tool_result,
+    merge_completion_files,
     pin_anthropic_channel_env,
     pin_hermes_timeout_env,
 )
@@ -144,7 +144,7 @@ def test_build_hermes_runtime_reads_config_channel(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("context_length", [None, 1_000_000])
 def test_channel_context_window_reaches_hermes_and_turn_receipt(
-    tmp_path: Path, context_length: int | None,
+    tmp_path: Path, context_length: int | None, monkeypatch,
 ) -> None:
     from unittest.mock import Mock
 
@@ -166,6 +166,12 @@ def test_channel_context_window_reaches_hermes_and_turn_receipt(
         compressor.threshold_tokens = 500_000
 
     compressor.update_model = Mock(side_effect=apply_window)
+    auxiliary = types.SimpleNamespace(
+        get_text_auxiliary_client=lambda *args, **kwargs: (
+            types.SimpleNamespace(base_url=compressor.base_url), compressor.model),
+        _get_task_timeout=lambda task: 30,
+    )
+    monkeypatch.setitem(sys.modules, "agent.auxiliary_client", auxiliary)
     agents = []
 
     def create(**kwargs):
@@ -192,7 +198,11 @@ def test_channel_context_window_reaches_hermes_and_turn_receipt(
     else:
         compressor.update_model.assert_not_called()
     assert agents[0]._config_context_length == context_length
+    assert getattr(agents[0], "_aux_compression_context_length_config", None) == context_length
     turn = result.turns[0]
+    assert turn["aux_compression_context_length"] == context_length
+    assert turn["compression_request_timeout_seconds"] == INTENT_ROLE.request_timeout_seconds
+    assert auxiliary._get_task_timeout("compression") == 30
     assert turn["agent_context_length"] == context_length
     assert turn["resolved_context_length"] == (context_length or 256_000)
     assert turn["compression_threshold_tokens"] == (500_000 if context_length else 128_000)
@@ -681,7 +691,7 @@ def test_resolve_rollout_model_uses_channel_not_forged_anthropic() -> None:
 
 
 def test_openai_root_endpoint_adds_v1():
-    from traceforge.reconstruction.agents.runtime import openai_sdk_base_url, HermesNativeRuntime
+    from traceforge.reconstruction.agents.runtime import HermesNativeRuntime, openai_sdk_base_url
     assert openai_sdk_base_url("https://tokenhub.example") == "https://tokenhub.example/v1"
     assert openai_sdk_base_url("https://tokenhub.example/v1/chat/completions") == "https://tokenhub.example/v1"
     assert openai_sdk_base_url("https://proxy.example/custom-api") == "https://proxy.example/custom-api"
