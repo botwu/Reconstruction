@@ -530,6 +530,12 @@ def _render_harbor_config(
         )
     if agent_mode == "hermes":
         rendered = _bind_agent_budgets(rendered, agent_max_iterations, timeout_seconds)
+        rendered, count = re.subn(
+            r"(?m)^(\s+(?:-\s+)?import_path:)\s*harbor_ags\.agent:LosslessHermesAgent\s*$",
+            r"\1 traceforge.harbor_ags.agent:GatewayHermesAgent", rendered, count=1,
+        )
+        if count != 1:
+            raise HarborRolloutError("Hermes 配置必须使用原生 LosslessHermesAgent 入口")
     rendered = _bind_environment_timeouts(rendered, timeout_seconds)
     return _rewrite_extra_instruction_paths(rendered, harbor_root)
 
@@ -725,6 +731,7 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
             "timeout_seconds": config.timeout_seconds,
             "agent_max_iterations": config.agent_max_iterations,
             "expected_hermes_commit": config.expected_hermes_commit,
+            "gateway_harness": _gateway_runtime_files() if config.agent_mode == "hermes" else None,
         },
     )
     workspace = ArtifactWorkspace(config.output_root.resolve(), run_id)
@@ -818,6 +825,8 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
             },
             "external_execution": False,
         }
+        if config.agent_mode == "hermes":
+            plan["harbor_runtime"]["gateway_files"] = _gateway_runtime_files()
         if search:
             plan["harbor_runtime"]["search_environment_sha256"] = _sha256_file(
                 Path(__file__).with_name("search.py")
@@ -961,11 +970,19 @@ def _assert_plan_integrity(plan_dir: Path, plan: dict[str, Any]) -> None:
         raise HarborRolloutError("rollout plan command 未绑定到本 plan 的 harbor run")
 
 
+def _gateway_runtime_files() -> dict[str, str]:
+    return {name: _sha256_file(Path(__file__).with_name(name))
+            for name in ("agent.py", "gateway_harness.py")}
+
+
 def validate_rollout_runtime(plan: dict[str, Any]) -> None:
     """执行或认证前核对计划已记录的 runtime；旧计划不补加 metadata 门禁。"""
 
     runtime = plan.get("harbor_runtime")
     if isinstance(runtime, dict):
+        gateway_files = runtime.get("gateway_files")
+        if gateway_files is not None and gateway_files != _gateway_runtime_files():
+            raise HarborRolloutError("Gateway Hermes adapter changed after plan creation")
         search_hash = runtime.get("search_environment_sha256")
         if search_hash and search_hash != _sha256_file(Path(__file__).with_name("search.py")):
             raise HarborRolloutError("Search AGS adapter changed after plan creation")
@@ -1082,6 +1099,7 @@ def execute_rollout_plan(
             value = env.get(name) or search_values.get(field)
             if value:
                 env[name] = str(value)
+    if mode == "hermes" or plan.get("domain") == "search":
         env["PYTHONPATH"] = os.pathsep.join(filter(None, (
             str(Path(__file__).resolve().parents[2]),
             str(Path(plan["harbor_root"]) / "src"), env.get("PYTHONPATH"),

@@ -97,3 +97,15 @@ harbor run --path /path/to/search/task --agent nop --env docker \
 哈希识别任务，自动选择此环境并禁用评分。无需生成 `solution/` 或 `tests/control/`。
 上述直接 Harbor 命令仅供诊断。原生结果须完成请求/响应对账、任务输入绑定和沙盒清理，
 才记录执行完成；没有 reward 的自由文本回答始终标记 `NOT_ASSESSED`，不能视为 PASS。
+
+
+### 原生 rollout 的网关传输
+
+正式 Hermes 计划使用本仓库 GatewayHermesAgent，原生 Harbor 的环境准备、输入、
+工具、捕获、对账与清理继续复用。仓库内小入口加载原始 harness，禁止流式，并在
+Messages SDK 请求边界保留完整网关 model 字面值，避免 Hermes 将网关路由当作
+Anthropic 官方模型名再次归一化。adapter 和入口源码哈希绑定到计划；旧计划按其
+原有 runtime 记录验证，不追溯添加新的约束。
+
+HTTP 200 或最终回答存在不等于轨迹完整。中间响应缺失、残缺参数被 harness 修复后
+实际执行的工具调用，仍保留原始证据与失败状态；此适配不放宽捕获认证。

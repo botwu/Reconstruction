@@ -53,6 +53,8 @@ def test_search_plan_preserves_delivery_and_disables_only_grading(tmp_path):
     assert plan["verifier"]["response_acceptance"] == "NOT_ASSESSED"
     config = yaml.safe_load((plan_dir / "harbor-config.yaml").read_text())
     assert config["verifier"]["disable"] is True
+    assert config["agents"][0]["import_path"] == "traceforge.harbor_ags.agent:GatewayHermesAgent"
+    assert set(plan["harbor_runtime"]["gateway_files"]) == {"agent.py", "gateway_harness.py"}
     assert config["environment"]["import_path"].endswith(":SearchAGSEnvironment")
     dataset = Path(plan["dataset"]["dataset_root"])
     delivery = json.loads((dataset / "delivery.json").read_text())
@@ -213,3 +215,15 @@ def test_search_result_is_complete_but_never_scored_as_pass(tmp_path, monkeypatc
     incomplete = read_rollout_results(trial.parent, domain="search", expected_trial_count=1)
     assert not incomplete["execution_completed"]
     assert "SANDBOX_CLEANUP_UNCONFIRMED" in incomplete["quality_gate"]["reasons"]
+
+
+def test_gateway_runtime_is_bound_but_old_plans_remain_readable(tmp_path):
+    from traceforge.harbor_ags.rollout import validate_rollout_runtime
+
+    plan = load_verified_rollout_plan(_plan(tmp_path))
+    validate_rollout_runtime(plan)
+    plan["harbor_runtime"]["gateway_files"]["gateway_harness.py"] = "0" * 64
+    with pytest.raises(HarborRolloutError, match="Gateway Hermes"):
+        validate_rollout_runtime(plan)
+    del plan["harbor_runtime"]["gateway_files"]
+    validate_rollout_runtime(plan)
