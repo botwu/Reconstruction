@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import ipaddress
 import io
+import ipaddress
 import json
 import os
 import socket
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
@@ -62,8 +63,22 @@ class SearchTools:
         return entry
 
     def _response(self, request: urllib.request.Request) -> tuple[dict[str, Any], str]:
-        with urllib.request.urlopen(request, timeout=90) as response:
-            raw = response.read(8_000_001)
+        try:
+            with urllib.request.urlopen(request, timeout=90) as response:
+                raw = response.read(8_000_001)
+        except urllib.error.HTTPError as exc:
+            raw = exc.read(8_000_001)
+            digest = hashlib.sha256(raw).hexdigest()
+            (self.root / f"{digest}.error.raw").write_bytes(raw)
+            detail = raw.decode("utf-8", errors="replace")
+            for key in (self._serper_key, self._jina_key):
+                if key:
+                    detail = detail.replace(key, "[credential]")
+            suffix = "（错误正文展示已截断）" if len(detail) > 2000 else ""
+            raise ValueError(
+                f"检索服务 HTTP {exc.code}: {detail[:2000]}{suffix}; "
+                f"错误回执 {digest}.error.raw"
+            ) from exc
         if len(raw) > 8_000_000:
             raise ValueError("返回超过 8 MB，未将不完整下载冒充完整来源")
         digest = hashlib.sha256(raw).hexdigest()
