@@ -32,7 +32,7 @@ PYTHONPATH=src python -m traceforge reconstruct raw-run \
   --input return_data/four_batch/by-rubric/R01.jsonl \
   --line-number 38 --domain search \
   --output /path/to/new-search-run --config /path/to/config.yaml \
-  --hermes-home /path/to/hermes-agent \
+  --hermes-home /path/to/hermes-agent --harbor-root /path/to/harbor_ags \
   --execute-rollout --rollout-trials 2 --manual-response-review
 ```
 

@@ -102,8 +102,8 @@ export TRACEFORGE_PYTHON="$PWD/.runtime/harbor-ags/.venv/bin/python"
 ```bash
 "$TRACEFORGE_PYTHON" -m traceforge reconstruct raw-run \
   --input return_data/four_batch/by-rubric/R01.jsonl \
-  --line-number 559 --domain search \
-  --output artifacts/new-machine-search559 --config config.yaml \
+  --line-number 38 --domain search \
+  --output artifacts/new-machine-search38 --config config.yaml \
   --hermes-home "$PWD/.runtime/hermes-agent" \
   --harbor-root "$PWD/.runtime/harbor-ags" \
   --execute-rollout --rollout-trials 1 --manual-response-review
@@ -117,7 +117,7 @@ export TRACEFORGE_PYTHON="$PWD/.runtime/harbor-ags/.venv/bin/python"
   --execute-red --execute-rollout --rollout-trials 2 --manual-response-review
 ```
 
-`R01:559` 与 `R04:1` 指从 1 起算的物理行，不能用筛选后的序号替代。
+`R01:38` 与 `R04:1` 指从 1 起算的物理行，不能用筛选后的序号替代。
 数据清单中的样本哈希用于确认抽取了同一条原始会话。
 迁移校验只证明代码和输入完整、基础入口可用；不会把已有
 `NEEDS_CORRECTION` / `NOT_ASSESSED` 改成验收通过。

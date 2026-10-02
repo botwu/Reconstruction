@@ -122,10 +122,17 @@ pytest 验证输入输出和保护行为，原始 reward 不变。重构是否�
 `verifier.collect` 从主环境 `/home/user/workspace` 回收至
 `artifacts/logs/artifacts/traceforge/workspace`；不是 verifier 临时工作区。
 
+收集器仅排除本次新增、带真实 pyvenv.cfg 的 Python 虚拟环境和 Python 字节码缓存；
+初态已有文件及任务显式交付路径受到保护。其他符号链接或特殊文件会明确失败。
+新任务包同时回收 workspace-collection.json，记录排除原因与每个业务文件的 SHA256；
+结果读取要求收集成功、文件清单和实际终态逐项匹配，不能把下载失败当作空产物继续验收。
+
 每个 trial 的 `verifier/file-semantic-review.json` 绑定任务、测试、判据、
 初终态文件树和执行记录哈希。审查者获得真实测试源码、存在的完整轨迹或
 Oracle 执行日志；每项结论必须引用完成态实际文件，删除则核对初态确有该文件。
 NOP 和变异校准允许行为通过而语义拒绝；正式 rollout 必须行为通过且全部语义接受。
+每条 trial 按其自身实际执行与捕获证据审查，一条失败不能跳过另一条的文件审查；
+整项任务仍需满足要求的全部复验，FILE 通过不清除未核查的分析回答。
 
 独立 `read-results --plan-dir` 只复核已有回执，不自动调用模型。语义回执缺失、
 拒绝、材料不足、哈希过期或引用不符时仍为 `REVIEW`，不能由 pytest 的成功奖励
