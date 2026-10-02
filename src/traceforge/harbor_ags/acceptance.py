@@ -8,7 +8,10 @@ import os
 from pathlib import Path
 from typing import Any
 
-from traceforge.harbor_ags.response_acceptance import apply_response_receipts
+from traceforge.harbor_ags.response_acceptance import (
+    apply_file_semantic_receipts,
+    apply_response_receipts,
+)
 from traceforge.harbor_ags.results import (
     HarborResultError,
     certify_hermes_job,
@@ -49,6 +52,7 @@ def _task_acceptance(task_paths: list[Path]) -> tuple[dict[str, Any], dict[str, 
                 "acceptance_obligations", "environment_bindings",
             ))
             or "response_contract" not in acceptance
+            or not isinstance(acceptance.get("file_semantic_checks", {}), dict)
         ):
             raise HarborResultError(f"隐藏 task_acceptance 缺失或无效：{manifest_path}")
         if task is not None and task != acceptance:
@@ -158,14 +162,22 @@ def read_rollout_acceptance(
     acceptance = {
         "status": "READY" if not errors else "REVIEW",
         "errors": errors,
-        "unverified_obligations": non_file_obligation_ids(task),
+        "unverified_obligations": sorted(
+            set(non_file_obligation_ids(task)) | set(task.get("file_semantic_checks", {}))
+        ),
     }
     if completed:
         apply_response_receipts(
             acceptance, {"execution": execution, "results": report}, task, expected_trials,
         )
-    if acceptance["unverified_obligations"]:
+        apply_file_semantic_receipts(
+            acceptance, {"execution": execution, "results": report}, task, expected_trials,
+        )
+    pending = set(acceptance["unverified_obligations"])
+    if pending & set(non_file_obligation_ids(task)):
         acceptance["errors"].append("NON_FILE_RESPONSE_UNVERIFIED")
+    if pending & set(task.get("file_semantic_checks", {})):
+        acceptance["errors"].append("FILE_SEMANTIC_UNVERIFIED")
     acceptance["errors"] = list(dict.fromkeys(acceptance["errors"]))
     acceptance["status"] = (
         "PASS" if acceptance["status"] == "READY" and not acceptance["errors"] else "REVIEW"

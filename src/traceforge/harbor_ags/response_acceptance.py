@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +11,11 @@ from traceforge.harbor_ags.response_receipt import (
     ResponseReceiptError,
     build_response_receipt,
     evaluate_response_contract,
+)
+from traceforge.harbor_ags.results import (
+    HarborResultError,
+    build_file_artifact_snapshot,
+    validate_file_semantic_receipt,
 )
 from traceforge.reconstruction.environment_bindings import non_file_obligation_ids
 
@@ -175,3 +182,61 @@ def apply_response_receipts(
         result["status"] = "REVIEW"
         result["sft_eligible"] = False
         result["errors"] = list(dict.fromkeys([*(result.get("errors") or []), *contract_errors]))
+
+
+def apply_file_semantic_receipts(
+    result: dict[str, Any], rollout: dict[str, Any], task: dict[str, Any], expected_trials: int,
+) -> None:
+    """仅接收与实际文件和执行绑定的语义回执，pytest reward 保持原值。"""
+
+    checks = task.get("file_semantic_checks", {})
+    if not checks:
+        return
+    unresolved = set(result.get("unverified_obligations") or []) | set(checks)
+    trials = (rollout.get("results") or {}).get("trials")
+    errors: list[str] = []
+    receipts: list[dict[str, Any]] = []
+    verified = set(checks)
+    execution = rollout.get("execution") or {}
+    if execution.get("status") != "COMPLETED":
+        errors.append("FILE_SEMANTIC_EXECUTION_INCOMPLETE")
+    if not isinstance(trials, list) or expected_trials < 1 or len(trials) != expected_trials:
+        errors.append("FILE_SEMANTIC_TRIAL_COUNT_MISMATCH")
+        trials = []
+    for index, trial in enumerate(trials):
+        if (not isinstance(trial, dict) or trial.get("status") != "PASS"
+                or trial.get("content_valid") is False or not trial.get("result_path")):
+            errors.append(f"FILE_SEMANTIC_TRIAL_UNVERIFIED:{index}")
+            continue
+        root = Path(trial["result_path"]).parent
+        path = root / "verifier/file-semantic-review.json"
+        try:
+            snapshot = build_file_artifact_snapshot(root)
+            raw = path.read_bytes()
+            receipt = json.loads(raw)
+            if not isinstance(receipt, dict):
+                raise HarborResultError("FILE_SEMANTIC_RECEIPT_INVALID")
+            receipt_errors = validate_file_semantic_receipt(receipt, snapshot, checks)
+            if receipt_errors:
+                errors.extend(f"{error}:{index}" for error in receipt_errors)
+                continue
+        except (HarborResultError, OSError, UnicodeError, ValueError, TypeError) as exc:
+            errors.append(f"FILE_SEMANTIC_RECEIPT_INVALID:{index}:{exc}")
+            continue
+        summary = {
+            "path": str(path), "sha256": hashlib.sha256(raw).hexdigest(),
+            "binding": snapshot["binding"], "verified_obligation_ids": sorted(checks),
+        }
+        trial["file_semantic_receipt"] = summary
+        receipts.append(summary)
+    if errors or len(receipts) != expected_trials:
+        verified.clear()
+        result["status"] = "REVIEW"
+        result["sft_eligible"] = False
+        result["errors"] = list(dict.fromkeys([
+            *(result.get("errors") or []), *errors, "FILE_SEMANTIC_UNVERIFIED",
+        ]))
+    unresolved.difference_update(verified)
+    result["file_semantic_receipts"] = receipts
+    result["unverified_obligations"] = sorted(unresolved)
+    result["pending_file_semantic_obligations"] = sorted(unresolved & set(checks))

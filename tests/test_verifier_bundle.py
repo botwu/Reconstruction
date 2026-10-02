@@ -364,7 +364,7 @@ def test_bundle_digest_includes_compiler_contract(tmp_path):
     manifest = __import__("json").loads(
         (output / "compile_manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v8-native-harbor"
+    assert manifest["compiler_version"] == "traceforge.bundle-compiler.v9-file-semantics"
     assert manifest["entrypoint_contract"] == {
         "workspace_mount": "/home/user/workspace",
         "solution_mount": "/solution",
@@ -427,7 +427,7 @@ def test_bundle_carries_hidden_portable_task_acceptance(tmp_path):
     shutil.copytree(output, copied)
     relative = "task/tests/control/input-manifest.json"
     manifest = json.loads((copied / relative).read_text())
-    assert manifest["task_acceptance"] == acceptance
+    assert manifest["task_acceptance"] == {**acceptance, "file_semantic_checks": {}}
     assert [p.name for p in (copied / "task/workspace").iterdir()] == ["input.txt"]
     assert "response_contract" not in (copied / "task/instruction.md").read_text()
     artifacts = json.loads((copied / "artifact_manifest.json").read_text())
@@ -465,5 +465,21 @@ def test_bundle_keeps_missing_response_contract_explicit(tmp_path):
     manifest = json.loads((output / "task/tests/control/input-manifest.json").read_text())
     assert manifest["task_acceptance"] == {
         "task_id": None, "acceptance_obligations": [], "environment_bindings": [],
-        "response_contract": None,
+        "response_contract": None, "file_semantic_checks": {},
     }
+
+
+def test_file_semantic_contract_is_frozen_only_in_hidden_control(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.py").write_text("print(1)")
+    checks = {"extract": "实际业务移至独立模块，主入口真实消费"}
+    candidate = replace(_verifier(), file_semantic_checks=checks)
+    output = compile_bundle(
+        task={"core_objective": "提取业务"}, workspace_root=workspace,
+        verifier=candidate, output_root=tmp_path / "out",
+    )
+    manifest = json.loads((output / "task/tests/control/input-manifest.json").read_text())
+    assert manifest["task_acceptance"]["file_semantic_checks"] == checks
+    assert "实际业务移至独立模块" not in (output / "task/instruction.md").read_text()
+    assert list((output / "task/workspace").iterdir()) == [output / "task/workspace/main.py"]

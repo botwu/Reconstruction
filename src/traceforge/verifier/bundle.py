@@ -24,7 +24,7 @@ from traceforge.trajectory.artifacts import (
 
 from .synthesis import VerifierCandidate, is_python_solution, validate_solution_scripts
 
-_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v8-native-harbor"
+_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v9-file-semantics"
 
 
 def _make_workspace_solver_writable(workspace: Path) -> None:
@@ -121,6 +121,7 @@ def compile_bundle(
         "acceptance_obligations": task.get("acceptance_obligations", []),
         "environment_bindings": task.get("environment_bindings", []),
         "response_contract": task.get("response_contract"),
+        "file_semantic_checks": verifier.file_semantic_checks,
     }
     digest = hashlib.sha256(
         json.dumps(

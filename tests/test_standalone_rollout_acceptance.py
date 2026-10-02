@@ -7,18 +7,17 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
-
 from test_harbor_ags_rollout import _bundle, _harbor_root
 from test_harbor_rollout_results import _write, _write_ledger, _write_valid_hermes_artifacts
 from test_response_receipt import acceptance_contract, trajectory
+
 from traceforge.cli import main
 from traceforge.harbor_ags.rollout import HarborRolloutConfig, build_rollout_plan
-
 
 pytestmark = pytest.mark.usefixtures("harbor_cleanup")
 
 
-def _fixture(tmp_path, monkeypatch, *, trials=1, contract=True, runtime=False):
+def _fixture(tmp_path, monkeypatch, *, trials=1, contract=True, runtime=False, file_semantics=False):
     task = _bundle(tmp_path / "task")
     acceptance = {
         "task_id": "synthetic-task",
@@ -26,9 +25,18 @@ def _fixture(tmp_path, monkeypatch, *, trials=1, contract=True, runtime=False):
         "environment_bindings": [{"obligation_id": "obl-report", "verifier_kind": "NON_FILE"}],
         "response_contract": acceptance_contract() if contract else None,
     }
+    if file_semantics:
+        acceptance["file_semantic_checks"] = {"extract": "真实业务提取"}
+        acceptance["acceptance_obligations"].append({"id": "extract", "text": "真实业务提取"})
+        acceptance["environment_bindings"].append({"obligation_id": "extract", "verifier_kind": "FILE"})
+        (task / "tests/test_outputs.py").write_text("def test_output(): assert True")
     _write(task / "tests/control/input-manifest.json", {
         "schema_version": "traceforge.control-input-manifest.v1",
         "task_acceptance": acceptance,
+        "workspace_sha256": {
+            path.relative_to(task / "workspace").as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (task / "workspace").rglob("*") if path.is_file()
+        },
     })
     harbor = _harbor_root(tmp_path / "harbor")
     if runtime:
@@ -56,11 +64,18 @@ def _fixture(tmp_path, monkeypatch, *, trials=1, contract=True, runtime=False):
     for index, relative in enumerate(plan["dataset"]["task_relative_paths"]):
         trial = job / f"synthetic-trial-{index}"
         _write(trial / "config.json", {"task": {"path": str(plan_dir / "dataset" / relative)}})
-        _write(trial / "result.json", {"verifier_result": {"rewards": {"task": 1.0}}})
+        _write(trial / "result.json", {
+            "verifier_result": {"rewards": {"task": 1.0}}, "finished_at": "2026-10-02",
+        })
         _write(trial / "verifier/verdict.json", {"status": "TASK_PASS"})
         _write_valid_hermes_artifacts(trial)
         (trial / "agent/trajectory.full.json").write_bytes(trajectory())
         (trial / "reconstruction-certification.json").unlink()
+        if file_semantics:
+            final = trial / "artifacts/logs/artifacts/traceforge/workspace"
+            final.mkdir(parents=True)
+            (final / "input.txt").write_text("public\n")
+
     _write_ledger(job / "_control/ags-sandbox-ledger.jsonl")
     calls = []
 
@@ -338,6 +353,7 @@ def test_legacy_plan_without_runtime_metadata_keeps_read_and_execute_behavior(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import subprocess
+
     from traceforge.harbor_ags.rollout import execute_rollout_plan
 
     plan, job, calls = _fixture(tmp_path, monkeypatch, runtime=True)
@@ -391,3 +407,31 @@ def test_bundle_export_remains_independent_of_current_runtime(
     manifest = json.loads((destination / "artifact_manifest.json").read_text())
     assert manifest["execution_status"] == "NOT_ASSERTED"
     assert calls == []
+
+
+@pytest.mark.parametrize("state", ["missing", "accepted", "changed_final", "rejected"])
+def test_standalone_requires_bound_file_semantics_in_addition_to_reward(
+    tmp_path, monkeypatch, state,
+):
+    from traceforge.harbor_ags.results import build_file_artifact_snapshot
+
+    plan, job, _ = _fixture(tmp_path, monkeypatch, file_semantics=True)
+    trial = job / "synthetic-trial-0"
+    if state != "missing":
+        snapshot = build_file_artifact_snapshot(trial)
+        _write(trial / "verifier/file-semantic-review.json", {
+            "schema_version": "traceforge.file-semantic-review.v1",
+            "binding": snapshot["binding"],
+            "status": "REVISE" if state == "rejected" else "ACCEPT",
+            "obligations": [{
+                "obligation_id": "extract", "covered": state != "rejected",
+                "reason": "合成测试证据", "evidence": [{"path": "final/input.txt", "quote": "public"}],
+            }],
+        })
+    if state == "changed_final":
+        (trial / "artifacts/logs/artifacts/traceforge/workspace/input.txt").write_text("changed")
+    report = _read(plan, job)
+    assert report["trials"][0]["reward"] == 1.0
+    assert report["trials"][0]["status"] == "PASS"
+    assert report["acceptance"]["status"] == ("PASS" if state == "accepted" else "REVIEW")
+    assert report["acceptance"]["unverified_obligations"] == ([] if state == "accepted" else ["extract"])

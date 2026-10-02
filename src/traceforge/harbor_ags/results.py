@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import stat
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -386,6 +387,172 @@ def read_search_trial(
     return output
 
 
+
+def _content_hash(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+
+
+def _workspace_hashes(root: Path) -> dict[str, str]:
+    if root.is_symlink() or not root.is_dir():
+        raise HarborResultError(f"FILE_SNAPSHOT_WORKSPACE_MISSING_OR_UNSAFE:{root}")
+    files: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        mode = path.lstat().st_mode
+        if stat.S_ISDIR(mode):
+            continue
+        if not stat.S_ISREG(mode) or not path.resolve().is_relative_to(root.resolve()):
+            raise HarborResultError(f"FILE_SNAPSHOT_UNSAFE:{path}")
+        files[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return files
+
+
+def build_file_artifact_snapshot(
+    trial_dir: Path | str, *, expected_task: Path | str | None = None,
+) -> dict[str, Any]:
+    """绑定真实初态、collect 钩子回收的终态和执行字节，不接受模型自报路径。"""
+
+    root = Path(trial_dir).resolve()
+    config = _read_json(root / "config.json")
+    configured = config.get("task")
+    task_path = configured.get("path") if isinstance(configured, dict) else None
+    if not isinstance(task_path, str) or not Path(task_path).is_absolute():
+        raise HarborResultError("FILE_SNAPSHOT_TASK_PATH_INVALID")
+    task = Path(task_path).resolve()
+    if expected_task is not None and task != Path(expected_task).resolve():
+        raise HarborResultError("FILE_SNAPSHOT_TASK_MISMATCH")
+    control = task / "tests/control/input-manifest.json"
+    manifest = _read_json(control)
+    if manifest.get("schema_version") != "traceforge.control-input-manifest.v1":
+        raise HarborResultError("FILE_SNAPSHOT_CONTROL_INVALID")
+    acceptance = manifest.get("task_acceptance") or {}
+    checks = acceptance.get("file_semantic_checks", {})
+    if not isinstance(checks, dict) or any(
+        not isinstance(key, str) or not key or not isinstance(value, str) or not value.strip()
+        for key, value in checks.items()
+    ):
+        raise HarborResultError("FILE_SEMANTIC_CHECKS_INVALID")
+    initial = task / "workspace"
+    initial_files = _workspace_hashes(initial)
+    if initial_files != manifest.get("workspace_sha256"):
+        raise HarborResultError("FILE_SNAPSHOT_INITIAL_WORKSPACE_MISMATCH")
+    final = root / "artifacts/logs/artifacts/traceforge/workspace"
+    if any(path.is_symlink() for path in [final, *final.parents] if path != root and root in path.parents):
+        raise HarborResultError("FILE_SNAPSHOT_UNSAFE")
+    final_files = _workspace_hashes(final)
+    result = _read_json(root / "result.json")
+    if result.get("exception_info") or not result.get("finished_at"):
+        raise HarborResultError("FILE_SNAPSHOT_EXECUTION_INCOMPLETE")
+    result_task = (result.get("config") or {}).get("task") or {}
+    if result_task.get("path") and Path(result_task["path"]).resolve() != task:
+        raise HarborResultError("FILE_SNAPSHOT_TASK_MISMATCH")
+    execution_files = ["config.json", "result.json", "verifier/verdict.json"]
+    execution_files.extend(name for name in (
+        "agent/trajectory.full.json", "agent/trajectory.json", "agent/hermes-result.json",
+        "agent/anthropic-exchanges.jsonl", "agent/anthropic-sse.jsonl",
+        "agent/hermes-session.jsonl", "agent/task-input.json",
+        "agent/workspace-initial-manifest.json", "agent/workspace-manifest.json",
+        "agent/oracle.txt", "agent/exit-code.txt",
+    ) if (root / name).is_file())
+    try:
+        execution = {
+            name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+            for name in execution_files
+        }
+        task_files = {
+            name: hashlib.sha256((task / name).read_bytes()).hexdigest()
+            for name in ("instruction.md", "task.toml", "tests/control/input-manifest.json")
+        }
+        test_sha256 = hashlib.sha256((task / "tests/test_outputs.py").read_bytes()).hexdigest()
+    except OSError as exc:
+        raise HarborResultError(f"FILE_SNAPSHOT_INPUT_MISSING:{exc.filename}") from exc
+    binding = {
+        "schema_version": "traceforge.file-artifact-binding.v1",
+        "trial_path": str(root), "task_path": str(task),
+        "task_sha256": _content_hash(task_files), "test_sha256": test_sha256,
+        "criteria_sha256": _content_hash(checks),
+        "initial_sha256": _content_hash(initial_files), "final_sha256": _content_hash(final_files),
+        "execution_sha256": _content_hash(execution),
+    }
+    # 向审查者交付测试和实际行为正文；含进程配置的 config/result 只绑定哈希。
+    evidence_files = {"verifier/test_outputs.py": str(task / "tests/test_outputs.py")}
+    evidence_files.update({
+        name: str(root / name) for name in (
+            "verifier/verdict.json", "agent/trajectory.full.json", "agent/trajectory.json",
+            "agent/oracle.txt", "agent/exit-code.txt",
+        ) if name in execution
+    })
+    return {
+        "initial_workspace": str(initial), "workspace": str(final),
+        "initial_files": initial_files, "final_files": final_files, "binding": binding,
+        "evidence_files": evidence_files,
+    }
+
+
+def validate_file_semantic_receipt(
+    receipt: dict[str, Any], snapshot: dict[str, Any], checks: dict[str, str],
+    *, require_accepted: bool = True,
+) -> list[str]:
+    """复验来源、判断与实际引文；校准可读取合法 REVISE，正式验收仅接受 ACCEPT。"""
+
+    if (receipt.get("schema_version") != "traceforge.file-semantic-review.v1"
+            or receipt.get("binding") != snapshot["binding"]
+            or snapshot["binding"]["criteria_sha256"] != _content_hash(checks)):
+        return ["FILE_SEMANTIC_BINDING_MISMATCH"]
+    if receipt.get("errors"):
+        return ["FILE_SEMANTIC_REVIEW_ERRORS"]
+    status = receipt.get("status")
+    if status not in {"ACCEPT", "REVISE"} or (require_accepted and status != "ACCEPT"):
+        return [f"FILE_SEMANTIC_NOT_ACCEPTED:{status or 'UNKNOWN'}"]
+    obligations = receipt.get("obligations")
+    if not isinstance(obligations, list):
+        return ["FILE_SEMANTIC_OBLIGATIONS_MISSING"]
+    ids = [item.get("obligation_id") for item in obligations if isinstance(item, dict)]
+    if (len(ids) != len(obligations) or len(ids) != len(checks)
+            or any(not isinstance(oid, str) for oid in ids) or set(ids) != set(checks)):
+        return ["FILE_SEMANTIC_OBLIGATIONS_MISMATCH"]
+    if (any(type(item.get("covered")) is not bool for item in obligations)
+            or (status == "ACCEPT") != all(item["covered"] for item in obligations)):
+        return ["FILE_SEMANTIC_DECISION_INCONSISTENT"]
+    errors: list[str] = []
+    for item in obligations:
+        oid = item["obligation_id"]
+        evidence = item.get("evidence")
+        if (not isinstance(item.get("reason"), str) or not item["reason"].strip()
+                or not isinstance(evidence, list) or not evidence):
+            errors.append(f"FILE_SEMANTIC_EVIDENCE_MISSING:{oid}")
+            continue
+        final_evidence = False
+        for ref in evidence:
+            path = ref.get("path") if isinstance(ref, dict) else None
+            relative = Path(path) if isinstance(path, str) else Path()
+            if (relative.is_absolute() or ".." in relative.parts or len(relative.parts) < 2
+                    or relative.parts[0] not in {"initial", "final"}):
+                errors.append(f"FILE_SEMANTIC_EVIDENCE_INVALID:{oid}")
+                continue
+            is_final = relative.parts[0] == "final"
+            name = Path(*relative.parts[1:]).as_posix()
+            if ref.get("absent") is True:
+                valid = (is_final and name in snapshot["initial_files"]
+                         and name not in snapshot["final_files"])
+            else:
+                quote = ref.get("quote")
+                workspace = Path(snapshot["workspace"] if is_final else snapshot["initial_workspace"])
+                actual = workspace / name
+                try:
+                    valid = (isinstance(quote, str) and bool(quote.strip())
+                             and actual.resolve().is_relative_to(workspace.resolve())
+                             and quote in actual.read_text())
+                except (OSError, UnicodeError):
+                    valid = False
+            if not valid:
+                errors.append(f"FILE_SEMANTIC_EVIDENCE_INVALID:{oid}")
+            elif is_final:
+                final_evidence = True
+        if not final_evidence:
+            errors.append(f"FILE_SEMANTIC_FINAL_EVIDENCE_MISSING:{oid}")
+    return list(dict.fromkeys(errors))
+
+
 def read_rollout_results(
     job_dir: Path | str,
     *,
@@ -450,6 +617,21 @@ def read_rollout_results(
             content_valid, content_errors = (
                 _validate_hermes_artifacts(trial_dir) if hermes_artifacts else (True, [])
             )
+        snapshot = None
+        if not search:
+            config_path = trial_dir / "config.json"
+            if config_path.is_file():
+                task_config = _read_json(config_path).get("task") or {}
+                task_path = task_config.get("path")
+                control = Path(task_path) / "tests/control/input-manifest.json" if task_path else None
+                if control is not None and control.is_file():
+                    checks = (_read_json(control).get("task_acceptance") or {}).get("file_semantic_checks")
+                    if checks:
+                        try:
+                            snapshot = build_file_artifact_snapshot(trial_dir)
+                        except (HarborResultError, OSError, ValueError, TypeError) as exc:
+                            content_valid = False
+                            content_errors = [*content_errors, str(exc)]
         diagnostic = _trial_diagnostic(trial_dir, result)
         trials.append(
             {
@@ -457,6 +639,7 @@ def read_rollout_results(
                 "status": ("COMPLETED" if content_valid else "INFRA_ERROR")
                 if search else _trial_status(result, verdict),
                 **({"acceptance": "NOT_ASSESSED", "native_trial": native} if search else {}),
+                **({"artifact_snapshot": snapshot} if snapshot is not None else {}),
                 "reward": rewards.get("task") if isinstance(rewards, dict) else None,
                 "verdict_status": verdict.get("status") if verdict else None,
                 "trajectory_present": trajectory_path.is_file(),
@@ -509,7 +692,7 @@ def read_rollout_results(
     cleanup = _cleanup_ok(root / "_control/ags-sandbox-ledger.jsonl")
     artifact_missing = hermes_artifacts and not search and artifact_manifest_count != total
     trajectory_missing = hermes_artifacts and trajectory_count != total
-    content_invalid = hermes_artifacts and any(not item.get("content_valid") for item in trials)
+    content_invalid = any(item.get("content_valid") is False for item in trials)
     return {
         "schema_version": ROLLOUT_RESULTS_SCHEMA,
         "job_dir": str(root),
@@ -562,6 +745,8 @@ def read_rollout_results(
 __all__ = [
     "ROLLOUT_RESULTS_SCHEMA",
     "HarborResultError",
+    "build_file_artifact_snapshot",
+    "validate_file_semantic_receipt",
     "certify_hermes_job",
     "read_rollout_results",
     "read_search_trial",

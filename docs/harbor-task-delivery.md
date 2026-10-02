@@ -109,3 +109,24 @@ Anthropic 官方模型名再次归一化。adapter 和入口源码哈希绑定�
 
 HTTP 200 或最终回答存在不等于轨迹完整。中间响应缺失、残缺参数被 harness 修复后
 实际执行的工具调用，仍保留原始证据与失败状态；此适配不放宽捕获认证。
+
+
+### terminal 的行为与文件语义联合验收
+
+候选验证器可用 `file_semantic_checks` 声明必须检查实际代码变更的 FILE 义务。
+判据只进入隐藏 `tests/control/input-manifest.json` 的 `task_acceptance`，不放入
+solver 指令或公开 workspace。没有此类判据的任务保持原有验收方式。
+
+pytest 验证输入输出和保护行为，原始 reward 不变。重构是否真正转移业务、
+入口是否消费新实现，由只读审查比较冻结初态与真实完成态判断。终态复用现有
+`verifier.collect` 从主环境 `/home/user/workspace` 回收至
+`artifacts/logs/artifacts/traceforge/workspace`；不是 verifier 临时工作区。
+
+每个 trial 的 `verifier/file-semantic-review.json` 绑定任务、测试、判据、
+初终态文件树和执行记录哈希。审查者获得真实测试源码、存在的完整轨迹或
+Oracle 执行日志；每项结论必须引用完成态实际文件，删除则核对初态确有该文件。
+NOP 和变异校准允许行为通过而语义拒绝；正式 rollout 必须行为通过且全部语义接受。
+
+独立 `read-results --plan-dir` 只复核已有回执，不自动调用模型。语义回执缺失、
+拒绝、材料不足、哈希过期或引用不符时仍为 `REVIEW`，不能由 pytest 的成功奖励
+清除该 FILE 义务。此回执不替代轨迹认证、响应合同或沙盒清理回执。
