@@ -218,8 +218,9 @@ class SearchTools:
                 "retrieved_at": datetime.now(UTC).isoformat()}
 
     def open(self, url: str, *, offset: int = 0, limit: int = 8000) -> dict[str, Any]:
+        cache_hit = url in self.pages
         try:
-            if url not in self.pages:
+            if not cache_hit:
                 self.pages[url] = self._fetch(url)
                 name = hashlib.sha256(url.encode()).hexdigest() + ".json"
                 (self.root / name).write_text(
@@ -233,13 +234,17 @@ class SearchTools:
                      if offset + limit < len(text) else None}
         except Exception as exc:
             value = {"success": False, "url": url, "error": f"{type(exc).__name__}: {exc}"}
-        return self._record("web_open", value)
+        return self._record("web_open", {**value, "cache_hit": cache_hit})
 
     def ready(self) -> bool:
-        """只确认检索和读取可用；空匹配不代表请求失败或资料充足。"""
-        return any(c.get("tool") == "web_search" and c.get("success") for c in self.calls) and any(
-            c.get("tool") == "web_open" and c.get("success") and c.get("text") for c in self.calls
-        )
+        """分别核对最近实际查询和抓取；缓存命中不能证明当前服务可用。"""
+        latest = {
+            kind: next((call for call in reversed(self.calls)
+                        if call.get("tool") == kind and not call.get("cache_hit")), {})
+            for kind in ("web_search", "web_open")
+        }
+        return bool(latest["web_search"].get("success")
+                    and latest["web_open"].get("success") and latest["web_open"].get("text"))
 
 
 def main() -> int:

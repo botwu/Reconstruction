@@ -44,3 +44,40 @@ def test_provider_error_does_not_echo_configured_credential(tmp_path, monkeypatc
     assert result["success"] is False
     assert tools._serper_key not in result["error"]
     assert "[credential]" in result["error"]
+
+
+def test_cached_page_does_not_claim_live_fetch_available(tmp_path):
+    tools = SearchTools(tmp_path)
+    tools.calls.append({"tool": "web_search", "success": True, "results": []})
+    tools.pages["https://example.org/paper"] = {"success": True, "text": "原已抓取正文"}
+
+    result = tools.open("https://example.org/paper")
+
+    assert result["success"] is True and result["cache_hit"] is True
+    assert tools.ready() is False
+
+
+@pytest.mark.parametrize("failed_kind", ["web_search", "web_open"])
+def test_latest_service_failure_is_not_masked_by_prior_success_or_cache(
+    tmp_path, failed_kind,
+):
+    tools = SearchTools(tmp_path)
+    tools.calls.extend([
+        {"tool": "web_search", "success": True, "results": []},
+        {"tool": "web_open", "success": True, "text": "真实网页"},
+    ])
+    assert tools.ready() is True
+    tools.calls.append({"tool": failed_kind, "success": False, "error": "Not enough credits"})
+    tools.pages["https://example.org/paper"] = {"success": True, "text": "旧正文"}
+    tools.open("https://example.org/paper")
+    assert tools.ready() is False
+
+
+def test_live_fetch_then_pagination_keeps_actual_fetch_evidence(tmp_path, monkeypatch):
+    tools = SearchTools(tmp_path)
+    tools.calls.append({"tool": "web_search", "success": True, "results": []})
+    monkeypatch.setattr(tools, "_fetch", lambda url: {"success": True, "text": "实际连续正文"})
+
+    assert tools.open("https://example.org/paper", limit=2)["cache_hit"] is False
+    assert tools.open("https://example.org/paper", offset=2)["cache_hit"] is True
+    assert tools.ready() is True
