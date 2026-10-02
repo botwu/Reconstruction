@@ -60,6 +60,10 @@ def synthesize_verifier_iterative(
         if not isinstance(execution, dict):
             raise TypeError("VerifierExecutor 必须返回 object")
         outcome = str(execution.get("status", "INFRA_ERROR"))
+        if (candidate.file_semantic_checks and outcome == "PASS"
+                and execution.get("file_semantic_calibration") != "PASS"):
+            outcome = "INFRA_ERROR"
+            execution = {**execution, "feedback": "FILE_SEMANTIC_CALIBRATION_MISSING"}
         attempts.append(
             {"round": index + 1, "status": outcome, "feedback": execution.get("feedback", "")}
         )

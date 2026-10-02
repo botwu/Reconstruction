@@ -11,9 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from traceforge.harbor_ags.response_acceptance import apply_response_receipts
+from traceforge.harbor_ags.response_acceptance import apply_file_semantic_receipts, apply_response_receipts
 from traceforge.harbor_ags.results import (
     HarborResultError,
+    build_file_artifact_snapshot,
     certify_hermes_job,
     read_rollout_results,
     rollout_passed,
@@ -25,6 +26,7 @@ from traceforge.harbor_ags.rollout import (
     execute_rollout_plan,
     publish_rollout_bundle,
 )
+from traceforge.reconstruction.artifact_review import review_file_artifact
 from traceforge.reconstruction.environment_bindings import non_file_obligation_ids
 from traceforge.reconstruction.model_gateway import ChatModel, ModelGatewayError
 from traceforge.reconstruction.run_config import load_rollout_limits
@@ -114,9 +116,10 @@ def verifier_task(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def initial_red_check(
-    candidate: VerifierCandidate, verdicts: list[dict[str, Any]]
+    candidate: VerifierCandidate, verdicts: list[dict[str, Any]],
+    semantic_reviews: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """初始环境必须有缺失能力测试失败，且每个保护性测试都通过。"""
+    """初态须缺少行为或声明的 FILE 语义能力；所有保护性测试仍通过。"""
     errors: list[str] = []
     if not verdicts:
         errors.append("INITIAL_VERDICT_MISSING")
@@ -136,7 +139,10 @@ def initial_red_check(
             status not in {"PASS", "FAIL"} for statuses in by_name.values() for status in statuses
         ):
             errors.append(f"INITIAL_TEST_INCOMPLETE:{index}")
-        if not any("FAIL" in statuses for statuses in missing):
+        semantic = (semantic_reviews or [])[index] if index < len(semantic_reviews or []) else {}
+        semantic_failed = (bool(candidate.file_semantic_checks)
+                           and semantic.get("status") == "REVISE" and not semantic.get("errors"))
+        if not any("FAIL" in statuses for statuses in missing) and not semantic_failed:
             errors.append(f"MISSING_CAPABILITY_ALREADY_PASSES:{index}")
         if any(
             not statuses or any(status != "PASS" for status in statuses) for statuses in protective
@@ -209,8 +215,10 @@ def _write_verification(
     root: Path, result: dict[str, Any], config: VerificationConfig
 ) -> None:
     unresolved = set(result.get("unverified_obligations") or [])
-    pending = set(result.get("pending_response_obligations") or [])
-    response_ready = set(result.get("response_verifier_ready_obligations") or [])
+    pending = set(result.get("pending_response_obligations") or []) | set(
+        result.get("pending_file_semantic_obligations") or [])
+    response_ready = set(result.get("response_verifier_ready_obligations") or []) | set(
+        result.get("file_semantic_verifier_ready_obligations") or [])
     if unresolved:
         # 重建 READY 表示验收机制已就绪；真实响应仍须在独立 rollout 后验收。
         result["sft_eligible"] = False
@@ -249,9 +257,16 @@ class HarborCalibrationExecutor:
 
     def __init__(
         self, *, task: dict[str, Any], workspace: Path, root: Path, config: VerificationConfig,
-        env_root: Path | None = None,
+        env_root: Path | None = None, agent: Any | None = None,
+        source: dict[str, Any] | None = None,
+        baseline_observations: list[dict[str, Any]] | None = None,
     ):
         self.task, self.workspace, self.root, self.config = task, workspace, root, config
+        from traceforge.reconstruction.researcher import ReconstructionRuntime
+
+        self.review_agent = agent.agent if isinstance(agent, ReconstructionRuntime) else agent
+        self.source, self.baseline_observations = source, baseline_observations
+        self.semantic_candidate: VerifierCandidate | None = None
         self.env_root = Path(env_root).resolve() if env_root is not None else None
         self.attempts: list[dict[str, Any]] = []
         self.bundle: Path | None = None
@@ -286,6 +301,8 @@ class HarborCalibrationExecutor:
     ) -> dict[str, Any]:
         jobs = self.root / "jobs" / label
         record: dict[str, Any] = {"plan": None, "execution": None, "results": None}
+        if self.semantic_candidate is not None and self.semantic_candidate.file_semantic_checks:
+            record["file_semantic_checks"] = self.semantic_candidate.file_semantic_checks
         test_file = bundle / "tests/test_outputs.py"
         try:
             actual_test_sha256 = hashlib.sha256(test_file.read_bytes()).hexdigest()
@@ -344,7 +361,49 @@ class HarborCalibrationExecutor:
                 *(gate.get("reasons") or []),
                 f"HARBOR_EXECUTION_{execution.get('status', 'UNKNOWN')}",
             ]
+        if record.get("file_semantic_checks"):
+            self._review_artifacts(record)
         return record
+
+    def _review_artifacts(self, run: dict[str, Any]) -> None:
+        """对真实快照补充语义证据；pytest 状态和 reward 保留原值。"""
+        checks = run["file_semantic_checks"]
+        results = run.get("results") or {}
+        trials = results.get("trials") or []
+        run["file_semantic_reviews"], run["combined_verdicts"] = [], []
+        for trial in trials:
+            receipt: dict[str, Any] = {"status": "REVIEW", "errors": []}
+            try:
+                if ((run.get("execution") or {}).get("status") != "COMPLETED"
+                        or (results.get("quality_gate") or {}).get("ok") is not True):
+                    raise HarborResultError("实际执行或捕获证据不完整")
+                trial_dir = Path(trial["result_path"]).parent
+                snapshot = build_file_artifact_snapshot(trial_dir)
+                receipt = review_file_artifact(
+                    snapshot=snapshot, task=self.task, checks=checks, agent=self.review_agent,
+                    output_root=trial_dir / "verifier/file-semantic-review",
+                    execution_evidence={
+                        "pytest_status": trial.get("status"), "pytest_reward": trial.get("reward"),
+                        "verdict": json.loads(Path(trial["verdict_path"]).read_text()),
+                        "process": self._trial_process_diagnostic(trial),
+                    },
+                    source=self.source, baseline_observations=self.baseline_observations,
+                )
+                _write(trial_dir / "verifier/file-semantic-review.json", receipt)
+            except (HarborResultError, OSError, ValueError, KeyError) as exc:
+                receipt = {"status": "REVIEW", "errors": [f"FILE_SEMANTIC_REVIEW_FAILED:{exc}"]}
+            semantic_status = receipt["status"]
+            behavior_status = trial.get("status")
+            combined = (
+                "PASS" if behavior_status == "PASS" and semantic_status == "ACCEPT"
+                else "FAIL" if behavior_status in {"PASS", "FAIL"} and semantic_status in {"ACCEPT", "REVISE"}
+                else "REVIEW"
+            )
+            run["file_semantic_reviews"].append(receipt)
+            run["combined_verdicts"].append({
+                "status": combined, "pytest_status": behavior_status,
+                "pytest_reward": trial.get("reward"), "file_semantic_status": semantic_status,
+            })
 
     @staticmethod
     def _trial_process_diagnostic(trial: dict[str, Any]) -> dict[str, Any]:
@@ -409,6 +468,9 @@ class HarborCalibrationExecutor:
             rows.append(row)
         if rows:
             diagnostics["trials"] = rows
+        if run.get("file_semantic_reviews") is not None:
+            diagnostics["file_semantic_reviews"] = run["file_semantic_reviews"]
+            diagnostics["combined_verdicts"] = run.get("combined_verdicts", [])
         quality = results.get("quality_gate")
         if isinstance(quality, dict):
             diagnostics["quality_gate"] = {
@@ -431,9 +493,15 @@ class HarborCalibrationExecutor:
                 process = cls._trial_process_diagnostic(trial)
                 if process.get("process_error") or process.get("exit_code") != 0:
                     process_ok = False
-        passed = valid and process_ok and all(
-            row.get("status") == expected and row.get("reward") == reward for row in trials
-        )
+        if run.get("file_semantic_checks"):
+            combined = run.get("combined_verdicts") or []
+            valid = (valid and len(combined) == len(trials)
+                     and all(row.get("status") in {"PASS", "FAIL"} for row in combined))
+            passed = valid and process_ok and all(row["status"] == expected for row in combined)
+        else:
+            passed = valid and process_ok and all(
+                row.get("status") == expected and row.get("reward") == reward for row in trials
+            )
         if not valid:
             status = "INFRA_ERROR"
         elif not process_ok or not passed:
@@ -451,10 +519,18 @@ class HarborCalibrationExecutor:
         return self._publish_harbor_bundle(self.bundle, label=label, trials=trials)
 
     def run(self, candidate: VerifierCandidate) -> dict[str, Any]:
+        self.semantic_candidate = candidate
         number = len(self.attempts) + 1
         prefix = f"round-{number:02d}"
         runs: dict[str, Any] = {}
         cases: list[RedCheckCase] = []
+        if candidate.file_semantic_checks and self.review_agent is None:
+            feedback = json.dumps({"errors": ["FILE_SEMANTIC_REVIEW_AGENT_MISSING"]})
+            record = {"round": number, "candidate_id": candidate.candidate_id,
+                      "status": "INFRA_ERROR", "feedback": feedback, "preflight": True}
+            self.attempts.append(record)
+            _write(self.root / f"{prefix}.json", record)
+            return record
         try:
             validate_solution_scripts(candidate.oracle_solutions, candidate.mutation_solutions)
         except VerifierSynthesisError as exc:
@@ -530,7 +606,7 @@ class HarborCalibrationExecutor:
                     verdicts.append(json.loads(Path(path).read_text(encoding="utf-8")))
                 except (OSError, UnicodeError, json.JSONDecodeError):
                     pass
-        initial = initial_red_check(candidate, verdicts)
+        initial = initial_red_check(candidate, verdicts, runs[nop_label].get("file_semantic_reviews"))
         report = evaluate_red_check(tuple(cases))
         passed = report.passed and initial["passed"]
         status = (
@@ -564,6 +640,7 @@ class HarborCalibrationExecutor:
         return {
             "status": status,
             "feedback": json.dumps(feedback_payload, ensure_ascii=False),
+            "file_semantic_calibration": status if candidate.file_semantic_checks else "NOT_REQUIRED",
         }
 
 
@@ -598,10 +675,23 @@ def _record_unverified_obligations(
     task: dict[str, Any],
     audit: dict[str, Any] | None = None,
 ) -> bool:
-    """记录后验义务；NON_FILE 未验证阻止最终认证，不阻止采集真实响应。"""
+    """后验文件语义与响应义务在真实产物审查前保持未验收。"""
 
     non_file = set(non_file_obligation_ids(task))
     recorded = list(result.get("unverified_obligations") or [])
+    if audit is not None:
+        declared = (audit.get("verifier") or {}).get("file_semantic_checks") or {}
+        review = audit.get("semantic_review") or {}
+        pending_file = (
+            list(audit.get("pending_file_semantic_obligations") or [])
+            if audit.get("status") == "READY" and review.get("status") == "ACCEPT"
+            and not review.get("errors") and set(declared) == set(
+                audit.get("pending_file_semantic_obligations") or []) else []
+        )
+        old_pending = set(result.get("pending_file_semantic_obligations") or [])
+        recorded = [item for item in recorded if item not in old_pending]
+        result["pending_file_semantic_obligations"] = pending_file
+        result["file_semantic_verifier_ready_obligations"] = pending_file
     recorded.extend(sorted(non_file))
     raw = (audit or {}).get("unverified_obligations") or []
     if isinstance(raw, list):
@@ -632,7 +722,8 @@ def _record_unverified_obligations(
                 and row.get("covered") is True
             }
     result["response_verifier_ready_obligations"] = sorted(non_file & contract_ids & reviewed_ids)
-    blocking = [item for item in unresolved if item not in non_file]
+    pending_file = set(result.get("pending_file_semantic_obligations") or [])
+    blocking = [item for item in unresolved if item not in non_file | pending_file]
     if not blocking:
         return False
     result["status"] = "REVIEW"
@@ -694,6 +785,8 @@ def run_reconstruction_verification(
                 root=root,
                 config=config,
                 env_root=Path(env_root) if env_root is not None else None,
+                agent=agent, source=source,
+                baseline_observations=(initial_feedback or {}).get("baseline_observations"),
             )
             iterations: list[dict[str, Any]] = []
             feedback = dict(initial_feedback) if initial_feedback is not None else None
@@ -799,6 +892,9 @@ def run_reconstruction_verification(
                     result["rollout"] = rollout
                     passed = rollout_passed(result.get("rollout"), config.rollout_trials)
                     apply_response_receipts(result, rollout, task, config.rollout_trials)
+                    apply_file_semantic_receipts(result, rollout, {
+                        **task, "file_semantic_checks": candidate.file_semantic_checks,
+                    }, config.rollout_trials)
                     if rollout.get("harbor_bundle"):
                         result["harbor_bundle"] = rollout["harbor_bundle"]
                         result["rollout_plan"] = rollout.get("plan")
@@ -853,6 +949,8 @@ def run_reconstruction_verification(
             executor = HarborCalibrationExecutor(
                 task=task, workspace=workspace, root=root, config=config,
                 env_root=Path(env_root) if env_root is not None else None,
+                agent=agent, source=source,
+                baseline_observations=(initial_feedback or {}).get("baseline_observations"),
             )
             iteration = synthesize_verifier_iterative(
                 task=task,
@@ -885,6 +983,9 @@ def run_reconstruction_verification(
                     result["rollout"] = rollout
                     passed = rollout_passed(result.get("rollout"), config.rollout_trials)
                     apply_response_receipts(result, rollout, task, config.rollout_trials)
+                    apply_file_semantic_receipts(result, rollout, {
+                        **task, "file_semantic_checks": candidate.file_semantic_checks,
+                    }, config.rollout_trials)
                     if rollout.get("harbor_bundle"):
                         result["harbor_bundle"] = rollout["harbor_bundle"]
                         result["rollout_plan"] = rollout.get("plan")
@@ -913,6 +1014,10 @@ def run_reconstruction_verification(
             return result
         else:
             result["errors"] = ["VERIFIER_SOURCE_MISSING"]
+        if candidate is not None and candidate.file_semantic_checks and agent is None:
+            result["unverified_obligations"].extend(candidate.file_semantic_checks)
+            result["errors"].append("FILE_SEMANTIC_REVIEW_AGENT_MISSING")
+            candidate = None
         if _record_unverified_obligations(
             result, task=task, audit=audit
         ):
@@ -935,6 +1040,8 @@ def run_reconstruction_verification(
                 executor = HarborCalibrationExecutor(
                     task=task, workspace=workspace, root=root, config=config,
                     env_root=Path(env_root) if env_root is not None else None,
+                    agent=agent, source=source,
+                    baseline_observations=(initial_feedback or {}).get("baseline_observations"),
                 )
                 outcome = executor.run(candidate)
                 result["calibration_runs"] = executor.attempts
@@ -951,6 +1058,9 @@ def run_reconstruction_verification(
                         result["rollout"] = rollout
                         passed = rollout_passed(result.get("rollout"), config.rollout_trials)
                         apply_response_receipts(result, rollout, task, config.rollout_trials)
+                        apply_file_semantic_receipts(result, rollout, {
+                            **task, "file_semantic_checks": candidate.file_semantic_checks,
+                        }, config.rollout_trials)
                         _set_rollout_eligibility(result, config.rollout_trials)
                         if not passed:
                             result["errors"] = list(
