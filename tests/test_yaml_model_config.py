@@ -82,5 +82,11 @@ def test_absent_optional_role_still_uses_documented_default(tmp_path: Path) -> N
         encoding="utf-8",
     )
     assert load_channel_connection(config, "claude")[0] == "https://gateway.example"
-    assert load_role_settings(config, "rollout").model == "anthropic/claude-opus-4-8"
+    from traceforge.reconstruction.agents.runtime import resolve_rollout_model
+
+    role = load_role_settings(config, "rollout")
+    assert role.model == "claude-opus-4-8"
+    assert resolve_rollout_model(None, channel=role.channel, model_name=role.model) == (
+        "anthropic/claude-opus-4-8"
+    )
     assert load_rollout_limits(config) == (900, 60)

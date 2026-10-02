@@ -20,7 +20,7 @@ ROLE_DEFAULTS: dict[str, tuple[str, str]] = {
     "session_parser": ("deepseek", "bailian/deepseek-v4-flash-0731"),
     "reconstruction": ("gpt", "gpt-5"),
     "verifier": ("gpt", "gpt-5"),
-    "rollout": ("claude", "anthropic/claude-opus-4-8"),
+    "rollout": ("claude", "claude-opus-4-8"),
 }
 
 
