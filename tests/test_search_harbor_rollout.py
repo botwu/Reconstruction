@@ -227,3 +227,23 @@ def test_gateway_runtime_is_bound_but_old_plans_remain_readable(tmp_path):
         validate_rollout_runtime(plan)
     del plan["harbor_runtime"]["gateway_files"]
     validate_rollout_runtime(plan)
+
+
+@pytest.mark.parametrize("cache_state", ["missing", "present", "outside"])
+def test_native_reader_only_exposes_recovered_web_cache(tmp_path, monkeypatch, cache_state):
+    trial, _ = _native_trial(tmp_path, monkeypatch)
+    cache = trial / "artifacts/logs/artifacts/search"
+    if cache_state != "missing":
+        cache.parent.mkdir(parents=True)
+        if cache_state == "outside":
+            outside = tmp_path / "unrelated-cache"
+            outside.mkdir()
+            cache.symlink_to(outside, target_is_directory=True)
+        else:
+            cache.mkdir()
+            (cache / "calls.jsonl").write_text("{}\n")
+    result = read_search_trial(trial)
+    assert result["web_cache_root"] == (str(cache) if cache_state == "present" else None)
+    assert result["completed"] is (cache_state != "outside")
+    if cache_state == "outside":
+        assert result["errors"] == ["NATIVE_WEB_CACHE_PATH_INVALID"]

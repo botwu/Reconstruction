@@ -116,7 +116,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
     pdf_dependencies = [f"{item['name']}=={item['version']}"
                         for item in dependency_lock.get("wheels", [])]
     digest = hashlib.sha256(json.dumps({
-        "search_delivery_version": 8, "pdf_dependencies": pdf_dependencies,
+        "search_delivery_version": 9, "pdf_dependencies": pdf_dependencies,
         "dependency_sources": dependency_lock,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),
@@ -156,7 +156,11 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
             instruction += "\n本任务使用已交付的原始语料及补充来源，不需要继续公网搜索；缺少的证据应明确说明。\n"
         (root / "instruction.md").write_text(instruction, encoding="utf-8")
         (root / "task.toml").write_text(
-            'schema_version = "1.4"\nartifacts = ["/home/user/workspace"]\n'
+            'schema_version = "1.4"\n'
+            + "artifacts = " + json.dumps(
+                ["/home/user/workspace", "/logs/artifacts/search"]
+                if requires_web else ["/home/user/workspace"]
+            ) + "\n"
             f'[task]\nname = "traceforge/search-{digest[:16]}"\n'
             '[metadata]\ndomain = "search"\nresponse_acceptance = "NOT_ASSESSED"\n'
             '[agent]\ntimeout_sec = 1800.0\nuser = "user"\n'

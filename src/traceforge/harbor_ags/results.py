@@ -271,7 +271,7 @@ def read_search_trial(
     root = Path(trial_dir).resolve()
     output: dict[str, Any] = {
         "trial": root.name, "answer": "", "tool_events": [], "model": None,
-        "errors": [], "completed": False, "final_stop_reason": None,
+        "errors": [], "completed": False, "final_stop_reason": None, "web_cache_root": None,
         "receipt": {"backend": "native_harbor", "acceptance": "NOT_ASSESSED",
                     "evidence_files": {}, "input_task": None, "source_binding": False},
     }
@@ -375,6 +375,11 @@ def read_search_trial(
             raise HarborResultError("NATIVE_FINAL_RESPONSE_INCOMPLETE")
         if not answer.strip():
             raise HarborResultError("NATIVE_FINAL_RESPONSE_EMPTY")
+        web_cache = root / "artifacts/logs/artifacts/search"
+        if web_cache.is_dir():
+            if not web_cache.resolve().is_relative_to(root):
+                raise HarborResultError("NATIVE_WEB_CACHE_PATH_INVALID")
+            output["web_cache_root"] = str(web_cache.resolve())
         output["completed"] = True
     except (OSError, ValueError, KeyError, TypeError, ImportError, RuntimeError, AttributeError) as exc:
         output["errors"] = [str(exc) if isinstance(exc, HarborResultError) else type(exc).__name__]

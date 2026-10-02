@@ -30,6 +30,7 @@ def test_search_delivery_preserves_evidence_without_inventing_a_verifier(tmp_pat
     config = tomllib.loads((task / "task.toml").read_text())
     assert config["metadata"]["domain"] == "search"
     assert config["metadata"]["response_acceptance"] == "NOT_ASSESSED"
+    assert config["artifacts"] == ["/home/user/workspace", "/logs/artifacts/search"]
     assert config["environment"]["env"]["SERPER_API_KEY"] == "${SERPER_API_KEY:-}"
     evidence = json.loads((task / "workspace/evidence.json").read_text())
     assert evidence["captures"] == source["captures"]
@@ -91,6 +92,7 @@ def test_local_code_search_remains_search_and_does_not_require_web_credentials(t
     config = tomllib.loads((task / "task.toml").read_text())
     assert config["metadata"]["domain"] == "search"
     assert "env" not in config["environment"]
+    assert config["artifacts"] == ["/home/user/workspace"]
     assert not (task / "environment/search_tools.py").exists()
     assert "不需要继续公网搜索" in (task / "instruction.md").read_text()
     assert json.loads((task / "workspace/evidence.json").read_text())["captures"] == source["captures"]
