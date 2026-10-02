@@ -121,10 +121,15 @@ def _write_search_sources(public: Path, environment: dict[str, Any]) -> None:
                     body_sha256=hashlib.sha256(raw).hexdigest(),
                     body_bytes=len(raw), body_lines=len(body.splitlines()),
                 )
-            written = write_json_artifact(public, f"{stem}.json", record)
-            entry["record_sha256"] = written.sha256
+            record_path = public / f"{stem}.json"
+            record_path.write_text(
+                json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+            )
+            entry["record_sha256"] = hashlib.sha256(record_path.read_bytes()).hexdigest()
             sources.append(entry)
-    write_json_artifact(public, "evidence-index.json", {"sources": sources})
+    (public / "evidence-index.json").write_text(
+        json.dumps({"sources": sources}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
+    )
 
 
 def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
@@ -147,7 +152,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
     pdf_dependencies = [f"{item['name']}=={item['version']}"
                         for item in dependency_lock.get("wheels", [])]
     digest = hashlib.sha256(json.dumps({
-        "search_delivery_version": 11, "pdf_dependencies": pdf_dependencies,
+        "search_delivery_version": 12, "pdf_dependencies": pdf_dependencies,
         "dependency_sources": dependency_lock,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),

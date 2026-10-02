@@ -330,3 +330,24 @@ def test_search_source_index_guides_native_file_reading_and_is_hashed(tmp_path):
             assert receipt["task_file_sha256"][str(path.relative_to(task))] == (
                 hashlib.sha256(path.read_bytes()).hexdigest()
             )
+
+
+def test_search_json_metadata_is_visible_with_native_line_preview(tmp_path):
+    source = search_environment()
+    source["requires_live_web"] = False
+    source["live_references"][0].update(
+        abstract="原长字段" * 1000,
+        metadata={"citation_authors": ["首位署名", "末位署名"]},
+        jsonld={"author": [{"@id": "作者一"}, {"@id": "作者二"}]},
+    )
+    task = export_search_task(source, tmp_path)
+    public = task / "workspace"
+    index_text = (public / "evidence-index.json").read_text()
+    record_text = (public / "sources/live-0000.json").read_text()
+    # 真实 Hermes 对超长单行裁剪；作者关系不能藏在同一长行末端。
+    visible = "\n".join(line[:2000] for line in record_text.splitlines())
+    assert "首位署名" in visible
+    assert "末位署名" in visible
+    assert '"@id": "作者一"' in visible
+    assert '"@id": "作者二"' in visible
+    assert '\n  "sources": [\n' in index_text
