@@ -1,0 +1,11 @@
+{
+  "version": "14.1.1",
+  "platform": "Linux x86_64",
+  "archive": "ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz",
+  "archive_sha256": "4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e",
+  "member": "ripgrep-14.1.1-x86_64-unknown-linux-musl/rg",
+  "binary_sha256": "f401154e2393f9002ac77e419f9ee5521c18f4f8cd3e32293972f493ba06fce7",
+  "source": "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz",
+  "checksum_source": "https://github.com/BurntSushi/ripgrep/releases/download/14.1.1/ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz.sha256",
+  "license": "MIT OR Unlicense"
+}

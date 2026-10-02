@@ -20,6 +20,7 @@ dev = [
 ]
 
 [tool.setuptools.package-data]
+"traceforge.harbor_ags" = ["ripgrep_lock.json", "vendor/*"]
 "traceforge.reconstruction" = ["researcher_instruction.md", "search_vendor/*.whl", "search_vendor_lock.json", "pdf_ocr_lock.json"]
 "traceforge.failure_analysis" = ["assets/**/*.py", "assets/**/*.md", "reference_assets/*.json", "reference_assets/*.txt", "reference_assets/*.md"]
 "traceforge.verifier" = ["vendor/*.whl", "vendor_lock.json"]

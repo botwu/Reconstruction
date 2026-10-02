@@ -65,6 +65,11 @@ def test_gateway_adapter_reuses_native_harness_bytes(tmp_path, monkeypatch):
     LosslessHermesAgent = native.LosslessHermesAgent
 
     called = []
+    commands = []
+
+    async def exec_as_root(self, environment, **kwargs):
+        commands.append(kwargs["command"])
+        return SimpleNamespace(return_code=0, stdout="ripgrep 14.1.1 (rev 4649aa9700)\n")
 
     async def setup(self, environment):
         called.append("native_setup")
@@ -73,6 +78,7 @@ def test_gateway_adapter_reuses_native_harness_bytes(tmp_path, monkeypatch):
         called.append((destination, Path(source).read_bytes()))
 
     monkeypatch.setattr(LosslessHermesAgent, "setup", setup)
+    monkeypatch.setattr(GatewayHermesAgent, "exec_as_root", exec_as_root)
     agent = object.__new__(GatewayHermesAgent)
     asyncio.run(agent.setup(SimpleNamespace(upload_file=upload_file)))
     assert called[0] == "native_setup"
@@ -82,6 +88,9 @@ def test_gateway_adapter_reuses_native_harness_bytes(tmp_path, monkeypatch):
         )
     assert called[2][0] == "/tmp/harbor_ags_runtime/hermes_harness.py"
     assert called[2][1] == Path(gateway_harness.__file__).read_bytes()
+    assert called[3][0].endswith("ripgrep-14.1.1-x86_64-unknown-linux-musl.tar.gz")
+    assert "uname -m" in commands[0] and "sha256sum" in commands[0]
+    assert "/usr/local/bin/rg --version" in commands[0]
 
 
 def test_nonstreaming_wire_request_uses_exact_model_with_real_sdk():
@@ -122,3 +131,20 @@ def test_nonstreaming_wire_request_uses_exact_model_with_real_sdk():
         assert requests[0]["stream"] is False
     finally:
         client.close()
+
+
+def test_gateway_setup_rejects_corrupt_ripgrep_before_upload(monkeypatch):
+    import asyncio
+
+    pytest.importorskip("harbor_ags.agent")
+    from traceforge.harbor_ags.agent import GatewayHermesAgent
+
+    original = Path.read_bytes
+
+    def read_bytes(path):
+        return b"corrupt" if path.name.endswith(".tar.gz") else original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    agent = object.__new__(GatewayHermesAgent)
+    with pytest.raises(ValueError, match="ripgrep.*哈希"):
+        asyncio.run(agent.setup(SimpleNamespace()))
