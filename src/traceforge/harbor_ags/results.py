@@ -445,13 +445,14 @@ def build_file_artifact_snapshot(
     result_task = (result.get("config") or {}).get("task") or {}
     if result_task.get("path") and Path(result_task["path"]).resolve() != task:
         raise HarborResultError("FILE_SNAPSHOT_TASK_MISMATCH")
+    collection_manifest = "artifacts/logs/artifacts/traceforge/workspace-collection.json"
     execution_files = ["config.json", "result.json", "verifier/verdict.json"]
     execution_files.extend(name for name in (
         "agent/trajectory.full.json", "agent/trajectory.json", "agent/hermes-result.json",
         "agent/anthropic-exchanges.jsonl", "agent/anthropic-sse.jsonl",
         "agent/hermes-session.jsonl", "agent/task-input.json",
         "agent/workspace-initial-manifest.json", "agent/workspace-manifest.json",
-        "agent/oracle.txt", "agent/exit-code.txt",
+        "agent/oracle.txt", "agent/exit-code.txt", collection_manifest,
     ) if (root / name).is_file())
     try:
         execution = {
@@ -481,6 +482,8 @@ def build_file_artifact_snapshot(
             "agent/oracle.txt", "agent/exit-code.txt",
         ) if name in execution
     })
+    if collection_manifest in execution:
+        evidence_files["verifier/workspace-collection.json"] = str(root / collection_manifest)
     return {
         "initial_workspace": str(initial), "workspace": str(final),
         "initial_files": initial_files, "final_files": final_files, "binding": binding,

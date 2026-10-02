@@ -233,3 +233,22 @@ def test_missing_snapshot_keeps_obligation_unverified(tmp_path):
     result = _apply(trial, contract)
     assert result["status"] == "REVIEW"
     assert result["unverified_obligations"] == ["extract"]
+
+
+def test_workspace_collection_manifest_is_visible_and_bound_when_present(tmp_path):
+    trial, _, contract = _trial(tmp_path)
+    legacy = build_file_artifact_snapshot(trial)
+    assert "verifier/workspace-collection.json" not in legacy["evidence_files"]
+    path = trial / "artifacts/logs/artifacts/traceforge/workspace-collection.json"
+    _write(path, {
+        "status": "COMPLETE",
+        "excluded": [{"path": ".venv", "reason": "新增虚拟环境"}],
+    })
+    snapshot = build_file_artifact_snapshot(trial)
+    assert snapshot["evidence_files"]["verifier/workspace-collection.json"] == str(path)
+    assert snapshot["binding"]["execution_sha256"] != legacy["binding"]["execution_sha256"]
+    receipt = _receipt(snapshot)
+    _write(path, {"status": "COMPLETE", "excluded": []})
+    assert validate_file_semantic_receipt(
+        receipt, build_file_artifact_snapshot(trial), contract["file_semantic_checks"],
+    ) == ["FILE_SEMANTIC_BINDING_MISMATCH"]
