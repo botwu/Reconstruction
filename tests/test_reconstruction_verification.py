@@ -97,7 +97,17 @@ class VerifierRuntime:
         if self.sandbox:
             session.sandbox = object()
             digest = hashlib.sha256(_VERIFIER_PAYLOAD["test_outputs_py"].encode("utf-8")).hexdigest()
-            session.pytest_runs.extend([dict(row, test_sha256=digest) for row in self.pytest_runs])
+            rows = [
+                (path.relative_to(session.workspace).as_posix(),
+                 "link:" + str(path.readlink()) if path.is_symlink() else
+                 hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "dir")
+                for path in sorted(session.workspace.rglob("*"))
+            ]
+            input_sha256 = hashlib.sha256(json.dumps(rows).encode()).hexdigest()
+            session.pytest_runs.extend([
+                dict(row, test_sha256=digest, input_sha256=input_sha256, input_unchanged=True)
+                for row in self.pytest_runs
+            ])
         session.test_outputs_py = _VERIFIER_PAYLOAD["test_outputs_py"]
         return AgentResult(
             role=role.name,

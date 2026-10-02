@@ -210,7 +210,8 @@ def _parser() -> argparse.ArgumentParser:
                          help="文件验证通过后采集 rollout；响应内容保留人工核查，不标为完整验收或 SFT")
     raw_run.add_argument("--rollout-timeout-seconds", type=int, default=None)
     raw_run.add_argument("--rollout-max-iterations", type=int, default=None)
-    raw_run.add_argument("--verifier-rounds", type=int, default=6)
+    raw_run.add_argument("--verifier-rounds", type=int, default=None,
+                         help="可选正整数轮数预算；默认持续返修至通过、无进展或执行阻塞")
 
     requery = commands.add_parser("requery", help="Terminal-Universe C.2/C.3/C.4 任务扩展")
     requery_commands = requery.add_subparsers(dest="requery_command", required=True)

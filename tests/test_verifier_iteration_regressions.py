@@ -279,3 +279,116 @@ def test_invalid_baseline_observations_are_rejected(tmp_path: Path, observations
             workspace_root=tmp_path, agent=_Agent(), output_root=tmp_path / "out",
             feedback={"baseline_observations": observations},
         )
+
+
+@pytest.mark.parametrize(
+    "budget,expected_rounds,expected_status", [(None, 8, "READY"), (3, 3, "REVIEW")],
+)
+def test_default_continues_past_six_rounds_and_explicit_budget_still_limits(
+    monkeypatch, tmp_path, budget, expected_rounds, expected_status,
+):
+    class ProgressingExecutor(_Executor):
+        def run(self, candidate):
+            self.calls += 1
+            return {"status": "PASS" if self.calls == 8 else "FAIL",
+                    "feedback": json.dumps({"remaining_case": 8 - self.calls})}
+
+    executor = ProgressingExecutor(root=tmp_path)
+    monkeypatch.setattr(verification_module, "HarborCalibrationExecutor", lambda **kwargs: executor)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "input.txt").write_text("x")
+    options = {} if budget is None else {"max_rounds": budget}
+    result = run_reconstruction_verification(
+        task={"task_instruction": "do x",
+              "acceptance_obligations": [{"id": "o", "text": "output"}]},
+        workspace_root=workspace, model=None, agent=_Agent(), output_root=tmp_path / "out",
+        config=VerificationConfig(
+            harbor_root=tmp_path, model_name="fake", rollout_model="test/model",
+                                  execute_red=True, **options),
+    )
+    assert result["status"] == expected_status
+    assert executor.calls == expected_rounds
+    assert len(result["iterations"]) == expected_rounds
+
+
+@pytest.mark.parametrize("error", [
+    "VERIFIER_NO_PROGRESS", "AGENT_INCOMPLETE",
+    "VERIFIER_REVIEW_INCOMPLETE", "VERIFIER_REVIEW_INVALID",
+])
+def test_terminal_generation_failure_stops_without_recalling_author(monkeypatch, tmp_path, error):
+    from traceforge.reconstruction import verifier_recovery
+
+    calls = []
+    def failed(**kwargs):
+        calls.append(kwargs["round_number"])
+        return {"errors": [error], "feedback": {"generation_errors": [error]}}, None
+
+    monkeypatch.setattr(verifier_recovery, "run_verifier_recovery", failed)
+    monkeypatch.setattr(verification_module, "HarborCalibrationExecutor", _Executor)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "input.txt").write_text("x")
+    result = run_reconstruction_verification(
+        task={"task_instruction": "do x",
+              "acceptance_obligations": [{"id": "o", "text": "output"}]},
+        workspace_root=workspace, model=None, agent=_Agent(), output_root=tmp_path / "out",
+        config=VerificationConfig(
+            harbor_root=tmp_path, model_name="fake", rollout_model="test/model",
+                                  execute_red=True, max_rounds=4),
+    )
+    assert calls == [1]
+    assert result["errors"] == [error]
+    assert result["status"] == "REVIEW"
+
+
+def test_raw_cli_defaults_to_unlimited_verifier_and_accepts_explicit_budget():
+    from traceforge.cli import _parser
+
+    args = ["reconstruct", "raw-run", "--input", "raw.jsonl", "--domain", "terminal",
+            "--line-number", "1", "--output", "output", "--config", "config.yaml"]
+    assert _parser().parse_args(args).verifier_rounds is None
+    assert _parser().parse_args([*args, "--verifier-rounds", "3"]).verifier_rounds == 3
+
+
+@pytest.mark.parametrize("changed", [False, True, "explanation", "malformed_variant"])
+def test_invalid_candidate_progress_compares_actual_payload_not_only_error(
+    monkeypatch, tmp_path, changed,
+):
+    class InvalidThenValid(_Agent):
+        def run(self, **kwargs):
+            result = super().run(**kwargs)
+            if kwargs["role"].result_schema != "traceforge.verifier-semantic-review.v1":
+                if len(self.calls) <= 2:
+                    suffix = "second" if changed is True and len(self.calls) == 2 else "first"
+                    result.payload["test_outputs_py"] = f"def test_{suffix}(:"
+                    if changed == "malformed_variant":
+                        result.payload["oracle_solutions"] = None
+                    if changed == "explanation":
+                        result.payload["expected_value_strategy"] = f"新说明 {len(self.calls)}"
+                        result.payload["oracle_solutions"] = [
+                            {**row, "justification": f"新解释 {len(self.calls)}"}
+                            for row in result.payload["oracle_solutions"]
+                        ]
+            return result
+
+    agent = InvalidThenValid()
+    executor = _Executor(root=tmp_path)
+    executor.calls = 1
+    monkeypatch.setattr(verification_module, "HarborCalibrationExecutor", lambda **kw: executor)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "input.txt").write_text("x")
+    result = run_reconstruction_verification(
+        task={"task_instruction": "do x",
+              "acceptance_obligations": [{"id": "o", "text": "output"}]},
+        workspace_root=workspace, model=None, agent=agent, output_root=tmp_path / "out",
+        config=VerificationConfig(
+            harbor_root=tmp_path, model_name="fake", rollout_model="test/model",
+            execute_red=True, max_rounds=4,
+        ),
+    )
+    assert len(agent.calls) == (3 if changed is True else 2)
+    assert result["status"] == ("READY" if changed is True else "REVIEW")
+    assert ("VERIFIER_NO_PROGRESS" in result["errors"]) is (changed is not True)
+    assert all("测试代码语法无效" in row["errors"] for row in result["iterations"][:2])

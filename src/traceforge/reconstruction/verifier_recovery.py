@@ -258,14 +258,17 @@ def _pytest_red_ok(runs: list[dict[str, Any]], candidate: Any) -> bool:
     return all(all(status == "PASS" for status in statuses) for statuses in protective)
 
 
-def _verifier_behavior(payload: dict[str, Any]) -> dict[str, Any]:
+def verifier_behavior(payload: dict[str, Any]) -> dict[str, Any]:
     """比较实际测试和脚本，说明文字或提示哈希变化不构成修订。"""
     return {
         **{key: payload.get(key) for key in (
             "test_outputs_py", "missing_capability_tests", "protective_tests",
             "obligation_coverage", "file_semantic_checks", "response_contract",
         )},
-        **{key: [item.get("script") for item in payload.get(key, [])]
+        **{key: [
+            item.get("script") if isinstance(item, dict) else item
+            for item in payload[key]
+        ] if isinstance(payload.get(key), list) else payload.get(key, [])
            for key in ("oracle_solutions", "mutation_solutions")},
     }
 
@@ -480,7 +483,7 @@ def run_verifier_recovery(
                 == _pytest_run_facts(session.pytest_runs)
                 and (rejected.get("pytest_evidence") or {}).get("input_binding")
                 == verifier_input_binding(review_task, workspace, source)
-                and _verifier_behavior(payload) == _verifier_behavior(previous)):
+                and verifier_behavior(payload) == verifier_behavior(previous)):
             semantic_review = {**rejected, "reused_rejection": True}
             errors.append("VERIFIER_NO_PROGRESS")
         else:

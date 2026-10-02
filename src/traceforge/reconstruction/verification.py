@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from itertools import count
 from pathlib import Path
 from typing import Any
 
@@ -54,7 +55,7 @@ class VerificationConfig:
     execute_rollout: bool = False
     manual_response_review: bool = False
     rollout_trials: int = 2
-    max_rounds: int = 2
+    max_rounds: int | None = None
     config_path: Path | None = None
     hermes_home: Path | None = None
     channel: str = "claude"
@@ -66,12 +67,12 @@ class VerificationConfig:
             raise ValueError("真实复验要求至少两次 Hermes rollout")
         if self.execute_rollout and not self.should_run_red():
             raise ValueError("真实 rollout 要求同时执行 Harbor RED；请设置 --execute-red")
-        if (
+        if self.max_rounds is not None and (
             isinstance(self.max_rounds, bool)
             or not isinstance(self.max_rounds, int)
             or self.max_rounds < 1
         ):
-            raise ValueError("Verifier 迭代次数必须是正整数")
+            raise ValueError("Verifier 迭代次数必须是正整数或 None（不限制）")
         if not self.model_name.strip() or "/" not in self.rollout_model:
             raise ValueError("必须明确 verifier model 和 provider/model rollout 模型")
         if self.timeout_seconds < 1:
@@ -782,7 +783,8 @@ def run_reconstruction_verification(
             return result
         if agent is not None and config.should_run_red():
             from traceforge.reconstruction.verifier_recovery import (
-                VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION, run_verifier_recovery, verifier_input_binding,
+                VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION, run_verifier_recovery,
+                verifier_behavior, verifier_input_binding,
             )
             resume = None
             if reviewed_candidate is not None:
@@ -820,7 +822,11 @@ def run_reconstruction_verification(
             iterations: list[dict[str, Any]] = []
             feedback = dict(initial_feedback) if initial_feedback is not None else None
             baseline_observations = (initial_feedback or {}).get("baseline_observations")
-            for round_number in range(start_round, start_round + config.max_rounds):
+            previous_generation_failure = None
+            rounds = count(start_round) if config.max_rounds is None else range(
+                start_round, start_round + config.max_rounds,
+            )
+            for round_number in rounds:
                 if baseline_observations is not None:
                     feedback = {**(feedback or {}), "baseline_observations": baseline_observations}
                 if resume is not None:
@@ -856,7 +862,29 @@ def run_reconstruction_verification(
                     prior_feedback = recovered.get("feedback")
                     feedback = {**(feedback or {}), **(prior_feedback if isinstance(prior_feedback, dict) else {})}
                     feedback["generation_errors"] = errors
+                    # 无进展或未完成的调用不是语义返修，保留原因等待恢复。
+                    review_errors = (recovered.get("semantic_review") or {}).get("errors") or []
+                    if (set(errors) & {
+                        "VERIFIER_NO_PROGRESS", "AGENT_INCOMPLETE",
+                        "VERIFIER_REVIEW_INCOMPLETE", "VERIFIER_REVIEW_INVALID",
+                    } or any(error != "VERIFIER_SEMANTIC_REPAIR_REQUIRED" for error in review_errors)):
+                        result["errors"] = errors
+                        break
+                    if not recovered.get("semantic_review"):
+                        payload = feedback.get("previous_candidate")
+                        if not isinstance(payload, dict) or not payload:
+                            result["errors"] = errors
+                            break
+                        failure = (verifier_behavior(payload), errors)
+                        if failure == previous_generation_failure:
+                            result["errors"] = [*errors, "VERIFIER_NO_PROGRESS"]
+                            iterations[-1]["errors"] = result["errors"]
+                            break
+                        previous_generation_failure = failure
+                    else:
+                        previous_generation_failure = None
                     continue
+                previous_generation_failure = None
                 outcome = executor.run(generated)
                 iterations.append(
                     {

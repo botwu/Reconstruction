@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import count
 from typing import Any, Protocol
 
 from .synthesis import VerifierCandidate, VerifierSynthesisError, synthesize_verifier
@@ -27,15 +28,18 @@ def synthesize_verifier_iterative(
     model: Any,
     executor: VerifierExecutor,
     model_name: str = "claude-opus-4-8",
-    max_rounds: int = 2,
+    max_rounds: int | None = None,
 ) -> VerifierIterationResult:
-    if isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or max_rounds < 1:
-        raise ValueError("max_rounds 必须是正整数")
+    if max_rounds is not None and (
+        isinstance(max_rounds, bool) or not isinstance(max_rounds, int) or max_rounds < 1
+    ):
+        raise ValueError("max_rounds 必须是正整数或 None（不限制）")
     working = dict(task)
     attempts: list[dict[str, Any]] = []
     candidate = None
     questions: list[str] = []
-    for index in range(max_rounds):
+    previous_failure = None
+    for index in count() if max_rounds is None else range(max_rounds):
         try:
             candidate, audit = synthesize_verifier(
                 task=working, workspace_files=workspace_files, model=model, model_name=model_name
@@ -43,9 +47,8 @@ def synthesize_verifier_iterative(
         except VerifierSynthesisError as exc:
             error = str(exc)
             attempts.append({"round": index + 1, "status": "REVIEW", "feedback": [error]})
-            questions.append(error)
-            working["_verifier_feedback"] = error
-            continue
+            # 该接口的异常不携带候选，无法证明两次输出相同；明确阻塞而非伪判无进展。
+            return VerifierIterationResult(None, "REVIEW", tuple(attempts), (error,))
         if candidate is None:
             attempts.append(
                 {
@@ -71,6 +74,24 @@ def synthesize_verifier_iterative(
             return VerifierIterationResult(candidate, "READY", tuple(attempts), ())
         if outcome not in {"FAIL", "INFRA_ERROR"}:
             raise ValueError("executor status 必须为 PASS/FAIL/INFRA_ERROR")
+        if outcome == "INFRA_ERROR":
+            return VerifierIterationResult(
+                candidate, "REVIEW", tuple(attempts), ("VERIFIER_CALIBRATION_INFRA_ERROR",),
+            )
+        # 提示、响应哈希及标签不是候选修复；比较实际程序与校准反馈。
+        failure = (
+            candidate.test_outputs_py,
+            tuple(item.script for item in candidate.oracle_solutions),
+            tuple(item.script for item in candidate.mutation_solutions),
+            candidate.missing_capability_tests, candidate.protective_tests,
+            candidate.obligation_coverage, candidate.file_semantic_checks,
+            execution.get("feedback"),
+        )
+        if failure == previous_failure:
+            return VerifierIterationResult(
+                candidate, "REVIEW", tuple(attempts), ("VERIFIER_NO_PROGRESS",),
+            )
+        previous_failure = failure
         working["_verifier_feedback"] = {
             "calibration_feedback": execution.get("feedback", "未提供执行反馈"),
             "previous_candidate": candidate.to_dict(),
