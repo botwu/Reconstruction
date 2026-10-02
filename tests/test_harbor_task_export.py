@@ -30,7 +30,7 @@ def test_search_delivery_preserves_evidence_without_inventing_a_verifier(tmp_pat
     config = tomllib.loads((task / "task.toml").read_text())
     assert config["metadata"]["domain"] == "search"
     assert config["metadata"]["response_acceptance"] == "NOT_ASSESSED"
-    assert config["artifacts"] == ["/home/user/workspace", "/logs/artifacts/search"]
+    assert config["artifacts"] == ["/home/user/workspace"]
     assert config["environment"]["env"]["SERPER_API_KEY"] == "${SERPER_API_KEY:-}"
     evidence = json.loads((task / "workspace/evidence.json").read_text())
     assert evidence["captures"] == source["captures"]
@@ -203,3 +203,43 @@ def test_search_export_rejects_corrupt_vendored_dependency(tmp_path, monkeypatch
     with pytest.raises(ValueError, match="wheel 哈希"):
         export_search_task(search_environment(), tmp_path)
     assert not any(tmp_path.iterdir())
+
+
+def test_native_harbor_collects_web_cache_from_convention_directory(tmp_path):
+    import asyncio
+    import logging
+    import shutil
+    from pathlib import PurePosixPath
+    from types import SimpleNamespace
+
+    artifacts = pytest.importorskip("harbor.trial.artifact_handler")
+    task = export_search_task(search_environment(), tmp_path / "export")
+    source = tmp_path / "sandbox"
+    cache = source / "logs/artifacts/search"
+    cache.mkdir(parents=True)
+    (cache / "calls.jsonl").write_text('{"tool":"web_open"}\n')
+    (cache / "source.raw").write_bytes(b"captured-source")
+    (source / "home/user/workspace").mkdir(parents=True)
+    downloads = []
+
+    class LocalTransfer:
+        capabilities = SimpleNamespace(mounted=False)
+
+        async def service_is_dir(self, path, **kwargs):
+            return (source / path.lstrip("/")).is_dir()
+
+        async def service_download_dir(self, source_dir, target_dir, **kwargs):
+            downloads.append(source_dir)
+            shutil.copytree(source / source_dir.lstrip("/"), target_dir, dirs_exist_ok=True)
+
+    handler = artifacts.ArtifactHandler(
+        artifacts=tomllib.loads((task / "task.toml").read_text())["artifacts"],
+        logger=logging.getLogger(__name__),
+    )
+    target = tmp_path / "collected"
+    asyncio.run(handler.download_artifacts(
+        LocalTransfer(), target, source_artifacts_dir=PurePosixPath("/logs/artifacts"),
+    ))
+    assert downloads == ["/logs/artifacts", "/home/user/workspace"]
+    assert (target / "logs/artifacts/search/source.raw").read_bytes() == b"captured-source"
+    assert (target / "logs/artifacts/search/calls.jsonl").read_text() == '{"tool":"web_open"}\n'

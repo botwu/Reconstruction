@@ -156,11 +156,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
             instruction += "\n本任务使用已交付的原始语料及补充来源，不需要继续公网搜索；缺少的证据应明确说明。\n"
         (root / "instruction.md").write_text(instruction, encoding="utf-8")
         (root / "task.toml").write_text(
-            'schema_version = "1.4"\n'
-            + "artifacts = " + json.dumps(
-                ["/home/user/workspace", "/logs/artifacts/search"]
-                if requires_web else ["/home/user/workspace"]
-            ) + "\n"
+            'schema_version = "1.4"\nartifacts = ["/home/user/workspace"]\n'
             f'[task]\nname = "traceforge/search-{digest[:16]}"\n'
             '[metadata]\ndomain = "search"\nresponse_acceptance = "NOT_ASSESSED"\n'
             '[agent]\ntimeout_sec = 1800.0\nuser = "user"\n'
