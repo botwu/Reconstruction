@@ -820,13 +820,18 @@ def test_unrequested_report_does_not_inherit_legacy_required_fields(tmp_path):
     assert result["response_receipts"][0]["verification_scope"] == "REPORT_BINDING_ONLY"
 
 
-@pytest.mark.parametrize("defect", [None, "test", "criteria", "oracle", "missing_review", "stale_review", "incomplete_review"])
+@pytest.mark.parametrize("defect", [None, "test", "criteria", "oracle", "missing_review", "stale_review", "incomplete_review",
+                                  "missing_binding", "task_binding", "source_binding", "workspace_binding"])
 def test_reviewed_candidate_resume_reuses_exact_candidate_or_regenerates(tmp_path, monkeypatch, defect):
     from copy import deepcopy
     from test_artifact_review import candidate as fixture_candidate, TASK
     from traceforge.reconstruction import verifier_recovery
 
     seed = fixture_candidate()
+    task, source = deepcopy(TASK), None
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "main.py").write_text("print(1)")
     review = {
         "status": "ACCEPT", "errors": [], "candidate_id": seed.candidate_id,
         "prompt_version": verifier_recovery.VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION,
@@ -836,6 +841,7 @@ def test_reviewed_candidate_resume_reuses_exact_candidate_or_regenerates(tmp_pat
     audit = {"status": "READY", "errors": [], "verifier": json.loads(json.dumps(seed.to_dict())),
              "semantic_review": review, "agent": {"completed": True},
              "unverified_obligations": ["extract"], "pending_file_semantic_obligations": ["extract"]}
+    audit["input_binding"] = verifier_recovery.verifier_input_binding(TASK, workspace, None)
     frozen = deepcopy(audit)
     if defect == "test":
         audit["verifier"]["test_outputs_py"] += "# changed"
@@ -849,9 +855,14 @@ def test_reviewed_candidate_resume_reuses_exact_candidate_or_regenerates(tmp_pat
         review["prompt_version"] = "old"
     elif defect == "incomplete_review":
         review["agent"]["completed"] = False
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "main.py").write_text("print(1)")
+    elif defect == "missing_binding":
+        audit.pop("input_binding")
+    elif defect == "task_binding":
+        task["task_instruction"] += "新增不同要求"
+    elif defect == "source_binding":
+        source = {"raw_session": {"messages": [{"role": "user", "content": "另一个原始请求"}]}}
+    elif defect == "workspace_binding":
+        (workspace / "main.py").write_text("print(2)")
     calls = []
 
     def generate(**kwargs):
@@ -872,7 +883,7 @@ def test_reviewed_candidate_resume_reuses_exact_candidate_or_regenerates(tmp_pat
     monkeypatch.setattr(verifier_recovery, "run_verifier_recovery", generate)
     monkeypatch.setattr(verification, "HarborCalibrationExecutor", Calibration)
     result = run_reconstruction_verification(
-        task=TASK, workspace_root=workspace, model=None, output_root=tmp_path / "out",
+        task=task, source=source, workspace_root=workspace, model=None, output_root=tmp_path / "out",
         agent=object(), config=VerificationConfig(
             harbor_root=tmp_path, model_name="fixture", rollout_model="test/model",
             execute_red=True, max_rounds=2,

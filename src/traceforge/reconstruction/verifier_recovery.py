@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from traceforge.reconstruction.agents import VERIFIER_ROLE, AgentRuntime, AgentSession
+from traceforge.reconstruction.agents.session import workspace_tree_hash
 from traceforge.reconstruction.environment_bindings import (
     environment_bindings,
     file_obligation_ids,
@@ -50,6 +51,22 @@ _BASELINE_SCOPE_RULE = (
     "源码和执行证据不足以支持判定时返回REVIEW。不得用命名、局部布局、逐字源码或宽泛异常豁免"
     "代替实质核查，也不能掩盖重建损坏。"
 )
+
+
+def verifier_input_binding(
+    task: dict[str, Any], workspace: Path, source: dict[str, Any] | None,
+) -> dict[str, str]:
+    """候选审查绑定实际任务、完整来源和初态字节，不能跨输入恢复。"""
+    values = {
+        "task": {**task, "task_instruction": render_task_instruction(task).strip()},
+        "source": source,
+        "workspace": workspace_tree_hash(workspace),
+    }
+    return {
+        f"{key}_sha256": hashlib.sha256(
+            json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        for key, value in values.items()
+    }
 
 
 def review_verifier_candidate(
@@ -244,6 +261,7 @@ def run_verifier_recovery(
     ):
         raise ValueError("baseline_observations 必须是来源观察对象的列表")
     workspace = Path(workspace_root).resolve()
+    input_binding = verifier_input_binding(task, workspace, source)
     all_non_file = bool(environment_bindings(task)) and not file_ids
     if (
         all_non_file or (
@@ -457,6 +475,7 @@ def run_verifier_recovery(
         "pending_file_semantic_obligations": list(candidate.file_semantic_checks) if candidate else [],
         "manual_response_review": manual_response_review,
         "warnings": audit_warnings,
+        "input_binding": input_binding,
         "pytest_runs": list(session.pytest_runs),
         "sandbox": session.sandbox is not None,
         "verifier": candidate.to_dict() if candidate is not None else None,

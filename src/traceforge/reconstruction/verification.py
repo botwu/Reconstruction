@@ -780,7 +780,7 @@ def run_reconstruction_verification(
             return result
         if agent is not None and config.should_run_red():
             from traceforge.reconstruction.verifier_recovery import (
-                VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION, run_verifier_recovery,
+                VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION, run_verifier_recovery, verifier_input_binding,
             )
             resume = None
             if reviewed_candidate is not None:
@@ -788,6 +788,7 @@ def run_reconstruction_verification(
                 review = saved_audit.get("semantic_review") or {}
                 matched = (
                     saved_audit.get("status") == "READY" and not saved_audit.get("errors")
+                    and saved_audit.get("input_binding") == verifier_input_binding(task, workspace, source)
                     and (saved_audit.get("agent") or {}).get("completed") is True
                     and review.get("status") == "ACCEPT" and not review.get("errors")
                     and (review.get("agent") or {}).get("completed") is True

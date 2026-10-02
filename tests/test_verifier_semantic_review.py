@@ -55,6 +55,11 @@ def test_semantic_review_runs_with_fresh_session_and_binds_candidate(tmp_path):
     assert runtime.calls[0][1] is not runtime.calls[1][1]
     assert result["semantic_review"]["candidate_id"] == candidate.candidate_id
     assert (tmp_path / "verifier/semantic-review/review.json").is_file()
+    from traceforge.reconstruction.verifier_recovery import verifier_input_binding
+    binding = result["input_binding"]
+    assert set(binding) == {"task_sha256", "source_sha256", "workspace_sha256"}
+    (tmp_path / "workspace/input.py").write_text("def get_value(): return 2\n")
+    assert verifier_input_binding({}, tmp_path / "workspace", None)["workspace_sha256"] != binding["workspace_sha256"]
 
 
 def test_keyword_only_review_returns_concrete_repair_feedback(tmp_path):
