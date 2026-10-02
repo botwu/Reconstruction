@@ -31,10 +31,10 @@ READY 初态同时导出 `harbor/<digest>/task/`，`result.json.harbor_task` 返
 
 ## 显式单页 OCR
 
-补全者可调用 \`web_open(url, ocr_page=1, offset=0, limit=8000)\`。页号从 1 开始；未传页号仍读取原 PDF 文本层。配置 \`TRACEFORGE_OCR_PYTHON\` 或私有 \`search.json\` 的 \`ocr_python\` 指定已有 OCR 解释器，未配置或版本/模型哈希不符时明确失败，不自动安装、换引擎或切到远端模型。
+补全者可调用 `web_open(url, ocr_page=1, offset=0, limit=8000)`。页号从 1 开始；未传页号仍读取原 PDF 文本层。配置 `TRACEFORGE_OCR_PYTHON` 或私有 `search.json` 的 `ocr_python` 指定已有 OCR 解释器，未配置或版本/模型哈希不符时明确失败，不自动安装、换引擎或切到远端模型。
 
-工作进程按 \`pdf_ocr_lock.json\` 核对实际包版本和 RapidOCR 模型/配置哈希。当前锁定的是已完成五页真实诊断的 Python 3.10 环境；其中 OpenCV 5 的依赖元数据要求 numpy>=2，而已安装 numpy1.26.4，因此它仅是现有诊断能力记录，**不是另一台机器的推荐安装方案**。独立且依赖相容的 Python 3.12 安装尚待授权和验证；不能声称公开 clone 后 OCR 可直接运行。
+工作进程按 `pdf_ocr_lock.json` 核对实际包版本和 RapidOCR 模型/配置哈希。当前锁定的是已完成五页真实诊断的 Python 3.10 环境；其中 OpenCV 5 的依赖元数据要求 numpy>=2，而已安装 numpy1.26.4，因此它仅是现有诊断能力记录，**不是另一台机器的推荐安装方案**。独立且依赖相容的 Python 3.12 安装尚待授权和验证；不能声称公开 clone 后 OCR 可直接运行。
 
-OCR 返回带像素坐标和置信度的原检测块，保留检测順序。双栏段落未经重排，公式、上下标、表格和署名可能误识别；不得据此宣称精确恢复。原 PDF 和原文本层保留不变，原文件、页图、识别原始 JSON 分别以 SHA256 绑定。默认最多返回 8000 字符，余下用同一页号和 offset 续读。
+OCR 返回带像素坐标和置信度的原检测块，保留检测顺序。双栏段落未经重排，公式、上下标、表格和署名可能误识别；不得据此宣称精确恢复。原 PDF 和原文本层保留不变，原文件、页图、识别原始 JSON 分别以 SHA256 绑定。默认最多返回 8000 字符，余下用同一页号和 offset 续读。
 
-检查点保存这三种资产；Harbor 的来源索引列出可用 OCR 页号及文件位置，\`source-assets/\` 中交付 PDF、PNG 与 \`.ocr.raw\`。来源的 TXT 仍是原文本层，JSON 中的 \`ocr_pages\` 保存独立识别结果。solver 不安装 OCR 包，只读取已经取得的真实材料。OCR 成功不自动改变环境的 READY 状态，仍由原 researcher 逐项判断资料是否足够。
+检查点保存这三种资产；Harbor 的来源索引列出可用 OCR 页号及文件位置，`source-assets/` 中交付 PDF、PNG 与 `.ocr.raw`。来源的 TXT 仍是原文本层，JSON 中的 `ocr_pages` 保存独立识别结果。solver 不安装 OCR 包，只读取已经取得的真实材料。OCR 成功不自动改变环境的 READY 状态，仍由原 researcher 逐项判断资料是否足够。
