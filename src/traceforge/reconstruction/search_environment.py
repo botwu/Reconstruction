@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import shutil
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -276,43 +279,95 @@ def _complete_search_environment(
     return environment
 
 
+def _native_cache_tool_results(trial: dict[str, Any]) -> list[dict[str, Any]]:
+    """将原生 terminal 完整 stdout 绑定到 CLI 回执，不由分页返回生成原始抓取。"""
+    returned = []
+    for event in trial.get("tool_events", []):
+        if (event.get("name") != "terminal"
+                or "traceforge-search" not in event.get("arguments", {}).get("command", "")):
+            continue
+        result = event.get("result")
+        digest = hashlib.sha256(
+            json.dumps(result, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        if digest != event.get("result_sha256"):
+            raise ValueError(f"原生检索工具正文哈希不匹配：{event.get('tool_call_id')}")
+        if isinstance(result, list):
+            result = "\n".join(block["text"] for block in result
+                               if block.get("type") == "text" and isinstance(block.get("text"), str))
+        if not isinstance(result, str):
+            raise ValueError(f"原生检索工具没有完整文本返回：{event.get('tool_call_id')}")
+        try:
+            terminal = json.loads(result)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"原生检索 terminal 返回不可解析：{event['tool_call_id']}") from exc
+        if not isinstance(terminal, dict) or not isinstance(terminal.get("output"), str):
+            raise ValueError(f"原生检索 terminal 缺少 output：{event['tool_call_id']}")
+        for line in terminal["output"].splitlines():
+            try:
+                call = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(call, dict) or call.get("tool") not in {"web_open", "web_search"}:
+                continue
+            body = json.dumps(call, ensure_ascii=False)
+            returned.append({
+                "name": call["tool"], "tool_call_id": event["tool_call_id"], "result": body,
+                "result_sha256": hashlib.sha256(body.encode()).hexdigest(),
+                "native_result_sha256": digest, "native_tool_name": event["name"],
+            })
+    return returned
+
+
 def _review_search_rollouts(
     *, task: dict[str, Any], environment: dict[str, Any], agent: AgentRuntime,
     session: AgentSession, output_root: Path,
     native_trials: list[dict[str, Any]] | None = None,
+    network: SearchTools | None = None,
 ) -> dict[str, Any]:
     trials = list(native_trials) if native_trials is not None else []
-    for root in (() if native_trials is not None else
-                 sorted((output_root / "rollouts").glob("trial-*"))):
-        execution = json.loads((root / "execution.json").read_text())
-        try:
+    trial_name = ""
+    try:
+        if network is not None:
+            for trial in trials:
+                trial_name = trial["trial"]
+                if trial.get("web_cache_root"):
+                    network.restore(
+                        Path(trial["web_cache_root"]), origin=f"native_solver:{trial_name}",
+                        tool_results=_native_cache_tool_results(trial),
+                    )
+        for root in (() if native_trials is not None else
+                     sorted((output_root / "rollouts").glob("trial-*"))):
+            trial_name = root.name
+            execution = json.loads((root / "execution.json").read_text())
             tool_events = load_tool_results(root, execution["tool_events"])
-        except ValueError as exc:
-            review = {
-                "decision": "BLOCKED", "failure_kind": "TRACE_UNAVAILABLE",
-                "errors": ["TOOL_TRACE_UNAVAILABLE"], "trial": root.name,
-                "error_detail": str(exc),
+            if network is not None and any(
+                    event.get("name") in {"web_search", "web_open"} for event in tool_events):
+                network.restore(root / "web", origin=f"solver:{root.name}", tool_results=tool_events)
+            solver_sources = {
+                item["evidence_ref_id"]: {key: item[key] for key in (
+                    "evidence_ref_id", "url", "query", "source_ref", "content_kind",
+                ) if key in item}
+                for item in json.loads((root / "input.json").read_text())["evidence"]
             }
-            _save(output_root / "researcher-review/validation.json",
-                  {"status": "TRACE_UNAVAILABLE", **review})
-            _save(output_root / "researcher-review.json", review)
-            return review
-        solver_sources = {
-            item["evidence_ref_id"]: {key: item[key] for key in (
-                "evidence_ref_id", "url", "query", "source_ref", "content_kind",
-            ) if key in item}
-            for item in json.loads((root / "input.json").read_text())["evidence"]
+            trials.append({
+                "trial": root.name, "answer": (root / "answer.md").read_text(encoding="utf-8"),
+                "receipt": json.loads((root / "receipt.json").read_text()),
+                "tool_events": tool_events,
+                "read_evidence_calls": [
+                    {**event.get("arguments", {}), "ok": event.get("ok"),
+                     "source": solver_sources.get(event.get("arguments", {}).get("id"), {})}
+                    for event in tool_events if event.get("name") == "read_evidence"
+                ],
+            })
+    except ValueError as exc:
+        review = {
+            "decision": "BLOCKED", "failure_kind": "TRACE_UNAVAILABLE",
+            "errors": ["TOOL_TRACE_UNAVAILABLE"], "trial": trial_name, "error_detail": str(exc),
         }
-        trials.append({
-            "trial": root.name, "answer": (root / "answer.md").read_text(encoding="utf-8"),
-            "receipt": json.loads((root / "receipt.json").read_text()),
-            "tool_events": tool_events,
-            "read_evidence_calls": [
-                {**event.get("arguments", {}), "ok": event.get("ok"),
-                 "source": solver_sources.get(event.get("arguments", {}).get("id"), {})}
-                for event in tool_events if event.get("name") == "read_evidence"
-            ],
-        })
+        _save(output_root / "researcher-review/validation.json",
+              {"status": "TRACE_UNAVAILABLE", **review})
+        _save(output_root / "researcher-review.json", review)
+        return review
     request = {
         "current_stage_instruction": (
             "补全和真实 rollout 已结束，现在复核 trials 中的实际读取与回答。"
@@ -385,13 +440,104 @@ def _review_search_rollouts(
     return review
 
 
+def save_search_checkpoint(
+    *, source: dict[str, Any], task: dict[str, Any], session: AgentSession,
+    network: SearchTools, output_root: Path,
+) -> Path:
+    """为已返回的研究员阶段保存独立快照；中断不能破坏上一有效检查点。"""
+    snapshots = output_root / "researcher-checkpoint"
+    snapshots.mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix="stage-", dir=snapshots))
+    _save(root / "conversation.json",
+          session.conversation.messages if session.conversation is not None else [])
+    web = root / "web"
+    web.mkdir(exist_ok=True)
+    for url, page in network.pages.items():
+        _save(web / (hashlib.sha256(url.encode()).hexdigest() + ".json"), page)
+    (web / "calls.jsonl").write_text(
+        "".join(json.dumps(call, ensure_ascii=False) + "\n" for call in network.calls),
+        encoding="utf-8",
+    )
+    network_root = getattr(network, "root", output_root / "completion/web")
+    for path in [*network_root.glob("*.raw"), *network_root.glob("*.pdf")]:
+        shutil.copyfile(path, web / path.name)
+    manifest = {
+        "schema_version": "traceforge.search-checkpoint.v1",
+        "source_sha256": source.get("line_sha256"), "task_id": task["task_id"],
+        "task_sha256": hashlib.sha256(
+            json.dumps(task, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
+        "files": {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in [root / "conversation.json", *web.iterdir()] if path.is_file()},
+    }
+    _save(root / "checkpoint.json", manifest)
+    return root / "checkpoint.json"
+
+
+def _restore_search_checkpoint(
+    checkpoint: Path, *, source: dict[str, Any], task: dict[str, Any], network: SearchTools,
+) -> AgentConversation:
+    try:
+        manifest = json.loads(checkpoint.read_text())
+        task_hash = hashlib.sha256(
+            json.dumps(task, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        if (manifest.get("schema_version") != "traceforge.search-checkpoint.v1"
+                or manifest.get("source_sha256") != source.get("line_sha256")
+                or manifest.get("task_id") != task["task_id"]
+                or manifest.get("task_sha256") != task_hash):
+            raise ValueError(f"检查点不属于当前原会话和任务：{checkpoint}")
+        files = manifest.get("files")
+        if (not isinstance(files, dict) or "conversation.json" not in files
+                or "web/calls.jsonl" not in files):
+            raise ValueError(f"检查点缺少会话或检索文件绑定：{checkpoint}")
+        for name, digest in files.items():
+            path = Path(name)
+            if path.is_absolute() or ".." in path.parts:
+                raise ValueError(f"检查点含非相对内部路径：{name}")
+            if name == "conversation.json" and hashlib.sha256(
+                    (checkpoint.parent / path).read_bytes()).hexdigest() != digest:
+                raise ValueError(f"检查点文件哈希不匹配：{name}")
+        actual = {str(path.relative_to(checkpoint.parent))
+                  for path in (checkpoint.parent / "web").iterdir() if path.is_file()}
+        if actual != {name for name in files if name.startswith("web/")}:
+            raise ValueError(f"检查点检索文件清单不匹配：{checkpoint}")
+        messages = json.loads((checkpoint.parent / "conversation.json").read_text())
+        if not isinstance(messages, list):
+            raise ValueError(f"检查点会话不是消息列表：{checkpoint}")
+        original = indexed_session(source["raw_session"])
+        source_present = False
+        for message in messages:
+            if not isinstance(message, dict):
+                raise ValueError(f"检查点会话含无效消息：{checkpoint}")
+            if message.get("role") != "user":
+                continue
+            try:
+                payload = json.loads(message_text(message))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict) and payload.get("SOURCE_SESSION") == original:
+                source_present = True
+                break
+        if not source_present:
+            raise ValueError(f"检查点会话没有当前完整 SOURCE_SESSION：{checkpoint}")
+        network.restore(
+            checkpoint.parent / "web", origin="researcher_checkpoint",
+            checkpoint_files={name.removeprefix("web/"): digest
+                              for name, digest in files.items() if name.startswith("web/")},
+        )
+        return AgentConversation(messages=messages)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"研究员检查点恢复失败：{checkpoint}（{exc}）") from exc
+
+
 def run_search_task(
     *, source: dict[str, Any], task: dict[str, Any], agent: AgentRuntime,
     output_root: Path, rollout_agent: AgentRuntime | None = None,
     rollout_trials: int = 2, rollout_max_iterations: int = 80,
     initial_feedback: dict[str, Any] | None = None,
     verification_config: VerificationConfig | None = None,
+    checkpoint_path: Path | None = None,
 ) -> dict[str, Any]:
+    """检查点只恢复研究员会话和真实来源，随后重新进入同一任务的环境补全。"""
     original_session = indexed_session(source["raw_session"])
     messages = source["raw_session"].get("messages", [])
     records = captured_evidence(source)
@@ -423,8 +569,11 @@ def run_search_task(
                      if message.get("role") == "user" and (task_indices is None or i in task_indices)),
                     default=-1)
     network = SearchTools(output_root / "completion" / "web")
+    conversation = (AgentConversation() if checkpoint_path is None else
+                    _restore_search_checkpoint(
+                        checkpoint_path, source=source, task=task, network=network))
     session = AgentSession(
-        conversation=AgentConversation(), evidence=records,
+        conversation=conversation, evidence=records,
         session_context=json.dumps(source["raw_session"], ensure_ascii=False),
         web_search_handler=network.search, web_open_handler=network.open,
     )
@@ -460,6 +609,17 @@ def run_search_task(
         "inline_original_observations": inline_observations,
         "events": events,
     }, ensure_ascii=False)
+    if checkpoint_path is not None:
+        instruction = json.dumps({
+            "current_stage_instruction": "继续同一原任务的环境补全；完整原轨迹已在恢复会话中，"
+            "使用已恢复真实缓存，历史成功不证明当前在线可用。不重新回答原任务。",
+            "task": task, "reconstruction_feedback": initial_feedback or {},
+            "restored_reference_catalog": [
+                {"url": url, "title": page.get("title"), "content_kind": page.get("content_kind"),
+                 "retrieved_at": page.get("retrieved_at"), "total_chars": len(page["text"])}
+                for url, page in network.pages.items()
+            ],
+        }, ensure_ascii=False)
     seen_environments: set[str] = set()
     rounds = []
     while True:
@@ -469,11 +629,14 @@ def run_search_task(
             instruction=instruction, output_root=round_root, inline_observations=inline_observations,
             inline_returns=inline_returns,
         )
+        checkpoint = save_search_checkpoint(
+            source=source, task=task, session=session, network=network, output_root=output_root)
         errors = environment["errors"]
         outcome = {"task_id": task["task_id"], "status": "ENVIRONMENT_READY",
                    "domain_route": "retrieval", "errors": errors, "rollouts": [],
                    "acceptance": "NOT_ASSESSED", "environment_review": "AUTHOR_REVIEWED",
-                   "environment_path": str(round_root / "environment.json")}
+                   "environment_path": str(round_root / "environment.json"),
+                   "researcher_checkpoint": str(checkpoint)}
         if errors:
             outcome.update(status="BLOCKED", stopped_at="search_completion",
                            environment_review="NOT_READY", missing_inputs=environment["missing_inputs"])
@@ -507,8 +670,10 @@ def run_search_task(
             break
         review = _review_search_rollouts(
             task=task, environment=environment, agent=agent, session=session, output_root=round_root,
-            native_trials=native_trials,
+            native_trials=native_trials, network=network,
         )
+        save_search_checkpoint(
+            source=source, task=task, session=session, network=network, output_root=output_root)
         rounds.append({"output_root": str(round_root), "review": review})
         outcome["researcher_rounds"] = rounds
         outcome["environment_review"] = (

@@ -8,6 +8,7 @@ import io
 import ipaddress
 import json
 import os
+import shutil
 import socket
 import urllib.error
 import urllib.parse
@@ -236,11 +237,141 @@ class SearchTools:
             value = {"success": False, "url": url, "error": f"{type(exc).__name__}: {exc}"}
         return self._record("web_open", {**value, "cache_hit": cache_hit})
 
+    def restore(
+        self, root: Path, *, origin: str,
+        tool_results: list[dict[str, Any]] | None = None,
+        checkpoint_files: dict[str, str] | None = None,
+    ) -> None:
+        """恢复真实快照及调用；导入 solver 时必须绑定完整工具回执。"""
+        try:
+            if tool_results is None:
+                if checkpoint_files is None:
+                    raise ValueError("恢复须提供完整工具回执或已绑定的检查点文件清单")
+                actual_files = {path.name for path in root.iterdir() if path.is_file()}
+                if actual_files != set(checkpoint_files):
+                    raise ValueError(f"检查点检索文件清单不匹配：{root}")
+                for name, digest in checkpoint_files.items():
+                    if Path(name).name != name:
+                        raise ValueError(f"检查点检索文件不是内部文件名：{name}")
+                    if hashlib.sha256((root / name).read_bytes()).hexdigest() != digest:
+                        raise ValueError(f"检查点检索文件哈希不匹配：{name}")
+            calls = [json.loads(line) for line in (root / "calls.jsonl").read_text().splitlines()]
+            pages = {}
+            raw_files = list(root.glob("*.raw")) + list(root.glob("*.pdf"))
+            for path in raw_files:
+                if hashlib.sha256(path.read_bytes()).hexdigest() != path.name.split(".")[0]:
+                    raise ValueError(f"原始抓取哈希不匹配：{path}")
+            bindings = []
+            if tool_results is not None:
+                returned = []
+                for event in tool_results:
+                    if event.get("name") not in {"web_open", "web_search"}:
+                        continue
+                    result = event.get("result")
+                    if (not isinstance(result, str)
+                            or hashlib.sha256(result.encode()).hexdigest()
+                            != event.get("result_sha256")):
+                        raise ValueError(f"检索完整工具回执哈希不匹配：{origin}")
+                    returned.append(json.loads(result))
+                    bindings.append({
+                        "tool_call_id": event["tool_call_id"],
+                        "tool_result_sha256": event["result_sha256"],
+                        **{key: event[key] for key in ("native_result_sha256", "native_tool_name")
+                           if key in event},
+                    })
+                if calls != returned:
+                    raise ValueError(f"检索缓存调用与完整工具回执不匹配：{origin}")
+            for path in root.glob("*.json"):
+                page = json.loads(path.read_text())
+                url = page.get("url")
+                if (not isinstance(url, str) or not isinstance(page.get("text"), str)
+                        or not page.get("success")
+                        or path.name != hashlib.sha256(url.encode()).hexdigest() + ".json"):
+                    raise ValueError(f"检索页面缓存无效：{path}")
+                digest = page.get("raw_sha256")
+                raw_path = root / f"{digest}.raw"
+                if page.get("provider") == "direct_pdf":
+                    raw_path = root / f"{digest}.pdf"
+                if not raw_path.is_file():
+                    raise ValueError(f"检索原始抓取缺失：{raw_path}")
+                if page.get("content_kind") == "page_text":
+                    data = json.loads(raw_path.read_bytes())
+                    text = data.get("text") if page.get("provider") == "serper" else (
+                        data.get("data") or {}).get("content")
+                    if text != page["text"]:
+                        raise ValueError(f"缓存正文与原始抓取不一致：{path}")
+                    if page.get("provider") == "serper" and "jsonld" in data:
+                        page["jsonld"] = data["jsonld"]
+                existing = self.pages.get(url)
+                fields = ("text", "metadata", "jsonld", "content_kind", "source_ref")
+                if existing and any(existing.get(key) != page.get(key) for key in fields):
+                    raise ValueError(f"同一来源快照内容冲突：{url}（{origin}）")
+                pages[url] = page
+            for call in calls:
+                if not isinstance(call, dict) or call.get("tool") not in {"web_open", "web_search"}:
+                    raise ValueError(f"检索调用缓存无效：{origin}")
+                if not call.get("success"):
+                    continue
+                digest = call.get("raw_sha256")
+                if not any(path.name == f"{digest}.raw" or path.name == f"{digest}.pdf"
+                           for path in raw_files):
+                    raise ValueError(f"检索调用原始抓取缺失：{origin}，{digest}")
+                if call["tool"] == "web_search":
+                    raw_search = json.loads((root / f"{digest}.raw").read_bytes())
+                    if raw_search.get("organic") != call.get("results"):
+                        raise ValueError(f"检索摘要与原始抓取不一致：{origin}")
+                if call["tool"] == "web_open":
+                    page = pages.get(call.get("url"))
+                    offset = call.get("offset")
+                    if (page is None or type(offset) is not int or offset < 0
+                            or not isinstance(call.get("text"), str)
+                            or call.get("total_chars") != len(page["text"])
+                            or call.get("text") != page["text"][offset:offset + len(call["text"])]):
+                        raise ValueError(f"检索实际分页与缓存正文不一致：{origin}")
+            for url, page in pages.items():
+                restored = dict(page)
+                provenance = [
+                    *(self.pages.get(url, {}).get("cache_provenance") or []),
+                    *(page.get("cache_provenance") or []),
+                    {"origin": origin, "raw_sha256": page["raw_sha256"],
+                     "retrieved_at": page.get("retrieved_at")},
+                ]
+                restored["cache_provenance"] = []
+                for item in provenance:
+                    if item not in restored["cache_provenance"]:
+                        restored["cache_provenance"].append(item)
+                if url in self.pages:
+                    restored = {**self.pages[url], "cache_provenance": restored["cache_provenance"]}
+                self.pages[url] = restored
+                filename = hashlib.sha256(url.encode()).hexdigest() + ".json"
+                (self.root / filename).write_text(
+                    json.dumps(restored, ensure_ascii=False, indent=2), encoding="utf-8",
+                )
+            for path in raw_files:
+                if path.resolve() != (self.root / path.name).resolve():
+                    shutil.copyfile(path, self.root / path.name)
+            for index, call in enumerate(calls):
+                history = list(call.get("restore_history") or [])
+                if origin not in history:
+                    history.append(origin)
+                self.calls.append({
+                    **call, **(bindings[index] if bindings else {}),
+                    "restored": True, "restored_from": call.get("restored_from", origin),
+                    "restore_history": history,
+                })
+            (self.root / "calls.jsonl").write_text(
+                "".join(json.dumps(call, ensure_ascii=False) + "\n" for call in self.calls),
+                encoding="utf-8",
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"检索状态恢复失败：{root}（{exc}）") from exc
+
     def ready(self) -> bool:
         """分别核对最近实际查询和抓取；缓存命中不能证明当前服务可用。"""
         latest = {
             kind: next((call for call in reversed(self.calls)
-                        if call.get("tool") == kind and not call.get("cache_hit")), {})
+                        if call.get("tool") == kind and not call.get("cache_hit")
+                        and not call.get("restored")), {})
             for kind in ("web_search", "web_open")
         }
         return bool(latest["web_search"].get("success")
