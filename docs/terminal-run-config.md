@@ -13,7 +13,7 @@ R01 使用 search，R04 使用 terminal。会话未结束、工具返回缺失�
 
 ```yaml
 roles:
-  {"session_parser":{"channel":"deepseek","model":"bailian/deepseek-v4-flash-0731"},"reconstruction":{"channel":"gpt","model":"gpt-5"},"verifier":{"channel":"gpt","model":"gpt-5"},"rollout":{"channel":"claude","model":"anthropic/claude-opus-4-8/awsb_L/sfa"}}
+  {"session_parser":{"channel":"deepseek","model":"bailian/deepseek-v4-flash-0731"},"reconstruction":{"channel":"gpt","model":"gpt-5"},"verifier":{"channel":"gpt","model":"gpt-5"},"rollout":{"channel":"claude","model":"claude-opus-4-8/awsb_L/sfa"}}
 ```
 
 这组值表示当前 terminal 运行矩阵：
@@ -23,13 +23,15 @@ roles:
 | session_parser | deepseek | `bailian/deepseek-v4-flash-0731` | Replay 前理解工具语义和返回引用；此角色有默认值，可在 roles 中覆盖 |
 | reconstruction | gpt | `gpt-5` | Intent、Completion、Sufficiency 和编排代理 |
 | verifier | gpt | `gpt-5` | 生成隐藏 pytest 和 RED 证据 |
-| rollout | claude | `anthropic/claude-opus-4-8/awsb_L/sfa` | Harbor 解题复验；必须与 reconstruction 模型不同 |
+| rollout | claude | `claude-opus-4-8/awsb_L/sfa` | Harbor 解题复验；必须与 reconstruction 模型不同 |
 
 roles 中的 model 是网关的完整模型 ID，斜杠和路由后缀原样保留。
 转接 Harbor 时另外加一层 provider；例如上面的 rollout 在 Harbor 计划中为
-anthropic/anthropic/claude-opus-4-8/awsb_L/sfa，实际发给网关的仍是
-anthropic/claude-opus-4-8/awsb_L/sfa。CLI 显式 --rollout-model 接受 Harbor 的
-provider/model；需要上述同一模型时应包含两层前缀。
+`anthropic/claude-opus-4-8/awsb_L/sfa`，实际发给网关的是
+`claude-opus-4-8/awsb_L/sfa`。CLI 显式 `--rollout-model` 已接受 Harbor 的
+`provider/model`，传该计划值即可，不再自动加前缀。不要把 Harbor 计划值填入 roles.model。
+只有网关本身的完整 ID 确实以 provider 名开头时，外层计划才会出现重复前缀；
+适配器不会猜测或删除合法网关别名。
 
 实际报告中的 `roles` 只包含 role/channel/model，不包含 key。CLI 的 `--channel`、`--model-name`、`--verifier-channel`、`--verifier-model`、`--rollout-channel`、`--rollout-model` 只做显式覆盖，覆盖值不会写入配置。
 

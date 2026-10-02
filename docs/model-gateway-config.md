@@ -24,6 +24,26 @@ gemini:
 
 如果网关返回 HTTP 503，应先检查 channel 路由、模型名和服务状态；客户端保留 HTTP 状态及服务返回的 error.code/message/param，限制诊断长度并移除本次部署密钥；不复制整段响应正文。真实调试中的模型名错误、输出预算超限因此能直接定位。
 
+## 模型 ID 与 Harbor provider 的边界
+
+`roles.<role>.model` 是请求实际发给网关的完整模型 ID，不是 Harbor 的
+`provider/model`。原样保留网关路由后缀；转接 Harbor 时由运行器另外加 provider。
+显式 `--rollout-model` 则已是 Harbor ID，不再加一层。
+
+本项目 Claude 配置的对应关系为：
+
+| 配置位置 | 值 |
+| --- | --- |
+| roles.rollout.channel | `claude` |
+| roles.rollout.model / 实际请求 model | `claude-opus-4-8/awsb_L/sfa` |
+| Harbor plan / 显式 --rollout-model | `anthropic/claude-opus-4-8/awsb_L/sfa` |
+
+2026-10-02 原生 run05 精确保留错误配置的 `anthropic/claude-opus-4-8/awsb_L/sfa`
+作为网关 ID，实际返回 HTTP 503 `No available channel`；旧 run04 曾在 Hermes
+额外移除前缀后成功。修复应更正角色配置，不能依赖客户端静默改写模型别名。
+原生适配器保持最终请求的 model 字面值，且使用非流式响应；配置正确仍需真实请求验证。
+若其他网关的合法 ID 自身含 `anthropic/`，仍须完整保留，不能套用全局去前缀规则。
+
 ## Astra 的实际接入
 
 2026-10-01 的 TokenHub 实测可用 ID 为 `gpt-6-astra/azure/sfa`，响应报告
