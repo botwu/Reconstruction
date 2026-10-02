@@ -116,7 +116,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
     pdf_dependencies = [f"{item['name']}=={item['version']}"
                         for item in dependency_lock.get("wheels", [])]
     digest = hashlib.sha256(json.dumps({
-        "search_delivery_version": 9, "pdf_dependencies": pdf_dependencies,
+        "search_delivery_version": 10, "pdf_dependencies": pdf_dependencies,
         "dependency_sources": dependency_lock,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),
@@ -143,6 +143,13 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
             "可使用 Python 读取 JSON：captures 中的 result_blocks 和 session_parse 保存原始观察；"
             "live_references 中的 results/text 保存补全时取得的检索返回与源码或网页正文，"
             "按 url、title、source_ref 定位并核对所需内容。"
+            "用户确实依赖的原会话历史回答或方案是任务输入，用于恢复已有文献、比较或执行对象；"
+            "当前待解任务的答案或草稿，以及重建生成的 solver/rollout 答卷与复核意见不属于初态，"
+            "不能与必要历史输入混淆。"
+            "历史 AI 陈述和搜索题录或摘要应按各自实际范围使用，出版事实须对照同一文献实际取得的"
+            "出版元数据、JSON-LD 作者关系或正文署名（live_references 的 metadata/jsonld/text）；"
+            "不能把正文参考文献作者归给当前论文、仅凭单值 citation_author 断言署名完整，"
+            "或把访问成功当成未读内容已核实。"
             "文件路径和行号来自原始观察；公开上游版本与原仓库分开引用，未捕获不等于不存在。"
             "按原任务要求给出最终回答，Harbor 会保存执行轨迹。\n"
         )

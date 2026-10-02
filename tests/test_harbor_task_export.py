@@ -243,3 +243,29 @@ def test_native_harbor_collects_web_cache_from_convention_directory(tmp_path):
     assert downloads == ["/logs/artifacts", "/home/user/workspace"]
     assert (target / "logs/artifacts/search/source.raw").read_bytes() == b"captured-source"
     assert (target / "logs/artifacts/search/calls.jsonl").read_text() == '{"tool":"web_open"}\n'
+
+
+def test_search_guidance_preserves_history_and_publication_evidence(tmp_path):
+    source = search_environment()
+    source["requires_live_web"] = False
+    source["captures"][0]["result_text"] = "【AI】已有清单：作者甲的论文及既有分析。"
+    source["live_references"][0].update(
+        metadata={"citation_author": "单值作者"},
+        jsonld={"author": [{"@id": "作者关系"}]},
+    )
+    original = json.loads(json.dumps(source))
+    task = export_search_task(source, tmp_path)
+    instruction = (task / "instruction.md").read_text()
+
+    assert "用户确实依赖的原会话历史回答或方案是任务输入" in instruction
+    assert "当前待解任务的答案或草稿" in instruction
+    assert "重建生成的 solver/rollout 答卷与复核意见" in instruction
+    assert "历史 AI 陈述和搜索题录或摘要" in instruction
+    assert "出版元数据、JSON-LD 作者关系或正文署名" in instruction
+    assert "参考文献作者" in instruction
+    evidence = json.loads((task / "workspace/evidence.json").read_text())
+    assert evidence == {key: original[key] for key in ("captures", "live_references")}
+    assert source == original
+    assert "必须取得全文" not in instruction
+    assert "作者甲" not in instruction
+    assert "单值作者" not in instruction
