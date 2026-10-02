@@ -270,6 +270,10 @@ def _shared_footer(
         "目标文件也可能需要补全初态上下文；禁止的是提前实现目标改动，而不是禁止补全同一文件。",
         "所需上下文和依赖由原用户目标决定；功能实现任务需要相关源码和依赖可加载。"
         "修复采集乱码、截断、占位符是你的职责；新增目标功能是 solver 的职责。",
+        "任务必需源码的 load 检查必须输出 module.__file__ 和实际正文 SHA256，"
+        "并断言加载的是候选预期路径。",
+        "安装库成功只能证明该依赖可用，不能证明同名原路径完整；"
+        "需要安装库时明确其位置、版本、哈希与原路径的片段范围。",
         CAPTURE_REPAIR_GUIDANCE,
         "If TASK asks to add/change a node, API, config, test, or behavior, leave that change absent; Verifier must test it later.",
         "Do not treat a task acceptance path as permission to implement it. Existing PARTIAL content is pre-task context only.",

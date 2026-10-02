@@ -115,3 +115,56 @@ def test_source_excerpt_index_allows_direct_read_of_later_range(tmp_path: Path) 
     assert "2000: source-2000" in text
     assert "2100: source-2100" in text
     assert "continued; use offset" not in text
+
+
+def test_replayed_provenance_locates_all_observed_ranges(tmp_path: Path) -> None:
+    replay, workspace = _materialize(tmp_path, [
+        _read("first", 3, 4, 10), _read("later", 8, 9, 10),
+    ])
+    manifest = json.loads((workspace.parent / "env_manifest.json").read_text())
+    row = manifest["provenance"][replay.files[0].path]
+    assert row["replay_completeness"] == "PARTIAL"
+    index = json.loads((workspace / row["source_excerpts_ref"]).read_text())
+    source = next(item for item in index["files"] if item["path"] == replay.files[0].path)
+    segments = source["segments"]
+    assert [(item["line_start"], item["line_end"]) for item in segments] == [(3, 4), (8, 9)]
+    assert (workspace / replay.files[0].path).read_text() == "source-3\nsource-4\n"
+    assert "8: source-8" in (workspace / segments[1]["excerpt_path"]).read_text()
+
+
+def test_completed_candidate_keeps_original_observation_scope(tmp_path: Path) -> None:
+    timeline = [_read("first", 3, 4, 6), _read("later", 5, 6, 6)]
+    replay = replay_from_timeline(timeline)
+    content = "\n".join(f"source-{n}" for n in range(1, 7)) + "\n"
+    manifest = materialize_environment(
+        replay, {"files": [{
+            "path": replay.files[0].path, "content": content,
+            "evidence_ref_ids": ["first", "later"],
+        }], "decision": "READY"}, tmp_path / "env", evidence_refs={"first", "later"},
+    )
+    row = manifest["provenance"][replay.files[0].path]
+    assert row["kind"] == "MODEL_COMPLETED"
+    assert row["replay_completeness"] == "PARTIAL"
+    workspace = tmp_path / "env/workspace"
+    assert (workspace / replay.files[0].path).read_text() == content
+    index = json.loads((workspace / row["source_excerpts_ref"]).read_text())
+    assert index["files"][0]["missing_line_ranges"] == [[1, 2]]
+
+
+def test_conflicting_observations_have_no_fabricated_source_reference(tmp_path: Path) -> None:
+    replay, workspace = _materialize(tmp_path, [
+        _read("first", 1, 2, 4), _read("conflict", 2, 3, 4, body="2#AB:DIFFERENT\n3#AB:source-3"),
+    ])
+    manifest = json.loads((workspace.parent / "env_manifest.json").read_text())
+    row = manifest["provenance"][replay.files[0].path]
+    assert row["replay_completeness"] == "PARTIAL"
+    assert "source_excerpts_ref" not in row
+    assert not (workspace / ".traceforge/source-excerpts.json").exists()
+
+
+def test_complete_provenance_does_not_imply_missing_excerpts(tmp_path: Path) -> None:
+    replay, workspace = _materialize(tmp_path, [_read("full", 1, 2, 2)])
+    manifest = json.loads((workspace.parent / "env_manifest.json").read_text())
+    row = manifest["provenance"][replay.files[0].path]
+    assert row["replay_completeness"] == "COMPLETE"
+    assert "source_excerpts_ref" not in row

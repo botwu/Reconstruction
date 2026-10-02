@@ -23,7 +23,7 @@ from traceforge.reconstruction.workspace_integrity import (
 )
 
 SUFFICIENCY_SCHEMA = "traceforge.workspace-sufficiency.v1"
-SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v14-source-fidelity"
+SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v15-load-origin"
 
 
 def run_workspace_sufficiency(
@@ -97,6 +97,10 @@ def run_workspace_sufficiency(
             "如果探针自身包含不稳定信息，应在当前环境修正探针并重跑，不要求作者修改源码消除测试耗时或文件时间戳。",
             "实现功能的任务需要实际加载相关源码与依赖，不能用文件存在、源码可读或字符串匹配代替。"
             "确认原有入口能工作，再把缺失的目标功能留给 solver。"
+            "任务必需源码的 load 检查必须输出 module.__file__ 和该文件实际正文 SHA256，"
+            "并断言加载的是候选预期路径；仅调整 sys.path 不证明加载来源。"
+            "安装库成功只能证明该依赖可用，不能证明同名原路径完整；确需使用安装库时说明其"
+            "位置、版本、哈希和原路径的片段范围，不能用它豁免任务必需源码的恢复缺口。"
             "语法损坏若阻碍必要入口加载，属于重建缺口；不能以用户没有要求运行测试为由豁免。",
             "根据用户任务选择必要的探测能力。只读源码审查、分析或报告任务应验证必要源码可读、所需分析工具可用、"
             "以及独立临时目录中的报告写入可重复；不应因没有 Cargo.toml 等构建入口而强求整个项目可以编译。"

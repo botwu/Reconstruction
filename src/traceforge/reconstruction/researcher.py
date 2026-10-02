@@ -321,6 +321,8 @@ class ReconstructionRuntime:
                         + ", ".join(sorted(missing))
                         + "。这是当前检查步骤未完成，不是要求作者修改源码。保持只读，使用工具补齐这些检查，"
                         "若此前检查了被你判定无关的文件，应纠正检查范围，实际调用任务需要的原有入口。"
+                        "源码 load 检查输出 module.__file__ 和实际正文 SHA256，并断言候选预期路径；"
+                        "安装库成功不能证明同名原路径完整，不能用它豁免任务相关片段缺口。"
                         "依据真实结果返回完整 JSON；environment_checks 仅列 load/reset/dependency，引用有效 probe_id。"
                         "若发现真实源码缺口则明确返回 INSUFFICIENT；不得只再次声明未检查。"
                     )

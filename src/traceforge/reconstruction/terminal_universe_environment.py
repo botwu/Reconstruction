@@ -674,6 +674,7 @@ def materialize_environment(
     if not ok:
         raise EnvironmentReconstructionError(";".join(errors))
     excerpts, excerpt_texts = _public_source_excerpts(replay, evidence_refs)
+    excerpt_paths = {item["path"] for item in excerpts["files"]}
     root = Path(destination)
     if root.exists():
         shutil.rmtree(root)
@@ -690,6 +691,8 @@ def materialize_environment(
             "kind": "REPLAYED",
             "evidence_ref_ids": [item.first_observation_event_id],
             "content_sha256": item.content_sha256,
+            "replay_completeness": item.completeness,
+            **({"source_excerpts_ref": SOURCE_EXCERPTS_PATH} if item.path in excerpt_paths else {}),
         }
     for item in candidate.get("files", []):
         path = _safe_path(str(item["path"]))
@@ -700,6 +703,7 @@ def materialize_environment(
         if kind not in {"MODEL_COMPLETED", "SYNTHETIC_STUB", "NEIGHBOR"}:
             kind = "MODEL_COMPLETED"
         provenance[path] = {
+            **provenance.get(path, {}),
             "kind": kind,
             "evidence_ref_ids": list(item.get("evidence_ref_ids", [])),
             "content_sha256": hashlib.sha256(item["content"].encode("utf-8")).hexdigest(),
