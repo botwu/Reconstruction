@@ -12,15 +12,32 @@ from typing import Any
 from traceforge.reconstruction.python_runtime import freeze_wheels, validate_python_runtime
 from traceforge.trajectory.artifacts import ArtifactWorkspace, write_json_artifact
 
-CONTAINER_VERSION = "traceforge.harbor-container.v3"
-WORKSPACE_SNAPSHOT_HOOK = (
-    "# TraceForge workspace snapshot hook\n"
-    "[[verifier.collect]]\n"
-    'command = "set -eu; rm -rf /logs/artifacts/traceforge/workspace; '
-    "mkdir -p /logs/artifacts/traceforge/workspace; "
-    'cp -a /home/user/workspace/. /logs/artifacts/traceforge/workspace/"\n'
-    'service = "main"\nuser = "root"\ntimeout_sec = 120.0\n'
-)
+CONTAINER_VERSION = "traceforge.harbor-container.v4"
+
+
+def workspace_snapshot_hook(task: Path) -> str:
+    """在同一收集命令中绑定初态及已声明输出，排除范围不依赖模型猜测。"""
+    initial = sorted(path.relative_to(task / "workspace").as_posix()
+                     for path in (task / "workspace").rglob("*"))
+    manifest = task / "tests/control/input-manifest.json"
+    acceptance = json.loads(manifest.read_text()).get("task_acceptance", {}) if manifest.is_file() else {}
+    outputs = sorted({str(Path(path).as_posix()).rstrip("/")
+                      for binding in acceptance.get("environment_bindings", [])
+                      for path in binding.get("output_paths", [])})
+    code = Path(__file__).with_name("workspace_snapshot.py").read_text()
+    code += (
+        "\ncollect_workspace(Path('/home/user/workspace'), "
+        "Path('/logs/artifacts/traceforge/workspace'), "
+        f"initial_paths={initial!r}, output_paths={outputs!r})\n"
+    )
+    command = "python3 - <<'TRACEFORGE_SNAPSHOT'\n" + code + "TRACEFORGE_SNAPSHOT"
+    return (
+        "# TraceForge workspace snapshot hook v2\n[[verifier.collect]]\n"
+        f"command = {json.dumps(command, ensure_ascii=False)}\n"
+        'service = "main"\nuser = "root"\ntimeout_sec = 120.0\n'
+    )
+
+
 _BASE = """RUN apt-get update && apt-get install -y --no-install-recommends \\
     bash ca-certificates curl git ripgrep && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 1000 user \\

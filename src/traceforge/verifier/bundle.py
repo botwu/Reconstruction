@@ -11,7 +11,7 @@ from typing import Any
 from traceforge.harbor_ags.adapter import validate_bundle_layout
 from traceforge.harbor_task import (
     CONTAINER_VERSION,
-    WORKSPACE_SNAPSHOT_HOOK,
+    workspace_snapshot_hook,
     write_container_environment,
 )
 from traceforge.reconstruction.python_runtime import RUNTIME_NAME, validate_python_runtime
@@ -24,7 +24,7 @@ from traceforge.trajectory.artifacts import (
 
 from .synthesis import VerifierCandidate, is_python_solution, validate_solution_scripts
 
-_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v9-file-semantics"
+_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v10-safe-snapshot"
 
 
 def _make_workspace_solver_writable(workspace: Path) -> None:
@@ -206,7 +206,7 @@ def compile_bundle(
             '[agent]\ntimeout_sec = 900.0\nuser = "user"\n'
             '[verifier]\ntimeout_sec = 120.0\nenvironment_mode = "separate"\nuser = "user"\n'
             '[verifier.environment]\nnetwork_mode = "no-network"\n'
-            '[environment]\nos = "linux"\nnetwork_mode = "public"\n' + WORKSPACE_SNAPSHOT_HOOK,
+            '[environment]\nos = "linux"\nnetwork_mode = "public"\n' + workspace_snapshot_hook(root),
             encoding="utf-8",
         )
         (root / "environment/README.md").write_text(

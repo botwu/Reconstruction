@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from traceforge.harbor_task import WORKSPACE_SNAPSHOT_HOOK
+from traceforge.harbor_task import workspace_snapshot_hook
 from traceforge.reconstruction.model_gateway import (
     ModelGatewayError,
     iter_config_items,
@@ -222,11 +222,13 @@ def _ensure_workspace_snapshot_hook(task_toml: Path) -> None:
         raise HarborRolloutError("复制后的 task.toml 无法解析") from exc
     marker_text = "TraceForge workspace snapshot hook"
     if marker_text in raw:
+        if marker_text + " v2" not in raw:
+            raise HarborRolloutError("旧版工作区收集会携带不安全运行时链接；请重新编译任务")
         return
     # Array-of-table must be appended after all existing tables. Inserting it
     # inside [verifier] would re-parent later fields and can create duplicate
     # keys when the hook declares timeout/user itself.
-    rendered = raw.rstrip() + "\n" + WORKSPACE_SNAPSHOT_HOOK
+    rendered = raw.rstrip() + "\n" + workspace_snapshot_hook(task_toml.parent)
     try:
         tomllib.loads(rendered)
     except tomllib.TOMLDecodeError as exc:
