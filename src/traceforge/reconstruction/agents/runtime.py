@@ -131,6 +131,7 @@ class HermesNativeRuntime:
         provider: str = "anthropic",
         api_mode: str | None = None,
         api_max_retries: int | None = None,
+        agent_context_length: int | None = None,
     ) -> None:
         if not model_name.strip():
             raise HermesUnavailableError("Hermes Agent 必须配置 model")
@@ -140,7 +141,12 @@ class HermesNativeRuntime:
             raise HermesUnavailableError("Hermes Agent 必须配置 base_url")
         if api_max_retries is not None and (type(api_max_retries) is not int or api_max_retries < 1):
             raise HermesUnavailableError("Agent API 重试预算必须为正整数")
+        if agent_context_length is not None and (
+            type(agent_context_length) is not int or agent_context_length < 1
+        ):
+            raise HermesUnavailableError("agent_context_length 必须为正整数")
         self.api_max_retries = api_max_retries
+        self.agent_context_length = agent_context_length
         self.factory = factory
         self.base_url = (
             base_url if provider == "anthropic" else openai_sdk_base_url(base_url)
@@ -240,6 +246,19 @@ class HermesNativeRuntime:
                         agent, base_url=self.base_url, api_key=self._api_key
                     )
                 compressor = getattr(agent, "context_compressor", None)
+                if self.agent_context_length is not None:
+                    if not callable(getattr(compressor, "update_model", None)):
+                        raise HermesUnavailableError("Hermes 缺少可配置上下文的原生压缩器")
+                    # 网关别名可能缺少窗口元数据；沿用原生预算更新，不能提前摘要完整轨迹。
+                    compressor.update_model(
+                        model=compressor.model,
+                        context_length=self.agent_context_length,
+                        base_url=compressor.base_url,
+                        api_key=compressor.api_key,
+                        provider=compressor.provider,
+                        api_mode=compressor.api_mode,
+                    )
+                    agent._config_context_length = self.agent_context_length
                 if compressor is not None:
                     # 摘要请求失败时保留消息，由原生有界溢出处理返回错误，不能静默丢弃历史。
                     compressor.abort_on_summary_failure = True
@@ -274,6 +293,11 @@ class HermesNativeRuntime:
                             "policy_errors": list(session.policy_errors),
                             "request_timeout_seconds": request_timeout,
                             "max_output_tokens": role.max_output_tokens,
+                            "agent_context_length": self.agent_context_length,
+                            "resolved_context_length": getattr(compressor, "context_length", None),
+                            "compression_threshold_tokens": getattr(compressor, "threshold_tokens", None),
+                            "compression_threshold_percent": getattr(compressor, "threshold_percent", None),
+                            "compression_count": getattr(compressor, "compression_count", None),
                             "continued_messages": len(history or []),
                         }
                         turns.append(turn)
@@ -405,6 +429,7 @@ def build_hermes_runtime(
         provider=provider or provider_for_channel(channel, model_name),
         api_mode=api_mode,
         api_max_retries=settings.get("agent_api_max_retries"),
+        agent_context_length=settings.get("agent_context_length"),
     )
 
 

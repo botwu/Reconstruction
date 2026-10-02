@@ -42,6 +42,15 @@ NewAPI JSON 请求。未配置时沿用既有通道协议。服务实测接受�
 128000，131072 会被拒绝；输入上下文上限是另一项能力，不能从输出预算推导。
 已真实处理约 6.46 万和 18.99 万输入 token 的完整 session，尚未验证 Astra 的 1M 输入。
 
+Hermes Agent 可在通道连接对象中增加 `"agent_context_length":1000000`，显式声明
+该通道的输入窗口（正整数）；不配时继续采用 Hermes 检测结果。它复用原生压缩器更新窗口、
+压缩阈值与摘要预算，不修改压缩比例。默认比例为 50% 时，1M 配置对应 50 万 token
+的预压缩阈值，避免网关别名被识别为较小窗口而提前摘要完整轨迹。
+每轮 `agent_trace.json` 记录 `agent_context_length`、`resolved_context_length`、
+`compression_threshold_tokens`、`compression_threshold_percent` 和 `compression_count`。
+此配置只控制本地窗口判断，不扩充上游能力；1M 输入仍须真实请求验证。
+独立的 session_parser JSON 请求不使用 Hermes 压缩器，也不受该字段控制。
+
 HTTP 400 等运行失败记录为 `SESSION_TASK_AGENT_FAILED`，保留实际错误；
 只有 Agent 正常返回但任务覆盖/引用不合约时才记录 `SESSION_TASK_REVIEW`。
 协议探针成功不等于重建或 rollout 验收成功，具体实跑见[当前状态](current-status.md)。

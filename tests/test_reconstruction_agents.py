@@ -142,6 +142,99 @@ def test_build_hermes_runtime_reads_config_channel(tmp_path: Path) -> None:
     assert factory.last_kwargs["provider"] == "anthropic"
 
 
+@pytest.mark.parametrize("context_length", [None, 1_000_000])
+def test_channel_context_window_reaches_hermes_and_turn_receipt(
+    tmp_path: Path, context_length: int | None,
+) -> None:
+    from unittest.mock import Mock
+
+    config = tmp_path / "config.yaml"
+    settings = {"url": "https://tokenhub.example/v1", "key": "fixture"}
+    if context_length is not None:
+        settings["agent_context_length"] = context_length
+    config.write_text("gpt:\n  " + json.dumps(settings) + "\n")
+    factory = FakeHermesFactory()
+    compressor = types.SimpleNamespace(
+        model="gpt-test", base_url="https://tokenhub.example/v1",
+        api_key="fixture", provider="custom", api_mode="chat_completions",
+        context_length=256_000, threshold_tokens=128_000,
+        threshold_percent=0.5, compression_count=0,
+    )
+
+    def apply_window(**kwargs):
+        compressor.context_length = kwargs["context_length"]
+        compressor.threshold_tokens = 500_000
+
+    compressor.update_model = Mock(side_effect=apply_window)
+    agents = []
+
+    def create(**kwargs):
+        agent = factory(**kwargs)
+        agent.context_compressor = compressor
+        agent._config_context_length = None
+        agents.append(agent)
+        return agent
+
+    runtime = build_hermes_runtime(
+        model_name="gpt-test", config_path=config, channel="gpt", factory=create,
+    )
+    result = runtime.run(
+        role=INTENT_ROLE, instruction="完整解析轨迹", session=AgentSession(),
+        output_root=tmp_path / "out",
+    )
+    assert result.completed
+    if context_length is not None:
+        compressor.update_model.assert_called_once_with(
+            model="gpt-test", context_length=1_000_000,
+            base_url="https://tokenhub.example/v1", api_key="fixture",
+            provider="custom", api_mode="chat_completions",
+        )
+    else:
+        compressor.update_model.assert_not_called()
+    assert agents[0]._config_context_length == context_length
+    turn = result.turns[0]
+    assert turn["agent_context_length"] == context_length
+    assert turn["resolved_context_length"] == (context_length or 256_000)
+    assert turn["compression_threshold_tokens"] == (500_000 if context_length else 128_000)
+    assert turn["compression_threshold_percent"] == 0.5
+    assert turn["compression_count"] == 0
+    trace = json.loads((tmp_path / "out/private/agent_trace.json").read_text())
+    assert trace["turns"][0]["resolved_context_length"] == turn["resolved_context_length"]
+
+
+@pytest.mark.parametrize("context_length", [True, 0, -1, 1.5, "1000000"])
+def test_channel_rejects_invalid_agent_context_length(tmp_path: Path, context_length) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("gpt:\n  " + json.dumps({
+        "url": "https://tokenhub.example/v1", "key": "fixture",
+        "agent_context_length": context_length,
+    }) + "\n")
+    with pytest.raises(HermesUnavailableError, match="agent_context_length"):
+        build_hermes_runtime(
+            model_name="gpt-test", config_path=config, channel="gpt",
+            factory=FakeHermesFactory(),
+        )
+
+
+def test_configured_context_window_requires_native_compressor(tmp_path: Path) -> None:
+    config = tmp_path / "config.yaml"
+    config.write_text("gpt:\n  " + json.dumps({
+        "url": "https://tokenhub.example/v1", "key": "fixture",
+        "agent_context_length": 1_000_000,
+    }) + "\n")
+    runtime = build_hermes_runtime(
+        model_name="gpt-test", config_path=config, channel="gpt",
+        factory=FakeHermesFactory(),
+    )
+    result = runtime.run(
+        role=INTENT_ROLE, instruction="完整解析轨迹", session=AgentSession(),
+        output_root=tmp_path / "out",
+    )
+    assert not result.completed
+    assert result.errors == ["HermesUnavailableError"]
+    assert result.turns == []
+
+
 def test_anthropic_sdk_base_url_strips_v1() -> None:
     assert anthropic_sdk_base_url("https://tokenhub.sensetime.com/") == (
         "https://tokenhub.sensetime.com/"
