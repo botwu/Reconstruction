@@ -138,7 +138,8 @@ def test_search_setup_uses_its_uploaded_directory(tmp_path, install_exit):
     )
     assert result.returncode == install_exit, result.stderr
     calls = [json.loads(line) for line in log.read_text().splitlines()]
-    assert calls[0][-2:] == ["-r", str(relocated / "requirements.txt")]
+    assert calls[0][-4:] == ["--target", str(relocated / "python"),
+                              "-r", str(relocated / "requirements.txt")]
     assert len(calls) == (3 if install_exit == 0 else 1)
     if install_exit == 0:
         assert calls[-1][-2:] == [
@@ -158,3 +159,26 @@ def test_search_command_follows_its_installed_symlink(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert "search" in result.stdout and "open" in result.stdout
+
+
+def test_search_command_imports_private_dependencies_after_relocation(tmp_path):
+    task = export_search_task(search_environment(), tmp_path / "export")
+    environment = task / "environment"
+    private = environment / "python"
+    private.mkdir()
+    (private / "traceforge_dependency_probe.py").write_text("VALUE = 'private-dependency'\n")
+    (environment / "search_tools.py").write_text(
+        "from traceforge_dependency_probe import VALUE\nprint(VALUE)\n")
+    relocated = tmp_path / "ags relocated environment"
+    environment.rename(relocated)
+    command = relocated / "traceforge-search"
+    command.chmod(0o755)
+    installed = tmp_path / "traceforge-search"
+    installed.symlink_to(command)
+    result = subprocess.run(
+        [str(installed)], capture_output=True, text=True,
+        env={**os.environ, "PATH": str(Path(sys.executable).parent)
+             + os.pathsep + os.environ["PATH"]},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "private-dependency"

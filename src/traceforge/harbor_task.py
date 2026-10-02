@@ -83,7 +83,7 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
 
     pdf_dependencies = [f"{name}=={version(name)}" for name in ("pypdf", "fonttools")] if requires_web else []
     digest = hashlib.sha256(json.dumps({
-        "search_delivery_version": 6, "pdf_dependencies": pdf_dependencies,
+        "search_delivery_version": 7, "pdf_dependencies": pdf_dependencies,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),
     }, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
@@ -140,13 +140,15 @@ def export_search_task(environment: dict[str, Any], output_root: Path) -> Path:
             (root / "environment/traceforge-search").write_text(
                 '#!/bin/sh\nset -eu\n'
                 'script_dir=$(dirname -- "$(readlink -f -- "$0")")\n'
+                'export PYTHONPATH="$script_dir/python${PYTHONPATH:+:$PYTHONPATH}"\n'
                 'exec python3 "$script_dir/search_tools.py" "$@"\n',
                 encoding="utf-8",
             )
             (root / "environment/setup.sh").write_text(
                 '#!/bin/sh\nset -eu\n'
                 'script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\n'
-                'python3 -m pip install --no-cache-dir -r "$script_dir/requirements.txt"\n'
+                'python3 -m pip install --no-cache-dir --target "$script_dir/python" '
+                '-r "$script_dir/requirements.txt"\n'
                 'chmod 755 "$script_dir/traceforge-search"\n'
                 'ln -sf "$script_dir/traceforge-search" /usr/local/bin/traceforge-search\n',
                 encoding="utf-8",
