@@ -114,7 +114,7 @@ def _copy_search_runtime(environment: Path, lock: dict[str, Any]) -> None:
 
 
 def _write_search_sources(public: Path, environment: dict[str, Any]) -> None:
-    """按来源分开原文与其余字段，保留规范证据文件用于完整对账。"""
+    """按来源拆分可读正文视图；规范证据文件保留原字节用于完整对账。"""
     (public / "sources").mkdir()
     sources = []
     for collection, prefix, field in (
@@ -138,6 +138,15 @@ def _write_search_sources(public: Path, environment: dict[str, Any]) -> None:
                 ]
             if isinstance(record.get(field), str):
                 body = record.pop(field)
+                if "\x00" in body:
+                    entry["body_projection"] = {
+                        "kind": "nul_to_control_picture_v1",
+                        "nul_codepoint_offsets": [
+                            offset for offset, character in enumerate(body) if character == "\x00"
+                        ],
+                        "original_body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+                    }
+                    body = body.replace("\x00", "␀")
                 raw = body.encode("utf-8")
                 (public / f"{stem}.txt").write_bytes(raw)
                 entry.update(
@@ -186,7 +195,7 @@ def export_search_task(
     pdf_dependencies = [f"{item['name']}=={item['version']}"
                         for item in dependency_lock.get("wheels", [])]
     digest = hashlib.sha256(json.dumps({
-        "search_delivery_version": 13, "pdf_dependencies": pdf_dependencies,
+        "search_delivery_version": 14, "pdf_dependencies": pdf_dependencies,
         "dependency_sources": dependency_lock,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),
@@ -215,7 +224,10 @@ def export_search_task(
         instruction += "\n\n任务所需历史上下文：\n" + json.dumps(context, ensure_ascii=False, indent=2)
         instruction += (
             "\n\n工作目录为 /home/user/workspace。先从 evidence-index.json 定位每个来源的文件路径；"
-            "sources 中的 JSON 保存该来源除正文外的全部字段，同名 txt 保留未改写的正文。"
+            "sources 中的 JSON 保存该来源除正文外的全部字段，同名 txt 是可读检索视图。"
+            "若索引含 body_projection，只有记录位置的 NUL 显示为 ␀，行号不变；"
+            "nul_codepoint_offsets 是从 0 开始的 Unicode 码点位置，可据此恢复 NUL。"
+            "原有字面 ␀ 不变，原始字符和完整正文仍保存在 evidence.json。"
             "使用 read_file/search_files 定位全文关键词并分页核对相关内容；"
             "前缀截取不能等同于已读摘要或相关章节。"
             "evidence.json 仍完整保留原始资料及捕获来源；也可使用 Python 读取 JSON："

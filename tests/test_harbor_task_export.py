@@ -351,3 +351,49 @@ def test_search_json_metadata_is_visible_with_native_line_preview(tmp_path):
     assert '"@id": "作者一"' in visible
     assert '"@id": "作者二"' in visible
     assert '\n  "sources": [\n' in index_text
+
+
+@pytest.mark.parametrize("collection,field", [
+    ("captures", "result_text"), ("live_references", "text"),
+])
+def test_search_nul_view_is_reversible_without_changing_source(tmp_path, collection, field):
+    source = search_environment()
+    source["requires_live_web"] = False
+    body = "中文␀\\0\\\x00起车\n牵引力\x00结束\n"
+    source[collection][0][field] = body
+    original = json.loads(json.dumps(source))
+    task = export_search_task(source, tmp_path)
+    public = task / "workspace"
+    evidence = json.loads((public / "evidence.json").read_bytes())
+    assert evidence == {key: original[key] for key in ("captures", "live_references")}
+    entries = json.loads((public / "evidence-index.json").read_text())["sources"]
+    for entry in entries:
+        if entry["body_path"] is None:
+            continue
+        raw = (public / entry["body_path"]).read_bytes()
+        original_body = original[entry["collection"]][entry["index"]][entry["body_field"]]
+        if entry["collection"] != collection:
+            assert raw == original_body.encode("utf-8")
+            assert "body_projection" not in entry
+            continue
+        view = raw.decode("utf-8")
+        assert "\x00" not in view
+        assert view == "中文␀\\0\\␀起车\n牵引力␀结束\n"
+        projection = entry["body_projection"]
+        assert projection == {
+            "kind": "nul_to_control_picture_v1",
+            "nul_codepoint_offsets": [6, 13],
+            "original_body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        }
+        restored = list(view)
+        for offset in projection["nul_codepoint_offsets"]:
+            assert restored[offset] == "␀"
+            restored[offset] = "\x00"
+        assert "".join(restored) == body
+        assert view[2] == body[2] == "␀"
+        assert view.splitlines()[0].endswith("起车")
+        assert view.splitlines()[1].startswith("牵引力")
+        assert len(view.splitlines()) == len(body.splitlines()) == entry["body_lines"]
+        assert len(raw) == entry["body_bytes"]
+        assert hashlib.sha256(raw).hexdigest() == entry["body_sha256"]
+    assert source == original
