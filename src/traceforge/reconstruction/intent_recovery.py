@@ -23,7 +23,7 @@ from traceforge.reconstruction.session_parser import indexed_system_messages
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v17-consistent-binding-repair"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v18-grounded-obligation-boundaries"
 _STUB_OBSERVABLE = "replayed excerpts still present"
 _REVIEW_ONLY = re.compile(
     r"(?i)(只读(?:代码)?(?:评审|审查)|只审查(?:并)?不修改|只查看.*不修改|"
@@ -173,6 +173,12 @@ def _prompt(
         "initial_required_paths are task-start inputs; they may name an explicitly referenced but currently missing input and must remain a blocker. output_paths are only explicit new/generated final files. required_paths is their union. Listing-only names are not bindings. When FILE_BINDING_PATHS is empty, do not invent a project.",
         "Classify every acceptance obligation exactly once in environment_bindings. Do not omit an obligation or infer a missing binding from shared context; missing bindings are a REVIEW error.",
         "FILE 表示该义务的完成状态可以从沙盒文件或本地程序行为中完整验证。observable 只描述用户要求的最终行为，不规定实现步骤、修改测试文件或运行某个测试命令，除非原用户明确提出这些要求。不能仅检查初始文件仍然存在。",
+        "每条义务应对应可独立判定的原用户要求；用户的省略、指代和“继续”可结合真实上下文还原。"
+        "代码或行为修复及其必要验证可属于同一 FILE 义务，不因助手承诺测试就新增交付。"
+        "原用户确实要求分析、报告或回答时，须保留该响应要求并独立归为 NON_FILE；"
+        "不能把回复真实性混入 FILE，声称仅检查文件即可完成验收。"
+        "普通诚实汇报、说明验证限制等通用规范不自动成为独立验收义务；"
+        "依据用户实际目标和上下文判定，不按“说明”等关键词分类，也不能删除用户要求的报告。",
         "仅将与用户目标直接相关的对象绑定为初始路径，周边依赖和已有测试不自动成为交付义务。FILE 的初始或输出路径至少有一项非空；路径不完整不代表可以删掉用户要求。has_examples 根据用户是否提供具体示例填写。",
         '必须返回 response_contract 字段；原用户要求包含下列已支持响应结构时，声明完整检查，否则返回 null 并保留原义务未验证。契约为 response_contract={"schema_version":"traceforge.response-contract.v1","checks":[...]}。仅为纯输出结构或摘要一致性义务声明检查：{"kind":"acceptance_report","obligation_id":"...","criterion_ids":["..."],"required_fields":{"字段名":"类型"}} 或 {"kind":"basic_summary","obligation_id":"...","verdicts":["..."],"finding_levels":["..."],"report_path":"...","match_report":true}。所有字段、义务 ID、枚举和路径必须来自该义务引用的原用户要求；不得把事实正确性或行为已完成声明成格式检查。不认识的响应要求保留未验证。同一义务包含摘要和 acceptance-report 时，在 checks 中使用相同 obligation_id 分别列出 basic_summary 与 acceptance_report；该义务的检查必须全部通过，不能只声明其中一项。',
         "Return JSON only, with no Markdown or prose before/after it.",
