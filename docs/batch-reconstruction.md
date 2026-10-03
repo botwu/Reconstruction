@@ -30,15 +30,19 @@
   --offset 37 --limit 1 --output artifacts/search-batch \
   --config config.yaml --hermes-home "$PWD/.runtime/hermes-agent" \
   --harbor-root "$PWD/integrations/harbor_ags" \
-  --execute-rollout --rollout-trials 1 --manual-response-review
+  --disable-verification --execute-rollout --rollout-trials 2 \
+  --session-timeout-seconds 86400
 
 "$TRACEFORGE_PYTHON" scripts/run_session_batch.py \
   --manifest artifacts/terminal-inventory/source_manifest.json --domain terminal \
   --offset 0 --limit 1 --output artifacts/terminal-batch \
   --config config.yaml --hermes-home "$PWD/.runtime/hermes-agent" \
   --harbor-root "$PWD/integrations/harbor_ags" \
-  --execute-red --execute-rollout --rollout-trials 2 --manual-response-review
+  --disable-verification --execute-rollout --rollout-trials 2 \
+  --session-timeout-seconds 86400
 ```
+
+以上示例显式禁用评分器，仍核对真实执行、捕获、输出回收及清理，结果保留 NOT_ASSESSED。需要 terminal 自动文件评分时，用 --execute-red 替换 --disable-verification；两项不能同时使用。--manual-response-review 只保留自由文本待人工核查，不跳过文件验证。
 
 加上 --plan-only 可以只生成计划，不请求模型。实际执行固定 workers=1；两种领域使用各自的补全和验证策略，不按原始 harness 名称拆出另一条重建管线。
 
