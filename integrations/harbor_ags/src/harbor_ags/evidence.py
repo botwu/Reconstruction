@@ -67,11 +67,100 @@ def _validate_raw_body(value: Any, *, location: str) -> tuple[list[dict[str, Any
     return errors, raw
 
 
-def _superseded_transport_exchange_ids(exchanges: Sequence[Any]) -> set[str]:
-    """Recover only empty transport failures followed by the same raw request.
+def _validate_anthropic_message(
+    value: Any,
+    *,
+    exchange_id: str,
+) -> list[dict[str, Any]]:
+    """验证 HTTP 200 的 Anthropic Messages 返回确实是完整模型消息。"""
 
-    Every attempt still undergoes capture validation. A retry only discharges
-    completeness errors; it cannot erase received content or evidence defects.
+    location = {"exchange_id": exchange_id}
+    if not isinstance(value, Mapping) or not value:
+        return [{"code": "ANTHROPIC_MESSAGE_SHAPE", **location}]
+    errors: list[dict[str, Any]] = []
+    for field_name in ("id", "model", "stop_reason"):
+        if not isinstance(value.get(field_name), str) or not value.get(field_name):
+            errors.append(
+                {"code": "ANTHROPIC_MESSAGE_FIELD", "field": field_name, **location}
+            )
+    if value.get("type") != "message":
+        errors.append({"code": "ANTHROPIC_MESSAGE_TYPE", **location})
+    if value.get("role") != "assistant":
+        errors.append({"code": "ANTHROPIC_MESSAGE_ROLE", **location})
+    if "complete" in value and not isinstance(value.get("complete"), bool):
+        errors.append({"code": "ANTHROPIC_MESSAGE_COMPLETE", **location})
+
+    content = value.get("content")
+    if not isinstance(content, list) or not content:
+        errors.append({"code": "ANTHROPIC_MESSAGE_CONTENT", **location})
+    else:
+        for index, block in enumerate(content):
+            block_location = {**location, "index": index}
+            if not isinstance(block, Mapping):
+                errors.append({"code": "ANTHROPIC_CONTENT_BLOCK", **block_location})
+                continue
+            block_type = block.get("type")
+            if not isinstance(block_type, str) or not block_type:
+                errors.append({"code": "ANTHROPIC_CONTENT_BLOCK_TYPE", **block_location})
+            elif block_type not in {
+                "text",
+                "thinking",
+                "redacted_thinking",
+                "tool_use",
+            }:
+                errors.append(
+                    {
+                        "code": "ANTHROPIC_CONTENT_BLOCK_UNSUPPORTED",
+                        "block_type": block_type,
+                        **block_location,
+                    }
+                )
+            elif block_type == "text" and not isinstance(block.get("text"), str):
+                errors.append({"code": "ANTHROPIC_TEXT_BLOCK", **block_location})
+            elif block_type == "thinking" and not isinstance(block.get("thinking"), str):
+                errors.append({"code": "ANTHROPIC_THINKING_BLOCK", **block_location})
+            elif block_type == "redacted_thinking" and not isinstance(
+                block.get("data"), str
+            ):
+                errors.append({"code": "ANTHROPIC_REDACTED_THINKING_BLOCK", **block_location})
+            elif block_type == "tool_use":
+                if any(
+                    not isinstance(block.get(field_name), str) or not block.get(field_name)
+                    for field_name in ("id", "name")
+                ) or not isinstance(block.get("input"), Mapping):
+                    errors.append({"code": "ANTHROPIC_TOOL_USE_BLOCK", **block_location})
+
+    usage = value.get("usage")
+    if not isinstance(usage, Mapping):
+        errors.append({"code": "ANTHROPIC_USAGE_SHAPE", **location})
+    else:
+        for field_name in ("input_tokens", "output_tokens"):
+            observed = usage.get(field_name)
+            if isinstance(observed, bool) or not isinstance(observed, int) or observed < 0:
+                errors.append(
+                    {"code": "ANTHROPIC_USAGE_FIELD", "field": field_name, **location}
+                )
+        for field_name in ("cache_creation_input_tokens", "cache_read_input_tokens"):
+            if field_name not in usage:
+                continue
+            observed = usage.get(field_name)
+            if observed is not None and (
+                isinstance(observed, bool) or not isinstance(observed, int) or observed < 0
+            ):
+                errors.append(
+                    {"code": "ANTHROPIC_USAGE_FIELD", "field": field_name, **location}
+                )
+    return errors
+
+
+def _superseded_transport_exchange_ids(
+    exchanges: Sequence[Any], *, include_http_errors: bool = False,
+) -> set[str]:
+    """绑定同一原始请求在失败之后得到的完整成功回复。
+
+    默认仅恢复空流传输错误；通用验收也可识别完整、仅含错误的 HTTP 429/5xx。
+    每次尝试仍须接受原始字节、SSE 与完整消息校验；本函数不替代这些门禁，
+    也不允许重试抹去已收到的回复内容或证据缺陷。
     """
     successful_after: dict[tuple[Any, ...], _dt.datetime] = {}
     superseded: set[str] = set()
@@ -111,10 +200,43 @@ def _superseded_transport_exchange_ids(exchanges: Sequence[Any]) -> set[str]:
             and exchange.get("complete") is True
             and exchange.get("error_code") is None
         ):
+            if include_http_errors:
+                body = exchange.get("response")
+                if exchange.get("streaming") and isinstance(body, Mapping):
+                    body = body.get("body")
+                body_errors, _ = _validate_raw_body(body, location="retry:success")
+                message_errors = _validate_anthropic_message(
+                    _exchange_response(exchange),
+                    exchange_id=str(exchange.get("exchange_id") or ""),
+                )
+                if body_errors or message_errors:
+                    continue
             successful_after[identity] = started
             continue
         exchange_id = exchange.get("exchange_id")
         response = exchange.get("response")
+        status = exchange.get("response_status")
+        if (
+            include_http_errors and isinstance(exchange_id, str)
+            and identity in successful_after and finished <= successful_after[identity]
+            and type(status) is int and (status == 429 or 500 <= status <= 599)
+            and exchange.get("streaming") is False and exchange.get("complete") is True
+            and exchange.get("error_code") is None and exchange.get("sse_event_count") == 0
+            and isinstance(response, Mapping)
+        ):
+            body_errors, _ = _validate_raw_body(response, location="retry:http-error")
+            parsed = response.get("json")
+            detail = parsed.get("error") if isinstance(parsed, Mapping) else None
+            if (
+                not body_errors and isinstance(parsed, Mapping)
+                and parsed.get("type") == "error"
+                and set(parsed) <= {"type", "error", "request_id"}
+                and isinstance(detail, Mapping) and set(detail) == {"type", "message"}
+                and all(isinstance(detail[key], str) and detail[key] for key in detail)
+                and ("request_id" not in parsed or isinstance(parsed["request_id"], str))
+            ):
+                superseded.add(exchange_id)
+            continue
         if not (
             isinstance(exchange_id, str)
             and identity in successful_after

@@ -22,6 +22,7 @@ from .capture import assemble_anthropic_sse
 from .evidence import (
     EvidenceError,
     _superseded_transport_exchange_ids,
+    _validate_anthropic_message,
     _validate_raw_body,
     aggregate_usage,
     canonical_json_sha256,
@@ -1151,95 +1152,14 @@ def _parse_sse_body(raw: bytes) -> list[tuple[bytes, dict[str, Any]]]:
     return result
 
 
-def _validate_anthropic_message(
-    value: Any,
-    *,
-    exchange_id: str,
+def _validate_capture_records(
+    exchanges: list[Any], sse_records: list[Any],
+    *, warnings: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """验证 HTTP 200 的 Anthropic Messages 返回确实是完整模型消息。"""
-
-    location = {"exchange_id": exchange_id}
-    if not isinstance(value, Mapping) or not value:
-        return [{"code": "ANTHROPIC_MESSAGE_SHAPE", **location}]
     errors: list[dict[str, Any]] = []
-    for field_name in ("id", "model", "stop_reason"):
-        if not isinstance(value.get(field_name), str) or not value.get(field_name):
-            errors.append(
-                {"code": "ANTHROPIC_MESSAGE_FIELD", "field": field_name, **location}
-            )
-    if value.get("type") != "message":
-        errors.append({"code": "ANTHROPIC_MESSAGE_TYPE", **location})
-    if value.get("role") != "assistant":
-        errors.append({"code": "ANTHROPIC_MESSAGE_ROLE", **location})
-    if "complete" in value and not isinstance(value.get("complete"), bool):
-        errors.append({"code": "ANTHROPIC_MESSAGE_COMPLETE", **location})
-
-    content = value.get("content")
-    if not isinstance(content, list) or not content:
-        errors.append({"code": "ANTHROPIC_MESSAGE_CONTENT", **location})
-    else:
-        for index, block in enumerate(content):
-            block_location = {**location, "index": index}
-            if not isinstance(block, Mapping):
-                errors.append({"code": "ANTHROPIC_CONTENT_BLOCK", **block_location})
-                continue
-            block_type = block.get("type")
-            if not isinstance(block_type, str) or not block_type:
-                errors.append({"code": "ANTHROPIC_CONTENT_BLOCK_TYPE", **block_location})
-            elif block_type not in {
-                "text",
-                "thinking",
-                "redacted_thinking",
-                "tool_use",
-            }:
-                errors.append(
-                    {
-                        "code": "ANTHROPIC_CONTENT_BLOCK_UNSUPPORTED",
-                        "block_type": block_type,
-                        **block_location,
-                    }
-                )
-            elif block_type == "text" and not isinstance(block.get("text"), str):
-                errors.append({"code": "ANTHROPIC_TEXT_BLOCK", **block_location})
-            elif block_type == "thinking" and not isinstance(block.get("thinking"), str):
-                errors.append({"code": "ANTHROPIC_THINKING_BLOCK", **block_location})
-            elif block_type == "redacted_thinking" and not isinstance(
-                block.get("data"), str
-            ):
-                errors.append({"code": "ANTHROPIC_REDACTED_THINKING_BLOCK", **block_location})
-            elif block_type == "tool_use":
-                if any(
-                    not isinstance(block.get(field_name), str) or not block.get(field_name)
-                    for field_name in ("id", "name")
-                ) or not isinstance(block.get("input"), Mapping):
-                    errors.append({"code": "ANTHROPIC_TOOL_USE_BLOCK", **block_location})
-
-    usage = value.get("usage")
-    if not isinstance(usage, Mapping):
-        errors.append({"code": "ANTHROPIC_USAGE_SHAPE", **location})
-    else:
-        for field_name in ("input_tokens", "output_tokens"):
-            observed = usage.get(field_name)
-            if isinstance(observed, bool) or not isinstance(observed, int) or observed < 0:
-                errors.append(
-                    {"code": "ANTHROPIC_USAGE_FIELD", "field": field_name, **location}
-                )
-        for field_name in ("cache_creation_input_tokens", "cache_read_input_tokens"):
-            if field_name not in usage:
-                continue
-            observed = usage.get(field_name)
-            if observed is not None and (
-                isinstance(observed, bool) or not isinstance(observed, int) or observed < 0
-            ):
-                errors.append(
-                    {"code": "ANTHROPIC_USAGE_FIELD", "field": field_name, **location}
-                )
-    return errors
-
-
-def _validate_capture_records(exchanges: list[Any], sse_records: list[Any]) -> list[dict[str, Any]]:
-    errors: list[dict[str, Any]] = []
-    superseded_transport = _superseded_transport_exchange_ids(exchanges)
+    superseded_transport = _superseded_transport_exchange_ids(
+        exchanges, include_http_errors=True,
+    )
     sse_by_exchange: dict[str, list[tuple[Mapping[str, Any], bytes, dict[str, Any]]]] = {}
     sensitive_headers = {
         "authorization",
@@ -1338,13 +1258,17 @@ def _validate_capture_records(exchanges: list[Any], sse_records: list[Any]) -> l
         ):
             errors.append({"code": "CAPTURE_HTTP_STATUS", "exchange_id": exchange_id})
         elif response_status != 200:
-            errors.append(
-                {
+            if recovered:
+                if warnings is not None:
+                    warnings.append({
+                        "code": "RETRIED_COMPLETE_HTTP_ERROR",
+                        "exchange_id": exchange_id, "status": response_status,
+                    })
+            else:
+                errors.append({
                     "code": "MODEL_EXCHANGE_HTTP_FAILURE",
-                    "exchange_id": exchange_id,
-                    "status": response_status,
-                }
-            )
+                    "exchange_id": exchange_id, "status": response_status,
+                })
         for field_name in ("streaming", "complete"):
             if not isinstance(item.get(field_name), bool):
                 errors.append(
@@ -1969,7 +1893,9 @@ def validate_harbor_trial(
                     "detail": str(exc),
                 }
             )
-    capture_record_errors = _validate_capture_records(exchanges, sse_records)
+    capture_record_errors = _validate_capture_records(
+        exchanges, sse_records, warnings=warnings,
+    )
     checks["capture_records"] = not capture_record_errors
     if capture_record_errors:
         errors.append({"code": "CAPTURE_RECORDS_INVALID", "issues": capture_record_errors})
