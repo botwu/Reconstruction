@@ -113,7 +113,9 @@ def _copy_search_runtime(environment: Path, lock: dict[str, Any]) -> None:
         json.dumps(lock, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _write_search_sources(public: Path, environment: dict[str, Any]) -> None:
+def _write_search_sources(
+    public: Path, environment: dict[str, Any], pdf_paths: dict[str, str],
+) -> None:
     """按来源拆分可读正文视图；规范证据文件保留原字节用于完整对账。"""
     (public / "sources").mkdir()
     sources = []
@@ -129,6 +131,9 @@ def _write_search_sources(public: Path, environment: dict[str, Any]) -> None:
                 **{key: original[key] for key in
                    ("evidence_ref_id", "url", "query", "title", "content_kind") if key in original},
             }
+            digest = record.get("raw_sha256")
+            if collection == "live_references" and isinstance(digest, str) and digest in pdf_paths:
+                entry.update(pdf_path=pdf_paths[digest], pdf_sha256=digest)
             if record.get("ocr_pages"):
                 entry["ocr_pages"] = [
                     {"page": item["page_number"], "record_key": f"ocr_pages.{number}",
@@ -179,14 +184,13 @@ def export_search_task(
             or environment.get("missing_inputs")
             or not isinstance(instruction, str) or not instruction.strip()):
         raise ValueError("只有任务和必要上下文完整的检索初态才能导出 Harbor")
-    from traceforge.reconstruction.search_tools import pdf_ocr_assets
+    from traceforge.reconstruction.search_tools import pdf_assets
 
     assets: set[Path] = set()
     for page in environment.get("live_references", []):
-        if page.get("ocr_pages"):
-            if evidence_root is None:
-                raise ValueError("OCR 交付缺少原 PDF、页图和识别原始返回所在目录")
-            assets.update(pdf_ocr_assets(page, evidence_root))
+        assets.update(pdf_assets(page, evidence_root))
+    pdf_paths = {asset.stem: f"source-assets/{asset.name}" for asset in assets
+                 if asset.suffix == ".pdf"}
     tool_source = Path(__file__).parent / "reconstruction/search_tools.py"
     requires_web = environment.get("requires_live_web", True)
     dependency_lock = json.loads(
@@ -195,7 +199,7 @@ def export_search_task(
     pdf_dependencies = [f"{item['name']}=={item['version']}"
                         for item in dependency_lock.get("wheels", [])]
     digest = hashlib.sha256(json.dumps({
-        "search_delivery_version": 14, "pdf_dependencies": pdf_dependencies,
+        "search_delivery_version": 15, "pdf_dependencies": pdf_dependencies,
         "dependency_sources": dependency_lock,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),
@@ -211,7 +215,7 @@ def export_search_task(
             "captures": environment.get("captures", []),
             "live_references": environment.get("live_references", []),
         })
-        _write_search_sources(public, environment)
+        _write_search_sources(public, environment, pdf_paths)
         if assets:
             (public / "source-assets").mkdir()
             for asset in sorted(assets):
@@ -244,7 +248,13 @@ def export_search_task(
             "文件路径和行号来自原始观察；公开上游版本与原仓库分开引用，未捕获不等于不存在。"
             "按原任务要求给出最终回答，Harbor 会保存执行轨迹。\n"
         )
-        if assets:
+        if pdf_paths:
+            instruction += (
+                "\n索引的 pdf_path 指向已抓取的原 PDF，pdf_sha256 绑定原件字节；"
+                "文本层和 OCR 是辅助视图，图表、公式和排版应核对原件。"
+                "交付原文件不代表已经完成视觉核对。\n"
+            )
+        if any(page.get("ocr_pages") for page in environment.get("live_references", [])):
             instruction += (
                 "\nPDF 的 ocr_pages 为按页保存的 OCR 原检测块，含 bbox 像素坐标和置信度。"
                 "source-assets 中 source_pdf_sha256.pdf 是原文件，image_sha256.png 是原页图，"

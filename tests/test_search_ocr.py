@@ -120,6 +120,8 @@ def test_ocr_checkpoint_and_harbor_export_bind_actual_assets(tmp_path, monkeypat
     assert "OCR" in (task / "instruction.md").read_text()
     index = json.loads((task / "workspace/evidence-index.json").read_text())
     entry = next(item for item in index["sources"] if item.get("url") == url)
+    assert entry["pdf_path"] == f"source-assets/{item['source_pdf_sha256']}.pdf"
+    assert entry["pdf_sha256"] == item["source_pdf_sha256"]
     assert entry["ocr_pages"][0]["page"] == 1
     assert (task / "workspace" / entry["ocr_pages"][0]["raw_path"]).is_file()
     assert (task / "workspace" / entry["body_path"]).read_text() == tools.pages[url]["text"]

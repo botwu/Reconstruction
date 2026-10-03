@@ -146,26 +146,33 @@ def _validate_html_page(page: dict[str, Any], root: Path) -> None:
         raise ValueError("HTML 缓存正文、链接或提取信息与原始抓取不一致")
 
 
-def pdf_ocr_assets(page: dict[str, Any], root: Path) -> list[Path]:
-    """核对 OCR 原始返回、PDF 和页图；同一契约用于检查点恢复与 Harbor 交付。"""
-    assets: set[Path] = set()
+def _verified_pdf_asset(root: Path, digest: Any, suffix: str) -> Path:
+    """原 PDF 与 OCR 派生物使用同一哈希校验，不能按文件名冒认原件。"""
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("PDF/OCR 来源哈希格式无效")
+    path = root / (digest + suffix)
+    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+        raise ValueError(f"PDF/OCR 来源缺失或哈希不匹配：{path.name}")
+    return path
+
+
+def pdf_assets(page: dict[str, Any], root: Path | None) -> list[Path]:
+    """核对直接抓取的 PDF 与已有 OCR；检查点恢复与 Harbor 交付共用此契约。"""
+    if page.get("provider") != "direct_pdf" and not page.get("ocr_pages"):
+        return []
+    if root is None:
+        raise ValueError("PDF/OCR 交付缺少原 PDF、页图和识别原始返回所在目录")
+    pdf = _verified_pdf_asset(root, page.get("raw_sha256"), ".pdf")
+    assets = {pdf}
     for number, item in (page.get("ocr_pages") or {}).items():
         if (not isinstance(item, dict) or item.get("schema_version") != "traceforge.pdf-ocr-page.v1"
                 or str(item.get("page_number")) != number
                 or item.get("source_pdf_sha256") != page.get("raw_sha256")
                 or item.get("page_count") != page.get("page_count")):
             raise ValueError("OCR 页面与原 PDF 的绑定不匹配")
-        paths = []
-        for field, suffix in (("source_pdf_sha256", ".pdf"), ("image_sha256", ".png"),
-                              ("ocr_raw_sha256", ".ocr.raw")):
-            digest = item.get(field)
-            if not isinstance(digest, str) or len(digest) != 64 or any(
-                    char not in "0123456789abcdef" for char in digest):
-                raise ValueError("OCR 来源哈希格式无效")
-            path = root / (digest + suffix)
-            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-                raise ValueError(f"OCR 来源缺失或哈希不匹配：{path.name}")
-            paths.append(path)
+        paths = [pdf]
+        for field, suffix in (("image_sha256", ".png"), ("ocr_raw_sha256", ".ocr.raw")):
+            paths.append(_verified_pdf_asset(root, item.get(field), suffix))
         if json.loads(paths[-1].read_bytes()) != {
                 key: value for key, value in item.items() if key != "ocr_raw_sha256"}:
             raise ValueError("OCR 文本块与实际识别原始返回不一致")
@@ -399,13 +406,11 @@ class SearchTools:
         if type(number) is not int or not 1 <= number <= page.get("page_count", 0):
             raise ValueError("ocr_page 必须为 PDF 范围内从 1 开始的整数页号")
         if str(number) in (page.get("ocr_pages") or {}):
-            pdf_ocr_assets(page, self.root)
+            pdf_assets(page, self.root)
             return
         if not self._ocr_python:
             raise ValueError("OCR 未配置：需要 TRACEFORGE_OCR_PYTHON 或 search.json 的 ocr_python")
-        pdf = self.root / (page["raw_sha256"] + ".pdf")
-        if hashlib.sha256(pdf.read_bytes()).hexdigest() != page["raw_sha256"]:
-            raise ValueError("OCR 原 PDF 哈希不匹配")
+        pdf = _verified_pdf_asset(self.root, page.get("raw_sha256"), ".pdf")
         env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         result = subprocess.run(
@@ -420,7 +425,7 @@ class SearchTools:
         (self.root / (digest + ".ocr.raw")).write_bytes(raw)
         item = {**json.loads(raw), "ocr_raw_sha256": digest}
         candidate = {**page, "ocr_pages": {**page.get("ocr_pages", {}), str(number): item}}
-        pdf_ocr_assets(candidate, self.root)
+        pdf_assets(candidate, self.root)
         page["ocr_pages"] = candidate["ocr_pages"]
 
     def open(self, url: str, *, offset: int = 0, limit: int = 8000,
@@ -518,7 +523,7 @@ class SearchTools:
                         raise ValueError(f"缓存正文与原始抓取不一致：{path}")
                     if page.get("provider") == "serper" and "jsonld" in data:
                         page["jsonld"] = data["jsonld"]
-                pdf_ocr_assets(page, root)
+                pdf_assets(page, root)
                 existing = self.pages.get(url)
                 fields = ("raw_sha256", "text", "metadata", "jsonld", "content_kind", "source_ref")
                 if page.get("provider") == "direct_html":

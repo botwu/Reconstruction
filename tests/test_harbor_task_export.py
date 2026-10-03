@@ -397,3 +397,75 @@ def test_search_nul_view_is_reversible_without_changing_source(tmp_path, collect
         assert len(raw) == entry["body_bytes"]
         assert hashlib.sha256(raw).hexdigest() == entry["body_sha256"]
     assert source == original
+
+
+def test_search_exports_original_pdf_and_index_without_changing_evidence(tmp_path):
+    from test_search_pdf import pdf_bytes
+
+    raw = pdf_bytes(["Original figure caption", "Original formula"])
+    digest = hashlib.sha256(raw).hexdigest()
+    cache = tmp_path / "web"
+    cache.mkdir()
+    (cache / f"{digest}.pdf").write_bytes(raw)
+    source = search_environment()
+    source.update(requires_live_web=False, live_references=[
+        {"url": url, "provider": "direct_pdf", "content_kind": "pdf_text",
+         "raw_sha256": digest, "text": "提取文本不是原图表", "page_count": 2}
+        for url in ("https://example.org/paper.pdf", "https://example.org/doi/pdf/1")
+    ])
+    original = json.dumps(source, ensure_ascii=False, sort_keys=True)
+    task = export_search_task(source, tmp_path / "export", evidence_root=cache)
+    workspace = task / "workspace"
+    index = json.loads((workspace / "evidence-index.json").read_text())
+    entries = [item for item in index["sources"] if item["collection"] == "live_references"]
+
+    for entry in entries:
+        assert entry["pdf_path"] == f"source-assets/{digest}.pdf"
+        assert entry["pdf_sha256"] == digest
+        assert (workspace / entry["pdf_path"]).read_bytes() == raw
+        assert (workspace / entry["body_path"]).read_text() == "提取文本不是原图表"
+    assert len(list((workspace / "source-assets").iterdir())) == 1
+    evidence = json.loads((workspace / "evidence.json").read_text())
+    assert evidence["live_references"] == source["live_references"]
+    assert json.dumps(source, ensure_ascii=False, sort_keys=True) == original
+    assert "pdf_path" in (task / "instruction.md").read_text()
+
+
+@pytest.mark.parametrize("damage", ["missing_root", "missing_pdf", "corrupt_pdf", "invalid_hash"])
+def test_search_export_rejects_unbound_original_pdf(tmp_path, damage):
+    raw = b"%PDF-1.7\noriginal source"
+    digest = hashlib.sha256(raw).hexdigest()
+    cache = tmp_path / "web"
+    cache.mkdir()
+    path = cache / f"{digest}.pdf"
+    path.write_bytes(raw)
+    source = search_environment()
+    source.update(requires_live_web=False, live_references=[
+        {"url": "https://example.org/paper.pdf", "provider": "direct_pdf",
+         "content_kind": "pdf_text", "raw_sha256": digest, "text": "原文"}
+    ])
+    if damage == "missing_pdf":
+        path.unlink()
+    elif damage == "corrupt_pdf":
+        path.write_bytes(b"changed PDF")
+    elif damage == "invalid_hash":
+        source["live_references"][0]["raw_sha256"] = "../not-a-hash"
+    output = tmp_path / "export"
+    with pytest.raises(ValueError, match="PDF"):
+        export_search_task(
+            source, output, evidence_root=None if damage == "missing_root" else cache,
+        )
+    assert not output.exists()
+
+
+def test_search_does_not_treat_reader_response_hash_as_original_pdf(tmp_path):
+    source = search_environment()
+    source.update(requires_live_web=False, live_references=[
+        {"url": "https://example.org/paper.pdf", "provider": "jina",
+         "content_kind": "pdf_text", "raw_sha256": "a" * 64, "text": "Reader 提供的文本"}
+    ])
+    task = export_search_task(source, tmp_path / "export")
+    index = json.loads((task / "workspace/evidence-index.json").read_text())
+    entry = next(item for item in index["sources"] if item["collection"] == "live_references")
+    assert "pdf_path" not in entry and "pdf_sha256" not in entry
+    assert not (task / "workspace/source-assets").exists()
