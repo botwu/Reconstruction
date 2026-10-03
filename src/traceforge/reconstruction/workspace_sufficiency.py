@@ -23,7 +23,7 @@ from traceforge.reconstruction.workspace_integrity import (
 )
 
 SUFFICIENCY_SCHEMA = "traceforge.workspace-sufficiency.v1"
-SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v16-source-grounded-probes"
+SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v17-target-grounded-validation"
 
 
 def run_workspace_sufficiency(
@@ -97,10 +97,15 @@ def run_workspace_sufficiency(
             "如果探针自身包含不稳定信息，应在当前环境修正探针并重跑，不要求作者修改源码消除测试耗时或文件时间戳。",
             "实现功能的任务需要实际加载相关源码与依赖，不能用文件存在、源码可读或字符串匹配代替。"
             "确认原有入口能工作，再把缺失的目标功能留给 solver。"
-            "涉及具体故障修复时，区分原轨迹真实触发条件与探针自行构造的输入。"
-            "人工错误响应使初态抛错，只证明该响应下的行为，不证明复现了原故障、其致因或有效修复条件。"
-            "核对后续真实成功与失败观察能支持哪些验证；无需一律访问线上服务，但隔离验证须说明原始依据。"
-            "缺少必要条件且无可靠替代验证时，将缺口记入 missing_context，相关 task_fit 为 UNKNOWN；"
+            "涉及具体故障修复时，先依原用户目标说明实现和验证所必需的条件。"
+            "区分原轨迹真实触发条件与探针构造输入；人工错误使初态抛错，不证明原故障致因或有效修复。"
+            "真实错误文本及实际抛错代码支持、明确标注的受控场景可用于行为验证；"
+            "说明原始依据、可区分未修与合理修复的可观察目标行为及未验证范围。"
+            "核对后续真实成功与失败观察，不能把模拟冒称历史复现或唯一致因；"
+            "不强加无依据的重试、请求参数阈值或部分数据处理策略。"
+            "不得仅因缺少真实账户、完整生产回放或唯一致因证明就判定整个重建环境不足；"
+            "若认为必需，须说明它与原用户目标的关系及为何没有可靠替代验证。"
+            "若仍缺少验证原用户目标所必需的条件且无可靠替代，将缺口记入 missing_context，相关 task_fit 为 UNKNOWN；"
             "不能仅因源码、依赖和模拟接口可运行就宣称原目标可验证，也不要求提前实现修复。"
             "任务必需源码的 load 检查必须输出 module.__file__ 和该文件实际正文 SHA256，"
             "并断言加载的是候选预期路径；仅调整 sys.path 不证明加载来源。"
