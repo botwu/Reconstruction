@@ -119,6 +119,7 @@ class WithheldChange:
     path: str | None
     event_id: str
     operation: str
+    # agent_created_file 仅表示未取得改动前正文，不证明原路径不存在。
     classification: str
     old_content_available: bool
     new_content_withheld: bool = True

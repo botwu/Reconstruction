@@ -149,7 +149,7 @@ def _redaction_positions(source: str) -> list[tuple[int, int]]:
 def inspect_workspace_integrity(
     workspace: Path, task: dict[str, Any], *, observed_paths: Iterable[str] = (),
 ) -> dict[str, Any]:
-    """静态诊断绑定、改动前观测源码及本地导入闭包；不执行项目代码。"""
+    """静态诊断绑定、原轨迹观测源码及本地导入闭包；不执行项目代码。"""
 
     workspace = workspace.resolve()
     pending = _bound_python_paths(workspace, task)
@@ -170,7 +170,8 @@ def inspect_workspace_integrity(
             issues.append({
                 "code": "OBSERVED_PYTHON_SOURCE_MISSING", "path": relative,
                 "line": 1, "column": 1,
-                "reason": "改动前回放已观测此源码，但候选环境缺失该文件。",
+                "reason": "原轨迹曾读取此源码，但候选环境缺失该文件；"
+                "是否属于任务起点所需源码，需结合轨迹核查。",
             })
     while pending:
         path = min(pending)

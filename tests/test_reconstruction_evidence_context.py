@@ -176,3 +176,28 @@ def test_repair_loop_passes_each_current_candidates_metadata(tmp_path, monkeypat
     assert contexts[1]["uncertainties"] == repaired["uncertainties"]
     assert contexts[1]["dependencies"] == []
     assert contexts[1]["candidate_completed_files"] == repaired["file_provenance"]
+
+
+def test_untrusted_read_then_write_remains_available_to_initial_diagnosis(tmp_path: Path) -> None:
+    timeline = [
+        {"call_id": "unknown", "name": "bash",
+         "arguments": {"command": "python -c 'change_files()'"}, "result_text": "ok"},
+        {"call_id": "read", "name": "read_file",
+         "arguments": {"path": "dependency.py"}, "result_text": "VALUE = 1\n"},
+        {"call_id": "write", "name": "write_file",
+         "arguments": {"path": "dependency.py", "content": "VALUE = 2\n"}, "result_text": "ok"},
+    ]
+    replay = replay_from_timeline(timeline)
+    assert replay.files == ()
+    assert replay.withheld_changes[0].classification == "agent_created_file"
+    assert replay.partial_evidence[-1]["content"] == "VALUE = 1\n"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _, judge, _, _ = pipeline._judge_and_repair_candidate(
+        task={"task_instruction": "审查依赖源码"}, candidate={"workspace": str(workspace)},
+        replay=replay, timeline=timeline, task_source={"tool_timeline": timeline},
+        agent=SufficientRuntime(), task_root=tmp_path / "task", index=0, origin="REPLAYED",
+        max_repair_rounds=0,
+    )
+    assert judge["integrity_report"]["observed_paths"] == ["dependency.py"]
+    assert judge["integrity_report"]["issues"][0]["code"] == "OBSERVED_PYTHON_SOURCE_MISSING"
