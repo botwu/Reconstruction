@@ -69,6 +69,43 @@ def test_direct_html_preserves_source_links_and_pagination(tmp_path, monkeypatch
     assert requests == [URL]
 
 
+@pytest.mark.parametrize("url,wire", [
+    ("https://www.bing.com/search?q=铁路通信信号工程技术+张辰东+2024",
+     "https://www.bing.com/search?q=%E9%93%81%E8%B7%AF%E9%80%9A%E4%BF%A1%E4%BF%A1%E5%8F%B7"
+     "%E5%B7%A5%E7%A8%8B%E6%8A%80%E6%9C%AF+%E5%BC%A0%E8%BE%B0%E4%B8%9C+2024"),
+    ("https://example.org/中文%2F.html?q=a%26b+c&x=带 空格",
+     "https://example.org/%E4%B8%AD%E6%96%87%2F.html?q=a%26b+c&x=%E5%B8%A6%20%E7%A9%BA%E6%A0%BC"),
+    ("https://例子.测试:8443/正文",
+     "https://xn--fsqu00a.xn--0zwm56d:8443/%E6%AD%A3%E6%96%87"),
+    ("https://[2606:4700:4700::1111]:443/正文",
+     "https://[2606:4700:4700::1111]:443/%E6%AD%A3%E6%96%87"),
+])
+def test_unicode_url_is_encoded_for_transport_without_rewriting_source(
+    tmp_path, monkeypatch, url, wire,
+):
+    tools, requests = direct_tools(tmp_path, monkeypatch)
+    result = tools.open(url)
+    assert result["success"] and result["url"] == url
+    assert requests == [wire] and requests[0].isascii()
+    assert tools.calls[0]["url"] == url and url in tools.pages
+
+
+@pytest.mark.parametrize("bad_url", [
+    "https://example.org:bad/path", "https://example.org:99999/path", "https://@example.org/path",
+])
+def test_invalid_navigation_link_does_not_discard_valid_page_text(
+    tmp_path, monkeypatch, bad_url,
+):
+    raw = (
+        f'<p>前段正文</p><a href="{bad_url}">无效导航</a>'
+        '<a href="/valid">有效导航</a><p>后段正文</p>'
+    ).encode()
+    tools, _ = direct_tools(tmp_path, monkeypatch, raw=raw)
+    result = tools.open(URL)
+    assert result["success"] and "前段正文" in result["text"] and "后段正文" in result["text"]
+    assert [item["url"] for item in result["links"]] == ["https://example.org/valid"]
+
+
 def test_direct_html_restore_uses_raw_encoding_and_links(tmp_path, monkeypatch):
     raw = HTML.decode().replace("utf-8", "gb18030").encode("gb18030")
     tools, requests = direct_tools(tmp_path / "original", monkeypatch, raw, "text/html")

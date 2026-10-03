@@ -31,6 +31,21 @@ def _public_url(url: str) -> None:
         raise ValueError("来源不能指向本机或私有网络")
 
 
+def _wire_url(url: str) -> str:
+    """只编码传输地址，保留分隔符和已有转义；原调用与缓存仍按原 URL 记账。"""
+    parsed = urllib.parse.urlsplit(url)
+    if not parsed.hostname or parsed.username is not None:
+        raise ValueError("来源地址必须包含主机且不能含用户信息")
+    host = parsed.hostname.encode("idna").decode("ascii")
+    if ":" in host:
+        host = f"[{host}]"
+    if parsed.port is not None:
+        host += f":{parsed.port}"
+    return urllib.parse.quote(
+        urllib.parse.urlunsplit(parsed._replace(netloc=host)), safe=":/?#[]@!$&'()*+,;=%",
+    )
+
+
 class PublicSourceRedirect(urllib.request.HTTPRedirectHandler):
     """逐跳检查公开来源，避免重定向绕过原地址检查。"""
 
@@ -38,6 +53,7 @@ class PublicSourceRedirect(urllib.request.HTTPRedirectHandler):
         self, req: urllib.request.Request, fp: Any, code: int,
         msg: str, headers: Any, newurl: str,
     ) -> urllib.request.Request | None:
+        newurl = _wire_url(newurl)
         _public_url(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -75,8 +91,11 @@ class _StaticHTML(HTMLParser):
             url = urllib.parse.urljoin(self.base_url, href)
             parsed = urllib.parse.urlsplit(url)
             if parsed.scheme in {"http", "https"} and parsed.hostname and not parsed.username:
-                link = {"url": urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%"),
-                        "text": "", "source": source}
+                try:
+                    link_url = _wire_url(url)
+                except (ValueError, UnicodeError):
+                    return
+                link = {"url": link_url, "text": "", "source": source}
                 self.links.append(link)
                 if tag == "a":
                     self.anchor = link
@@ -273,7 +292,7 @@ class SearchTools:
     def _fetch_document(self, url: str) -> dict[str, Any] | None:
         # 单次直连按实际响应区分 PDF 与静态 HTML；其他内容仍由既定读取服务处理。
         pdf_expected = urllib.parse.urlsplit(url).path.lower().endswith(".pdf")
-        request = urllib.request.Request(url, headers={"User-Agent": "TraceForge/0.3"})
+        request = urllib.request.Request(_wire_url(url), headers={"User-Agent": "TraceForge/0.3"})
         opener = urllib.request.build_opener(PublicSourceRedirect())
         try:
             with opener.open(request, timeout=90 if pdf_expected else 20) as response:
