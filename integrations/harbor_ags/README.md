@@ -21,6 +21,17 @@
 
 原生 Hermes 在导入前设置 `HERMES_REDACT_SECRETS=false`，与本项目宿主入口一致，保留任务文本、源码、工具参数和会话历史。模型服务凭据仍由 capture 代理单独持有，Hermes 使用本地代理凭据；完整轨迹和部署凭据检查仍执行。
 
+## 离线认证检查
+
+完成完整运行环境安装后，在仓库根目录执行：
+
+```bash
+"$TRACEFORGE_PYTHON" -m pytest -c pyproject.toml integrations/harbor_ags/tests
+```
+
+这里的检查使用固定样例和内存变体，不发送模型请求或创建沙箱。它们依赖可选连接层，
+因此与基础开发环境的 `tests/` 分开运行；基础检查不能替代这些认证检查或真实 rollout。
+
 ## 版本与边界
 
 `version-lock.json` 固定 Harbor、SDK、模板内 Hermes 提交与离线 wheel 哈希。离线 wheel 保留各自许可证。`configs/` 仅含环境变量占位；模型与 AGS 凭据由运行方提供。
