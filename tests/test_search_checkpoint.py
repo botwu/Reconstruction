@@ -27,7 +27,7 @@ def recorded_network(root, monkeypatch):
         return json.loads(raw), digest
 
     monkeypatch.setattr(tools, "_response", response)
-    monkeypatch.setattr(tools, "_fetch_pdf", lambda _url: None)
+    monkeypatch.setattr(tools, "_fetch_document", lambda _url: None)
     monkeypatch.setattr("traceforge.reconstruction.search_tools._public_url", lambda _url: None)
     session = AgentSession(web_open_handler=tools.open)
     arguments = {"url": "https://example.org/paper", "offset": 2, "limit": 3}

@@ -41,6 +41,10 @@ AGS 使用预置 Hermes 模板，未执行 Dockerfile 中的 ripgrep 安装。�
 
 已在本项目原生 setup 中交付固定版本 rg，校验官方包及二进制 SHA，保留许可，安装到该次 AGS 的标准工具目录；不修改上游工具源码或 shell 配置。六条原参数在真实 AGS 回放分别按原 limit 返回 25/30/25/15/30/20 条，每条行号和正文对上冻结来源。随后 run03 两份真实 solver 也实际得到正确非零匹配。
 
+### 官网正文恢复
+
+真实 R01:38 诊断发现，旧读取器已取得官网 HTML，却丢弃它再依赖不可用的外部 Reader。现在直接保留静态正文和真实链接，原始响应、编码、题名、提取范围及缓存回执可交叉核对；GitHub 原文件校验与 PDF 路由保留。两篇实际官网页面各一次 GET 成功，分别取得 7,626/3,372 字符及真实 PDF 下载地址，分页与恢复没有额外请求。这项证据只证明页面静态正文可读，不代表已下载论文全文或 Serper 查询额度已恢复。
+
 ### 任务说明与来源
 
 冷运行首任务首次输出擅自指定 twitter_likes.py，虽然门禁拒绝了输出路径，旧纠错却禁止修改说明文字，导致绑定与说明矛盾。
@@ -83,4 +87,4 @@ terminal 首任务的分析回答把累计无新增页数写成连续页数、�
 
 实现与使用见[流程](raw-session-pipeline.md)、[源码地图](rebuild-live-map.md)、[Harbor 交付](harbor-task-delivery.md)、[批量运行](batch-reconstruction.md)与[跨机器调试](cross-machine-debug.md)。密钥、私有配置及运行产物不进入 Git。
 
-最新私有证据：artifacts/pipeline-debug-20261002/ 下的 cold-search-journal-native-run03、terminal-environment-recovery/run07、terminal-task2-verification-run02、terminal-raw-cold-run01；artifacts/pipeline-debug-20261003/ 下的 terminal-parser-effect-run01、terminal-intent-repair-run01、terminal-intent-semantic-run01、evidence-handoff-audit、terminal-raw-cold-run02、terminal-task1-evidence-resume-run01、search-current-environment-astra-run01、runtime-integration-validation。所有旧失败、原答卷和清理回执保留，不由新结果覆盖。
+最新私有证据：artifacts/pipeline-debug-20261002/ 下的 cold-search-journal-native-run03、terminal-environment-recovery/run07、terminal-task2-verification-run02、terminal-raw-cold-run01；artifacts/pipeline-debug-20261003/ 下的 terminal-parser-effect-run01、terminal-intent-repair-run01、terminal-intent-semantic-run01、evidence-handoff-audit、terminal-raw-cold-run02、terminal-task1-evidence-resume-run01、search-current-environment-astra-run01、search-direct-html-production-check、runtime-integration-validation。所有旧失败、原答卷和清理回执保留，不由新结果覆盖。

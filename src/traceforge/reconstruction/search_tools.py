@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import base64
+import codecs
 import hashlib
 import io
 import ipaddress
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -15,6 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import UTC, datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +40,91 @@ class PublicSourceRedirect(urllib.request.HTTPRedirectHandler):
     ) -> urllib.request.Request | None:
         _public_url(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class _StaticHTML(HTMLParser):
+    """仅提取原 HTML 中已有的文字和链接，不执行脚本或猜测下载地址。"""
+
+    def __init__(self, url: str) -> None:
+        super().__init__(convert_charrefs=True)
+        self.base_url = url
+        self.has_base = False
+        self.skipped = 0
+        self.in_title = False
+        self.parts: list[str] = []
+        self.title: list[str] = []
+        self.links: list[dict[str, str]] = []
+        self.anchor: dict[str, str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        if tag in {"script", "style", "noscript", "template"}:
+            self.skipped += 1
+        if self.skipped:
+            return
+        if tag == "title":
+            self.in_title = True
+        href = values.get("href")
+        if tag == "base" and href and not self.has_base:
+            self.base_url = urllib.parse.urljoin(self.base_url, href)
+            self.has_base = True
+        source = tag
+        if tag == "meta" and (values.get("name") or "").lower() == "citation_pdf_url":
+            href, source = values.get("content"), "citation_pdf_url"
+        if href and source in {"a", "link", "citation_pdf_url"}:
+            url = urllib.parse.urljoin(self.base_url, href)
+            parsed = urllib.parse.urlsplit(url)
+            if parsed.scheme in {"http", "https"} and parsed.hostname and not parsed.username:
+                link = {"url": urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%"),
+                        "text": "", "source": source}
+                self.links.append(link)
+                if tag == "a":
+                    self.anchor = link
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style", "noscript", "template"}:
+            self.skipped = max(0, self.skipped - 1)
+        if tag == "title":
+            self.in_title = False
+        if tag == "a":
+            self.anchor = None
+
+    def handle_data(self, data: str) -> None:
+        text = data.strip()
+        if self.skipped or not text:
+            return
+        (self.title if self.in_title else self.parts).append(text)
+        if self.anchor is not None:
+            self.anchor["text"] = " ".join(filter(None, [self.anchor["text"], text]))
+
+
+def _extract_static_html(raw: bytes, *, encoding: str, url: str) -> dict[str, Any]:
+    encoding = codecs.lookup(encoding).name
+    parser = _StaticHTML(url)
+    parser.feed(raw.decode(encoding))
+    parser.close()
+    return {
+        "title": " ".join(parser.title), "text": "\n".join(parser.parts), "links": parser.links,
+        "encoding": encoding, "resolved_url": url, "provider": "direct_html",
+        "content_kind": "page_text", "extractor": "stdlib.html.parser/static-v1",
+        "extraction_scope": "static_html",
+        "limitations": ["仅提取原始 HTML 的静态文字与链接，未执行 JavaScript 或验证链接内容；"
+                        "可能含导航文字，不保证页面包含论文全文。"],
+    }
+
+
+def _validate_html_page(page: dict[str, Any], root: Path) -> None:
+    digest = page.get("raw_sha256")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("HTML 原始抓取哈希无效")
+    raw = (root / f"{digest}.raw").read_bytes()
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise ValueError("HTML 原始抓取哈希不匹配")
+    if not isinstance(page.get("encoding"), str) or not isinstance(page.get("resolved_url"), str):
+        raise ValueError("HTML 缓存缺少原始编码或最终网址")
+    actual = _extract_static_html(raw, encoding=page["encoding"], url=page["resolved_url"])
+    if any(page.get(key) != value for key, value in actual.items()):
+        raise ValueError("HTML 缓存正文、链接或提取信息与原始抓取不一致")
 
 
 def pdf_ocr_assets(page: dict[str, Any], root: Path) -> list[Path]:
@@ -155,9 +243,9 @@ class SearchTools:
 
     def _fetch(self, url: str) -> dict[str, Any]:
         _public_url(url)
-        pdf = self._fetch_pdf(url)
-        if pdf is not None:
-            return pdf
+        document = self._fetch_document(url)
+        if document is not None:
+            return document
         parsed = urllib.parse.urlsplit(url)
         parts = parsed.path.strip("/").split("/")
         if parsed.hostname == "raw.githubusercontent.com" and len(parts) >= 4:
@@ -182,19 +270,47 @@ class SearchTools:
                 "content_kind": "source_file", "content_sha256": hashlib.sha256(raw).hexdigest(),
                 "git_blob_sha1": blob, "source_ref": urllib.parse.unquote(ref)}
 
-    def _fetch_pdf(self, url: str) -> dict[str, Any] | None:
-        # 文献链接可能无后缀或经重定向；依据实际响应识别，普通网页仍交给既定读取服务。
+    def _fetch_document(self, url: str) -> dict[str, Any] | None:
+        # 单次直连按实际响应区分 PDF 与静态 HTML；其他内容仍由既定读取服务处理。
         pdf_expected = urllib.parse.urlsplit(url).path.lower().endswith(".pdf")
         request = urllib.request.Request(url, headers={"User-Agent": "TraceForge/0.3"})
         opener = urllib.request.build_opener(PublicSourceRedirect())
         try:
             with opener.open(request, timeout=90 if pdf_expected else 20) as response:
                 prefix = response.read(5)
-                pdf_expected = pdf_expected or "application/pdf" in response.headers.get("Content-Type", "").lower()
+                content_type = response.headers.get("Content-Type", "")
+                pdf_expected = pdf_expected or "application/pdf" in content_type.lower()
                 if prefix != b"%PDF-":
                     if pdf_expected:
                         raise ValueError("来源没有返回 PDF 原文件，不能把登录页或错误页面当正文")
-                    return None
+                    if content_type.split(";", 1)[0].strip().lower() != "text/html":
+                        return None
+                    if urllib.parse.urlsplit(url).hostname in {
+                            "github.com", "raw.githubusercontent.com"}:
+                        return None
+                    resolved = urllib.parse.urlsplit(response.geturl())
+                    if resolved.hostname in {"github.com", "raw.githubusercontent.com"}:
+                        raise ValueError("GitHub 来源须通过内容 API 校验，不能采用 HTML 静态正文")
+                    raw = prefix + response.read(8_000_001 - len(prefix))
+                    if len(raw) > 8_000_000:
+                        raise ValueError("HTML 超过 8 MB，未采用不完整下载")
+                    digest = hashlib.sha256(raw).hexdigest()
+                    (self.root / f"{digest}.raw").write_bytes(raw)
+                    charset = re.search(r"charset\s*=\s*['\"]?([\w.-]+)", content_type, re.I)
+                    if charset is None:
+                        charset = re.search(
+                            r"<meta\b[^>]*\bcharset\s*=\s*['\"]?([\w.-]+)",
+                            raw[:8192].decode("ascii", errors="ignore"), re.I,
+                        )
+                    page = _extract_static_html(
+                        raw, encoding=charset.group(1) if charset else "utf-8",
+                        url=response.geturl(),
+                    )
+                    if not page["text"]:
+                        return None
+                    return {**page, "success": True, "url": url, "raw_sha256": digest,
+                            "source_mode": "live_page",
+                            "retrieved_at": datetime.now(UTC).isoformat()}
                 pdf_expected = True
                 raw = prefix + response.read(32_000_001 - len(prefix))
                 resolved_url = response.geturl()
@@ -295,6 +411,8 @@ class SearchTools:
             if not cache_hit:
                 self.pages[url] = self._fetch(url)
             page = self.pages[url]
+            if cache_hit and page.get("provider") == "direct_html":
+                _validate_html_page(page, self.root)
             if ocr_page is not None:
                 self._ocr(page, ocr_page)
             name = hashlib.sha256(url.encode()).hexdigest() + ".json"
@@ -371,7 +489,9 @@ class SearchTools:
                     raw_path = root / f"{digest}.pdf"
                 if not raw_path.is_file():
                     raise ValueError(f"检索原始抓取缺失：{raw_path}")
-                if page.get("content_kind") == "page_text":
+                if page.get("provider") == "direct_html":
+                    _validate_html_page(page, root)
+                elif page.get("content_kind") == "page_text":
                     data = json.loads(raw_path.read_bytes())
                     text = data.get("text") if page.get("provider") == "serper" else (
                         data.get("data") or {}).get("content")
@@ -382,6 +502,8 @@ class SearchTools:
                 pdf_ocr_assets(page, root)
                 existing = self.pages.get(url)
                 fields = ("raw_sha256", "text", "metadata", "jsonld", "content_kind", "source_ref")
+                if page.get("provider") == "direct_html":
+                    fields += ("title", "links", "encoding", "resolved_url")
                 if existing and any(existing.get(key) != page.get(key) for key in fields):
                     raise ValueError(f"同一来源快照内容冲突：{url}（{origin}）")
                 for number, item in (existing or {}).get("ocr_pages", {}).items():
@@ -405,6 +527,12 @@ class SearchTools:
                     page = pages.get(call.get("url"))
                     if page is not None:
                         page = _page_view(page, call.get("ocr_page"))
+                    if page is not None and page.get("provider") == "direct_html":
+                        fields = ("raw_sha256", "resolved_url", "encoding", "title", "links",
+                                  "provider", "content_kind", "extractor",
+                                  "extraction_scope", "limitations")
+                        if any(call.get(key) != page.get(key) for key in fields):
+                            raise ValueError(f"HTML 工具回执与原始页面来源不一致：{origin}")
                     if call.get("ocr_page") is not None and page is not None:
                         fields = ("content_kind", "extraction_scope", "image_sha256", "ocr_raw_sha256",
                                   "limitations", "versions", "model_sha256", "image_size")

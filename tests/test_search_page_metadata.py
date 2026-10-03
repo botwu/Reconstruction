@@ -12,7 +12,7 @@ def serper_tools(tmp_path, monkeypatch):
     tools = SearchTools(tmp_path)
     tools._serper_key = "test-only"
     tools._fetch_provider = "serper"
-    monkeypatch.setattr(tools, "_fetch_pdf", lambda url: None)
+    monkeypatch.setattr(tools, "_fetch_document", lambda url: None)
     monkeypatch.setattr("traceforge.reconstruction.search_tools._public_url", lambda url: None)
     return tools
 

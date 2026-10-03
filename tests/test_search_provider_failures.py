@@ -13,7 +13,7 @@ def test_provider_credit_error_is_explained_and_retained(tmp_path, monkeypatch, 
     tools = SearchTools(tmp_path)
     tools._serper_key = "test-only"
     tools._fetch_provider = "serper"
-    monkeypatch.setattr(tools, "_fetch_pdf", lambda url: None)
+    monkeypatch.setattr(tools, "_fetch_document", lambda url: None)
     monkeypatch.setattr("traceforge.reconstruction.search_tools._public_url", lambda url: None)
     raw = b'{"message":"Not enough credits","statusCode":400}'
 
