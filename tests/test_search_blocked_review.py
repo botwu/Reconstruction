@@ -250,3 +250,70 @@ def test_only_nonempty_successful_pagination_counts_as_reading(text):
     before = _search_recovery_state(network)
     network.calls.append({**first, "offset": 16000})
     assert (_search_recovery_state(network) != before) is bool(text)
+
+
+@pytest.mark.parametrize("status,repair,failed,turns,reviewed", [
+    ("BLOCKED", True, False, 2, True),
+    ("READY", True, False, 2, True),
+    ("BLOCKED", False, False, 2, False),
+    ("UNKNOWN", True, False, 1, False),
+    ("BLOCKED", True, True, 1, False),
+])
+def test_blocked_reference_format_can_be_fixed_without_erasing_real_gap(
+    tmp_path, status, repair, failed, turns, reviewed,
+):
+    from traceforge.reconstruction import search_environment as module
+
+    sessions, reviews = [], []
+    missing = ["原论文正文尚缺"]
+    source = {"raw_session": {"messages": [
+        {"role": "user", "content": "分析该论文"},
+        {"role": "tool", "content": "原始资料入口"},
+    ]}, "tool_timeline": [{"name": "lookup", "result_text": "原始资料入口",
+                          "tool_message_index": 1}]}
+    task = {"task_id": "paper", "task_instruction": "分析该论文",
+            "source_task": {"message_indices": [0], "user_texts": ["分析该论文"]},
+            "acceptance_obligations": [{"id": "analysis"}]}
+
+    def run(*, role, instruction, session, output_root):
+        request = json.loads(instruction)
+        if role.name == "search_review":
+            reviews.append(request)
+            assert request["environment"]["missing_inputs"] == missing
+            assert request["environment"]["author_result"]["status"] == status
+            return SimpleNamespace(completed=True, errors=[], payload={
+                "decision": "BLOCKED", "requirements": [{
+                    "obligation_id": "analysis", "status": "ENVIRONMENT_GAP",
+                    "reason": "可用入口没有交付论文正文", "repair": "",
+                }],
+            })
+        sessions.append(session)
+        if len(sessions) > 1:
+            assert session is sessions[0]
+            assert request["previous_output"]["missing_inputs"] == missing
+            assert request["previous_output"]["status"] == status
+            assert request["validation_feedback"]
+            assert "captured:0" in request["available_evidence_ref_ids"]
+        payload = {
+            "status": status, "requires_live_web": False,
+            "retrieval_reason": "保留原始入口，正文仍未提供", "missing_inputs": missing,
+            "requirement_coverage": [{
+                "obligation_id": "analysis",
+                "evidence_ref_ids": ["captured:0" if repair and len(sessions) > 1
+                                     else "captured:typo"],
+                "reason": "原始资料入口；正文仍缺",
+            }],
+        }
+        return SimpleNamespace(completed=not failed,
+                               errors=["MODEL_CONNECTION_ERROR"] if failed else [],
+                               payload=payload)
+
+    result = module.run_search_task(
+        source=source, task=task, agent=SimpleNamespace(run=run), output_root=tmp_path,
+    )
+    assert len(sessions) == turns and bool(reviews) is reviewed
+    assert result["status"] == "BLOCKED" and result["missing_inputs"] == missing
+    first = json.loads((tmp_path / "completion/validation.json").read_text())
+    assert first["status"] == "INVALID"
+    if not repair:
+        assert "SEARCH_COMPLETION_NO_PROGRESS" in result["errors"]

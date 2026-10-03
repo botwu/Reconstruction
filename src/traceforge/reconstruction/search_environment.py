@@ -258,8 +258,11 @@ def _complete_search_environment(
             [errors, sorted(ref for ref in read_ids if ref), _search_recovery_state(network)],
             sort_keys=True, ensure_ascii=False,
         )
-        if (not result.completed or result.errors or payload.get("status") != "READY"
-                or payload.get("missing_inputs") or state in seen):
+        if (not result.completed or result.errors
+                or payload.get("status") not in {"READY", "BLOCKED"}
+                or (valid_payload and (payload.get("status") == "BLOCKED"
+                                       or payload.get("missing_inputs")))
+                or state in seen):
             if state in seen:
                 errors.append("SEARCH_COMPLETION_NO_PROGRESS")
             break
@@ -271,6 +274,8 @@ def _complete_search_environment(
             "available_evidence_ref_ids": sorted(available),
             "read_evidence_ref_ids": sorted(available & (read_ids | set(network.pages) | context_ids)),
             "instruction": "保留原任务和全部可用原文，修正交接引用及实际读取缺口，提交完整 JSON。"
+            "结构或引用无效时先只修正已报的格式错误，保留有依据的 BLOCKED 和真实 missing_inputs；"
+            "纠正格式不要求改为 READY，也不要求删除真实缺口。"
             "evidence_ref_ids 从 available_evidence_ref_ids 原样选择，不把 offset、用户角色或查询词拼进编号；"
             "分页范围写在 reason，不能改写来源 ID。网页用已打开 URL，历史消息用 message:索引。"
             "live_access 仅列本轮真实调用，空 web_search_calls 表示本轮一次查询都没有执行；"
