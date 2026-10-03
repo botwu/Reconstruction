@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import copy
 import datetime as _dt
 import hashlib
@@ -11,6 +13,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .capture import assemble_anthropic_sse
 from .exceptions import TrajectoryCaptureError
 
 USAGE_FIELDS = (
@@ -36,6 +39,249 @@ def canonical_json_sha256(value: Any) -> str:
         "utf-8"
     )
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _validate_raw_body(value: Any, *, location: str) -> tuple[list[dict[str, Any]], bytes | None]:
+    errors: list[dict[str, Any]] = []
+    if not isinstance(value, Mapping):
+        return [{"code": "CAPTURE_BODY_SHAPE", "location": location}], None
+    encoded = value.get("raw_base64")
+    if not isinstance(encoded, str):
+        return [{"code": "CAPTURE_RAW_BODY_MISSING", "location": location}], None
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        return [{"code": "CAPTURE_RAW_BODY_BASE64", "location": location}], None
+    if value.get("size_bytes") != len(raw):
+        errors.append({"code": "CAPTURE_BODY_SIZE_MISMATCH", "location": location})
+    if value.get("sha256") != hashlib.sha256(raw).hexdigest():
+        errors.append({"code": "CAPTURE_BODY_HASH_MISMATCH", "location": location})
+    if "json" in value:
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            errors.append({"code": "CAPTURE_BODY_JSON_MISMATCH", "location": location})
+        else:
+            if parsed != value.get("json"):
+                errors.append({"code": "CAPTURE_BODY_JSON_MISMATCH", "location": location})
+    return errors, raw
+
+
+def _superseded_transport_exchange_ids(exchanges: Sequence[Any]) -> set[str]:
+    """Recover only empty transport failures followed by the same raw request.
+
+    Every attempt still undergoes capture validation. A retry only discharges
+    completeness errors; it cannot erase received content or evidence defects.
+    """
+    successful_after: dict[tuple[Any, ...], _dt.datetime] = {}
+    superseded: set[str] = set()
+    for exchange in reversed(exchanges):
+        if not isinstance(exchange, Mapping):
+            continue
+        request_errors, request_raw = _validate_raw_body(
+            exchange.get("request"), location="retry:request"
+        )
+        headers = exchange.get("request_headers")
+        if (
+            request_errors
+            or request_raw is None
+            or not isinstance(headers, Mapping)
+            or any(
+                not isinstance(exchange.get(name), str)
+                for name in ("method", "path", "upstream_url")
+            )
+        ):
+            continue
+        try:
+            started = _dt.datetime.fromisoformat(exchange["started_at"])
+            finished = _dt.datetime.fromisoformat(exchange["finished_at"])
+            if started.utcoffset() is None or finished.utcoffset() is None or finished < started:
+                continue
+        except (KeyError, TypeError, ValueError):
+            continue
+        identity = (
+            request_raw,
+            exchange.get("method"),
+            exchange.get("path"),
+            exchange.get("upstream_url"),
+            canonical_json_sha256(headers),
+        )
+        if (
+            exchange.get("response_status") == 200
+            and exchange.get("complete") is True
+            and exchange.get("error_code") is None
+        ):
+            successful_after[identity] = started
+            continue
+        exchange_id = exchange.get("exchange_id")
+        response = exchange.get("response")
+        if not (
+            isinstance(exchange_id, str)
+            and identity in successful_after
+            and finished <= successful_after[identity]
+            and exchange.get("response_status") == 200
+            and exchange.get("streaming") is True
+            and exchange.get("complete") is False
+            and exchange.get("error_code") == "UPSTREAM_TRANSPORT_ERROR"
+            and exchange.get("sse_event_count") == 0
+            and isinstance(response, Mapping)
+            and response.get("message") == assemble_anthropic_sse([])
+        ):
+            continue
+        body_errors, response_raw = _validate_raw_body(
+            response.get("body"), location="retry:response"
+        )
+        if not body_errors and response_raw == b"":
+            superseded.add(exchange_id)
+    return superseded
+
+
+def is_assistant_response(call: Any) -> bool:
+    """完整成功的 Anthropic assistant 回复；HTTP 错误不是额外一轮。"""
+    if not isinstance(call, Mapping):
+        return False
+    response = call.get("response")
+    status = call.get("status")
+    return (
+        isinstance(status, int) and not isinstance(status, bool) and 200 <= status < 300
+        and call.get("complete") is True and not call.get("error_code")
+        and isinstance(response, Mapping) and response.get("type") == "message"
+        and response.get("role") == "assistant"
+        and isinstance(response.get("content"), list) and bool(response["content"])
+        and all(isinstance(block, Mapping) for block in response["content"])
+    )
+
+
+def response_history_matches(actual: Any, expected: Any) -> bool:
+    """仅容许既有 adapter 的 thinking/cache/signature 运输投影。"""
+    if actual == expected:
+        return True
+    if not isinstance(actual, list) or not isinstance(expected, list):
+        return False
+    projected = []
+    injected = 0
+    for block in actual:
+        if not isinstance(block, Mapping):
+            projected.append(block)
+            continue
+        normalized = dict(block)
+        if normalized.get("type") == "thinking":
+            continue
+        if "cache_control" in normalized:
+            if (
+                normalized.get("type") != "text"
+                or normalized["cache_control"] != {"type": "ephemeral"}
+            ):
+                return False
+            injected += 1
+            normalized.pop("cache_control")
+        projected.append(normalized)
+    expected_projection = []
+    for block in expected:
+        if not isinstance(block, Mapping):
+            expected_projection.append(block)
+        elif block.get("type") != "thinking":
+            normalized = dict(block)
+            normalized.pop("signature", None)
+            expected_projection.append(normalized)
+    return injected <= 1 and projected == expected_projection
+
+
+_SUMMARY_END = (
+    "--- END OF CONTEXT SUMMARY — respond to the message below, not the summary above ---"
+)
+
+
+def compaction_summary_text(text: Any) -> bool:
+    return (
+        isinstance(text, str)
+        and text.startswith(("[CONTEXT COMPACTION — REFERENCE ONLY]", "[CONTEXT SUMMARY]:"))
+        and _SUMMARY_END in text
+    )
+
+
+def _summary_blocks(message: Any) -> list[str]:
+    if not isinstance(message, Mapping) or message.get("role") not in {"user", "assistant"}:
+        return []
+    content = message.get("content")
+    if isinstance(content, str):
+        return [content] if compaction_summary_text(content) else []
+    if not isinstance(content, list):
+        return []
+    return [
+        str(block["text"]) for block in content
+        if isinstance(block, Mapping) and block.get("type") == "text"
+        and compaction_summary_text(block.get("text"))
+    ]
+
+
+def request_assistant_contents(messages: Any) -> list[Any]:
+    if not isinstance(messages, list):
+        return []
+    result = []
+    for message in messages:
+        if not isinstance(message, Mapping) or message.get("role") != "assistant":
+            continue
+        content = message.get("content")
+        # 独立 assistant 摘要没有对应模型回复；合并了真实尾部的摘要不猜测拆分。
+        if _summary_blocks(message) and isinstance(content, list) and all(
+            isinstance(block, Mapping) and block.get("type") == "text"
+            and compaction_summary_text(block.get("text"))
+            and str(block["text"]).rstrip().endswith(_SUMMARY_END)
+            for block in content
+        ):
+            continue
+        result.append(content)
+    return result
+
+
+def compaction_windows(calls: Any) -> dict[int, dict[str, list[int]]]:
+    """只记录由新摘要和成功响应历史收缩共同证明的压缩边界。"""
+    if not isinstance(calls, list):
+        return {}
+    windows: dict[int, dict[str, list[int]]] = {}
+    visible: list[int] = []
+    previous_messages: list[Any] = []
+    seen_summaries: set[str] = set()
+    for index, call in enumerate(calls):
+        request = call.get("request") if isinstance(call, Mapping) else None
+        messages = request.get("messages") if isinstance(request, Mapping) else None
+        messages = messages if isinstance(messages, list) else []
+        summaries = {text for message in messages for text in _summary_blocks(message)}
+        new_summary = any(
+            text not in seen_summaries
+            for message in messages[1:] for text in _summary_blocks(message)
+        )
+        actual = request_assistant_contents(messages)
+        if (
+            new_summary and visible and messages and previous_messages
+            and messages[0] == previous_messages[0]
+            and len(actual) < len(visible)
+            and len(messages) < len(previous_messages) + 2
+        ):
+            retained = []
+            cursor = 0
+            for content in actual:
+                while cursor < len(visible) and not response_history_matches(
+                    content, calls[visible[cursor]]["response"]["content"]
+                ):
+                    cursor += 1
+                if cursor == len(visible):
+                    break
+                retained.append(visible[cursor])
+                cursor += 1
+            # 压缩必须保留最近真实回复；未知 assistant 内容不得靠摘要兜底。
+            if len(retained) == len(actual) and retained and retained[-1] == visible[-1]:
+                windows[index] = {
+                    "retained": retained,
+                    "compacted": [item for item in visible if item not in retained],
+                }
+                visible = list(retained)
+        seen_summaries.update(summaries)
+        previous_messages = messages
+        if is_assistant_response(call):
+            visible.append(index)
+    return windows
 
 
 def normalize_usage(usage: Mapping[str, Any] | None) -> dict[str, int | None]:
@@ -1009,7 +1255,8 @@ def _atif_call_result_ids(
 
 
 def reconcile_evidence(
-    full_trajectory: Mapping[str, Any], atif: Mapping[str, Any]
+    full_trajectory: Mapping[str, Any], atif: Mapping[str, Any],
+    *, exchanges: JsonSource | None = None,
 ) -> dict[str, Any]:
     """严格对账模型调用、Hermes 事件、工具对和 ATIF 步骤。
 
@@ -1074,15 +1321,26 @@ def reconcile_evidence(
         if isinstance(index, int) and 0 <= index < len(anthropic_calls):
             represented_indices.append(index)
     represented_index_set = set(represented_indices)
-    compaction_detected = len(anthropic_calls) > len(assistant_messages)
-    if not compaction_detected:
-        searchable = [full_trajectory.get("hermes_session_metadata"), *messages]
-        compaction_detected = any(
-            marker in json.dumps(item, ensure_ascii=False)
-            for item in searchable
-            if item is not None
-            for marker in ("[CONTEXT COMPACTION", "compacting context", "Compacting context")
-        )
+    windows = compaction_windows(anthropic_calls)
+    compaction_detected = bool(windows)
+    compacted_indices = {
+        index for window in windows.values() for index in window["compacted"]
+    }
+    successful_indices = {
+        index for index, call in enumerate(anthropic_calls) if is_assistant_response(call)
+    }
+    missing_successes = successful_indices - represented_index_set - compacted_indices
+    if missing_successes:
+        issues.append({
+            "code": "SUCCESSFUL_RESPONSE_MAPPING_MISSING",
+            "call_indices": sorted(missing_successes),
+        })
+    invalid_mappings = represented_index_set - successful_indices
+    if invalid_mappings or len(represented_indices) != len(represented_index_set):
+        issues.append({
+            "code": "ASSISTANT_CAPTURE_MAPPING_INVALID",
+            "call_indices": sorted(invalid_mappings),
+        })
     represented_capture_calls = [
         anthropic_calls[index] for index in represented_indices
         if isinstance(anthropic_calls[index], Mapping)
@@ -1134,23 +1392,31 @@ def reconcile_evidence(
         if isinstance(call, Mapping) and not bool(call.get("complete"))
     ]
     if incomplete_indices:
-        unrepresented_incomplete = [
-            index for index in incomplete_indices if index not in represented_index_set
-        ]
-        if compaction_detected and unrepresented_incomplete:
-            warnings.append(
-                {
-                    "code": "COMPACTED_INCOMPLETE_CAPTURE",
-                    "call_indices": unrepresented_incomplete,
+        retried_indices: set[int] = set()
+        if exchanges is not None:
+            raw_exchanges = _records(exchanges)
+            if len(raw_exchanges) == len(anthropic_calls) and all(
+                isinstance(call, Mapping)
+                and call.get("raw_exchange_sha256") == canonical_json_sha256(raw)
+                for call, raw in zip(anthropic_calls, raw_exchanges, strict=True)
+            ):
+                superseded = _superseded_transport_exchange_ids(raw_exchanges)
+                retried_indices = {
+                    index for index in incomplete_indices
+                    if anthropic_calls[index].get("exchange_id") in superseded
+                    and index not in represented_index_set
                 }
-            )
-        else:
-            issues.append(
-                {
-                    "code": "INCOMPLETE_MODEL_EXCHANGE",
-                    "call_indices": incomplete_indices,
-                }
-            )
+        if retried_indices:
+            warnings.append({
+                "code": "RETRIED_EMPTY_TRANSPORT_CAPTURE",
+                "call_indices": sorted(retried_indices),
+            })
+        remaining = sorted(set(incomplete_indices) - retried_indices)
+        if remaining:
+            issues.append({
+                "code": "INCOMPLETE_MODEL_EXCHANGE",
+                "call_indices": remaining,
+            })
     harness_drift = full_trajectory.get("harness_drift")
     if isinstance(harness_drift, list) and harness_drift:
         issues.append({"code": "HARNESS_DRIFT", "calls": copy.deepcopy(harness_drift)})
@@ -1406,7 +1672,10 @@ def write_evidence_bundle(
     else:
         raise EvidenceError("exchanges 和 hermes_session 必须同时提供或同时省略")
     atif, projection = project_atif_v17(full, include_report=True)
-    reconciliation = reconcile_evidence(full, atif)
+    reconciliation = reconcile_evidence(
+        full, atif,
+        exchanges=exchanges if exchanges is not None else output_path / "anthropic-exchanges.jsonl",
+    )
     values = {
         "trajectory.full.json": full,
         "trajectory.json": atif,

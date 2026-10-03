@@ -153,7 +153,7 @@ def _native_trial(tmp_path, monkeypatch):
         (agent / name).write_text("{}\n")
     monkeypatch.setitem(sys.modules, "harbor_ags.evidence", SimpleNamespace(
         build_full_trajectory=lambda *args, **kwargs: copy.deepcopy(raw),
-        reconcile_evidence=lambda *args: {"ok": True},
+        reconcile_evidence=lambda *args, **kwargs: {"ok": True},
     ))
     return trial, raw
 

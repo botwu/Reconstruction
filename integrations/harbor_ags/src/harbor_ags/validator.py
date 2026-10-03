@@ -21,11 +21,18 @@ from typing import Any
 from .capture import assemble_anthropic_sse
 from .evidence import (
     EvidenceError,
+    _superseded_transport_exchange_ids,
+    _validate_raw_body,
     aggregate_usage,
     canonical_json_sha256,
+    compaction_summary_text,
+    compaction_windows,
+    is_assistant_response,
     normalize_usage,
     project_atif_v17,
     reconcile_evidence,
+    request_assistant_contents,
+    response_history_matches,
 )
 from .input_contract import (
     RENDERED_INPUT_SCHEMA,
@@ -397,16 +404,31 @@ def _anthropic_transcript(calls: Any) -> tuple[list[dict[str, Any]], bool]:
                 )
             else:
                 invalid = True
-        # Anthropic 的普通 user turn 与 tool_result turn 不应混在同一条
-        # Hermes 消息中；混合时无法做无损对账。
         if text_parts and tool_results:
-            invalid = True
-        if text_parts:
-            transcript.append({"role": "user", "content": "".join(text_parts)})
-        transcript.extend(tool_results)
+            if not all(compaction_summary_text(part) for part in text_parts):
+                invalid = True
+            # Hermes 把摘要和前置工具返回合成一个 user turn，保留 block 原序。
+            for block in content:
+                if not isinstance(block, Mapping):
+                    continue
+                if block.get("type") == "text":
+                    transcript.append({"role": "user", "content": block.get("text")})
+                elif block.get("type") == "tool_result":
+                    transcript.append({
+                        "role": "tool",
+                        "tool_call_id": str(
+                            block.get("tool_use_id") or block.get("tool_call_id") or ""
+                        ),
+                        "content": block.get("content"),
+                    })
+        else:
+            if text_parts:
+                transcript.append({"role": "user", "content": "".join(text_parts)})
+            transcript.extend(tool_results)
 
-    text, tool_calls = _response_assistant_projection(response)
-    transcript.append({"role": "assistant", "content": text, "tool_calls": tool_calls})
+    if is_assistant_response(final_call):
+        text, tool_calls = _response_assistant_projection(response)
+        transcript.append({"role": "assistant", "content": text, "tool_calls": tool_calls})
     for event in transcript:
         if event.get("role") == "user":
             # Hermes/SDK 在后续 request 中会去掉初始 prompt 末尾换行。
@@ -437,7 +459,8 @@ def _terminal_text_only_call(call: Any, index: int, total: int) -> bool:
         for block in content
     )
     return (
-        not request.get("tools")
+        is_assistant_response(call)
+        and not request.get("tools")
         and not request.get("tool_choice")
         and not has_tool_use
         and bool(call.get("complete"))
@@ -506,139 +529,74 @@ def _hermes_transcript(messages: Any) -> tuple[list[dict[str, Any]], bool]:
 
 
 def _context_compaction_detected(messages: Any, calls: Any) -> bool:
-    if isinstance(calls, list) and isinstance(messages, list):
-        assistants = sum(
-            isinstance(message, Mapping) and message.get("role") == "assistant"
-            for message in messages
-        )
-        if len(calls) > assistants:
-            return True
-    try:
-        text = json.dumps(messages, ensure_ascii=False)
-    except (TypeError, ValueError):
-        text = ""
-    return any(
-        marker in text
-        for marker in ("[CONTEXT COMPACTION", "compacting context", "Compacting context")
-    )
+    return bool(compaction_windows(calls))
 
 
 def _call_transcript_prefix_issues(calls: Any, messages: Any) -> list[dict[str, Any]]:
-    """核对每一笔模型请求的历史前缀，避免只校验最后一轮。"""
-
+    """逐笔验证历史；只有已证明的压缩边界可以替换原窗口。"""
     if not isinstance(calls, list):
         return [{"code": "CALL_TRANSCRIPT_CALLS_SHAPE"}]
     hermes, hermes_invalid = _hermes_transcript(messages)
     if hermes_invalid:
         return [{"code": "CALL_TRANSCRIPT_HERMES_INVALID"}]
-    if _context_compaction_detected(messages, calls):
-        return []
-    assistant_positions = [
-        index for index, event in enumerate(hermes) if event.get("role") == "assistant"
+    windows = compaction_windows(calls)
+    compacted = {index for window in windows.values() for index in window["compacted"]}
+    final_indices = [
+        index for index, call in enumerate(calls)
+        if is_assistant_response(call) and index not in compacted
     ]
-    if len(assistant_positions) != len(calls):
-        return [
-            {
-                "code": "CALL_TRANSCRIPT_ASSISTANT_COUNT",
-                "calls": len(calls),
-                "assistants": len(assistant_positions),
-            }
-        ]
+    assistant_positions = [
+        index for index, event in enumerate(hermes)
+        if event.get("role") == "assistant" and not compaction_summary_text(event.get("content"))
+    ]
     issues: list[dict[str, Any]] = []
+    if len(assistant_positions) != len(final_indices):
+        issues.append({
+            "code": "CALL_TRANSCRIPT_ASSISTANT_COUNT",
+            "calls": len(final_indices), "assistants": len(assistant_positions),
+        })
+    visible: list[int] = []
+    previous_prefix: list[dict[str, Any]] | None = None
+    last_boundary = max(windows, default=-1)
     for index, call in enumerate(calls):
-        if _terminal_text_only_call(call, index, len(calls)):
+        if not isinstance(call, Mapping):
+            issues.append({"code": "CALL_TRANSCRIPT_CALL_SHAPE", "call_index": index})
             continue
-        raw_prefix, raw_invalid = _anthropic_transcript([call])
-        hermes_prefix = hermes[: assistant_positions[index] + 1]
-        if raw_invalid or raw_prefix != hermes_prefix:
-            issues.append(
-                {
-                    "code": "CALL_TRANSCRIPT_PREFIX_MISMATCH",
-                    "call_index": index,
-                }
-            )
-        request = call.get("request") if isinstance(call, Mapping) else None
+        if index in windows:
+            visible = list(windows[index]["retained"])
+        request = call.get("request")
         request_messages = request.get("messages") if isinstance(request, Mapping) else None
-        history_assistants = (
-            [
-                message.get("content")
-                for message in request_messages
-                if isinstance(message, Mapping) and message.get("role") == "assistant"
-            ]
-            if isinstance(request_messages, list)
-            else []
+        actual = request_assistant_contents(request_messages)
+        expected = [calls[item]["response"]["content"] for item in visible]
+        if len(actual) != len(expected) or not all(
+            response_history_matches(a, e) for a, e in zip(actual, expected, strict=True)
+        ):
+            issues.append({"code": "CALL_RESPONSE_HISTORY_MISMATCH", "call_index": index})
+        raw_prefix, raw_invalid = _anthropic_transcript([call])
+        request_prefix, request_invalid = _anthropic_transcript(
+            [dict(call, response={}, status=500)]
         )
-        expected_assistants = [
-            previous.get("response", {}).get("content")
-            if isinstance(previous, Mapping)
-            and isinstance(previous.get("response"), Mapping)
-            else None
-            for previous in calls[:index]
-        ]
-        # 这项使用原始 content block 精确比较，不会丢失
-        # thinking、signature、redacted_thinking 或 tool_use 字段。唯一允许的
-        # 运输投影是 Hermes adapter 为 prompt cache 在一个 text block 上
-        # 添加 cache_control={"type":"ephemeral"}。
-        history_matches = len(history_assistants) == len(expected_assistants)
-        if history_matches:
-            for actual_content, expected_content in zip(
-                history_assistants,
-                expected_assistants,
-                strict=True,
-            ):
-                if actual_content == expected_content:
-                    continue
-                if not isinstance(actual_content, list):
-                    history_matches = False
-                    break
-                projected: list[Any] = []
-                injected = 0
-                valid_projection = True
-                for block in actual_content:
-                    if not isinstance(block, Mapping):
-                        projected.append(block)
-                        continue
-                    normalized_block = dict(block)
-                    if normalized_block.get("type") == "thinking":
-                        continue
-                    if "cache_control" in normalized_block:
-                        if (
-                            normalized_block.get("type") != "text"
-                            or normalized_block.get("cache_control")
-                            != {"type": "ephemeral"}
-                        ):
-                            valid_projection = False
-                            break
-                        injected += 1
-                        normalized_block.pop("cache_control")
-                    projected.append(normalized_block)
-                expected_projection: list[Any] = []
-                if isinstance(expected_content, list):
-                    for block in expected_content:
-                        if not isinstance(block, Mapping):
-                            expected_projection.append(block)
-                            continue
-                        if block.get("type") == "thinking":
-                            continue
-                        normalized_block = dict(block)
-                        normalized_block.pop("signature", None)
-                        expected_projection.append(normalized_block)
-                else:
-                    expected_projection = expected_content
-                if (
-                    not valid_projection
-                    or injected > 1
-                    or projected != expected_projection
-                ):
-                    history_matches = False
-                    break
-        if not history_matches:
-            issues.append(
-                {
-                    "code": "CALL_RESPONSE_HISTORY_MISMATCH",
-                    "call_index": index,
-                }
-            )
+        # 每次失败请求也必须保留此前真实历史；只有当前压缩边界可更换它。
+        if (
+            previous_prefix is not None and index not in windows
+            and not _terminal_text_only_call(call, index, len(calls))
+            and (request_invalid or request_prefix[:len(previous_prefix)] != previous_prefix)
+        ):
+            issues.append({"code": "CALL_REQUEST_HISTORY_MISMATCH", "call_index": index})
+        if index >= last_boundary and not _terminal_text_only_call(call, index, len(calls)):
+            ordinal = sum(item < index for item in final_indices)
+            if is_assistant_response(call):
+                end = assistant_positions[ordinal] + 1 if ordinal < len(assistant_positions) else -1
+            else:
+                end = (
+                    assistant_positions[ordinal]
+                    if ordinal < len(assistant_positions) else len(hermes)
+                )
+            if raw_invalid or end < 0 or raw_prefix != hermes[:end]:
+                issues.append({"code": "CALL_TRANSCRIPT_PREFIX_MISMATCH", "call_index": index})
+        previous_prefix = raw_prefix
+        if is_assistant_response(call):
+            visible.append(index)
     return issues
 
 
@@ -1141,32 +1099,6 @@ def validate_atif_v17(value: Any) -> list[dict[str, Any]]:
     return errors
 
 
-def _validate_raw_body(value: Any, *, location: str) -> tuple[list[dict[str, Any]], bytes | None]:
-    errors: list[dict[str, Any]] = []
-    if not isinstance(value, Mapping):
-        return [{"code": "CAPTURE_BODY_SHAPE", "location": location}], None
-    encoded = value.get("raw_base64")
-    if not isinstance(encoded, str):
-        return [{"code": "CAPTURE_RAW_BODY_MISSING", "location": location}], None
-    try:
-        raw = base64.b64decode(encoded, validate=True)
-    except (ValueError, binascii.Error):
-        return [{"code": "CAPTURE_RAW_BODY_BASE64", "location": location}], None
-    if value.get("size_bytes") != len(raw):
-        errors.append({"code": "CAPTURE_BODY_SIZE_MISMATCH", "location": location})
-    if value.get("sha256") != hashlib.sha256(raw).hexdigest():
-        errors.append({"code": "CAPTURE_BODY_HASH_MISMATCH", "location": location})
-    if "json" in value:
-        try:
-            parsed = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            errors.append({"code": "CAPTURE_BODY_JSON_MISMATCH", "location": location})
-        else:
-            if parsed != value.get("json"):
-                errors.append({"code": "CAPTURE_BODY_JSON_MISMATCH", "location": location})
-    return errors, raw
-
-
 def _parse_sse_frame(raw: bytes) -> dict[str, Any] | None:
     """按 CaptureGateway 的规则从原始 SSE frame 恢复语义字段。"""
 
@@ -1303,75 +1235,6 @@ def _validate_anthropic_message(
                     {"code": "ANTHROPIC_USAGE_FIELD", "field": field_name, **location}
                 )
     return errors
-
-
-def _superseded_transport_exchange_ids(exchanges: Sequence[Any]) -> set[str]:
-    """Recover only empty transport failures followed by the same raw request.
-
-    Every attempt still undergoes capture validation. A retry only discharges
-    completeness errors; it cannot erase received content or evidence defects.
-    """
-    successful_after: dict[tuple[Any, ...], _dt.datetime] = {}
-    superseded: set[str] = set()
-    for exchange in reversed(exchanges):
-        if not isinstance(exchange, Mapping):
-            continue
-        request_errors, request_raw = _validate_raw_body(
-            exchange.get("request"), location="retry:request"
-        )
-        headers = exchange.get("request_headers")
-        if (
-            request_errors
-            or request_raw is None
-            or not isinstance(headers, Mapping)
-            or any(
-                not isinstance(exchange.get(name), str)
-                for name in ("method", "path", "upstream_url")
-            )
-        ):
-            continue
-        try:
-            started = _dt.datetime.fromisoformat(exchange["started_at"])
-            finished = _dt.datetime.fromisoformat(exchange["finished_at"])
-            if started.utcoffset() is None or finished.utcoffset() is None or finished < started:
-                continue
-        except (KeyError, TypeError, ValueError):
-            continue
-        identity = (
-            request_raw,
-            exchange.get("method"),
-            exchange.get("path"),
-            exchange.get("upstream_url"),
-            canonical_json_sha256(headers),
-        )
-        if (
-            exchange.get("response_status") == 200
-            and exchange.get("complete") is True
-            and exchange.get("error_code") is None
-        ):
-            successful_after[identity] = started
-            continue
-        exchange_id = exchange.get("exchange_id")
-        response = exchange.get("response")
-        if not (
-            isinstance(exchange_id, str)
-            and identity in successful_after
-            and finished <= successful_after[identity]
-            and exchange.get("response_status") == 200
-            and exchange.get("streaming") is True
-            and exchange.get("complete") is False
-            and exchange.get("error_code") == "UPSTREAM_TRANSPORT_ERROR"
-            and exchange.get("sse_event_count") == 0
-            and isinstance(response, Mapping)
-            and response.get("message") == assemble_anthropic_sse([])
-        ):
-            continue
-        body_errors, response_raw = _validate_raw_body(
-            response.get("body"), location="retry:response"
-        )
-        if not body_errors and response_raw == b"":
-            superseded.add(exchange_id)
-    return superseded
 
 
 def _validate_capture_records(exchanges: list[Any], sse_records: list[Any]) -> list[dict[str, Any]]:
@@ -2584,7 +2447,8 @@ def validate_harbor_trial(
                 for message in normalized_messages
                 if isinstance(message, Mapping) and message.get("role") == "assistant"
             ] if isinstance(normalized_messages, list) else []
-            if len(assistant_messages) != len(normalized_calls) and not compaction_detected:
+            successful_count = sum(is_assistant_response(call) for call in normalized_calls)
+            if len(assistant_messages) != successful_count and not compaction_detected:
                 full_structure_errors.append({"code": "FULL_ASSISTANT_RESPONSE_COUNT_MISMATCH"})
             assistant_by_call = {
                 message.get("_anthropic_call_index"): message
@@ -2699,8 +2563,7 @@ def validate_harbor_trial(
                 else False
             )
             if (
-                not compaction_detected
-                and not terminal_call
+                not terminal_call
                 and (
                     request_transcript_invalid
                     or hermes_transcript_invalid
@@ -2893,7 +2756,9 @@ def validate_harbor_trial(
                 full_trajectory,
                 include_report=True,
             )
-            fresh_reconciliation = reconcile_evidence(full_trajectory, fresh_atif)
+            fresh_reconciliation = reconcile_evidence(
+                full_trajectory, fresh_atif, exchanges=exchanges
+            )
         except Exception as exc:
             checks["projection"] = False
             checks["reconciliation"] = False

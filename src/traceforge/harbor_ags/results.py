@@ -293,7 +293,9 @@ def read_search_trial(
             if full.get(field) != rebuilt.get(field):
                 raise HarborResultError(f"NATIVE_CAPTURE_BINDING_MISMATCH:{field}")
         atif = _read_json(root / "agent/trajectory.json")
-        reconciliation = evidence.reconcile_evidence(full, atif)
+        reconciliation = evidence.reconcile_evidence(
+            full, atif, exchanges=root / "agent/anthropic-exchanges.jsonl",
+        )
         if reconciliation.get("ok") is not True:
             codes = [str(item.get("code")) for item in reconciliation.get("issues", [])]
             raise HarborResultError("NATIVE_RECONCILIATION_FAILED:" + ",".join(codes))
