@@ -102,7 +102,7 @@ def test_mixed_non_file_diagnostic_rollout_cannot_certify_task(tmp_path: Path, m
     })
     candidate = SimpleNamespace(
         candidate_id="fixture", test_outputs_py="def test_bill(): pass",
-        to_dict=lambda: {"candidate_id": "fixture"},
+        file_semantic_checks={}, to_dict=lambda: {"candidate_id": "fixture"},
     )
     calls = []
     class FakeExec:
@@ -145,7 +145,10 @@ def test_recovered_unverified_obligations_override_ready_candidate(tmp_path: Pat
     workspace.mkdir()
     (workspace / "billing.py").write_text("def bill(x): return x\n", encoding="utf-8")
     def recover(**kwargs):
-        return {"status": "READY", "errors": [], "unverified_obligations": ["billing"]}, object()
+        return (
+            {"status": "READY", "errors": [], "unverified_obligations": ["billing"]},
+            SimpleNamespace(file_semantic_checks={}),
+        )
     def forbidden(*args, **kwargs):
         pytest.fail("an incomplete candidate must not be calibrated or compiled")
     monkeypatch.setattr(recovery_module, "run_verifier_recovery", recover)
