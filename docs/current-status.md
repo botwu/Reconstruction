@@ -11,8 +11,9 @@
 | R01:38 search | 最新 run03 两次原生 Harbor/AGS 完整结束；35 次模型请求全部 HTTP 200，57 条工具事件；每次 50 个初始文件逐哈希对账，捕获、回收和沙箱清理通过 | 材料完整交付、检索工具已修复；两份原生答卷仍有内容错误；同一环境的新独立 Astra 答卷已通过人工内容核查，证明当前环境可解 |
 | R04:1 首项：提取模块并分析代码 | warm run07 两次原生 rollout 均 9 项行为 PASS、FILE ACCEPT；回收 28/27 文件，12 个沙箱清理 | 代码义务通过；分析回答仍有事实错误，保留人工核查，SFT 不放行 |
 | R04:1 第二项：修复 DeadlineExceeded | 初态恢复、独立充分性、验证器语义审查和正反例校准通过；两次实际 solver 捕获完整、无容器异常，21 个沙箱清理 | 两次均 7 PASS / 1 FAIL，并被 FILE 审查拒绝；不能将 solver 失败说成环境未运行 |
-| R04:1 标准冷运行 run02 | 仅原始数据重新分段和解析；两任务合同与环境均已 READY、独立充分性通过 | 第一项校准被日志缺失及 SKIPPED 错误归因阻断；第二项源码与原正文/补丁一致、待修缺陷仍在，已进入验证器 |
-| R04:1 首项定向恢复 | 使用 run02 原环境、原候选及完整作者历史，冻结新运行时后重走校准 | 新 NOP 已完整回收日志并被文件审查实际读完，正确拒绝未提取初态；正在继续参考解与两次原生 rollout |
+| R04:1 标准冷运行 run02 | 仅原始数据重新分段和解析；两任务合同与环境均已 READY、独立充分性通过；第二项完成校准及两次原生 rollout | 第一项旧校准失败保留；第二项分别 5/6、4/6 PASS，部分拒绝源于验证器过约束，另一份另缺瞬态恢复；41 次请求完整、4 个 solver/verifier 沙箱清理 |
+| R04:1 首项定向恢复 | 原环境与原作者历史恢复；真实失败自动返修后校准 PASS；两次原生 rollout 均 6 PASS，40 次请求完整，21 个沙箱清理 | 两次 FILE 拒绝均涉及保留完整 Scraper 是否满足提取，已请求用户明确边界；分析回答另有三处事实需更正，整体保持 REVIEW |
+| R01:38 新原始冷批次 | 正式批量入口仅选原始第 38 条；任务切分、解析完成，5/5 原始记录完整交付，自主取得 7 份官网/PDF 来源 | Serper 额度不足、材料未证充分，真实状态 BLOCKED，未进入 rollout；已有相关直链尚未尝试，继续恢复不能靠降低门槛 |
 
 **目前不能声称无人干预批量生产已就绪。** 单个任务可解、两次运行完成、8,218 条原始数据可下载，都不等于批量重建通过。
 
@@ -65,7 +66,7 @@ AGS 使用预置 Hermes 模板，未执行 Dockerfile 中的 ripgrep 安装。�
 
 本次冷运行又实证两处下游交接问题：grader 已生成 pytest 日志，但四份运行配置只回收 verdict，文件审查也未绑定原日志；第一份参考解因此返回 REVIEW。第二份参考解因合法接口迁移而跳过一个作者测试，5 PASS / 1 SKIPPED 被严格 grader 拒绝，但编排错误地按基础设施问题原样重试后停止。现补齐 stdout/stderr/JUnit 回收及审查绑定，并将执行和清理完整、明确因 SKIPPED 缺覆盖的校准送回作者；不把 skip 算通过，未知和真实基础设施错误仍保留。返修诊断额外核对同一 trial、计划及任务，不能借其他回执改变方向。原回执未改；新定向恢复的首个 NOP 已真实回收 10,999 字节 stdout，并由独立审查完整读取后正确拒绝未提取初态。
 
-冷运行第二项又暴露验收来源问题：原用户只提供重复 DeadlineExceeded 错误文本，未提供完整响应；历史助手假设存在“数据和错误并存”的响应，生成测试却要求这种响应必须被消费并落盘。两份参考解都采用同一策略，RED 通过仍漏掉了这一附加要求。第一份真实 solver 的五项其他测试通过，仅被该条件拒绝；第二份还缺少同一失败页的瞬态恢复，二者不能混为一种失败。现已在作者和独立语义审查的共享规则中要求逐项说明用户/真实观察依据及必要性、检查合理替代策略，并升级提示版本；不删除有效故障、状态保护测试，也不改写旧 reward。新规则的真实语义复审尚待完成。
+冷运行第二项又暴露验收来源问题：原用户只提供重复 DeadlineExceeded 错误文本，未提供完整响应；历史助手假设存在“数据和错误并存”的响应，生成测试却要求这种响应必须被消费并落盘。两份参考解都采用同一策略，RED 通过仍漏掉了这一附加要求。第一份真实 solver 的五项其他测试通过，仅被该条件拒绝；第二份还缺少同一失败页的瞬态恢复，二者不能混为一种失败。现已在作者和独立语义审查的共享规则中要求逐项说明用户/真实观察依据及必要性、检查合理替代策略，并升级提示版本；不删除有效故障、状态保护测试，也不改写旧 reward。新规则已对同一原候选完成独立真实复审，没有注入我们的诊断或 solver 答卷；模型自行返回 REVISE，指出永久部分响应策略、未经证实的页大小和调用上限、断言来源归因三类问题，并保留有效故障和状态保护。原作者自动返修正在准备，尚未声称新候选已通过校准。
 
 标准入口默认不限制验证轮数；无实际候选变化、未完成审查或基础设施失败明确收口，不以反复改说明冒充进展。本次 Hermes 角色请求预算 300 秒，客户端可重试；独立解析器请求预算 900 秒，均不是整个阶段总时限。
 
@@ -79,8 +80,8 @@ terminal 首任务的分析回答把累计无新增页数写成连续页数、�
 
 ## 批量和迁移仍需完成
 
-- 标准 R04 冷入口 run02 正在继续验证器、RED 与原生 rollout；首任务环境通过仍不等于两项任务均已完成。
-- search 冷恢复仍用过外部公开导航协助。10 月 3 日单次复测仍为 Serper 额度不足、Jina 网络不可达；已有充分离线语料不代表检索服务恢复，已请求补充检索额度。
+- 标准 R04 冷入口 run02 已结束；首任务另通过正式检查点完成自动返修和两次原生运行，第二项需修正过约束的验收机制后重新校准。分析内容与提取边界仍未全部验收。
+- 旧 search 完整环境用过外部公开导航协助；本次新冷批次已自主沿原文取得官网与 PDF，但仍未证明四方向材料充分。Serper 额度不足、Jina 网络不可达；需继续利用未尝试的已知正文链接，不能把它们写成无法取得，也不能据此冒称查询服务恢复。
 - PDF 显式逐页 OCR 已保留原 PDF、页图、检测块、置信度和哈希；公式及双栏顺序仍有限制。现有诊断环境可用，独立 Python 3.12 依赖安装待批准与验证。
 - 批次冻结、逐条进程、原子进度和失败续跑已有实现，仍缺两个 domain 的自主冷运行与小批次实证。
 - R01:559 的 47 条原返回已完整交付，公开源码真实抓取；私有分支缺失正文不能生成冒充。
@@ -89,4 +90,4 @@ terminal 首任务的分析回答把累计无新增页数写成连续页数、�
 
 实现与使用见[流程](raw-session-pipeline.md)、[源码地图](rebuild-live-map.md)、[Harbor 交付](harbor-task-delivery.md)、[批量运行](batch-reconstruction.md)与[跨机器调试](cross-machine-debug.md)。密钥、私有配置及运行产物不进入 Git。
 
-最新私有证据：artifacts/pipeline-debug-20261002/ 下的 cold-search-journal-native-run03、terminal-environment-recovery/run07、terminal-task2-verification-run02、terminal-raw-cold-run01；artifacts/pipeline-debug-20261003/ 下的 terminal-parser-effect-run01、terminal-intent-repair-run01、terminal-intent-semantic-run01、evidence-handoff-audit、terminal-raw-cold-run02、terminal-task1-evidence-resume-run01、search-current-environment-astra-run01、search-direct-html-production-check、runtime-integration-validation。所有旧失败、原答卷和清理回执保留，不由新结果覆盖。
+最新私有证据：artifacts/pipeline-debug-20261002/ 下的 cold-search-journal-native-run03、terminal-environment-recovery/run07、terminal-task2-verification-run02、terminal-raw-cold-run01；artifacts/pipeline-debug-20261003/ 下的 terminal-parser-effect-run01、terminal-intent-repair-run01、terminal-intent-semantic-run01、evidence-handoff-audit、terminal-raw-cold-run02、terminal-task1-evidence-resume-run01、terminal-task2-source-review-run01、search-raw-cold-batch-run01、search-current-environment-astra-run01、search-direct-html-production-check、runtime-integration-validation。所有旧失败、原答卷和清理回执保留，不由新结果覆盖。
