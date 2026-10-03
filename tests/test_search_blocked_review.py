@@ -51,10 +51,16 @@ def scenario(tmp_path, monkeypatch, *, outcome="recover", failed_agent=False):
             assert "web_search" not in role.tools and "web_open" not in role.tools
             decision = "BLOCKED" if outcome == "unrecoverable" else "REPAIR"
             payload = {"decision": decision, "requirements": [{
-                "obligation_id": "analysis", "status": "ENVIRONMENT_GAP",
+                "obligation_id": "analysis",
+                "status": "SUPPORTED" if outcome == "reassess" else "ENVIRONMENT_GAP",
                 "reason": "原tool消息仍提供与论文义务相关的来源，未尝试不等于不可访问",
                 "repair": "读取原tool消息中的 https://example.org/paper，再核正文是否满足义务",
             }]}
+            if outcome == "reassess":
+                payload["requirements"][0].update(
+                    reason="environment 已交付原论文完整正文，查询服务并非原要求",
+                    repair="对照已交付正文与原分析义务，重新判断必须联网的停止依据",
+                )
         else:
             assert role.name == "search_completion"
             author_sessions.append(session)
@@ -62,6 +68,8 @@ def scenario(tmp_path, monkeypatch, *, outcome="recover", failed_agent=False):
             if (author_turns == 1 or outcome == "no_progress"
                     or (outcome == "ready_gate" and author_turns == 2)):
                 session.web_search_handler("原查询")
+                if outcome == "reassess":
+                    session.web_open_handler("https://example.org/paper")
                 payload = {"status": "READY" if outcome == "ready_gate" else "BLOCKED",
                            "requires_live_web": True, "retrieval_reason": "原查询额度不足",
                            "missing_inputs": [] if outcome == "ready_gate"
@@ -69,7 +77,8 @@ def scenario(tmp_path, monkeypatch, *, outcome="recover", failed_agent=False):
             else:
                 assert session is author_sessions[0]
                 assert request["completion_feedback"]["decision"] == "REPAIR"
-                session.web_open_handler("https://example.org/paper")
+                if outcome != "reassess":
+                    session.web_open_handler("https://example.org/paper")
                 payload = {"status": "READY", "requires_live_web": False,
                            "retrieval_reason": "原线索正文已实际读取，现有输入足够",
                            "missing_inputs": []}
@@ -101,6 +110,42 @@ def test_blocked_completion_reviews_original_routes_then_resumes_same_author(tmp
     revised = json.loads((tmp_path / "revisions/0001/environment.json").read_text())
     assert revised["requires_live_web"] is False
     assert revised["live_references"][0]["text"] == "原链接返回的完整论文正文"
+
+
+def test_existing_material_can_correct_stop_basis_without_new_fetch(tmp_path, monkeypatch):
+    result, roles, reviews, sessions = scenario(tmp_path, monkeypatch, outcome="reassess")
+    assert roles == ["search_completion", "search_review", "search_completion"]
+    assert result["status"] == "ENVIRONMENT_READY" and result["errors"] == []
+    assert sessions[0] is sessions[1]
+    before = reviews[0]["environment"]
+    after = json.loads((tmp_path / "revisions/0001/environment.json").read_text())
+    assert before["requires_live_web"] is True and after["requires_live_web"] is False
+    assert before["captures"] == after["captures"]
+    assert before["live_references"] == after["live_references"]
+    assert len(reviews[0]["actual_web_calls"]) == 2
+
+
+@pytest.mark.parametrize("completion,repair,accepted", [
+    (True, "依据已交付正文纠正非原任务必需的全文范围条件", True),
+    (True, "", False), (False, "依据已交付正文重新判断", False),
+])
+def test_supported_reassessment_cannot_bypass_postrollout_or_omit_action(
+    tmp_path, completion, repair, accepted,
+):
+    from traceforge.reconstruction.agents.session import AgentSession
+    from traceforge.reconstruction.search_environment import SEARCH_REVIEW_ROLE, _run_search_review
+
+    result = _run_search_review(
+        request={}, task={"acceptance_obligations": [{"id": "analysis"}]},
+        agent=SimpleNamespace(run=lambda **_: SimpleNamespace(
+            completed=True, errors=[], payload={"decision": "REPAIR", "requirements": [{
+                "obligation_id": "analysis", "status": "SUPPORTED",
+                "reason": "原分析任务所需正文已经交付", "repair": repair,
+            }]})),
+        session=AgentSession(), role=SEARCH_REVIEW_ROLE, output_root=tmp_path,
+        completion=completion,
+    )
+    assert (result["decision"] == "REPAIR") is accepted
 
 
 def test_repeated_failed_request_and_changed_reason_are_not_progress(tmp_path, monkeypatch):

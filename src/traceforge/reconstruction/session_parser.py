@@ -571,7 +571,6 @@ def parse_session_tools(
         "source_sha256": source.get("line_sha256"),
         "input_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
         "policy_sha256": hashlib.sha256(PARSER_SYSTEM.encode()).hexdigest(),
-        "context_window_tokens": 1_000_000 if model_name == PARSER_MODEL else None,
         "input_policy": "full_raw_session",
     }
     request = ModelRequest(

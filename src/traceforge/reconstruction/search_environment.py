@@ -456,7 +456,8 @@ def _run_search_review(
         if not valid:
             errors.append("requirements 须逐项对应 " + ", ".join(sorted(expected))
                           + "，每项包含 obligation_id、合法 status 和非空 reason")
-        elif (decision == "REPAIR" and not any(item["status"] == "ENVIRONMENT_GAP" for item in checks)):
+        elif (not completion and decision == "REPAIR"
+              and not any(item["status"] == "ENVIRONMENT_GAP" for item in checks)):
             errors.append("只有真实 ENVIRONMENT_GAP 才能返回 REPAIR；solver 错误不能通过改写环境修复")
         elif (decision == "COMPLETE" and any(item["status"] in {"ENVIRONMENT_GAP", "NOT_EXERCISED"}
                                              for item in checks)):
@@ -466,6 +467,12 @@ def _run_search_review(
                 errors.append("补全复核只能返回 REPAIR 或 BLOCKED，不能代替作者通过环境门禁")
             if valid and any(item["status"] == "SOLVER_ERROR" for item in checks):
                 errors.append("尚未执行 rollout，补全复核不能声明 SOLVER_ERROR")
+            if valid and decision == "REPAIR" and not any(
+                item["status"] in {"SUPPORTED", "ENVIRONMENT_GAP"}
+                and isinstance(item.get("repair"), str) and item["repair"].strip()
+                for item in checks
+            ):
+                errors.append("REPAIR 须引用具体证据，提出恢复必要输入或纠正停止依据的动作")
             if valid and decision == "REPAIR" and any(
                 item["status"] == "ENVIRONMENT_GAP"
                 and (not isinstance(item.get("repair"), str) or not item["repair"].strip())
@@ -510,15 +517,21 @@ def _review_search_completion(
             "actual_web_calls 是实际成功及失败返回。按原用户义务检查缺口是否必需，"
             "以及相关原始 URL、已读页面的正文链接、参考文献是否仍有未尝试的恢复路径。"
             "不能把查询服务故障等同于已知来源不可取得，也不能把未尝试声明为可访问或足够。"
-            "只提出与具体缺口相关、能够引用原文来源的动作，不要求穷尽所有 URL。"
-            "有恢复依据返回 REPAIR，逐项 repair 引用原消息或已读返回中的线索及尝试状态，"
-            "由同一作者实际执行后重新判断。无可恢复依据返回 BLOCKED，说明相关路线的"
-            "真实失败或不适用理由。不能因服务故障降低任务要求、强改 requires_live_web，"
-            "也不能直接接受环境或加入待求结论。"
+            "充分性不要求穷尽 URL、取得所有全文或支撑原用户未要求的更强结论；"
+            "证据范围限制某个断言，不自动证明整个任务不可解。按每项原义务判断必要性。"
+            "确缺必要输入时记 ENVIRONMENT_GAP；有恢复依据返回 REPAIR，repair 引用原消息"
+            "或已读返回中的线索及尝试状态。若已有输入足以支持该义务，记 SUPPORTED，"
+            "只表示输入供给，不表示 solver 或待求结论通过。作者停止依据过严时也可 REPAIR："
+            "repair 须引用具体已交付材料，说明额外条件为何不是原要求，由原作者重新核对，"
+            "不能只要求改状态、设 requires_live_web=false 或补写答案。"
+            "未核实的义务记 NOT_EXERCISED。"
+            "必要输入无法恢复或判断依据不足时返回 BLOCKED，说明具体限制。"
+            "不能因服务故障降低原要求，也不能直接接受环境或加入待求结论。"
             "返回既有复核 JSON：{decision: REPAIR|BLOCKED, requirements: "
             "[{obligation_id: 原义务id, status: SUPPORTED|ENVIRONMENT_GAP|NOT_EXERCISED, "
             "reason: 原文与实际返回依据, repair: 后续恢复动作或空字符串}]}。"
-            "REPAIR 至少包含一个 ENVIRONMENT_GAP；全部原义务必须逐项覆盖。"
+            "REPAIR 至少包含一个有具体 repair 的 ENVIRONMENT_GAP 或 SUPPORTED；"
+            "全部原义务必须逐项覆盖，某项已有输入不能代替其他缺口。"
         ),
     )
     reviewer = AgentSession(
@@ -769,9 +782,9 @@ def run_search_task(
                 break
             instruction = json.dumps({
                 "completion_feedback": review,
-                "instruction": "继续同一原任务补全，依据独立复核引用的原文线索实际恢复资料。"
-                "保持原用户要求、已有材料和真实失败记录；未尝试不等于可访问或足够。"
-                "取得实际结果后逐项重新判断输入供给，提交完整补全 JSON；不得直接套用通过状态。",
+                "instruction": "继续同一原任务补全，依据复核恢复确有必要的资料，或重新核对停止依据。"
+                "保留原要求、已有材料和真实失败记录；未尝试不等于可访问，已有输入充分也不强制新增访问。"
+                "按实际材料逐项判断输入供给，提交完整补全 JSON；不得套用通过状态或写入待求答案。",
             }, ensure_ascii=False)
             continue
         state = json.dumps({key: environment[key] for key in (
