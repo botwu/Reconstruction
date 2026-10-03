@@ -8,7 +8,7 @@ Gemini 测试示例：
 PYTHONPATH=src .venv/bin/python -m traceforge failure-analysis agentrx \
   --trajectory-json trajectory.json \
   --output agentrx.json \
-  --config /mnt/afs_toolcall/wujian1/Projects/workspace/TraceRconstruction/config.yaml \
+  --config config.yaml \
   --channel gemini \
   --model-name gemini-2.5-pro
 ```

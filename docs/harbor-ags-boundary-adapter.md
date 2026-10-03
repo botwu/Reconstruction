@@ -24,10 +24,12 @@
 
 ## 运行命令
 
+先按[换机调试](cross-machine-debug.md)准备运行时，以下命令从项目根目录执行。
+
 ```bash
-PYTHONPATH=src python -m traceforge harbor-ags plan \
+PYTHONPATH=src integrations/harbor_ags/.venv/bin/python -m traceforge harbor-ags plan \
   --task-dir /absolute/path/to/task \
-  --harbor-root /mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags \
+  --harbor-root "$PWD/integrations/harbor_ags" \
   --source-ref m4-report:<id> \
   --output /absolute/path/to/harbor-plans
 ```
@@ -37,7 +39,7 @@ PYTHONPATH=src python -m traceforge harbor-ags plan \
 独立执行已审核计划：
 
 ```bash
-PYTHONPATH=src python -m traceforge harbor-ags execute-rollout \
+PYTHONPATH=src integrations/harbor_ags/.venv/bin/python -m traceforge harbor-ags execute-rollout \
   --plan-dir /absolute/path/to/plan \
   --config config.yaml \
   --channel claude
@@ -46,7 +48,7 @@ PYTHONPATH=src python -m traceforge harbor-ags execute-rollout \
 独立 Hermes 执行完成后验收：
 
 ```bash
-PYTHONPATH=src python -m traceforge harbor-ags read-results \
+PYTHONPATH=src integrations/harbor_ags/.venv/bin/python -m traceforge harbor-ags read-results \
   --plan-dir /absolute/path/to/plan
 ```
 

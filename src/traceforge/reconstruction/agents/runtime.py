@@ -46,9 +46,7 @@ HermesFactory = Callable[..., Any]
 # 同进程的重建必须串行；批量并行由独立进程/沙盒承担。
 _HERMES_PROCESS_LOCK = threading.RLock()
 _MISSING_DISPATCH = object()
-DEFAULT_HERMES_HOME = Path(
-    "/mnt/afs_toolcall/wujian1/Projects/tokenhub_data_model_eval/R01/hermes-agent"
-)
+DEFAULT_HERMES_HOME = Path(__file__).resolve().parents[4] / ".runtime/hermes-agent"
 
 
 class HermesUnavailableError(RuntimeError):
@@ -56,7 +54,7 @@ class HermesUnavailableError(RuntimeError):
 
 
 def resolve_hermes_home(explicit: str | Path | None = None) -> Path:
-    """解析 Hermes 根目录：``--hermes-home`` / ``HERMES_HOME`` / 本机默认路径。"""
+    """解析 Hermes 根目录：``--hermes-home`` / ``HERMES_HOME`` / 项目内源码。"""
 
     if explicit is not None and str(explicit).strip():
         home = Path(explicit).expanduser().resolve()
@@ -73,7 +71,10 @@ def resolve_hermes_home(explicit: str | Path | None = None) -> Path:
 
 
 def hermes_install_hint(home: Path) -> str:
-    return f'.venv/bin/pip install -e "{home}"'
+    return (
+        "请按 docs/cross-machine-debug.md 安装完整的锁定运行时；"
+        f"当前 Hermes 源码目录：{home}。"
+    )
 
 
 @dataclass
@@ -440,7 +441,7 @@ def build_hermes_runtime(
             home = DEFAULT_HERMES_HOME
         raise HermesUnavailableError(
             "未找到 run_agent.AIAgent。重建只跑 Hermes Agent，不再使用 ChatModel 工具循环。\n"
-            f"请安装本机 Hermes：{hermes_install_hint(home)}"
+            + hermes_install_hint(home)
         )
     settings: dict[str, Any] = {}
     if base_url and api_key:
@@ -1062,8 +1063,7 @@ def _load_hermes_factory(hermes_home: str | Path | None = None) -> HermesFactory
         module = importlib.import_module("run_agent")
     except ImportError as exc:
         raise HermesUnavailableError(
-            f"无法 import run_agent（Hermes 根目录：{home}）。\n"
-            f"请在 TraceRconstruction 中执行：{hermes_install_hint(home)}"
+            "无法 import run_agent。\n" + hermes_install_hint(home)
         ) from exc
     factory = getattr(module, "AIAgent", None)
     if not callable(factory):

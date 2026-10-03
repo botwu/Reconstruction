@@ -545,7 +545,7 @@ def test_resolve_hermes_home_uses_default_when_unset(
         home,
     )
     assert resolve_hermes_home() == home.resolve()
-    assert DEFAULT_HERMES_HOME.name == "hermes-agent"
+    assert Path(__file__).resolve().parents[1] / ".runtime/hermes-agent" == DEFAULT_HERMES_HOME
 
 
 def test_resolve_hermes_home_requires_run_agent(tmp_path: Path) -> None:

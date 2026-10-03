@@ -52,11 +52,13 @@ roles 中的 model 是网关的完整模型 ID，斜杠和路由后缀原样保�
 
 ## 本地静态预检
 
+先按[换机调试](cross-machine-debug.md)准备锁定运行时，以下命令均从项目根目录执行。
+
 ```bash
-PYTHONPATH=src python scripts/preflight_terminal_environment.py \
+PYTHONPATH=src integrations/harbor_ags/.venv/bin/python scripts/preflight_terminal_environment.py \
   --config config.yaml \
-  --harbor-root /mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags \
-  --hermes-home /mnt/afs_toolcall/wujian1/Projects/tokenhub_data_model_eval/R01/hermes-agent \
+  --harbor-root "$PWD/integrations/harbor_ags" \
+  --hermes-home "$PWD/.runtime/hermes-agent" \
   --output /tmp/traceforge-terminal-preflight.json
 ```
 
@@ -74,10 +76,10 @@ PYTHONPATH=src python scripts/preflight_terminal_environment.py \
 需要明确验证真实 AGS 创建、离线 pytest 上传、PASS/FAIL 分类、输入不变和清理时，另给一个不存在的输出目录：
 
 ```bash
-PYTHONPATH=src python scripts/preflight_terminal_environment.py \
+PYTHONPATH=src integrations/harbor_ags/.venv/bin/python scripts/preflight_terminal_environment.py \
   --config config.yaml \
-  --harbor-root /mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags \
-  --hermes-home /mnt/afs_toolcall/wujian1/Projects/tokenhub_data_model_eval/R01/hermes-agent \
+  --harbor-root "$PWD/integrations/harbor_ags" \
+  --hermes-home "$PWD/.runtime/hermes-agent" \
   --sandbox-output /tmp/traceforge-terminal-preflight-smoke-<run-id> \
   --output /tmp/traceforge-terminal-preflight-smoke-<run-id>.json
 ```
@@ -87,9 +89,9 @@ PYTHONPATH=src python scripts/preflight_terminal_environment.py \
 ## 真实 terminal 主链
 
 ```bash
-export HERMES_HOME=/mnt/afs_toolcall/wujian1/Projects/tokenhub_data_model_eval/R01/hermes-agent
+export HERMES_HOME="$PWD/.runtime/hermes-agent"
 export TRACEFORGE_MODEL_TIMEOUT_SECONDS=300
-PYTHONPATH=src python -m traceforge reconstruct raw-run \
+PYTHONPATH=src integrations/harbor_ags/.venv/bin/python -m traceforge reconstruct raw-run \
   --input <完整 R04 或 R05 JSONL> \
   --domain terminal \
   --line-number <原始行号> \
