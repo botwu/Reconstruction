@@ -211,9 +211,13 @@ class ReconstructionRuntime:
                 "\n必须按 TASK.task_start_message_index 核对原任务起点，而非整个 session 最早状态。"
                 "使用 read_session_message 读取原用户消息及 task_time_context 标出的先前修改。"
                 "先前任务已完成的模块或集成是本任务的历史上下文；不得因候选改回旧调用链就判定它们无关。"
-                "当前任务开始之后的解决方案不能预置进初态。原始 session 只读保留，按索引核对。"
+                "完整 SOURCE_SESSION 直接提供全部原字段；也要利用任务之后的真实调用与返回核对条件，"
+                "但不得把后续解决方案预置进初态，或把历史助手猜测当成已观察事实。"
                 "核对探针代码实际调用的实现：替换 sys.modules 或用假类绕过本地源码，不能证明真实模块可加载。"
                 "外部网络可以隔离，但任务所需本地入口和依赖必须真实执行；不要把替身的 PASS 用来豁免损坏源码。"
+                "\nSOURCE_SESSION=" + json.dumps(
+                    indexed_session(self.source.get("raw_session", {})), ensure_ascii=False,
+                ) + "\n"
             )
         if (role.name in {"sufficiency", "verifier"} and self.python_runtime is not None
                 and session.workspace is not None):

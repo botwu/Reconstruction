@@ -23,7 +23,12 @@ class ReconstructionTests(unittest.TestCase):
         self.root = Path(self.temporary.name).resolve()
 
     def test_independent_reviewer_can_inspect_original_task_time_context(self) -> None:
-        source = {"raw_session": {"messages": [{"role": "user", "content": "原始任务"}]}}
+        source = {"raw_session": {"harness": "真实协议", "messages": [
+            {"role": "system", "content": "工具定义与执行约束"},
+            {"role": "user", "content": "原始任务"},
+            {"role": "assistant", "content": "后续假设", "reasoning_content": "假设依据"},
+            {"role": "tool", "tool_call_id": "later-call", "content": "后续成功原始返回"},
+        ]}}
         native = Mock(model_name="test", backend="test")
         native.run.return_value = AgentResult(role="sufficiency", backend="test", completed=True,
                                              payload={"label": "UNKNOWN"})
@@ -36,7 +41,14 @@ class ReconstructionTests(unittest.TestCase):
         role = native.run.call_args.kwargs["role"]
         self.assertIn("read_session_message", role.tools)
         self.assertFalse(role.allow_write)
-        self.assertIn("task_start_message_index", native.run.call_args.kwargs["instruction"])
+        instruction = native.run.call_args.kwargs["instruction"]
+        self.assertIn("task_start_message_index", instruction)
+        from traceforge.reconstruction.session_source import indexed_session
+        source_lines = [line for line in instruction.splitlines()
+                        if line.startswith("SOURCE_SESSION=")]
+        self.assertEqual(len(source_lines), 1)
+        self.assertEqual(json.loads(source_lines[0].removeprefix("SOURCE_SESSION=")),
+                         indexed_session(source["raw_session"]))
         author_session = AgentSession()
         adapter.run(role=COMPLETION_REPLAYED_ROLE, instruction="恢复任务", session=author_session,
                     output_root=self.root / "author")
@@ -317,10 +329,12 @@ class ReconstructionTests(unittest.TestCase):
                 def reviewer(**kwargs):
                     first = adapter.agent.run.call_count == 1
                     if first:
+                        self.assertIn("SOURCE_SESSION=", kwargs["instruction"])
                         session.environment_probes.append({"purpose": "load", "status": "FAIL" if case == "failed_load" else "PASS"})
                         if session.conversation is not None:
                             session.conversation.messages.append({"role": "assistant", "content": "已读取并加载源码"})
                     else:
+                        self.assertNotIn("SOURCE_SESSION=", kwargs["instruction"])
                         self.assertEqual(session.conversation.messages[0]["content"], "已读取并加载源码")
                         self.assertIn("dependency", kwargs["instruction"])
                         self.assertIn("reset", kwargs["instruction"])
