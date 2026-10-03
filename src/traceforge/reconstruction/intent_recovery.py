@@ -23,7 +23,7 @@ from traceforge.reconstruction.session_parser import indexed_system_messages
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v18-grounded-obligation-boundaries"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v19-consistent-binding-repair"
 _STUB_OBSERVABLE = "replayed excerpts still present"
 _REVIEW_ONLY = re.compile(
     r"(?i)(只读(?:代码)?(?:评审|审查)|只审查(?:并)?不修改|只查看.*不修改|"
@@ -158,6 +158,9 @@ def _prompt(
         "when explicitly requested; do not discard them as context.",
         "Do not invent a different product goal or a nearby unrelated coding task. Keep the same task_id.",
         "Use only explicit user intent and evidence refs; never turn assistant/tool actions into requirements.",
+        "原轨迹中的实现方式和助手选定文件名可供补全参考，不能升级为用户指定约束。"
+        "这一边界同时适用于任务说明、目标、义务文字、成功标准和路径绑定；"
+        "用户只要求新增文件而未命名时，保留实现者的命名选择。",
         "每条 acceptance_obligations.text 必须保留该用户要求的时间范围、指定资料来源、比较对象、"
         "数据条件和输出证据，不能只概括最终动作。observable 也必须涵盖这些限定；"
         "例如用户要求依据特定年份的报告，不能降为泛化建议。暂时无法核实的限定仍是义务，"
@@ -269,12 +272,32 @@ def _gate(
 
 
 def _binding_repair_changed_task(original: dict[str, Any], corrected: dict[str, Any]) -> bool:
-    """绑定及其任务表述可同步纠正，原目标、义务与 FILE 类型不能降级。"""
+    """纠正有误表述时保留任务、义务及证据身份，不降级 FILE。"""
 
-    repairable = {"environment_bindings", "task_instruction"}
+    repairable = {
+        "environment_bindings", "task_instruction", "core_objective",
+        "acceptance_obligations", "success_criteria", "mandatory_constraints",
+        "prohibitions",
+    }
     if {k: v for k, v in original.items() if k not in repairable} != {
         k: v for k, v in corrected.items() if k not in repairable
     }:
+        return True
+    # 表述可能已经夹带错误绑定，不能把首轮模型文字当作不可修改的原始要求。
+    # 这里只检查身份与来源；修正后的语义仍须以原用户和系统证据为准。
+    original_obligations = original.get("acceptance_obligations")
+    corrected_obligations = corrected.get("acceptance_obligations")
+    if not isinstance(original_obligations, list) or not isinstance(corrected_obligations, list):
+        return True
+
+    def identities(obligations: list[Any]) -> list[Any]:
+        return [
+            {k: v for k, v in item.items() if k not in {"text", "obligation"}}
+            if isinstance(item, dict) else item
+            for item in obligations
+        ]
+
+    if identities(original_obligations) != identities(corrected_obligations):
         return True
     original_bindings = original.get("environment_bindings")
     corrected_bindings = corrected.get("environment_bindings")
@@ -403,15 +426,14 @@ def run_intent_recovery(
             current_instruction = "\n".join([
                 instruction,
                 "上一条结果的文件绑定合同未通过校验。纠正 environment_bindings，"
-                "并同步检查 task_instruction："
-                "任务说明仅可移除或纠正 BINDING_ERRORS 已指出、"
-                "且无原始用户或系统依据的附加绑定约束。"
-                "不能只删除绑定却在任务说明中继续强制该约束，也不能改写其他任务内容。"
-                "除 environment_bindings 和上述必要的 task_instruction 修正外，"
-                "其他字段逐项保留原值；"
-                "core_objective、义务及其 ID/证据、success_criteria、"
-                "mandatory_constraints、prohibitions、"
-                "response_contract 和输出格式均不改变。不得删除用户义务、替换目标、伪造路径"
+                "并同步核对 task_instruction、core_objective、acceptance_obligations 的文字、"
+                "success_criteria、mandatory_constraints 和 prohibitions。"
+                "这些文字仅可移除或纠正 BINDING_ERRORS 已指出、"
+                "且无原始用户或系统依据的附加绑定约束；原始任务目标及真实约束必须保留。"
+                "逐项核对修正后的所有文字与绑定：不能只删除绑定，却在目标、义务、"
+                "成功标准或任务说明中继续强制同一个无依据约束。"
+                "task_id、义务数量及顺序、每条义务 ID 和 evidence_ref_ids 均逐值保留。"
+                "response_contract、输出格式及其他字段保持原值。不得删除用户义务、替换目标、伪造路径"
                 "或把已有 FILE 改为 NON_FILE 来绕过错误。"
                 "FILE_BINDING_PATHS 中的路径用于识别任务对象，不代表环境已经完整；"
                 "只读上下文工具可用于确认对应关系，环境补全仍交给后续模块。"

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import json
-from pathlib import Path
 
 import pytest
 
@@ -114,8 +113,8 @@ def test_unchanged_bad_binding_stops_after_one_correction(tmp_path):
 
 
 @pytest.mark.parametrize("change", [
-    "downgrade", "drop_obligation", "rewrite_goal", "task_id", "obligation_id",
-    "evidence_ref_ids", "success_criteria", "mandatory_constraints", "prohibitions",
+    "downgrade", "drop_obligation", "task_id", "obligation_id",
+    "evidence_ref_ids", "has_examples",
     "response_contract", "specified_output_format",
 ])
 def test_binding_correction_cannot_change_task_or_downgrade_file(tmp_path, change):
@@ -126,8 +125,6 @@ def test_binding_correction_cannot_change_task_or_downgrade_file(tmp_path, chang
         )
     elif change == "drop_obligation":
         corrected["acceptance_obligations"] = []
-    elif change == "rewrite_goal":
-        corrected["core_objective"] = "只需解释表头规则"
     elif change == "obligation_id":
         corrected["acceptance_obligations"][0]["id"] = "obl-other"
     elif change == "evidence_ref_ids":
@@ -209,7 +206,7 @@ def test_intent_identity_allows_grounding_without_inventing_requirements():
     assert "Do not turn agent actions into new user requirements" in INTENT_ROLE.identity
 
 
-def test_unrequested_output_name_is_corrected_in_instruction_and_binding(tmp_path):
+def test_unrequested_output_name_is_corrected_across_task_fields(tmp_path):
     source = _source()
     source["raw_session"]["messages"][0]["content"] = (
         "把 src/importer.py 的表头逻辑提取到一个新 py 文件供原模块调用，并分析代码质量。"
@@ -222,8 +219,11 @@ def test_unrequested_output_name_is_corrected_in_instruction_and_binding(tmp_pat
     first["task_instruction"] = (
         "把 src/importer.py 的表头逻辑提取到 src/header_helper.py，接入调用并分析代码质量。"
     )
-    first["core_objective"] = "提取表头逻辑并分析代码质量"
-    first["acceptance_obligations"][0]["text"] = "新增独立 Python 文件并接入原模块调用"
+    first["core_objective"] = "提取到 src/header_helper.py 并分析代码质量"
+    first["success_criteria"] = ["src/header_helper.py 的表头逻辑由原模块调用"]
+    first["mandatory_constraints"] = ["新增文件必须命名为 src/header_helper.py"]
+    first["prohibitions"] = ["不能使用 src/header_helper.py 之外的文件名"]
+    first["acceptance_obligations"][0]["text"] = "新增 src/header_helper.py 并接入原模块调用"
     first["acceptance_obligations"].append({
         "id": "obl-002", "text": "分析代码质量", "evidence_ref_ids": ["user:0"],
     })
@@ -238,6 +238,11 @@ def test_unrequested_output_name_is_corrected_in_instruction_and_binding(tmp_pat
         "observable": "回答包含对原代码质量的分析",
     })
     corrected = copy.deepcopy(first)
+    corrected["core_objective"] = "提取表头逻辑并分析代码质量"
+    corrected["success_criteria"] = ["新 Python 文件的表头逻辑由原模块调用"]
+    corrected["mandatory_constraints"] = []
+    corrected["prohibitions"] = []
+    corrected["acceptance_obligations"][0]["text"] = "新增独立 Python 文件并接入原模块调用"
     corrected["task_instruction"] = (
         "把 src/importer.py 的表头逻辑提取到一个新 Python 文件，接入调用并分析代码质量。"
     )
@@ -255,10 +260,38 @@ def test_unrequested_output_name_is_corrected_in_instruction_and_binding(tmp_pat
     assert "BINDING_OUTPUT_PATH_NOT_EXPLICIT:obl-001:src/header_helper.py" in (
         outcome["tasks"][0]["agent"]["attempts"][0]["errors"]
     )
-    assert "src/header_helper.py" not in outcome["task"]["task_instruction"]
+    for field in ("task_instruction", "core_objective", "acceptance_obligations",
+                  "success_criteria", "mandatory_constraints", "prohibitions"):
+        assert "src/header_helper.py" not in json.dumps(outcome["task"][field])
     assert "分析代码质量" in outcome["task"]["task_instruction"]
     assert [item["id"] for item in outcome["task"]["acceptance_obligations"]] == [
         "obl-001", "obl-002",
     ]
     assert outcome["task"]["environment_bindings"][0]["verifier_kind"] == "FILE"
     assert source == original_source
+
+
+@pytest.mark.parametrize("mutation", ["reorder", "duplicate", "change_valid_evidence"])
+def test_binding_repair_preserves_obligation_identity_and_source(tmp_path, mutation):
+    source = _source()
+    source["tasks"][0]["message_indices"] = [0, 2]
+    source["raw_session"]["messages"].append({"role": "user", "content": "同时分析代码质量"})
+    first = _payload()
+    first["acceptance_obligations"].append({
+        "id": "obl-002", "text": "分析代码质量", "evidence_ref_ids": ["user:2"],
+    })
+    first["environment_bindings"].append({
+        "obligation_id": "obl-002", "verifier_kind": "NON_FILE",
+        "required_paths": [], "observable": "包含代码质量分析",
+    })
+    corrected = copy.deepcopy(first)
+    corrected["environment_bindings"][0] = _payload(bound=True)["environment_bindings"][0]
+    if mutation == "reorder":
+        corrected["acceptance_obligations"].reverse()
+    elif mutation == "duplicate":
+        corrected["acceptance_obligations"].append(copy.deepcopy(corrected["acceptance_obligations"][0]))
+    else:
+        corrected["acceptance_obligations"][0]["evidence_ref_ids"] = ["user:2"]
+    outcome, _ = _run(tmp_path, [(first, [], True), (corrected, [], True)], source=source)
+    assert outcome["status"] == "REVIEW"
+    assert "INTENT_BINDING_REPAIR_CHANGED_TASK" in outcome["errors"]
