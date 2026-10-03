@@ -11,13 +11,6 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from traceforge.harbor_ags.results import HarborResultError, read_rollout_results
-from traceforge.harbor_ags.rollout import (
-    HarborRolloutConfig,
-    HarborRolloutError,
-    build_rollout_plan,
-    execute_rollout_plan,
-)
 from traceforge.harbor_task import export_search_task
 from traceforge.reconstruction.agents import AgentRuntime, AgentSession
 from traceforge.reconstruction.agents.roles import AgentRole
@@ -36,6 +29,7 @@ from traceforge.reconstruction.session_source import (
     message_text,
     source_session_message_indices,
 )
+from traceforge.reconstruction.verification import run_native_unassessed_rollouts
 
 if TYPE_CHECKING:
     from traceforge.reconstruction.verification import VerificationConfig
@@ -805,7 +799,7 @@ def run_search_task(
         outcome["harbor_rollout_args"] = ["--disable-verification"]
         native_trials = None
         if verification_config is not None and verification_config.execute_rollout:
-            execution, native_trials = run_native_search_rollouts(
+            execution, native_trials = run_native_unassessed_rollouts(
                 harbor_task=harbor_task, config=verification_config, output_root=round_root,
             )
             outcome.update(execution)
@@ -845,56 +839,6 @@ def run_search_task(
     _save(output_root / "result.json", outcome)
     return outcome
 
-
-
-def run_native_search_rollouts(
-    *, harbor_task: Path, config: VerificationConfig, output_root: Path,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """执行实际交付的 Harbor 包，返回经原生请求/响应对账的复核输入。"""
-    record: dict[str, Any] = {"plan": None, "execution": None, "results": None}
-    trials: list[dict[str, Any]] = []
-    errors = []
-    try:
-        plan_dir = build_rollout_plan(HarborRolloutConfig(
-            task_dir=harbor_task, harbor_root=config.harbor_root,
-            output_root=output_root / "native-rollout/plans",
-            jobs_root=output_root / "native-rollout/jobs",
-            model=config.rollout_model, trials=config.rollout_trials,
-            timeout_seconds=config.timeout_seconds,
-            agent_max_iterations=config.rollout_max_iterations,
-        ))
-        record["plan"] = str(plan_dir)
-        record["execution"] = execute_rollout_plan(
-            plan_dir, config_path=config.config_path, channel=config.channel,
-        )
-        plan = json.loads((plan_dir / "rollout_plan.json").read_text())
-        dataset = plan["dataset"]
-        expected_task = Path(dataset["dataset_root"]) / dataset["task_relative_paths"][0]
-        job_dir = Path(plan["jobs_root"]) / (plan.get("job_name") or plan["run_id"])
-        results = read_rollout_results(
-            job_dir, expected_trial_count=config.rollout_trials, domain="search",
-            expected_task=expected_task, harbor_root=config.harbor_root,
-        )
-        record["results"] = results
-        trials = [row["native_trial"] for row in results.get("trials", [])
-                  if "native_trial" in row]
-        if record["execution"].get("status") != "COMPLETED":
-            errors.append("NATIVE_HARBOR_EXECUTION_INCOMPLETE")
-        if results.get("execution_completed") is not True:
-            errors.extend((results.get("quality_gate") or {}).get("reasons") or
-                          ["NATIVE_HARBOR_TRACE_INCOMPLETE"])
-    except (HarborRolloutError, HarborResultError, OSError, ValueError) as exc:
-        errors.append(f"{type(exc).__name__}: {exc}")
-    record["errors"] = errors
-    receipt = output_root / "native-rollout.json"
-    _save(receipt, record)
-    return {
-        "status": "ROLLOUT_INCOMPLETE" if errors else "ROLLOUT_COMPLETED",
-        "errors": errors, "acceptance": "NOT_ASSESSED",
-        "rollout_backend": "native_harbor", "rollout_record": str(receipt),
-        "rollouts": [{key: item[key] for key in ("trial", "model", "completed", "errors")}
-                     for item in trials],
-    }, trials
 
 
 def run_search_rollouts(

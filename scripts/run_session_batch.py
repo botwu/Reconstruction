@@ -145,6 +145,7 @@ def _code_sha256(repo: Path) -> str:
 
 def _completed_attempt_matches(
     root: Path, row: dict[str, Any], domain: str, process: dict[str, Any],
+    *, disable_verification: bool = False,
 ) -> bool:
     """只补记明确成功且仍绑定当前原始行的完整终态，不恢复中间阶段。"""
     if (process.get("status") != "EXITED" or type(process.get("exit_code")) is not int
@@ -168,12 +169,15 @@ def _completed_attempt_matches(
         else:
             bound = final.get("source")
             if (final.get("schema_version") != "traceforge.raw-session-reconstruction.v1"
-                    or final.get("status") not in {"READY", "READY_VARIANT"}
+                    or final.get("status") not in (
+                        {"COMPLETED"} if disable_verification else {"READY", "READY_VARIANT"}
+                    )
                     or not isinstance(bound, dict)
                     or bound.get("line_sha256") != row["line_sha256"]
                     or bound.get("line_number") != row["line_number"]):
                 return False
-            ready = {"READY", "READY_VARIANT"}
+            ready = ({"ENVIRONMENT_READY", "ROLLOUT_COMPLETED"} if disable_verification
+                     else {"READY", "READY_VARIANT"})
         tasks, selected = final.get("tasks"), source.get("selected_task_ids")
         if (not isinstance(tasks, list) or not tasks or not isinstance(selected, list)
                 or not all(isinstance(item, str) and item for item in selected)
@@ -206,12 +210,15 @@ def execute_batch(
     hermes_home: str | Path | None = None,
     harbor_root: str | Path | None = None,
     manual_response_review: bool = False,
+    disable_verification: bool = False,
     session_timeout_seconds: int = 7200,
     repo_root: str | Path | None = None,
     resume: bool = False,
 ) -> dict[str, Any]:
     if domain not in {"search", "terminal"}:
         raise BatchInputError("domain 必须由调用方指定为 search 或 terminal")
+    if disable_verification and execute_red:
+        raise BatchInputError("未评分交付不能同时请求 RED 校准")
     if workers != 1:
         raise BatchInputError("当前批处理先固定 workers=1，避免共享 Hermes/AGS 资源污染")
     if session_timeout_seconds <= 0:
@@ -239,6 +246,7 @@ def execute_batch(
             "sandbox": sandbox, "execute_red": execute_red,
             "execute_rollout": execute_rollout, "rollout_trials": rollout_trials,
             "manual_response_review": manual_response_review,
+            "disable_verification": disable_verification,
             "hermes_home": str(Path(hermes_home).resolve()) if hermes_home else None,
             "harbor_root": str(Path(harbor_root).resolve()) if harbor_root else None,
         }
@@ -300,7 +308,7 @@ def execute_batch(
                         else:
                             raise BatchInputError(f"先前进程仍在运行，不能重复启动：{latest}")
                     recovered = previous is not None and _completed_attempt_matches(
-                        latest, row, domain, process,
+                        latest, row, domain, process, disable_verification=disable_verification,
                     )
                     run_root = latest if recovered else run_root / "retries" / f"{len(attempts):04d}"
                 if not recovered:
@@ -332,6 +340,8 @@ def execute_batch(
                 for option, value in (("--hermes-home", hermes_home), ("--harbor-root", harbor_root)):
                     if value is not None:
                         command.extend((option, str(Path(value).resolve())))
+                if disable_verification:
+                    command.append("--disable-verification")
                 if manual_response_review:
                     command.append("--manual-response-review")
                 command.append("--sandbox" if sandbox else "--no-sandbox")
@@ -435,6 +445,8 @@ def main() -> int:
     parser.add_argument("--hermes-home", type=Path)
     parser.add_argument("--harbor-root", type=Path)
     parser.add_argument("--manual-response-review", action="store_true")
+    parser.add_argument("--disable-verification", action="store_true",
+                        help="交付并运行未评分任务，验收保持 NOT_ASSESSED")
     parser.add_argument("--session-timeout-seconds", type=int, default=7200,
                         help="整条 session 的总时限（秒），包含重建、RED 和 rollout")
     parser.add_argument("--plan-only", action="store_true")
@@ -477,6 +489,7 @@ def main() -> int:
             hermes_home=args.hermes_home,
             harbor_root=args.harbor_root,
             manual_response_review=args.manual_response_review,
+            disable_verification=args.disable_verification,
             resume=args.resume,
             session_timeout_seconds=args.session_timeout_seconds,
         )

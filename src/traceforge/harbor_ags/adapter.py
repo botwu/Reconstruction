@@ -54,43 +54,55 @@ def _tree(root: Path) -> dict[str, Any]:
     return {"files": files, "tree_sha256": hashlib.sha256(canonical_json_bytes(files)).hexdigest()}
 
 
-def validate_search_delivery(task_dir: Path | str) -> dict[str, Any]:
-    """核对显式 search 任务及其完整交付哈希，不附加文件评分器。"""
+def validate_unassessed_delivery(task_dir: Path | str) -> dict[str, Any]:
+    """核对显式未评分交付及完整文件哈希；domain 只描述环境类型。"""
     root = Path(task_dir).resolve()
+    delivery_path = root.parent / "delivery.json"
+    if root.is_symlink() or delivery_path.is_symlink():
+        raise HarborAgsAdapterError("未评分交付不能使用符号链接")
     try:
         config = tomllib.loads((root / "task.toml").read_text(encoding="utf-8"))
-        delivery_path = root.parent / "delivery.json"
         delivery = json.loads(delivery_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
-        raise HarborAgsAdapterError("search 交付配置或 delivery.json 无法读取") from exc
+        raise HarborAgsAdapterError("未评分交付配置或 delivery.json 无法读取") from exc
     metadata = config.get("metadata")
     task = config.get("task")
     if not isinstance(delivery, dict) or not isinstance(metadata, dict) or not isinstance(task, dict):
-        raise HarborAgsAdapterError("search 交付配置必须为对象")
-    if (metadata.get("domain") != "search"
+        raise HarborAgsAdapterError("未评分交付配置必须为对象")
+    domain = metadata.get("domain")
+    if (domain not in {"terminal", "search"}
+            or metadata.get("response_acceptance") != "NOT_ASSESSED"
             or config.get("schema_version") != "1.4"
             or delivery.get("schema_version") != "traceforge.harbor-delivery.v1"
-            or delivery.get("domain") != "search"
+            or delivery.get("domain") != domain
             or delivery.get("response_acceptance") != "NOT_ASSESSED"
             or delivery.get("rollout_args") != ["--disable-verification"]):
-        raise HarborAgsAdapterError("search 交付必须显式声明领域与未自动验收状态")
-    for name in ("instruction.md", "workspace/evidence.json"):
+        raise HarborAgsAdapterError("未评分交付必须显式声明领域、禁用评分与未验收状态")
+    for name in ("instruction.md", "task.toml"):
         if not (root / name).is_file():
-            raise HarborAgsAdapterError(f"search 交付缺少 {name}")
-    for name in ("environment", "tests"):
+            raise HarborAgsAdapterError(f"未评分交付缺少 {name}")
+    for name in ("workspace", "environment"):
         if not (root / name).is_dir():
-            raise HarborAgsAdapterError(f"search 交付缺少 {name}/")
-    instruction = (root / "instruction.md").read_text(encoding="utf-8")
+            raise HarborAgsAdapterError(f"未评分交付缺少 {name}/")
+    if domain == "search" and not (root / "workspace/evidence.json").is_file():
+        raise HarborAgsAdapterError("search 交付缺少 workspace/evidence.json")
+    if domain == "terminal" and "TraceForge workspace snapshot hook v2" not in (
+        root / "task.toml"
+    ).read_text(encoding="utf-8"):
+        raise HarborAgsAdapterError("未评分 terminal 必须声明完整终态工作区收集")
+    if any((root / name).exists() for name in
+           ("solution", "tests/test.sh", "tests/grader.py", "tests/control")):
+        raise HarborAgsAdapterError("未评分交付不能混入评分器、参考解或隐藏验收材料")
     name = task.get("name")
+    instruction = (root / "instruction.md").read_text(encoding="utf-8")
     if not instruction.strip() or not isinstance(name, str) or not name.strip():
-        raise HarborAgsAdapterError("search 任务名称或说明为空")
-    files = _tree(root)["files"]
-    actual = {entry["path"]: entry["sha256"] for entry in files}
+        raise HarborAgsAdapterError("未评分任务名称或说明为空")
+    actual = {entry["path"]: entry["sha256"] for entry in _tree(root)["files"]}
     if actual != delivery.get("task_file_sha256"):
-        raise HarborAgsAdapterError("search 交付文件与 delivery.json 哈希不一致")
+        raise HarborAgsAdapterError("交付文件与 delivery.json 哈希不一致")
     return {
-        "domain": "search", "task_bundle_root": str(root), "task_name": name,
-        "schema_version": "traceforge.search-harbor-input.v1",
+        "domain": domain, "task_bundle_root": str(root), "task_name": name,
+        "schema_version": "traceforge.harbor-delivery-input.v1",
         "task_toml_sha256": actual["task.toml"],
         "instruction_sha256": actual["instruction.md"],
         "delivery_sha256": _sha256(delivery_path),
@@ -111,8 +123,8 @@ def validate_bundle_layout(task_dir: Path | str) -> dict[str, Any]:
     except (OSError, UnicodeError, ValueError) as exc:
         raise HarborAgsAdapterError("task.toml 无法解析") from exc
     metadata = config.get("metadata")
-    if isinstance(metadata, dict) and metadata.get("domain") == "search":
-        return validate_search_delivery(root)
+    if isinstance(metadata, dict) and metadata.get("response_acceptance") == "NOT_ASSESSED":
+        return validate_unassessed_delivery(root)
     for name in _REQUIRED_FILES:
         path = root / name
         if not path.is_file() or path.is_symlink():
@@ -214,7 +226,7 @@ def validate_harbor_bundle(
     """调用 Harbor 校验；测试替身缺少 Harbor 源码时只返回本地摘要。"""
     root = Path(task_dir).resolve()
     layout = validate_bundle_layout(root)
-    if layout.get("domain") == "search":
+    if layout.get("response_acceptance") == "NOT_ASSESSED":
         return layout
     external_root = Path(harbor_root).resolve() if harbor_root is not None else None
     if external_root is None or not (external_root / "src").is_dir():
@@ -257,8 +269,10 @@ def build_boundary_plan(
     root = Path(task_dir).resolve()
     refs = tuple(sorted(set(str(item) for item in source_refs if str(item))))
     layout = validate_bundle_layout(root)
-    if layout.get("domain") == "search":
-        raise HarborAgsAdapterError("search 请使用 prepare-rollout，边界计划仅适用于文件评分任务")
+    if layout.get("response_acceptance") == "NOT_ASSESSED":
+        raise HarborAgsAdapterError(
+            "未评分交付请使用 prepare-rollout，边界计划仅适用于文件评分任务"
+        )
     harbor_validation = None
     validation_status = "LOCAL_LAYOUT_ONLY"
     if harbor_root is not None:
@@ -345,5 +359,5 @@ __all__ = [
     "HarborAgsAdapterError",
     "build_boundary_plan",
     "validate_bundle_layout",
-    "validate_search_delivery",
+    "validate_unassessed_delivery",
 ]

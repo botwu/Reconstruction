@@ -23,6 +23,17 @@ Compose 的构建上下文为任务根目录，agent 镜像只复制 `environmen
 
 ## terminal
 
+公开任务与环境使用共用导出层，评分包再附加隐藏测试和参考解。环境充分性与真实执行探针通过后，即可单独交付公开 Harbor 包；不需要先生成评分器。
+
+`reconstruct raw-run --disable-verification --execute-rollout` 可直接收集未评分的真实求解，`scripts/run_session_batch.py` 传递同一选项。该模式不与 `--execute-red` 同用，包中不含 `tests/` 或 `solution/`；验收保持 `NOT_ASSESSED`，不产生 reward、通过率或 SFT 资格。原生入口为：
+
+```bash
+harbor run --path /path/to/public/task --agent <solver> --env <backend> \
+  --disable-verification --yes
+```
+
+下文的 oracle 和独立 verifier 仅适用于包含已审查评分器的任务包。
+
 原 bundle 编译器保留公开初态、冻结依赖、隐藏测试及参考解，同时生成原生容器定义和 workspace 采集 hook；原 AGS 执行路径继续使用原有 setup 和目录。独立 verifier 读取求解后的副本，保持无网络验证。已有旧 bundle 在发布阶段补上同一采集 hook。
 
 ```bash

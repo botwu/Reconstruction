@@ -469,3 +469,78 @@ def test_search_does_not_treat_reader_response_hash_as_original_pdf(tmp_path):
     entry = next(item for item in index["sources"] if item["collection"] == "live_references")
     assert "pdf_path" not in entry and "pdf_sha256" not in entry
     assert not (task / "workspace/source-assets").exists()
+
+def test_terminal_delivery_keeps_initial_state_without_hidden_grader(tmp_path):
+    from test_python_runtime import frozen_runtime
+
+    from traceforge.harbor_task import export_terminal_task
+
+    runtime, requirements = frozen_runtime(tmp_path)
+    workspace = requirements.parent
+    body = b"input\x00\r\n"
+    (workspace / "input.bin").write_bytes(body)
+    manifest = {"provenance": {"input.bin": "original"},
+                "dependencies": [], "runtime_constraints": [], "uncertainties": ["known gap"]}
+    (tmp_path / "env_manifest.json").write_text(json.dumps(manifest))
+    original = {"task_id": "terminal-1", "task_instruction": "读取输入并写报告。",
+                "prohibitions": ["不得联网。"],
+                "environment_bindings": [{"output_paths": ["reports/result.md"]}]}
+    task = export_terminal_task(task=original, workspace_root=workspace,
+                                env_root=tmp_path, output_root=tmp_path / "out")
+    config = tomllib.loads((task / "task.toml").read_text())
+    assert config["metadata"]["domain"] == "terminal"
+    assert config["metadata"]["response_acceptance"] == "NOT_ASSESSED"
+    assert "reports/result.md" in config["verifier"]["collect"][0]["command"]
+    assert config["environment"]["network_mode"] == "public"
+    assert not (task / "tests").exists()
+    assert not (task / "solution").exists()
+    assert "不得联网。" in (task / "instruction.md").read_text()
+    assert (task / "workspace/input.bin").read_bytes() == body
+    for source in runtime.rglob("*"):
+        if source.is_file():
+            target = task / "environment/python_runtime" / source.relative_to(runtime)
+            assert target.read_bytes() == source.read_bytes()
+    receipt = json.loads((task.parent / "delivery.json").read_text())
+    assert receipt["domain"] == "terminal"
+    assert receipt["response_acceptance"] == "NOT_ASSESSED"
+    assert receipt["rollout_args"] == ["--disable-verification"]
+    assert receipt["execution_status"] == "NOT_RUN"
+    assert receipt["workspace_sha256"]["input.bin"] == hashlib.sha256(body).hexdigest()
+    assert receipt["task_file_sha256"] == {
+        str(path.relative_to(task)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in task.rglob("*") if path.is_file()
+    }
+    assert not any(path.name == "env_manifest.json" for path in task.rglob("*"))
+    hidden = tmp_path / "hidden_control"
+    hidden.mkdir()
+    (hidden / "answer.txt").write_text("private answer")
+    with_hidden = export_terminal_task(
+        task=original, workspace_root=workspace, env_root=tmp_path,
+        output_root=tmp_path / "other",
+    )
+    assert with_hidden.parent.name == task.parent.name
+    assert not (with_hidden / "tests").exists()
+    assert json.loads((with_hidden.parent / "delivery.json").read_text()) == receipt
+    with pytest.raises(ValueError, match="已存在"):
+        export_terminal_task(task=original, workspace_root=workspace,
+                             env_root=tmp_path, output_root=tmp_path / "out")
+
+
+@pytest.mark.parametrize("bad_input", ["symlink", "runtime", "manifest"])
+def test_terminal_delivery_rejects_invalid_initial_inputs(tmp_path, bad_input):
+    from test_python_runtime import frozen_runtime
+
+    from traceforge.harbor_task import export_terminal_task
+
+    runtime, requirements = frozen_runtime(tmp_path)
+    if bad_input == "symlink":
+        (requirements.parent / "link").symlink_to(requirements)
+    elif bad_input == "runtime":
+        (runtime / "install.sh").write_text("changed")
+    else:
+        (tmp_path / "env_manifest.json").write_text("{}")
+    with pytest.raises(ValueError):
+        export_terminal_task(task={"task_instruction": "完成任务。"},
+                             workspace_root=requirements.parent, env_root=tmp_path,
+                             output_root=tmp_path / "out")
+    assert not (tmp_path / "out").exists()

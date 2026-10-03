@@ -36,7 +36,7 @@ from traceforge.trajectory.artifacts import (
 )
 from traceforge.trajectory.json_codec import stable_id
 
-from .adapter import validate_bundle_layout, validate_harbor_bundle
+from .adapter import HarborAgsAdapterError, validate_bundle_layout, validate_harbor_bundle
 
 DEFAULT_RUNTIME_CONFIG = Path(__file__).resolve().parents[3] / "config.yaml"
 
@@ -151,8 +151,8 @@ def _materialize_dataset(
         raise HarborRolloutError(f"Dataset 目标已存在，拒绝覆盖：{destination}")
     destination.mkdir(parents=True)
     task_name = _task_name(task_dir)
-    search = validate_bundle_layout(task_dir).get("domain") == "search"
-    if search:
+    unassessed = validate_bundle_layout(task_dir).get("response_acceptance") == "NOT_ASSESSED"
+    if unassessed:
         shutil.copyfile(task_dir.parent / "delivery.json", destination / "delivery.json")
     task_slug = _safe_name(task_name.replace("/", "_")) or "task"
     task_targets: list[str] = []
@@ -162,7 +162,7 @@ def _materialize_dataset(
         suffix = f"--trial-{index:03d}" if trials > 1 else ""
         task_target = destination / f"{task_slug}{suffix}"
         shutil.copytree(task_dir, task_target, symlinks=False)
-        if not search:
+        if not unassessed:
             _ensure_workspace_snapshot_hook(task_target / "task.toml")
         bundle_contract = validate_harbor_bundle(task_target, harbor_root=harbor_root)
         relative = task_target.relative_to(destination).as_posix()
@@ -202,7 +202,7 @@ def _materialize_dataset(
         "task_hashes": task_hashes,
         "dataset_toml_sha256": _sha256_file(destination / "dataset.toml"),
         "compile_manifest_sha256": _sha256_file(compile_path),
-        **({"delivery_sha256": _sha256_file(destination / "delivery.json")} if search else {}),
+        **({"delivery_sha256": _sha256_file(destination / "delivery.json")} if unassessed else {}),
     }
 
 def _ensure_workspace_snapshot_hook(task_toml: Path) -> None:
@@ -614,7 +614,7 @@ def publish_rollout_bundle(plan_dir: Path | str, destination: Path | str) -> Pat
     try:
         task_target = workspace.staging_path / "task"
         shutil.copytree(source, task_target, symlinks=False)
-        if plan.get("domain") == "search":
+        if plan["verifier"]["enabled"] is False:
             shutil.copyfile(dataset_root / "delivery.json", workspace.staging_path / "delivery.json")
         validate_bundle_layout(task_target)
         shutil.copy2(dataset_root / "dataset.toml", workspace.staging_path / "dataset.toml")
@@ -701,12 +701,13 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
     harbor_root = config.harbor_root.resolve()
     layout = validate_bundle_layout(task_dir)
     search = layout.get("domain") == "search"
+    unassessed = layout.get("response_acceptance") == "NOT_ASSESSED"
     reconstruction_gate = (
-        {"status": "NOT_APPLICABLE", "reason": "SEARCH_DELIVERY_VERIFIED"}
-        if search else _reconstruction_rollout_gate(task_dir)
+        {"status": "NOT_APPLICABLE", "reason": "UNASSESSED_DELIVERY_VERIFIED"}
+        if unassessed else _reconstruction_rollout_gate(task_dir)
     )
-    if search and config.agent_mode == "oracle":
-        raise HarborRolloutError("search 未提供参考解，不能运行 oracle")
+    if unassessed and config.agent_mode == "oracle":
+        raise HarborRolloutError("未评分交付没有参考解，不能运行 oracle")
     config_name = {
         "hermes": "hermes-batch.yaml",
         "oracle": "oracle.yaml",
@@ -758,13 +759,15 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
             agent_max_iterations=config.agent_max_iterations,
             expected_hermes_commit=config.expected_hermes_commit,
         )
-        if search:
+        if unassessed or search:
             rendered = yaml.safe_load(rendered_config)
-            rendered["environment"]["import_path"] = (
-                "traceforge.harbor_ags.search:SearchAGSEnvironment"
-            )
-            rendered["environment"].pop("type", None)
-            rendered.setdefault("verifier", {})["disable"] = True
+            if search:
+                rendered["environment"]["import_path"] = (
+                    "traceforge.harbor_ags.search:SearchAGSEnvironment"
+                )
+                rendered["environment"].pop("type", None)
+            if unassessed:
+                rendered.setdefault("verifier", {})["disable"] = True
             rendered_config = yaml.safe_dump(rendered, allow_unicode=True, sort_keys=False)
         (workspace.staging_path / "harbor-config.yaml").write_text(
             rendered_config, encoding="utf-8"
@@ -810,11 +813,11 @@ def build_rollout_plan(config: HarborRolloutConfig) -> Path:
             },
             "reconstruction_gate": reconstruction_gate,
             "verifier": {
-                "enabled": not search,
-                "environment_mode": None if search else "separate",
-                "network_mode": None if search else "no-network",
-                "response_acceptance": "NOT_ASSESSED" if search else "AUTOMATED",
-                "artifact_manifest_required": config.agent_mode == "hermes" and not search,
+                "enabled": not unassessed,
+                "environment_mode": None if unassessed else "separate",
+                "network_mode": None if unassessed else "no-network",
+                "response_acceptance": "NOT_ASSESSED" if unassessed else "AUTOMATED",
+                "artifact_manifest_required": config.agent_mode == "hermes" and not unassessed,
                 "sandbox_cleanup_required": True,
             },
             "credentials": _credential_status(config.agent_mode),
@@ -924,6 +927,14 @@ def _assert_plan_integrity(plan_dir: Path, plan: dict[str, Any]) -> None:
             raise HarborRolloutError("dataset task path 越界") from exc
         if not target.is_dir() or task_hashes.get(relative) != _sha256_tree(target):
             raise HarborRolloutError(f"dataset task hash 不匹配：{relative}")
+        try:
+            layout = validate_bundle_layout(target)
+        except HarborAgsAdapterError as exc:
+            raise HarborRolloutError(f"dataset task/delivery.json 校验失败：{exc}") from exc
+        unassessed = layout.get("response_acceptance") == "NOT_ASSESSED"
+        if (type((plan.get("verifier") or {}).get("enabled")) is not bool
+                or plan["verifier"]["enabled"] == unassessed):
+            raise HarborRolloutError("plan verifier.enabled 与实际交付评分状态不一致")
     dataset_toml = dataset / "dataset.toml"
     if (
         not dataset_toml.is_file()
@@ -945,7 +956,7 @@ def _assert_plan_integrity(plan_dir: Path, plan: dict[str, Any]) -> None:
     if dataset_meta.get("delivery_sha256"):
         delivery = dataset / "delivery.json"
         if not delivery.is_file() or _sha256_file(delivery) != dataset_meta["delivery_sha256"]:
-            raise HarborRolloutError("search delivery.json hash 与 plan 不一致")
+            raise HarborRolloutError("delivery.json hash 与 plan 不一致")
     materialized = plan.get("harbor_config")
     published = (
         Path(materialized["materialized"]).resolve()
@@ -959,6 +970,10 @@ def _assert_plan_integrity(plan_dir: Path, plan: dict[str, Any]) -> None:
     expected_hash = materialized.get("sha256") if isinstance(materialized, dict) else None
     if expected_hash != hashlib.sha256(config_path.read_bytes()).hexdigest():
         raise HarborRolloutError("harbor-config hash 与 plan 不一致")
+    rendered = yaml.safe_load(config_path.read_text())
+    disabled = (rendered.get("verifier") or {}).get("disable", False)
+    if type(disabled) is not bool or disabled == plan["verifier"]["enabled"]:
+        raise HarborRolloutError("Harbor verifier.disable 与 plan.verifier.enabled 不一致")
     command = plan.get("command")
     if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
         raise HarborRolloutError("rollout plan command 非法")

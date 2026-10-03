@@ -214,8 +214,9 @@ def test_search_batch_preserves_real_completion_and_unassessed_answer(
     assert report["status"] == "COMPLETED"
 
 
+@pytest.mark.parametrize("disable_verification", [False, True])
 def test_batch_passes_same_runtime_and_review_options_as_single_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, disable_verification,
 ) -> None:
     manifest, config = inventory(tmp_path)
     output = tmp_path / "batch"
@@ -224,6 +225,7 @@ def test_batch_passes_same_runtime_and_review_options_as_single_session(
         assert command[command.index("--hermes-home") + 1] == str(tmp_path / "hermes")
         assert command[command.index("--harbor-root") + 1] == str(tmp_path / "harbor")
         assert "--manual-response-review" in command
+        assert ("--disable-verification" in command) is disable_verification
         run_root = Path(command[command.index("--output") + 1])
         (run_root / "reconstruction_manifest.json").write_text(json.dumps({"status": "REVIEW"}))
         return 2
@@ -232,7 +234,7 @@ def test_batch_passes_same_runtime_and_review_options_as_single_session(
     report = batch.execute_batch(
         manifest_path=manifest, output_root=output, config=config, domain="terminal",
         repo_root=_REPO, hermes_home=tmp_path / "hermes", harbor_root=tmp_path / "harbor",
-        manual_response_review=True,
+        manual_response_review=True, disable_verification=disable_verification,
     )
     assert result_row(output)["status"] == "REVIEW"
     assert report["status"] == "COMPLETED_WITH_ERRORS"
@@ -369,12 +371,16 @@ def test_resume_rejects_changed_content_at_same_path(tmp_path, monkeypatch, chan
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("domain", ["search", "terminal"])
+@pytest.mark.parametrize("domain,disable_verification", [
+    ("search", False), ("terminal", False), ("terminal", True),
+])
 @pytest.mark.parametrize("damage", [
     None, "failed_exit", "unknown_exit", "missing_task", "wrong_receipt_hash",
     "changed_input", "broken_manifest", "pending_task", "missing_contract",
 ])
-def test_resume_accounts_for_completed_child_without_restarting(tmp_path, monkeypatch, domain, damage):
+def test_resume_accounts_for_completed_child_without_restarting(
+    tmp_path, monkeypatch, domain, damage, disable_verification,
+):
     """真实计数子进程与 EXITED 回执；不调用模型或 AGS。"""
     manifest, config = inventory(tmp_path)
     raw = tmp_path / "source.jsonl"
@@ -412,6 +418,10 @@ def test_resume_accounts_for_completed_child_without_restarting(tmp_path, monkey
         "        final = {'schema_version': 'traceforge.raw-session-reconstruction.v1',\n"
         "                 'status': 'READY', 'source': source, 'task_count': 2, 'ready_count': 2,\n"
         "                 'tasks': [{'task_id': t, 'status': 'READY'} for t in source['selected_task_ids']]}\n"
+        "    if domain == 'terminal' and '--disable-verification' in sys.argv:\n"
+        "        final.update(status='COMPLETED', ready_count=0, acceptance='NOT_ASSESSED')\n"
+        "        for task in final['tasks']:\n"
+        "            task.update(status='ROLLOUT_COMPLETED', acceptance='NOT_ASSESSED', sft_eligible=False)\n"
         "    (root / name).write_text(json.dumps(final))\n"
         f"    return {7 if damage == 'failed_exit' else 0}\n"
     )
@@ -426,7 +436,7 @@ def test_resume_accounts_for_completed_child_without_restarting(tmp_path, monkey
     monkeypatch.setattr(batch, "run_batch_process", interrupt_after_exit)
     output = tmp_path / "batch"
     options = dict(manifest_path=manifest, output_root=output, config=config,
-                   domain=domain, repo_root=repo)
+                   domain=domain, repo_root=repo, disable_verification=disable_verification)
     with pytest.raises(OSError, match="after child exit"):
         batch.execute_batch(**options)
     run_root = output / "runs/r04-one"

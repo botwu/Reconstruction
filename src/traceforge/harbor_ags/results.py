@@ -259,17 +259,20 @@ def rollout_passed(rollout: dict[str, Any] | None, expected_trials: int) -> bool
     )
 
 
-def read_search_trial(
+def read_native_trial(
     trial_dir: Path | str, *, expected_task: Path | str | None = None,
-    harbor_root: Path | str | None = None,
+    domain: str = "terminal", harbor_root: Path | str | None = None,
 ) -> dict[str, Any]:
-    """读取并对账原生检索轨迹，完成状态不代表回答内容通过。"""
+    """读取未评分原生轨迹和实际产物；证据完整不代表任务通过。"""
+    if domain not in {"terminal", "search"}:
+        raise HarborResultError("domain 必须是 terminal 或 search")
     root = Path(trial_dir).resolve()
     output: dict[str, Any] = {
         "trial": root.name, "answer": "", "tool_events": [], "model": None,
         "errors": [], "completed": False, "final_stop_reason": None, "web_cache_root": None,
         "receipt": {"backend": "native_harbor", "acceptance": "NOT_ASSESSED",
-                    "evidence_files": {}, "input_task": None, "source_binding": False},
+                    "evidence_files": {}, "input_task": None, "source_binding": False,
+                    "final_workspace_binding": False, "collection": "NOT_CHECKED"},
     }
     try:
         if harbor_root is not None:
@@ -284,6 +287,9 @@ def read_search_trial(
         result = _read_json(root / "result.json")
         if result.get("exception_info") or not result.get("finished_at"):
             raise HarborResultError("NATIVE_TRIAL_NOT_COMPLETED")
+        if ((result.get("verifier_result") or {}).get("rewards")
+                or (root / "verifier/verdict.json").exists()):
+            raise HarborResultError("NATIVE_UNASSESSED_GRADER_PRESENT")
         full = _read_json(root / "agent/trajectory.full.json")
         if full.get("schema_version") != "traceforge-lossless-trajectory-v1":
             raise HarborResultError("NATIVE_TRAJECTORY_SCHEMA_INVALID")
@@ -339,27 +345,47 @@ def read_search_trial(
                       model=full.get("model"), final_stop_reason=response.get("stop_reason"))
         task_input = full.get("task_input") or {}
         if expected_task is not None:
-            from .adapter import validate_search_delivery
+            from .adapter import validate_unassessed_delivery
 
             task = Path(expected_task).resolve()
-            validate_search_delivery(task)
+            layout = validate_unassessed_delivery(task)
+            if layout["domain"] != domain:
+                raise HarborResultError("NATIVE_TASK_DOMAIN_MISMATCH")
             original = (task / "instruction.md").read_text(encoding="utf-8")
             component = task_input.get("instruction", {}).get("task_instruction", {})
             if component.get("content") != original:
                 raise HarborResultError("NATIVE_TASK_INSTRUCTION_MISMATCH")
             observed = {item["path"]: item["sha256"]
                         for item in task_input.get("workspace", {}).get("files", [])}
-            expected = {p.relative_to(task / "workspace").as_posix():
-                        hashlib.sha256(p.read_bytes()).hexdigest()
-                        for p in (task / "workspace").rglob("*") if p.is_file()}
+            expected = _workspace_hashes(task / "workspace")
             if observed != expected:
                 raise HarborResultError("NATIVE_INITIAL_WORKSPACE_MISMATCH")
             output["receipt"].update(input_task=str(task), source_binding=True)
+        final_sources: list[Path] = []
+        if domain == "terminal" or expected_task is not None:
+            final_workspace, final_files, collection = _collected_workspace(
+                root, required=domain == "terminal",
+                final_workspace=(
+                    root / "artifacts/home/user/workspace" if domain == "search" else None
+                ),
+            )
+            if domain == "search" and any(final_files.get(name) != digest
+                                           for name, digest in expected.items()):
+                raise HarborResultError("NATIVE_SEARCH_MATERIAL_CHANGED")
+            output["receipt"].update(
+                final_workspace=str(final_workspace), final_workspace_binding=True,
+                final_workspace_sha256=_content_hash(final_files),
+                collection="VERIFIED" if collection is not None else "NOT_PRESENT",
+            )
+            final_sources.extend(final_workspace / name for name in final_files)
+            if collection is not None:
+                final_sources.append(collection)
         sources = [
             root / "result.json", root / "agent/trajectory.full.json",
             root / "agent/trajectory.json", root / "agent/anthropic-exchanges.jsonl",
             root / "agent/anthropic-sse.jsonl", root / "agent/hermes-session.jsonl",
             root / "agent/task-input.json", root / "agent/workspace-initial-manifest.json",
+            *final_sources,
         ]
         output["receipt"]["evidence_files"] = {
             path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -374,7 +400,7 @@ def read_search_trial(
         if not answer.strip():
             raise HarborResultError("NATIVE_FINAL_RESPONSE_EMPTY")
         web_cache = root / "artifacts/logs/artifacts/search"
-        if web_cache.is_dir():
+        if domain == "search" and web_cache.is_dir():
             if not web_cache.resolve().is_relative_to(root):
                 raise HarborResultError("NATIVE_WEB_CACHE_PATH_INVALID")
             output["web_cache_root"] = str(web_cache.resolve())
@@ -401,6 +427,36 @@ def _workspace_hashes(root: Path) -> dict[str, str]:
             raise HarborResultError(f"FILE_SNAPSHOT_UNSAFE:{path}")
         files[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
     return files
+
+
+def _collected_workspace(
+    root: Path, *, required: bool, final_workspace: Path | None = None,
+) -> tuple[Path, dict[str, str], Path | None]:
+    """核对实际终态与收集回执；没有回执时不得自报已验证 collection。"""
+    final = final_workspace or root / "artifacts/logs/artifacts/traceforge/workspace"
+    if any(path.is_symlink() for path in [final, *final.parents]
+           if path != root and root in path.parents):
+        raise HarborResultError("FILE_SNAPSHOT_UNSAFE")
+    final_files = _workspace_hashes(final)
+    collection_path = final.parent / "workspace-collection.json"
+    if collection_path.is_symlink():
+        raise HarborResultError("FILE_SNAPSHOT_COLLECTION_UNSAFE")
+    if not collection_path.is_file():
+        if required:
+            raise HarborResultError("FILE_SNAPSHOT_COLLECTION_MISSING")
+        return final, final_files, None
+    collection = _read_json(collection_path)
+    rows = collection.get("files")
+    if (collection.get("schema_version") != "traceforge.workspace-collection.v1"
+            or collection.get("status") != "COLLECTED" or collection.get("errors") != []
+            or not isinstance(rows, list)
+            or any(not isinstance(row, dict) or not isinstance(row.get("path"), str)
+                   or not isinstance(row.get("sha256"), str) for row in rows)):
+        raise HarborResultError("FILE_SNAPSHOT_COLLECTION_INCOMPLETE")
+    collected_files = {row["path"]: row["sha256"] for row in rows}
+    if len(collected_files) != len(rows) or collected_files != final_files:
+        raise HarborResultError("FILE_SNAPSHOT_COLLECTION_FILES_MISMATCH")
+    return final, final_files, collection_path
 
 
 def build_file_artifact_snapshot(
@@ -432,10 +488,6 @@ def build_file_artifact_snapshot(
     initial_files = _workspace_hashes(initial)
     if initial_files != manifest.get("workspace_sha256"):
         raise HarborResultError("FILE_SNAPSHOT_INITIAL_WORKSPACE_MISMATCH")
-    final = root / "artifacts/logs/artifacts/traceforge/workspace"
-    if any(path.is_symlink() for path in [final, *final.parents] if path != root and root in path.parents):
-        raise HarborResultError("FILE_SNAPSHOT_UNSAFE")
-    final_files = _workspace_hashes(final)
     result = _read_json(root / "result.json")
     if result.get("exception_info") or not result.get("finished_at"):
         raise HarborResultError("FILE_SNAPSHOT_EXECUTION_INCOMPLETE")
@@ -443,27 +495,11 @@ def build_file_artifact_snapshot(
     if result_task.get("path") and Path(result_task["path"]).resolve() != task:
         raise HarborResultError("FILE_SNAPSHOT_TASK_MISMATCH")
     collection_manifest = "artifacts/logs/artifacts/traceforge/workspace-collection.json"
-    collection_path = root / collection_manifest
     try:
         requires_collection = "TraceForge workspace snapshot hook v2" in (task / "task.toml").read_text()
     except OSError as exc:
         raise HarborResultError(f"FILE_SNAPSHOT_INPUT_MISSING:{exc.filename}") from exc
-    if collection_path.is_symlink():
-        raise HarborResultError("FILE_SNAPSHOT_COLLECTION_UNSAFE")
-    if requires_collection and not collection_path.is_file():
-        raise HarborResultError("FILE_SNAPSHOT_COLLECTION_MISSING")
-    if collection_path.exists():
-        collection = _read_json(collection_path)
-        rows = collection.get("files")
-        if (collection.get("schema_version") != "traceforge.workspace-collection.v1"
-                or collection.get("status") != "COLLECTED" or collection.get("errors") != []
-                or not isinstance(rows, list)
-                or any(not isinstance(row, dict) or not isinstance(row.get("path"), str)
-                       or not isinstance(row.get("sha256"), str) for row in rows)):
-            raise HarborResultError("FILE_SNAPSHOT_COLLECTION_INCOMPLETE")
-        collected_files = {row["path"]: row["sha256"] for row in rows}
-        if len(collected_files) != len(rows) or collected_files != final_files:
-            raise HarborResultError("FILE_SNAPSHOT_COLLECTION_FILES_MISMATCH")
+    final, final_files, _ = _collected_workspace(root, required=requires_collection)
     diagnostic_files = []
     for name in _VERIFIER_DIAGNOSTIC_FILES:
         path = root / name
@@ -589,6 +625,7 @@ def read_rollout_results(
     agent_mode: str = "hermes",
     expected_trial_count: int | None = None,
     domain: str = "terminal",
+    verifier_enabled: bool = True,
     expected_task: Path | str | None = None,
     harbor_root: Path | str | None = None,
 ) -> dict[str, Any]:
@@ -596,7 +633,9 @@ def read_rollout_results(
 
     if domain not in {"terminal", "search"}:
         raise HarborResultError("domain 必须是 terminal 或 search")
-    search = domain == "search"
+    if type(verifier_enabled) is not bool:
+        raise HarborResultError("verifier_enabled 必须为 bool")
+    unassessed = not verifier_enabled
     root = Path(job_dir).resolve()
     if not root.is_dir():
         raise HarborResultError(f"Job 目录不存在：{root}")
@@ -639,8 +678,17 @@ def read_rollout_results(
             "cache": agent_result.get("n_cache_tokens"),
             "output": agent_result.get("n_output_tokens"),
         }
-        native = (read_search_trial(trial_dir, expected_task=expected_task, harbor_root=harbor_root)
-                  if search else None)
+        native = None
+        if unassessed:
+            task = expected_task
+            if task is None and (trial_dir / "config.json").is_file():
+                task = (_read_json(trial_dir / "config.json").get("task") or {}).get("path")
+            native = read_native_trial(
+                trial_dir, expected_task=task, domain=domain, harbor_root=harbor_root,
+            )
+            if not native["receipt"]["source_binding"]:
+                native["completed"] = False
+                native["errors"].append("NATIVE_INITIAL_SOURCE_UNBOUND")
         if native is not None:
             content_valid, content_errors = native["completed"], native["errors"]
         else:
@@ -648,7 +696,7 @@ def read_rollout_results(
                 _validate_hermes_artifacts(trial_dir) if hermes_artifacts else (True, [])
             )
         snapshot = None
-        if not search:
+        if not unassessed:
             config_path = trial_dir / "config.json"
             if config_path.is_file():
                 task_config = _read_json(config_path).get("task") or {}
@@ -667,10 +715,13 @@ def read_rollout_results(
             {
                 "trial_name": trial_dir.name,
                 "status": ("COMPLETED" if content_valid else "INFRA_ERROR")
-                if search else _trial_status(result, verdict),
-                **({"acceptance": "NOT_ASSESSED", "native_trial": native} if search else {}),
+                if unassessed else _trial_status(result, verdict),
+                **({"acceptance": "NOT_ASSESSED", "native_trial": native} if unassessed else {}),
                 **({"artifact_snapshot": snapshot} if snapshot is not None else {}),
-                "reward": rewards.get("task") if isinstance(rewards, dict) else None,
+                "reward": (
+                    None if unassessed or not isinstance(rewards, dict)
+                    else rewards.get("task")
+                ),
                 "verdict_status": verdict.get("status") if verdict else None,
                 "trajectory_present": trajectory_path.is_file(),
                 "trajectory_path": str(trajectory_path) if trajectory_path.is_file() else None,
@@ -720,23 +771,23 @@ def read_rollout_results(
         for key in ("input", "cache", "output")
     }
     cleanup = _cleanup_ok(root / "_control/ags-sandbox-ledger.jsonl")
-    artifact_missing = hermes_artifacts and not search and artifact_manifest_count != total
+    artifact_missing = hermes_artifacts and not unassessed and artifact_manifest_count != total
     trajectory_missing = hermes_artifacts and trajectory_count != total
     content_invalid = any(item.get("content_valid") is False for item in trials)
     return {
         "schema_version": ROLLOUT_RESULTS_SCHEMA,
         "job_dir": str(root),
         "agent_mode": agent_mode,
-        **({"domain": "search", "acceptance": "NOT_ASSESSED",
+        **({"domain": domain, "acceptance": "NOT_ASSESSED", "sft_eligible": False,
             "execution_completed": bool(total and completed == total and cleanup is True
                                         and not trial_count_mismatch and not content_invalid)}
-           if search else {}),
+           if unassessed else {}),
         "trial_count": total,
         "expected_trial_count": expected_trial_count,
         "trials": trials,
         "metrics": {
             "completion_rate": completed / total if total else 0.0,
-            "pass_rate": None if search else (passed / total if total else 0.0),
+            "pass_rate": None if unassessed else (passed / total if total else 0.0),
             "trajectory_capture_rate": trajectory_count / total if total else 0.0,
             "artifact_manifest_rate": artifact_manifest_count / total if total else 0.0,
             "cleanup_rate": 1.0 if cleanup is True else 0.0,
@@ -745,7 +796,7 @@ def read_rollout_results(
         },
         "cleanup": {"ok": cleanup},
         "quality_gate": {
-            **({"scope": "EXECUTION"} if search else {}),
+            **({"scope": "EXECUTION"} if unassessed else {}),
             "ok": bool(
                 total
                 and completed == total
@@ -779,6 +830,6 @@ __all__ = [
     "validate_file_semantic_receipt",
     "certify_hermes_job",
     "read_rollout_results",
-    "read_search_trial",
+    "read_native_trial",
     "rollout_passed",
 ]

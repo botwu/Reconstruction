@@ -464,7 +464,7 @@ def test_github_source_preserves_bytes_and_rejects_corruption(tmp_path, monkeypa
 def test_native_search_requires_both_execution_and_trace(tmp_path, monkeypatch, executed, trace_complete):
     from types import SimpleNamespace
 
-    from traceforge.reconstruction import search_environment as search
+    from traceforge.reconstruction import verification as native
 
     plan_dir = tmp_path / "plan"
     plan_dir.mkdir()
@@ -472,6 +472,7 @@ def test_native_search_requires_both_execution_and_trace(tmp_path, monkeypatch, 
     plan = {
         "dataset": {"dataset_root": str(expected_task.parent), "task_relative_paths": ["task"]},
         "jobs_root": str(tmp_path / "jobs"), "job_name": "actual-job", "run_id": "stable-id",
+        "domain": "search", "verifier": {"enabled": False},
     }
     (plan_dir / "rollout_plan.json").write_text(json.dumps(plan))
     config = SimpleNamespace(
@@ -487,19 +488,18 @@ def test_native_search_requires_both_execution_and_trace(tmp_path, monkeypatch, 
         assert value.agent_max_iterations == 500
         return plan_dir
 
-    def read(job, **kwargs):
-        assert job == tmp_path / "jobs/actual-job"
-        assert kwargs == {"domain": "search", "expected_trial_count": 2,
-                          "expected_task": expected_task, "harbor_root": config.harbor_root}
+    def read(plan_root):
+        assert plan_root == plan_dir
         return {"trials": [{"native_trial": trial}], "execution_completed": trace_complete,
+                "acceptance": {"status": "NOT_ASSESSED", "errors": []},
                 "quality_gate": {"reasons": [] if trace_complete else ["MISSING_RETURN"]}}
 
-    monkeypatch.setattr(search, "build_rollout_plan", build)
-    monkeypatch.setattr(search, "execute_rollout_plan", lambda *args, **kwargs: {
+    monkeypatch.setattr(native, "build_rollout_plan", build)
+    monkeypatch.setattr(native, "execute_rollout_plan", lambda *args, **kwargs: {
         "status": "COMPLETED" if executed else "FAILED",
     })
-    monkeypatch.setattr(search, "read_rollout_results", read)
-    outcome, reviews = search.run_native_search_rollouts(
+    monkeypatch.setattr(native, "read_rollout_acceptance", read)
+    outcome, reviews = native.run_native_unassessed_rollouts(
         harbor_task=expected_task, config=config, output_root=tmp_path,
     )
     assert (outcome["status"] == "ROLLOUT_COMPLETED") is (executed and trace_complete)

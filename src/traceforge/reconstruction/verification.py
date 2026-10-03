@@ -12,7 +12,11 @@ from itertools import count
 from pathlib import Path
 from typing import Any
 
-from traceforge.harbor_ags.response_acceptance import apply_file_semantic_receipts, apply_response_receipts
+from traceforge.harbor_ags.acceptance import read_rollout_acceptance
+from traceforge.harbor_ags.response_acceptance import (
+    apply_file_semantic_receipts,
+    apply_response_receipts,
+)
 from traceforge.harbor_ags.results import (
     HarborResultError,
     build_file_artifact_snapshot,
@@ -55,6 +59,7 @@ class VerificationConfig:
     execute_red: bool = False
     execute_rollout: bool = False
     manual_response_review: bool = False
+    disable_verification: bool = False
     rollout_trials: int = 2
     max_rounds: int | None = None
     config_path: Path | None = None
@@ -66,7 +71,9 @@ class VerificationConfig:
     def validate(self) -> None:
         if self.execute_rollout and self.rollout_trials < 2:
             raise ValueError("真实复验要求至少两次 Hermes rollout")
-        if self.execute_rollout and not self.should_run_red():
+        if self.disable_verification and self.should_run_red():
+            raise ValueError("未评分交付不能同时请求 RED 校准")
+        if self.execute_rollout and not self.disable_verification and not self.should_run_red():
             raise ValueError("真实 rollout 要求同时执行 Harbor RED；请设置 --execute-red")
         if self.max_rounds is not None and (
             isinstance(self.max_rounds, bool)
@@ -156,6 +163,54 @@ def initial_red_check(
 def _write(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def run_native_unassessed_rollouts(
+    *, harbor_task: Path, config: VerificationConfig, output_root: Path,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """执行实际交付的 Harbor 包，返回经原生请求/响应对账的复核输入。"""
+    record: dict[str, Any] = {"plan": None, "execution": None, "results": None}
+    trials: list[dict[str, Any]] = []
+    errors = []
+    try:
+        plan_dir = build_rollout_plan(HarborRolloutConfig(
+            task_dir=harbor_task, harbor_root=config.harbor_root,
+            output_root=output_root / "native-rollout/plans",
+            jobs_root=output_root / "native-rollout/jobs",
+            model=config.rollout_model, trials=config.rollout_trials,
+            timeout_seconds=config.timeout_seconds,
+            agent_max_iterations=config.rollout_max_iterations,
+        ))
+        record["plan"] = str(plan_dir)
+        plan = json.loads((plan_dir / "rollout_plan.json").read_text())
+        if plan["verifier"]["enabled"] is not False:
+            raise HarborRolloutError("未评分执行需要显式无评分交付")
+        record["execution"] = execute_rollout_plan(
+            plan_dir, config_path=config.config_path, channel=config.channel,
+        )
+        results = read_rollout_acceptance(plan_dir)
+        record["results"] = results
+        trials = [row["native_trial"] for row in results.get("trials", [])
+                  if "native_trial" in row]
+        if record["execution"].get("status") != "COMPLETED":
+            errors.append("NATIVE_HARBOR_EXECUTION_INCOMPLETE")
+        errors.extend(results["acceptance"]["errors"])
+        if results.get("execution_completed") is not True:
+            errors.extend((results.get("quality_gate") or {}).get("reasons") or
+                          ["NATIVE_HARBOR_TRACE_INCOMPLETE"])
+    except (HarborRolloutError, HarborResultError, OSError, ValueError) as exc:
+        errors.append(f"{type(exc).__name__}: {exc}")
+    errors = list(dict.fromkeys(errors))
+    record["errors"] = errors
+    receipt = output_root / "native-rollout.json"
+    _write(receipt, record)
+    return {
+        "status": "ROLLOUT_INCOMPLETE" if errors else "ROLLOUT_COMPLETED",
+        "errors": errors, "acceptance": "NOT_ASSESSED", "sft_eligible": False,
+        "rollout_backend": "native_harbor", "rollout_record": str(receipt),
+        "rollouts": [{key: item[key] for key in ("trial", "model", "completed", "errors")}
+                     for item in trials],
+    }, trials
 
 
 def _set_rollout_eligibility(result: dict[str, Any], expected_trials: int) -> bool:
@@ -828,8 +883,10 @@ def run_reconstruction_verification(
             return result
         if agent is not None and config.should_run_red():
             from traceforge.reconstruction.verifier_recovery import (
-                VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION, run_verifier_recovery,
-                verifier_behavior, verifier_input_binding,
+                VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION,
+                run_verifier_recovery,
+                verifier_behavior,
+                verifier_input_binding,
             )
             resume = None
             if reviewed_candidate is not None:

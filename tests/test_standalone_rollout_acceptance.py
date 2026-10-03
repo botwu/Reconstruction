@@ -443,3 +443,45 @@ def test_standalone_requires_bound_file_semantics_in_addition_to_reward(
     assert report["trials"][0]["status"] == "PASS"
     assert report["acceptance"]["status"] == ("PASS" if state == "accepted" else "REVIEW")
     assert report["acceptance"]["unverified_obligations"] == ([] if state == "accepted" else ["extract"])
+
+
+@pytest.mark.parametrize("missing_collection", [False, True])
+def test_unassessed_cli_binds_execution_without_certifying(tmp_path, monkeypatch, capsys, missing_collection):
+    from test_unassessed_terminal_rollout import _terminal_trial
+
+    task, old_trial, _ = _terminal_trial(tmp_path, monkeypatch)
+    harbor = _harbor_root(tmp_path / "harbor")
+    monkeypatch.setattr(sys.modules["harbor_ags.evidence"], "__file__",
+                        str(harbor / "src/harbor_ags/evidence.py"), raising=False)
+    plan_dir = build_rollout_plan(HarborRolloutConfig(
+        task_dir=task, harbor_root=harbor, output_root=tmp_path / "plans",
+        jobs_root=tmp_path / "jobs", trials=1,
+    ))
+    plan = json.loads((plan_dir / "rollout_plan.json").read_text())
+    job = Path(plan["jobs_root"]) / plan["job_name"]
+    job.mkdir(parents=True)
+    trial = job / "trial"
+    shutil.move(str(old_trial), trial)
+    shutil.copytree(old_trial.parent / "_control", job / "_control")
+    slot = Path(plan["dataset"]["dataset_root"]) / plan["dataset"]["task_relative_paths"][0]
+    _write(trial / "config.json", {"task": {"path": str(slot)}})
+    receipt_path = plan_dir / "run_receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt.update(status="COMPLETED", external_execution=True, returncode=0)
+    _write(receipt_path, receipt)
+
+    def cannot_certify(*args, **kwargs):
+        raise AssertionError("未评分执行不能调用 TASK_PASS 认证")
+
+    monkeypatch.setattr("traceforge.harbor_ags.acceptance.certify_hermes_job", cannot_certify)
+    if missing_collection:
+        (trial / "artifacts/logs/artifacts/traceforge/workspace-collection.json").unlink()
+    code = main(["harbor-ags", "read-results", "--plan-dir", str(plan_dir)])
+    assert code == (2 if missing_collection else 0)
+    report = json.loads(capsys.readouterr().out)
+    assert report["acceptance"]["status"] == "NOT_ASSESSED"
+    assert report["acceptance"]["sft_eligible"] is False
+    assert report["execution_completed"] is not missing_collection
+    assert report["trials"][0]["reward"] is None
+    assert report["input_binding"]["trial_task_paths"] == {"trial": str(slot)}
+    assert report["input_binding"]["certification_harbor_root"] is None

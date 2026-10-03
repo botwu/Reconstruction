@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import copy
 import json
-from itertools import count
 from collections.abc import Callable
+from itertools import count
 from pathlib import Path
 from typing import Any
 
 from traceforge.curation.sft import write_reconstruction_sft_curation
+from traceforge.harbor_task import export_terminal_task
 from traceforge.reconstruction.agents import AgentRuntime, SandboxedAgentRuntime
 from traceforge.reconstruction.env_replay import (
     replay_task_workspace,
@@ -52,6 +53,7 @@ from traceforge.reconstruction.task_fit import (
 from traceforge.reconstruction.terminal_universe_environment import select_sufficient_candidate
 from traceforge.reconstruction.verification import (
     VerificationConfig,
+    run_native_unassessed_rollouts,
     run_reconstruction_verification,
 )
 from traceforge.reconstruction.workspace_completion import (
@@ -61,6 +63,7 @@ from traceforge.reconstruction.workspace_completion import (
     repair_workspace_completion,
 )
 from traceforge.reconstruction.workspace_sufficiency import run_workspace_sufficiency
+from traceforge.trajectory.artifacts import ArtifactPublishError
 
 RAW_SESSION_RECONSTRUCTION_SCHEMA = "traceforge.raw-session-reconstruction.v1"
 ENV_REPLAYED = "REPLAYED"
@@ -197,6 +200,10 @@ def _write_reconstruction_manifest(
     ready_statuses = {"READY", "READY_VARIANT"}
     if statuses and all(x in ready_statuses for x in statuses):
         status = "READY_VARIANT" if any(x == "READY_VARIANT" for x in statuses) else "READY"
+    elif statuses and all(
+        x in ready_statuses | {"ENVIRONMENT_READY", "ROLLOUT_COMPLETED"} for x in statuses
+    ):
+        status = "COMPLETED"
     elif statuses and all(x == ENVIRONMENT_UNRECONSTRUCTABLE for x in statuses):
         status = ENVIRONMENT_UNRECONSTRUCTABLE
     elif any(x == "PENDING_EXECUTION" for x in statuses) and not any(
@@ -210,7 +217,7 @@ def _write_reconstruction_manifest(
         for item in results
         if item.get("status") not in ready_statuses and item.get("stopped_at")
     }
-    if status in ready_statuses:
+    if status in ready_statuses | {"COMPLETED"}:
         stopped_at = None
     elif status == ENVIRONMENT_UNRECONSTRUCTABLE:
         stopped_at = "sufficiency"
@@ -765,6 +772,66 @@ def _task_result(
             fit["execution_policy"] = "PROCEED_ORIGINAL"
     _write_stage_json(task_root, "task_fit.json", fit)
     result["executed_task"] = task_for_verification
+    execution_blockers = environment_execution_blockers(environment)
+    if (verification_config is not None and verification_config.execute_rollout
+            and execution_blockers):
+        verification = {
+            "schema_version": "traceforge.reconstruction-verification.v1",
+            "status": "REVIEW",
+            "errors": execution_blockers,
+            "execution_gate": {
+                "status": "BLOCKED",
+                "blockers": execution_blockers,
+                "execution_readiness": environment.get("execution_readiness"),
+            },
+            "rollout": "SKIPPED",
+            "sft_eligible": False,
+            "unverified_obligations": [],
+        }
+        _write_stage_json(
+            task_root / "verification", "execution_gate.json", verification["execution_gate"]
+        )
+        result["verification"] = verification
+        result["status"] = "REVIEW"
+        result["stopped_at"] = "verification"
+        result["errors"] = execution_blockers
+        return result
+    if not execution_blockers:
+        try:
+            harbor_task = export_terminal_task(
+                task=task_for_verification, workspace_root=Path(chosen["workspace"]),
+                env_root=Path(chosen["env_root"]) if chosen.get("env_root") else None,
+                output_root=task_root / "harbor",
+            )
+        except (OSError, ValueError, ArtifactPublishError) as exc:
+            result.update(status="PIPELINE_ERROR", stopped_at="harbor_delivery",
+                          errors=["HARBOR_DELIVERY_FAILED", str(exc)])
+            return result
+        result["harbor_task"] = str(harbor_task.resolve())
+        result["harbor_rollout_args"] = ["--disable-verification"]
+    if verification_config is not None and verification_config.disable_verification:
+        verification_config.validate()
+        verification = {
+            "schema_version": "traceforge.reconstruction-verification.v1",
+            "status": "NOT_ASSESSED", "errors": execution_blockers,
+            "sft_eligible": False,
+            "unverified_obligations": [
+                item["id"] for item in task_for_verification["acceptance_obligations"]
+            ],
+        }
+        result["verification"] = verification
+        result.update(status="REVIEW" if execution_blockers else "ENVIRONMENT_READY",
+                      acceptance="NOT_ASSESSED", sft_eligible=False,
+                      stopped_at="environment" if execution_blockers else None,
+                      errors=execution_blockers)
+        if not execution_blockers and verification_config.execute_rollout:
+            execution, _ = run_native_unassessed_rollouts(
+                harbor_task=harbor_task, config=verification_config, output_root=task_root,
+            )
+            result.update(execution)
+            result["stopped_at"] = None if result["status"] == "ROLLOUT_COMPLETED" else "rollout"
+        _write_stage_json(task_root / "verification", "verification.json", verification)
+        return result
     if not support.get("allow_file_verifier"):
         result["verification"] = {
             "schema_version": "traceforge.reconstruction-verification.v1",
@@ -786,32 +853,6 @@ def _task_result(
             }
         )
         return result
-    # A context-ready snapshot may still be review-only. Do not let an
-    # explicit Hermes request turn missing execution probes into a real run.
-    if verification_config.execute_rollout:
-        execution_blockers = environment_execution_blockers(environment)
-        if execution_blockers:
-            verification = {
-                "schema_version": "traceforge.reconstruction-verification.v1",
-                "status": "REVIEW",
-                "errors": execution_blockers,
-                "execution_gate": {
-                    "status": "BLOCKED",
-                    "blockers": execution_blockers,
-                    "execution_readiness": environment.get("execution_readiness"),
-                },
-                "rollout": "SKIPPED",
-                "sft_eligible": False,
-                "unverified_obligations": [],
-            }
-            _write_stage_json(
-                task_root / "verification", "execution_gate.json", verification["execution_gate"]
-            )
-            result["verification"] = verification
-            result["status"] = "REVIEW"
-            result["stopped_at"] = "verification"
-            result["errors"] = execution_blockers
-            return result
     baseline_feedback = {}
     for context in (getattr(agent, "initial_feedback", None), completion_feedback):
         if isinstance(context, dict) and "baseline_observations" in context:
@@ -1182,7 +1223,10 @@ def run_raw_session_reconstruction(
     container_runtime_factory: Callable[[], Any] | None = None,
 ) -> Path:
     """对一条完整原始 session 直入重建管线，不读取筛选记录。"""
-    from traceforge.reconstruction.raw_session import RawSessionSourceError, build_raw_session_source
+    from traceforge.reconstruction.raw_session import (
+        RawSessionSourceError,
+        build_raw_session_source,
+    )
 
     if domain not in {"search", "terminal"}:
         raise ReconstructionError("原始 session 必须显式指定 domain：search 或 terminal")

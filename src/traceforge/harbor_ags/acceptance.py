@@ -132,61 +132,89 @@ def read_rollout_acceptance(
     ]
     if len(task_paths) != expected_trials or len(set(task_paths)) != expected_trials:
         raise HarborResultError("计划输入槽位与 trial 数不一致")
-    task, acceptance_hashes = _task_acceptance(task_paths)
     completed = (
         execution.get("status") == "COMPLETED"
         and execution.get("external_execution") is True
         and type(execution.get("returncode")) is int and execution["returncode"] == 0
     )
     bindings = _bind_trial_tasks(job, task_paths) if completed else {}
-    if completed:
-        validate_rollout_runtime(plan)
-        certification_sha256 = None
+    verifier_enabled = plan.get("verifier", {}).get("enabled", True)
+    acceptance_hashes: dict[str, str] = {}
+    if verifier_enabled is False:
         if certification_harbor_root is not None:
-            validator_path = Path(certification_harbor_root) / "src/harbor_ags/validator.py"
-            if not validator_path.is_file():
-                raise HarborResultError(f"认证器不存在：{validator_path}")
-            certification_sha256 = hashlib.sha256(validator_path.read_bytes()).hexdigest()
-        certify_hermes_job(job, harbor_root=certification_harbor_root or plan["harbor_root"])
-        if certification_sha256 is not None:
-            for trial_name in bindings:
-                certification = _read_json(job / trial_name / "reconstruction-certification.json")
-                if certification.get("validator_source_sha256") != certification_sha256:
-                    raise HarborResultError("实际认证器与指定源码不一致；请用指定 Harbor 路径启动独立复核进程")
-    report = read_rollout_results(job, agent_mode="hermes", expected_trial_count=expected_trials)
-    errors = list(report["quality_gate"]["reasons"])
-    if not completed:
-        errors.append(f"HARBOR_EXECUTION_NOT_COMPLETED:{execution.get('status', 'UNKNOWN')}")
-    if not rollout_passed({"execution": execution, "results": report}, expected_trials):
-        errors.append("ROLLOUT_NOT_PASSED")
-    acceptance = {
-        "status": "READY" if not errors else "REVIEW",
-        "errors": errors,
-        "unverified_obligations": sorted(
-            set(non_file_obligation_ids(task)) | set(task.get("file_semantic_checks", {}))
-        ),
-    }
-    if completed:
-        apply_response_receipts(
-            acceptance, {"execution": execution, "results": report}, task, expected_trials,
+            raise HarborResultError("未评分交付不能指定评分认证器")
+        if completed:
+            validate_rollout_runtime(plan)
+        report = read_rollout_results(
+            job, agent_mode="hermes", expected_trial_count=expected_trials,
+            domain=plan["domain"], verifier_enabled=False,
+            expected_task=task_paths[0], harbor_root=plan["harbor_root"],
         )
-        apply_file_semantic_receipts(
-            acceptance, {"execution": execution, "results": report}, task, expected_trials,
+        errors = list(report["quality_gate"]["reasons"])
+        if not completed:
+            errors.append(f"HARBOR_EXECUTION_NOT_COMPLETED:{execution.get('status', 'UNKNOWN')}")
+        report["acceptance"] = {
+            "status": "NOT_ASSESSED", "errors": errors, "sft_eligible": False,
+        }
+    else:
+        task, acceptance_hashes = _task_acceptance(task_paths)
+        if completed:
+            validate_rollout_runtime(plan)
+            certification_sha256 = None
+            if certification_harbor_root is not None:
+                validator_path = Path(certification_harbor_root) / "src/harbor_ags/validator.py"
+                if not validator_path.is_file():
+                    raise HarborResultError(f"认证器不存在：{validator_path}")
+                certification_sha256 = hashlib.sha256(validator_path.read_bytes()).hexdigest()
+            certify_hermes_job(job, harbor_root=certification_harbor_root or plan["harbor_root"])
+            if certification_sha256 is not None:
+                for trial_name in bindings:
+                    certification = _read_json(
+                        job / trial_name / "reconstruction-certification.json"
+                    )
+                    if certification.get("validator_source_sha256") != certification_sha256:
+                        raise HarborResultError(
+                            "实际认证器与指定源码不一致；请用指定 Harbor 路径启动独立复核进程"
+                        )
+        report = read_rollout_results(
+            job, agent_mode="hermes", expected_trial_count=expected_trials,
         )
-    pending = set(acceptance["unverified_obligations"])
-    if pending & set(non_file_obligation_ids(task)):
-        acceptance["errors"].append("NON_FILE_RESPONSE_UNVERIFIED")
-    if pending & set(task.get("file_semantic_checks", {})):
-        acceptance["errors"].append("FILE_SEMANTIC_UNVERIFIED")
-    acceptance["errors"] = list(dict.fromkeys(acceptance["errors"]))
-    acceptance["status"] = (
-        "PASS" if acceptance["status"] == "READY" and not acceptance["errors"] else "REVIEW"
-    )
-    acceptance.pop("sft_eligible", None)
-    report["acceptance"] = acceptance
+        errors = list(report["quality_gate"]["reasons"])
+        if not completed:
+            errors.append(f"HARBOR_EXECUTION_NOT_COMPLETED:{execution.get('status', 'UNKNOWN')}")
+        if not rollout_passed({"execution": execution, "results": report}, expected_trials):
+            errors.append("ROLLOUT_NOT_PASSED")
+        acceptance = {
+            "status": "READY" if not errors else "REVIEW",
+            "errors": errors,
+            "unverified_obligations": sorted(
+                set(non_file_obligation_ids(task)) | set(task.get("file_semantic_checks", {}))
+            ),
+        }
+        if completed:
+            apply_response_receipts(
+                acceptance, {"execution": execution, "results": report}, task, expected_trials,
+            )
+            apply_file_semantic_receipts(
+                acceptance, {"execution": execution, "results": report}, task, expected_trials,
+            )
+        pending = set(acceptance["unverified_obligations"])
+        if pending & set(non_file_obligation_ids(task)):
+            acceptance["errors"].append("NON_FILE_RESPONSE_UNVERIFIED")
+        if pending & set(task.get("file_semantic_checks", {})):
+            acceptance["errors"].append("FILE_SEMANTIC_UNVERIFIED")
+        acceptance["errors"] = list(dict.fromkeys(acceptance["errors"]))
+        acceptance["status"] = (
+            "PASS" if acceptance["status"] == "READY" and not acceptance["errors"] else "REVIEW"
+        )
+        acceptance.pop("sft_eligible", None)
+        report["acceptance"] = acceptance
     report["execution"] = {key: execution.get(key) for key in ("status", "external_execution", "returncode")}
     report["input_binding"] = {
-        "certification_harbor_root": str(Path(certification_harbor_root or plan["harbor_root"]).resolve()),
+        "certification_harbor_root": (
+            str(Path(certification_harbor_root or plan["harbor_root"]).resolve())
+            if verifier_enabled else None
+        ),
         "plan_dir": str(plan_root),
         "plan_sha256": hashlib.sha256((plan_root / "rollout_plan.json").read_bytes()).hexdigest(),
         "run_id": plan["run_id"],

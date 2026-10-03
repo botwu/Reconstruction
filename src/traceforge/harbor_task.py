@@ -9,20 +9,32 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from traceforge.reconstruction.python_runtime import freeze_wheels, validate_python_runtime
+from traceforge.reconstruction.python_runtime import (
+    RUNTIME_NAME,
+    freeze_wheels,
+    validate_python_runtime,
+)
+from traceforge.task_instruction import render_task_instruction
 from traceforge.trajectory.artifacts import ArtifactWorkspace, write_json_artifact
 
 CONTAINER_VERSION = "traceforge.harbor-container.v4"
 
 
-def workspace_snapshot_hook(task: Path) -> str:
+def workspace_snapshot_hook(
+    task: Path, *, environment_bindings: list[dict[str, Any]] | None = None,
+) -> str:
     """在同一收集命令中绑定初态及已声明输出，排除范围不依赖模型猜测。"""
     initial = sorted(path.relative_to(task / "workspace").as_posix()
                      for path in (task / "workspace").rglob("*"))
-    manifest = task / "tests/control/input-manifest.json"
-    acceptance = json.loads(manifest.read_text()).get("task_acceptance", {}) if manifest.is_file() else {}
+    if environment_bindings is None:
+        manifest = task / "tests/control/input-manifest.json"
+        acceptance = (
+            json.loads(manifest.read_text()).get("task_acceptance", {})
+            if manifest.is_file() else {}
+        )
+        environment_bindings = acceptance.get("environment_bindings", [])
     outputs = sorted({str(Path(path).as_posix()).rstrip("/")
-                      for binding in acceptance.get("environment_bindings", [])
+                      for binding in environment_bindings
                       for path in binding.get("output_paths", [])})
     code = Path(__file__).with_name("workspace_snapshot.py").read_text()
     code += (
@@ -81,6 +93,164 @@ def write_container_environment(task: Path, *, separate_verifier: bool) -> None:
             f"    build:\n      context: ..\n      dockerfile: {role}/Dockerfile\n"
             "    command: [sleep, infinity]\n", encoding="utf-8",
         )
+
+
+def terminal_task_inputs(
+    *, task: dict[str, Any], workspace_root: Path, env_root: Path | None = None,
+) -> tuple[str, dict[str, str], dict[str, Any]]:
+    """验证并绑定公开任务、初态与环境来源；隐藏评分文件不属于交付前提。"""
+    instruction = render_task_instruction(task)
+    if not isinstance(instruction, str) or not instruction.strip():
+        raise ValueError("缺少自足的任务指令")
+    if (workspace_root / ".traceforge/source-excerpts.json").is_file():
+        instruction += (
+            "\n\n.traceforge/source-excerpts.json 记录原轨迹直接捕获的部分源码及捕获覆盖范围，"
+            "不代表当前文件仍未恢复的区间。请结合当前工作区实际文件核查；"
+            "不要仅由片段范围推断当前代码缺失；对于原始片段，不能将其视为完整源码，"
+            "也不能以报告自述替代验证。"
+        )
+    if not workspace_root.is_dir():
+        raise ValueError("初始 workspace 不存在")
+    tree: dict[str, str] = {}
+    for path in sorted(workspace_root.rglob("*")):
+        if path.is_symlink() or (not path.is_file() and not path.is_dir()):
+            raise ValueError("初始 workspace 不得包含符号链接或特殊文件")
+        if path.is_file():
+            tree[path.relative_to(workspace_root).as_posix()] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+    env_metadata: dict[str, Any] = {}
+    python_runtime = workspace_root.parent / RUNTIME_NAME
+    if python_runtime.is_dir():
+        env_metadata["python_runtime"] = validate_python_runtime(
+            python_runtime, workspace_root / "requirements.txt",
+        )
+    if env_root is not None:
+        env_root = Path(env_root).resolve()
+        if not env_root.is_dir():
+            raise ValueError("env_root 不存在")
+        manifest_path = env_root / "env_manifest.json"
+        if manifest_path.is_file():
+            try:
+                raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise ValueError("env_manifest.json 无法解析") from exc
+            if not isinstance(raw_manifest, dict):
+                raise ValueError("env_manifest.json 必须是 object")
+            env_metadata.update({
+                "schema_version": raw_manifest.get("schema_version"),
+                "provenance": raw_manifest.get("provenance", {}),
+                "withheld_change_count": raw_manifest.get("withheld_change_count", 0),
+                "dependencies": raw_manifest.get("dependencies", []),
+                "runtime_constraints": raw_manifest.get("runtime_constraints", []),
+                "uncertainties": raw_manifest.get("uncertainties", []),
+            })
+            for key in ("provenance", "dependencies", "runtime_constraints", "uncertainties"):
+                if key not in raw_manifest:
+                    raise ValueError(f"env_manifest.json 缺少 {key}")
+            if not isinstance(env_metadata["provenance"], dict):
+                raise ValueError("env_manifest.provenance 必须是 object")
+            required_lists = ("dependencies", "runtime_constraints", "uncertainties")
+            if any(not isinstance(raw_manifest[key], list) for key in required_lists):
+                raise ValueError(
+                    "env_manifest dependencies/runtime_constraints/uncertainties 必须为数组")
+    return instruction, tree, env_metadata
+
+
+def _make_workspace_solver_writable(workspace: Path) -> None:
+    """让 AGS 中以普通 user 运行的 oracle/Hermes 能修改公开 workspace。"""
+
+    paths = [workspace, *workspace.rglob("*")]
+    for path in sorted(paths, key=lambda item: (not item.is_dir(), item.as_posix())):
+        try:
+            mode = path.stat().st_mode
+            path.chmod(mode | (0o777 if path.is_dir() else 0o666))
+        except OSError as exc:
+            raise ValueError(f"无法设置 workspace 写权限: {path}") from exc
+
+
+def write_terminal_task(
+    root: Path, *, task: dict[str, Any], workspace_root: Path, instruction: str,
+    name: str, separate_verifier: bool,
+) -> None:
+    """共同生成终端任务初态、运行环境和采集入口，不写参考解或评分内容。"""
+    shutil.copytree(workspace_root, root / "workspace")
+    _make_workspace_solver_writable(root / "workspace")
+    (root / "environment").mkdir()
+    python_runtime = workspace_root.parent / RUNTIME_NAME
+    if python_runtime.is_dir():
+        shutil.copytree(python_runtime, root / "environment" / RUNTIME_NAME)
+        (root / "environment/setup.sh").write_text(
+            '#!/bin/sh\nset -eu\nsh "$(dirname "$0")/python_runtime/install.sh"\n',
+        )
+    (root / "instruction.md").write_text(instruction + "\n", encoding="utf-8")
+    assessment = "" if separate_verifier else 'response_acceptance = "NOT_ASSESSED"\n'
+    verifier_config = (
+        'timeout_sec = 120.0\nenvironment_mode = "separate"\nuser = "user"\n'
+        '[verifier.environment]\nnetwork_mode = "no-network"\n'
+        if separate_verifier else ""
+    )
+    (root / "task.toml").write_text(
+        'schema_version = "1.4"\n[task]\n'
+        f'name = "{name}"\nversion = "1.0.0"\n'
+        '[metadata]\nworkspace_snapshot = true\ndomain = "terminal"\n' + assessment +
+        '[agent]\ntimeout_sec = 900.0\nuser = "user"\n'
+        '[verifier]\n' + verifier_config +
+        '[environment]\nos = "linux"\nnetwork_mode = "public"\n' +
+        workspace_snapshot_hook(root, environment_bindings=task.get("environment_bindings", [])),
+        encoding="utf-8",
+    )
+    (root / "environment/README.md").write_text(
+        "原生 Harbor 通过 Dockerfile/Compose 构建与冻结依赖 ABI 匹配的 Python 环境；"
+        "现有 AGS 后端继续使用其锁定模板。" + (
+            "pytest 由 tests/vendor 离线提供；"
+            "项目依赖从冻结的 python_runtime 离线安装，verifier 无网。\n"
+            if separate_verifier else
+            "项目依赖从冻结的 python_runtime 离线安装。\n"
+            "此交付未包含自动评分器；使用 Harbor --disable-verification，验收保持 NOT_ASSESSED。\n"
+        ), encoding="utf-8",
+    )
+    write_container_environment(root, separate_verifier=separate_verifier)
+
+
+def export_terminal_task(
+    *, task: dict[str, Any], workspace_root: Path, output_root: Path,
+    env_root: Path | None = None,
+) -> Path:
+    """独立交付已恢复的任务与环境，不因尚无公平评分器而构造通过结论。"""
+    instruction, tree, env_metadata = terminal_task_inputs(
+        task=task, workspace_root=workspace_root, env_root=env_root,
+    )
+    digest = hashlib.sha256(json.dumps({
+        "terminal_delivery_version": 1, "container_version": CONTAINER_VERSION,
+        "task": task, "instruction": instruction, "tree": tree, "environment": env_metadata,
+    }, sort_keys=True).encode()).hexdigest()
+    if (output_root / digest).exists():
+        raise ValueError("导出目录已存在，不能覆盖已发布任务")
+    artifact = ArtifactWorkspace(output_root, digest)
+    try:
+        root = artifact.staging_path / "task"
+        write_terminal_task(
+            root, task=task, workspace_root=workspace_root, instruction=instruction,
+            name=f"traceforge/reconstructed-{digest[:16]}", separate_verifier=False,
+        )
+        hashes = {
+            path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(root.rglob("*")) if path.is_file()
+        }
+        write_json_artifact(artifact.staging_path, "delivery.json", {
+            "schema_version": "traceforge.harbor-delivery.v1", "domain": "terminal",
+            "task_path": "task", "task_id": task.get("task_id"),
+            "source_task_hash": task.get("source_task_hash"),
+            "response_acceptance": "NOT_ASSESSED",
+            "rollout_args": ["--disable-verification"], "execution_status": "NOT_RUN",
+            "workspace_sha256": tree,
+            "task_file_sha256": hashes,
+        })
+        return artifact.publish() / "task"
+    except BaseException:
+        artifact.abort()
+        raise
 
 
 _SEARCH_INSTALL_SCRIPT = '''#!/bin/sh

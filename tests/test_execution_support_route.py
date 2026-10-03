@@ -194,6 +194,7 @@ def test_task_rechecks_intent_then_completes_non_file_tree(tmp_path, monkeypatch
         workspace = tmp_path / "ws"
         workspace.mkdir()
         (workspace / "foo.py").write_text("print(1)\n", encoding="utf-8")
+        (tmp_path / "env").mkdir()
         return {
             "status": "READY",
             "errors": [],

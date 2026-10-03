@@ -11,11 +11,10 @@ from typing import Any
 from traceforge.harbor_ags.adapter import validate_bundle_layout
 from traceforge.harbor_task import (
     CONTAINER_VERSION,
-    workspace_snapshot_hook,
-    write_container_environment,
+    terminal_task_inputs,
+    write_terminal_task,
 )
-from traceforge.reconstruction.python_runtime import RUNTIME_NAME, validate_python_runtime
-from traceforge.task_instruction import render_task_instruction
+from traceforge.reconstruction.python_runtime import RUNTIME_NAME
 from traceforge.trajectory.artifacts import (
     ArtifactWorkspace,
     artifact_entry_dicts,
@@ -25,18 +24,6 @@ from traceforge.trajectory.artifacts import (
 from .synthesis import VerifierCandidate, is_python_solution, validate_solution_scripts
 
 _BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v11-skip-diagnostics"
-
-
-def _make_workspace_solver_writable(workspace: Path) -> None:
-    """让 AGS 中以普通 user 运行的 oracle/Hermes 能修改公开 workspace。"""
-
-    paths = [workspace, *workspace.rglob("*")]
-    for path in sorted(paths, key=lambda item: (not item.is_dir(), item.as_posix())):
-        try:
-            mode = path.stat().st_mode
-            path.chmod(mode | (0o777 if path.is_dir() else 0o666))
-        except OSError as exc:
-            raise ValueError(f"无法设置 workspace 写权限: {path}") from exc
 
 
 def compile_bundle(
@@ -50,66 +37,17 @@ def compile_bundle(
     env_root: Path | None = None,
 ) -> Path:
     """生成带 hash 的 bundle；参考解只写入 solution，测试只写入 tests。"""
-    instruction = render_task_instruction(task)
-    if not isinstance(instruction, str) or not instruction.strip():
-        raise ValueError("缺少自足的任务指令")
-    if (workspace_root / ".traceforge/source-excerpts.json").is_file():
-        instruction += (
-            "\n\n.traceforge/source-excerpts.json 记录原轨迹直接捕获的部分源码及捕获覆盖范围，"
-            "不代表当前文件仍未恢复的区间。请结合当前工作区实际文件核查；"
-            "不要仅由片段范围推断当前代码缺失；对于原始片段，不能将其视为完整源码，"
-            "也不能以报告自述替代验证。"
-        )
-    if not workspace_root.is_dir():
-        raise ValueError("初始 workspace 不存在")
-    tree: dict[str, str] = {}
-    for path in sorted(workspace_root.rglob("*")):
-        if path.is_symlink() or (not path.is_file() and not path.is_dir()):
-            raise ValueError("初始 workspace 不得包含符号链接或特殊文件")
-        if path.is_file():
-            tree[path.relative_to(workspace_root).as_posix()] = hashlib.sha256(
-                path.read_bytes()
-            ).hexdigest()
-    env_metadata: dict[str, Any] = {}
-    hidden_source: Path | None = None
+    instruction, tree, env_metadata = terminal_task_inputs(
+        task=task, workspace_root=workspace_root, env_root=env_root,
+    )
     python_runtime = workspace_root.parent / RUNTIME_NAME
-    if python_runtime.is_dir():
-        env_metadata["python_runtime"] = validate_python_runtime(
-            python_runtime, workspace_root / "requirements.txt",
-        )
+    hidden_source: Path | None = None
     if env_root is not None:
         env_root = Path(env_root).resolve()
-        if not env_root.is_dir():
-            raise ValueError("env_root 不存在")
-        manifest_path = env_root / "env_manifest.json"
-        if manifest_path.is_file():
-            try:
-                raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-                raise ValueError("env_manifest.json 无法解析") from exc
-            if not isinstance(raw_manifest, dict):
-                raise ValueError("env_manifest.json 必须是 object")
-            env_metadata.update({
-                "schema_version": raw_manifest.get("schema_version"),
-                "provenance": raw_manifest.get("provenance", {}),
-                "withheld_change_count": raw_manifest.get("withheld_change_count", 0),
-                "dependencies": raw_manifest.get("dependencies", []),
-                "runtime_constraints": raw_manifest.get("runtime_constraints", []),
-                "uncertainties": raw_manifest.get("uncertainties", []),
-            })
-            for key in ("provenance", "dependencies", "runtime_constraints", "uncertainties"):
-                if key not in raw_manifest:
-                    raise ValueError(f"env_manifest.json 缺少 {key}")
-            if not isinstance(env_metadata["provenance"], dict):
-                raise ValueError("env_manifest.provenance 必须是 object")
-            required_lists = ("dependencies", "runtime_constraints", "uncertainties")
-            if any(not isinstance(raw_manifest[key], list) for key in required_lists):
-                raise ValueError(
-                    "env_manifest dependencies/runtime_constraints/uncertainties 必须为数组")
         hidden = env_root / "hidden_control"
         if hidden.is_dir():
             hidden_source = hidden
-        elif manifest_path.is_file():
+        elif (env_root / "env_manifest.json").is_file():
             raise ValueError("env_manifest 存在但 hidden_control 缺失")
     variants = verifier.oracle_solutions if mutation_index is None else verifier.mutation_solutions
     index = solution_index if mutation_index is None else mutation_index
@@ -154,16 +92,15 @@ def compile_bundle(
     entries = []
     try:
         root = artifact.staging_path / "task"
-        shutil.copytree(workspace_root, root / "workspace")
-        _make_workspace_solver_writable(root / "workspace")
-        for name in ("environment", "solution", "tests/control"):
+        write_terminal_task(
+            root, task=task, workspace_root=workspace_root, instruction=instruction,
+            name=f"traceforge/reconstructed-{digest[:16]}", separate_verifier=True,
+        )
+        for name in ("solution", "tests/control"):
             (root / name).mkdir(parents=True, exist_ok=True)
         if python_runtime.is_dir():
-            for destination in (root / "environment", root / "tests"):
-                shutil.copytree(python_runtime, destination / RUNTIME_NAME)
-                (destination / "setup.sh").write_text(
-                    '#!/bin/sh\nset -eu\nsh "$(dirname "$0")/python_runtime/install.sh"\n',
-                )
+            shutil.copytree(python_runtime, root / "tests" / RUNTIME_NAME)
+            shutil.copyfile(root / "environment/setup.sh", root / "tests/setup.sh")
         if hidden_source is not None:
             # The control copy is verifier-only.  It is never placed under the
             # public workspace or instruction, so solver agents cannot read it.
@@ -198,23 +135,6 @@ def compile_bundle(
                 indent=2,
                 sort_keys=True,
             ) + "\n",
-            encoding="utf-8",
-        )
-        (root / "instruction.md").write_text(instruction + "\n", encoding="utf-8")
-        (root / "task.toml").write_text(
-            'schema_version = "1.4"\n[task]\n'
-            f'name = "traceforge/reconstructed-{digest[:16]}"\nversion = "1.0.0"\n'
-            '[metadata]\nworkspace_snapshot = true\ndomain = "terminal"\n'
-            '[agent]\ntimeout_sec = 900.0\nuser = "user"\n'
-            '[verifier]\ntimeout_sec = 120.0\nenvironment_mode = "separate"\nuser = "user"\n'
-            '[verifier.environment]\nnetwork_mode = "no-network"\n'
-            '[environment]\nos = "linux"\nnetwork_mode = "public"\n' + workspace_snapshot_hook(root),
-            encoding="utf-8",
-        )
-        (root / "environment/README.md").write_text(
-            "原生 Harbor 通过 Dockerfile/Compose 构建与冻结依赖 ABI 匹配的 Python 环境；"
-            "现有 AGS 后端继续使用其锁定模板。pytest 由 tests/vendor 离线提供；"
-            "项目依赖从冻结的 python_runtime 离线安装，verifier 无网。\n",
             encoding="utf-8",
         )
         if is_python_solution(variant.script):
@@ -269,7 +189,6 @@ def compile_bundle(
                 verifier.to_dict(),
             )
         )
-        write_container_environment(root, separate_verifier=True)
         layout = validate_bundle_layout(root)
         entries.append(
             write_json_artifact(

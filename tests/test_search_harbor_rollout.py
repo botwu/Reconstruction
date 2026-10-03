@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import subprocess
+import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ import yaml
 from test_harbor_ags_rollout import _harbor_root
 
 from traceforge.harbor_ags.adapter import HarborAgsAdapterError
-from traceforge.harbor_ags.results import read_rollout_results, read_search_trial, rollout_passed
+from traceforge.harbor_ags.results import read_rollout_results, read_native_trial, rollout_passed
 from traceforge.harbor_ags.rollout import (
     HarborRolloutConfig,
     HarborRolloutError,
@@ -160,7 +161,7 @@ def _native_trial(tmp_path, monkeypatch):
 
 def test_native_reader_preserves_complete_actual_results(tmp_path, monkeypatch):
     trial, raw = _native_trial(tmp_path, monkeypatch)
-    read = read_search_trial(trial)
+    read = read_native_trial(trial, domain="search")
     assert read["completed"] and read["errors"] == []
     assert read["answer"] == "有出处的回答。"
     assert read["tool_events"][0]["result"] == "正文" * 1000
@@ -171,7 +172,7 @@ def test_native_reader_preserves_complete_actual_results(tmp_path, monkeypatch):
     changed = copy.deepcopy(raw)
     changed["anthropic_calls"][0]["response"]["content"][0]["input"] = {"command": "forged"}
     (trial / "agent/trajectory.full.json").write_text(json.dumps(changed))
-    rejected = read_search_trial(trial)
+    rejected = read_native_trial(trial, domain="search")
     assert not rejected["completed"]
     assert rejected["errors"] == ["NATIVE_CAPTURE_BINDING_MISMATCH:anthropic_calls"]
 
@@ -180,7 +181,7 @@ def test_native_reader_rejects_missing_actual_tool_result(tmp_path, monkeypatch)
     trial, raw = _native_trial(tmp_path, monkeypatch)
     raw["anthropic_calls"][1]["request"]["messages"] = []
     (trial / "agent/trajectory.full.json").write_text(json.dumps(raw))
-    assert read_search_trial(trial)["errors"] == ["NATIVE_TOOL_RESULT_MISSING:t1"]
+    assert read_native_trial(trial, domain="search")["errors"] == ["NATIVE_TOOL_RESULT_MISSING:t1"]
 
 
 
@@ -189,7 +190,7 @@ def test_native_reader_rejects_truncated_answer_and_keeps_evidence(tmp_path, mon
     trial, raw = _native_trial(tmp_path, monkeypatch)
     raw["anthropic_calls"][-1]["response"]["stop_reason"] = stop_reason
     (trial / "agent/trajectory.full.json").write_text(json.dumps(raw))
-    read = read_search_trial(trial)
+    read = read_native_trial(trial, domain="search")
     assert not read["completed"]
     assert read["errors"] == ["NATIVE_FINAL_RESPONSE_TRUNCATED"]
     assert read["answer"] == "有出处的回答。"
@@ -199,22 +200,44 @@ def test_native_reader_rejects_truncated_answer_and_keeps_evidence(tmp_path, mon
 
 
 def test_search_result_is_complete_but_never_scored_as_pass(tmp_path, monkeypatch, harbor_cleanup):
-    trial, _ = _native_trial(tmp_path, monkeypatch)
+    trial, raw = _native_trial(tmp_path, monkeypatch)
+    task = _task(tmp_path / "source")
+    raw["task_input"] = {
+        "instruction": {"task_instruction": {"content": (task / "instruction.md").read_text()}},
+        "workspace": {"files": [
+            {"path": str(p.relative_to(task / "workspace")),
+             "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+            for p in (task / "workspace").rglob("*") if p.is_file()
+        ]},
+    }
+    (trial / "config.json").write_text(json.dumps({"task": {"path": str(task)}}))
+    (trial / "agent/trajectory.full.json").write_text(json.dumps(raw))
+    final = trial / "artifacts/home/user/workspace"
+    shutil.copytree(task / "workspace", final)
     ledger = trial.parent / "_control/ags-sandbox-ledger.jsonl"
     ledger.parent.mkdir()
     ledger.write_text("{}")
-    report = read_rollout_results(trial.parent, domain="search", expected_trial_count=1)
+    report = read_rollout_results(trial.parent, domain="search", verifier_enabled=False, expected_trial_count=1)
     assert report["execution_completed"] is True
     assert report["quality_gate"] == {"scope": "EXECUTION", "ok": True, "reasons": []}
     assert report["trials"][0]["status"] == "COMPLETED"
     assert report["trials"][0]["reward"] is None
     assert report["metrics"]["pass_rate"] is None
     assert report["acceptance"] == "NOT_ASSESSED"
+    assert report["trials"][0]["native_trial"]["receipt"]["source_binding"]
+    assert report["trials"][0]["native_trial"]["receipt"]["collection"] == "NOT_PRESENT"
     assert not rollout_passed({"execution": {"status": "COMPLETED"}, "results": report}, 1)
     harbor_cleanup.ok = False
-    incomplete = read_rollout_results(trial.parent, domain="search", expected_trial_count=1)
+    incomplete = read_rollout_results(trial.parent, domain="search", verifier_enabled=False, expected_trial_count=1)
     assert not incomplete["execution_completed"]
     assert "SANDBOX_CLEANUP_UNCONFIRMED" in incomplete["quality_gate"]["reasons"]
+    harbor_cleanup.ok = True
+    (final / "evidence.json").write_text("{}")
+    changed = read_rollout_results(
+        trial.parent, domain="search", verifier_enabled=False, expected_trial_count=1,
+    )
+    assert not changed["execution_completed"]
+    assert "NATIVE_SEARCH_MATERIAL_CHANGED" in changed["trials"][0]["content_errors"]
 
 
 def test_gateway_runtime_is_bound_but_old_plans_remain_readable(tmp_path):
@@ -242,7 +265,7 @@ def test_native_reader_only_exposes_recovered_web_cache(tmp_path, monkeypatch, c
         else:
             cache.mkdir()
             (cache / "calls.jsonl").write_text("{}\n")
-    result = read_search_trial(trial)
+    result = read_native_trial(trial, domain="search")
     assert result["web_cache_root"] == (str(cache) if cache_state == "present" else None)
     assert result["completed"] is (cache_state != "outside")
     if cache_state == "outside":

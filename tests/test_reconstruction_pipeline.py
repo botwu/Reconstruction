@@ -746,3 +746,53 @@ def test_raw_terminal_keeps_baseline_facts_when_wrapping_task_runtime(monkeypatc
     )
     assert json.loads(manifest.read_text())["status"] == "READY"
     assert captured == [{"baseline_observations": observations}]
+
+
+@pytest.mark.parametrize("execute", [False, True])
+def test_public_delivery_does_not_require_a_grader(tmp_path, monkeypatch, execute):
+    """已验证初态可独立交付；实跑模式不进入评分器，也不获得评分资格。"""
+    from traceforge.reconstruction import pipeline
+    from traceforge.harbor_ags.adapter import validate_unassessed_delivery
+
+    def unexpected_verifier(**kwargs):
+        raise AssertionError("未评分模式不应构造评分器")
+
+    def execute_native(*, harbor_task, config, output_root):
+        assert validate_unassessed_delivery(harbor_task)["domain"] == "terminal"
+        assert config.disable_verification is True
+        return {
+            "status": "ROLLOUT_COMPLETED", "errors": [], "acceptance": "NOT_ASSESSED",
+            "sft_eligible": False,
+        }, []
+
+    monkeypatch.setattr(pipeline, "run_reconstruction_verification", unexpected_verifier)
+    monkeypatch.setattr(pipeline, "run_native_unassessed_rollouts", execute_native)
+    manifest = run_reconstruction(
+        source=_record(json.dumps(_session(), ensure_ascii=False)),
+        agent=_sandboxed_agent(tmp_path), output_root=tmp_path / "run",
+        verification_config=VerificationConfig(
+            harbor_root=tmp_path / "harbor", model_name="fake", rollout_model="anthropic/fake",
+            disable_verification=True, execute_rollout=execute,
+        ),
+    )
+    payload = json.loads(manifest.read_text())
+    result = payload["tasks"][0]
+    assert payload["status"] == "COMPLETED"
+    assert payload["ready_count"] == 0
+    assert result["status"] == ("ROLLOUT_COMPLETED" if execute else "ENVIRONMENT_READY")
+    assert result["verification"]["status"] == "NOT_ASSESSED"
+    assert result["verification"]["unverified_obligations"]
+    assert result["sft_eligible"] is False
+    task = Path(result["harbor_task"])
+    assert not (task / "tests").exists() and not (task / "solution").exists()
+    assert (task / "workspace/foo.py").read_bytes() == (Path(result["workspace"]) / "foo.py").read_bytes()
+    assert result["harbor_rollout_args"] == ["--disable-verification"]
+
+
+def test_unassessed_mode_cannot_claim_red_calibration(tmp_path):
+    config = VerificationConfig(
+        harbor_root=tmp_path, model_name="fake", rollout_model="anthropic/fake",
+        disable_verification=True, execute_red=True,
+    )
+    with pytest.raises(ValueError, match="RED"):
+        config.validate()

@@ -13,8 +13,8 @@ from traceforge.failure_analysis.agentrx_pipeline import run_agentrx_diagnosis
 from traceforge.failure_analysis.model_runner import run_failure_analysis_model
 from traceforge.failure_analysis.review_batch import build_review_batch
 from traceforge.failure_analysis.trace_capabilities import aggregate_capability_runs
-from traceforge.harbor_ags.adapter import HarborAgsAdapterError, build_boundary_plan
 from traceforge.harbor_ags.acceptance import read_rollout_acceptance
+from traceforge.harbor_ags.adapter import HarborAgsAdapterError, build_boundary_plan
 from traceforge.harbor_ags.results import HarborResultError, read_rollout_results
 from traceforge.harbor_ags.rollout import (
     DEFAULT_RUNTIME_CONFIG,
@@ -29,14 +29,14 @@ from traceforge.reconstruction.container_verification import (
     SandboxUnavailableError,
     build_ags_runtime_factory,
 )
-from traceforge.reconstruction.pipeline import (
-    ReconstructionError,
-    run_raw_session_reconstruction,
-)
 from traceforge.reconstruction.model_gateway import (
     ModelGatewayError,
     build_chat_model,
     resolve_model_name,
+)
+from traceforge.reconstruction.pipeline import (
+    ReconstructionError,
+    run_raw_session_reconstruction,
 )
 from traceforge.reconstruction.run_config import (
     load_rollout_limits,
@@ -206,6 +206,9 @@ def _parser() -> argparse.ArgumentParser:
     raw_run.add_argument("--rollout-model", default=None)
     raw_run.add_argument("--rollout-channel", default=None)
     raw_run.add_argument("--rollout-trials", type=int, default=2)
+    raw_run.add_argument("--disable-verification", action="store_true",
+                         help=("交付任务环境并可执行未评分 rollout；"
+                               "不生成评分器，不声明验收或 SFT 通过"))
     raw_run.add_argument("--manual-response-review", action="store_true",
                          help="文件验证通过后采集 rollout；响应内容保留人工核查，不标为完整验收或 SFT")
     raw_run.add_argument("--rollout-timeout-seconds", type=int, default=None)
@@ -253,7 +256,9 @@ def _parser() -> argparse.ArgumentParser:
 def _reconstruction_exit_code(output_path: Path) -> int:
     manifest = json.loads(output_path.read_text(encoding="utf-8"))
     print(output_path)
-    if manifest.get("status") in {"READY", "READY_VARIANT", "COMPLETED"}:
+    if manifest.get("status") in {
+        "READY", "READY_VARIANT", "COMPLETED", "ENVIRONMENT_READY", "ROLLOUT_COMPLETED",
+    }:
         return 0
     print(f"重建未完成：{manifest.get('status')}；阶段：{manifest.get('stopped_at') or '见任务回执'}",
           file=sys.stderr)
@@ -415,7 +420,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         print(json.dumps(result, ensure_ascii=False, indent=2))
         acceptance = result.get("acceptance")
-        passed = acceptance["status"] == "PASS" if acceptance is not None else result["quality_gate"]["ok"]
+        passed = (
+            acceptance["status"] == "PASS"
+            or (acceptance["status"] == "NOT_ASSESSED"
+                and result.get("execution_completed") is True and not acceptance["errors"])
+        ) if acceptance is not None else result["quality_gate"]["ok"]
         return 0 if passed else 2
     if arguments.command == "reconstruct" and arguments.reconstruct_command == "raw-run":
         try:
@@ -501,6 +510,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     execute_red=arguments.execute_red,
                     execute_rollout=arguments.execute_rollout,
                     manual_response_review=arguments.manual_response_review,
+                    disable_verification=arguments.disable_verification,
                     rollout_trials=arguments.rollout_trials,
                     max_rounds=arguments.verifier_rounds,
                     config_path=arguments.config,
