@@ -23,7 +23,7 @@ from traceforge.reconstruction.session_parser import indexed_system_messages
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v16-qualified-obligations"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v17-consistent-binding-repair"
 _STUB_OBSERVABLE = "replayed excerpts still present"
 _REVIEW_ONLY = re.compile(
     r"(?i)(只读(?:代码)?(?:评审|审查)|只审查(?:并)?不修改|只查看.*不修改|"
@@ -263,10 +263,11 @@ def _gate(
 
 
 def _binding_repair_changed_task(original: dict[str, Any], corrected: dict[str, Any]) -> bool:
-    """绑定纠正不允许重写原任务或把已有 FILE 义务降级以绕过校验。"""
+    """绑定及其任务表述可同步纠正，原目标、义务与 FILE 类型不能降级。"""
 
-    if {k: v for k, v in original.items() if k != "environment_bindings"} != {
-        k: v for k, v in corrected.items() if k != "environment_bindings"
+    repairable = {"environment_bindings", "task_instruction"}
+    if {k: v for k, v in original.items() if k not in repairable} != {
+        k: v for k, v in corrected.items() if k not in repairable
     }:
         return True
     original_bindings = original.get("environment_bindings")
@@ -395,8 +396,17 @@ def run_intent_recovery(
             repair_payload = raw_payload
             current_instruction = "\n".join([
                 instruction,
-                "上一条结果的文件绑定合同未通过校验。只纠正 environment_bindings，其他字段逐项保留原值；"
-                "不得删除用户义务、替换目标、伪造路径或把已有 FILE 改为 NON_FILE 来绕过错误。"
+                "上一条结果的文件绑定合同未通过校验。纠正 environment_bindings，"
+                "并同步检查 task_instruction："
+                "任务说明仅可移除或纠正 BINDING_ERRORS 已指出、"
+                "且无原始用户或系统依据的附加绑定约束。"
+                "不能只删除绑定却在任务说明中继续强制该约束，也不能改写其他任务内容。"
+                "除 environment_bindings 和上述必要的 task_instruction 修正外，"
+                "其他字段逐项保留原值；"
+                "core_objective、义务及其 ID/证据、success_criteria、"
+                "mandatory_constraints、prohibitions、"
+                "response_contract 和输出格式均不改变。不得删除用户义务、替换目标、伪造路径"
+                "或把已有 FILE 改为 NON_FILE 来绕过错误。"
                 "FILE_BINDING_PATHS 中的路径用于识别任务对象，不代表环境已经完整；"
                 "只读上下文工具可用于确认对应关系，环境补全仍交给后续模块。"
                 "无法从证据确认绑定时保留缺口。本次只有一次纠正机会，返回完整 JSON。",

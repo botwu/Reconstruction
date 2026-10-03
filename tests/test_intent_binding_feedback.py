@@ -113,7 +113,11 @@ def test_unchanged_bad_binding_stops_after_one_correction(tmp_path):
     assert outcome["errors"] == ["BINDING_FILE_PATHS_REQUIRED:obl-001"]
 
 
-@pytest.mark.parametrize("change", ["downgrade", "drop_obligation", "rewrite_goal"])
+@pytest.mark.parametrize("change", [
+    "downgrade", "drop_obligation", "rewrite_goal", "task_id", "obligation_id",
+    "evidence_ref_ids", "success_criteria", "mandatory_constraints", "prohibitions",
+    "response_contract", "specified_output_format",
+])
 def test_binding_correction_cannot_change_task_or_downgrade_file(tmp_path, change):
     corrected = _payload(bound=True)
     if change == "downgrade":
@@ -122,8 +126,16 @@ def test_binding_correction_cannot_change_task_or_downgrade_file(tmp_path, chang
         )
     elif change == "drop_obligation":
         corrected["acceptance_obligations"] = []
-    else:
+    elif change == "rewrite_goal":
         corrected["core_objective"] = "只需解释表头规则"
+    elif change == "obligation_id":
+        corrected["acceptance_obligations"][0]["id"] = "obl-other"
+    elif change == "evidence_ref_ids":
+        corrected["acceptance_obligations"][0]["evidence_ref_ids"] = ["user:1"]
+    elif change == "task_id":
+        corrected["task_id"] = "task-other"
+    else:
+        corrected[change] = ["新增要求"]
     outcome, runtime = _run(tmp_path, [(_payload(), [], True), (corrected, [], True)])
     assert len(runtime.calls) == 2
     assert outcome["status"] == "REVIEW"
@@ -195,3 +207,58 @@ def test_intent_identity_allows_grounding_without_inventing_requirements():
     assert "Do not inject paths" not in INTENT_ROLE.identity
     assert "Observed paths may identify the object of the existing user request" in INTENT_ROLE.identity
     assert "Do not turn agent actions into new user requirements" in INTENT_ROLE.identity
+
+
+def test_unrequested_output_name_is_corrected_in_instruction_and_binding(tmp_path):
+    source = _source()
+    source["raw_session"]["messages"][0]["content"] = (
+        "把 src/importer.py 的表头逻辑提取到一个新 py 文件供原模块调用，并分析代码质量。"
+    )
+    source["raw_session"]["messages"][1]["content"] = "我打算创建 src/header_helper.py。"
+    source["tool_timeline"] = [{
+        "name": "write_file", "arguments": {"path": "src/header_helper.py"},
+    }]
+    first = _payload(bound=True)
+    first["task_instruction"] = (
+        "把 src/importer.py 的表头逻辑提取到 src/header_helper.py，接入调用并分析代码质量。"
+    )
+    first["core_objective"] = "提取表头逻辑并分析代码质量"
+    first["acceptance_obligations"][0]["text"] = "新增独立 Python 文件并接入原模块调用"
+    first["acceptance_obligations"].append({
+        "id": "obl-002", "text": "分析代码质量", "evidence_ref_ids": ["user:0"],
+    })
+    first["environment_bindings"][0].update(
+        required_paths=["src/importer.py", "src/header_helper.py"],
+        output_paths=["src/header_helper.py"],
+        observable="新增 src/header_helper.py 并接入原模块调用",
+    )
+    first["environment_bindings"].append({
+        "obligation_id": "obl-002", "verifier_kind": "NON_FILE",
+        "required_paths": [], "initial_required_paths": [], "output_paths": [],
+        "observable": "回答包含对原代码质量的分析",
+    })
+    corrected = copy.deepcopy(first)
+    corrected["task_instruction"] = (
+        "把 src/importer.py 的表头逻辑提取到一个新 Python 文件，接入调用并分析代码质量。"
+    )
+    corrected["environment_bindings"][0].update(
+        required_paths=["src/importer.py"], output_paths=[],
+        observable="新增独立 Python 文件并接入原模块调用；用户未指定新文件名",
+    )
+    original_source = copy.deepcopy(source)
+    outcome, runtime = _run(
+        tmp_path, [(first, [], True), (corrected, [], True)], source=source,
+    )
+    assert outcome["status"] == "READY"
+    assert outcome["errors"] == []
+    assert len(runtime.calls) == 2
+    assert "BINDING_OUTPUT_PATH_NOT_EXPLICIT:obl-001:src/header_helper.py" in (
+        outcome["tasks"][0]["agent"]["attempts"][0]["errors"]
+    )
+    assert "src/header_helper.py" not in outcome["task"]["task_instruction"]
+    assert "分析代码质量" in outcome["task"]["task_instruction"]
+    assert [item["id"] for item in outcome["task"]["acceptance_obligations"]] == [
+        "obl-001", "obl-002",
+    ]
+    assert outcome["task"]["environment_bindings"][0]["verifier_kind"] == "FILE"
+    assert source == original_source
