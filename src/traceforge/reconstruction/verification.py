@@ -468,6 +468,7 @@ class HarborCalibrationExecutor:
                             test_row["message"] = item["message"]
                         row["tests"].append(test_row)
                 row["exit_code"] = verdict.get("exit_code") if isinstance(verdict, dict) else None
+                row["error_code"] = verdict.get("error_code") if isinstance(verdict, dict) else None
             rows.append(row)
         if rows:
             diagnostics["trials"] = rows
@@ -482,6 +483,35 @@ class HarborCalibrationExecutor:
             }
         return diagnostics
 
+
+    @staticmethod
+    def _skipped_calibration_test(run: dict[str, Any]) -> bool:
+        """已完成且回收的校准因跳过测试缺少 reward，应返修测试，不重试基础设施。"""
+        results = run.get("results") or {}
+        trials = results.get("trials") or []
+        if (run.get("error") or (run.get("execution") or {}).get("status") != "COMPLETED"
+                or (results.get("cleanup") or {}).get("ok") is not True or len(trials) != 1):
+            return False
+        reasons = (results.get("quality_gate") or {}).get("reasons") or []
+        if set(reasons) - {"TRIAL_INCOMPLETE_OR_INFRA_ERROR", "TRAJECTORY_OR_ARTIFACT_CONTENT_INVALID"}:
+            return False
+        trial = trials[0]
+        if (trial.get("error_code") != "RewardFileNotFoundError"
+                or set(trial.get("content_errors") or []) - {"FILE_SNAPSHOT_EXECUTION_INCOMPLETE"}):
+            return False
+        try:
+            verdict = json.loads(Path(trial["verdict_path"]).read_text(encoding="utf-8"))
+        except (KeyError, TypeError, OSError, UnicodeError, json.JSONDecodeError):
+            return False
+        tests = verdict.get("tests")
+        return (
+            verdict.get("schema_version") == "traceforge.pytest-verdict.v1"
+            and verdict.get("error_code") == "TEST_CASES_INCOMPLETE"
+            and verdict.get("exit_code") == 0 and isinstance(tests, list) and bool(tests)
+            and all(isinstance(test, dict) and test.get("status") in {"PASS", "SKIPPED"}
+                    for test in tests)
+            and any(test["status"] == "SKIPPED" for test in tests)
+        )
 
     @classmethod
     def _case(cls, label: str, kind: str, run: dict[str, Any], expected: str) -> RedCheckCase:
@@ -506,7 +536,7 @@ class HarborCalibrationExecutor:
                 row.get("status") == expected and row.get("reward") == reward for row in trials
             )
         if not valid:
-            status = "INFRA_ERROR"
+            status = "MISMATCH" if cls._skipped_calibration_test(run) else "INFRA_ERROR"
         elif not process_ok or not passed:
             # A crashing oracle/mutation is a candidate defect, never semantic
             # evidence and never a reason to mark calibration successful.

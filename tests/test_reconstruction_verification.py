@@ -906,3 +906,51 @@ def test_reviewed_candidate_resume_reuses_exact_candidate_or_regenerates(tmp_pat
     assert calls[-2][1]["previous_candidate"] == seed.to_dict()
     assert result["calibration_runs"] == [{"status": "FAIL"}, {"status": "FAIL"}]
     assert result["status"] == "REVIEW"
+
+
+def test_skipped_calibration_returns_to_author_without_relaxing_grade(tmp_path: Path) -> None:
+    from traceforge.verifier.grading import grade
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    test_file = tmp_path / "test_outputs.py"
+    test_file.write_text(
+        "import pytest\ndef test_existing_behavior(): assert True\n"
+        "def test_migrated_interface(): pytest.skip('旧接口已迁移，当前测试未覆盖')\n"
+    )
+    logs = tmp_path / "verifier"
+    verdict = grade(workspace=workspace, tests=test_file, log_dir=logs)
+    assert verdict["error_code"] == "TEST_CASES_INCOMPLETE"
+    assert verdict["reward"] is None and not (logs / "reward.json").exists()
+    assert verdict["tests"][1]["status"] == "SKIPPED"
+    assert "旧接口已迁移" in verdict["tests"][1]["message"]
+    trial = {
+        "status": "INFRA_ERROR", "reward": None, "error_code": "RewardFileNotFoundError",
+        "content_errors": ["FILE_SNAPSHOT_EXECUTION_INCOMPLETE"],
+        "verdict_path": str(logs / "verdict.json"),
+    }
+    run = {
+        "execution": {"status": "COMPLETED"},
+        "results": {
+            "cleanup": {"ok": True}, "trials": [trial],
+            "quality_gate": {"ok": False, "reasons": [
+                "TRIAL_INCOMPLETE_OR_INFRA_ERROR", "TRAJECTORY_OR_ARTIFACT_CONTENT_INVALID",
+            ]},
+        },
+    }
+    assert HarborCalibrationExecutor._case("oracle", "oracle_pass", run, "PASS").status == "MISMATCH"
+    diagnostics = HarborCalibrationExecutor._failure_diagnostics(run)
+    assert diagnostics["trials"][0]["error_code"] == "TEST_CASES_INCOMPLETE"
+    assert "旧接口已迁移" in diagnostics["trials"][0]["tests"][1]["message"]
+    # 缺失清理、执行失败或另一个捕获错误都不能被测试跳过掩盖。
+    for key, value in [
+        ("cleanup", {"ok": False}),
+        ("quality_gate", {"ok": False, "reasons": ["TRIAL_COUNT_MISMATCH"]}),
+    ]:
+        broken = {**run, "results": {**run["results"], key: value}}
+        assert HarborCalibrationExecutor._case("oracle", "oracle_pass", broken, "PASS").status == "INFRA_ERROR"
+    trial["content_errors"].append("FILE_SNAPSHOT_INITIAL_WORKSPACE_MISMATCH")
+    assert HarborCalibrationExecutor._case("oracle", "oracle_pass", run, "PASS").status == "INFRA_ERROR"
+    trial["content_errors"] = []
+    trial["error_code"] = "TimeoutError"
+    assert HarborCalibrationExecutor._case("oracle", "oracle_pass", run, "PASS").status == "INFRA_ERROR"

@@ -46,7 +46,9 @@ def collect_test_results(path: Path) -> list[dict[str, str]]:
         elif case.find("skipped") is not None:
             status = "SKIPPED"
         row = {"name": case.get("name", ""), "classname": case.get("classname", ""), "status": status}
-        detail_node = case.find("failure") if status == "FAIL" else case.find("error")
+        detail_node = case.find(
+            {"FAIL": "failure", "ERROR": "error", "SKIPPED": "skipped"}.get(status, "error")
+        )
         if detail_node is not None:
             detail = (detail_node.text or detail_node.get("message") or "").strip()
             if detail:

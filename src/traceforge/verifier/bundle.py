@@ -24,7 +24,7 @@ from traceforge.trajectory.artifacts import (
 
 from .synthesis import VerifierCandidate, is_python_solution, validate_solution_scripts
 
-_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v10-safe-snapshot"
+_BUNDLE_COMPILER_VERSION = "traceforge.bundle-compiler.v11-skip-diagnostics"
 
 
 def _make_workspace_solver_writable(workspace: Path) -> None:
