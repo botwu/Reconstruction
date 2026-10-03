@@ -500,7 +500,21 @@ class HarborCalibrationExecutor:
                 or set(trial.get("content_errors") or []) - {"FILE_SNAPSHOT_EXECUTION_INCOMPLETE"}):
             return False
         try:
-            verdict = json.loads(Path(trial["verdict_path"]).read_text(encoding="utf-8"))
+            result_path = Path(trial["result_path"]).resolve()
+            verdict_path = Path(trial["verdict_path"]).resolve()
+            plan = json.loads((Path(run["plan"]) / "rollout_plan.json").read_text())
+            dataset = plan["dataset"]
+            if len(dataset["task_relative_paths"]) != 1:
+                return False
+            expected_task = (Path(dataset["dataset_root"]) / dataset["task_relative_paths"][0]).resolve()
+            result = json.loads(result_path.read_text())
+            configured = json.loads((result_path.parent / "config.json").read_text())
+            if (verdict_path != result_path.parent / "verifier/verdict.json"
+                    or result_path.parent.parent != (Path(plan["jobs_root"]) / plan["job_name"]).resolve()
+                    or Path(configured["task"]["path"]).resolve() != expected_task
+                    or Path(result["config"]["task"]["path"]).resolve() != expected_task):
+                return False
+            verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
         except (KeyError, TypeError, OSError, UnicodeError, json.JSONDecodeError):
             return False
         tests = verdict.get("tests")

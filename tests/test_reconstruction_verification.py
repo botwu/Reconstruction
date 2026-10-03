@@ -918,8 +918,17 @@ def test_skipped_calibration_returns_to_author_without_relaxing_grade(tmp_path: 
         "import pytest\ndef test_existing_behavior(): assert True\n"
         "def test_migrated_interface(): pytest.skip('旧接口已迁移，当前测试未覆盖')\n"
     )
-    logs = tmp_path / "verifier"
+    trial_root = tmp_path / "jobs" / "job-1" / "trial-1"
+    logs = trial_root / "verifier"
     verdict = grade(workspace=workspace, tests=test_file, log_dir=logs)
+    (trial_root / "config.json").write_text(json.dumps({"task": {"path": str(workspace)}}))
+    (trial_root / "result.json").write_text(json.dumps({"config": {"task": {"path": str(workspace)}}}))
+    plan = tmp_path / "plan"
+    plan.mkdir()
+    (plan / "rollout_plan.json").write_text(json.dumps({
+        "dataset": {"dataset_root": str(tmp_path), "task_relative_paths": ["workspace"]},
+        "jobs_root": str(tmp_path / "jobs"), "job_name": "job-1",
+    }))
     assert verdict["error_code"] == "TEST_CASES_INCOMPLETE"
     assert verdict["reward"] is None and not (logs / "reward.json").exists()
     assert verdict["tests"][1]["status"] == "SKIPPED"
@@ -927,10 +936,10 @@ def test_skipped_calibration_returns_to_author_without_relaxing_grade(tmp_path: 
     trial = {
         "status": "INFRA_ERROR", "reward": None, "error_code": "RewardFileNotFoundError",
         "content_errors": ["FILE_SNAPSHOT_EXECUTION_INCOMPLETE"],
-        "verdict_path": str(logs / "verdict.json"),
+        "verdict_path": str(logs / "verdict.json"), "result_path": str(trial_root / "result.json"),
     }
     run = {
-        "execution": {"status": "COMPLETED"},
+        "plan": str(plan), "execution": {"status": "COMPLETED"},
         "results": {
             "cleanup": {"ok": True}, "trials": [trial],
             "quality_gate": {"ok": False, "reasons": [
@@ -953,4 +962,12 @@ def test_skipped_calibration_returns_to_author_without_relaxing_grade(tmp_path: 
     assert HarborCalibrationExecutor._case("oracle", "oracle_pass", run, "PASS").status == "INFRA_ERROR"
     trial["content_errors"] = []
     trial["error_code"] = "TimeoutError"
+    assert HarborCalibrationExecutor._case("oracle", "oracle_pass", run, "PASS").status == "INFRA_ERROR"
+    trial["error_code"] = "RewardFileNotFoundError"
+    other_verdict = tmp_path / "other-verdict.json"
+    other_verdict.write_bytes((logs / "verdict.json").read_bytes())
+    trial["verdict_path"] = str(other_verdict)
+    assert HarborCalibrationExecutor._case("oracle", "oracle_pass", run, "PASS").status == "INFRA_ERROR"
+    trial["verdict_path"] = str(logs / "verdict.json")
+    (trial_root / "result.json").write_text(json.dumps({"config": {"task": {"path": str(tmp_path)}}}))
     assert HarborCalibrationExecutor._case("oracle", "oracle_pass", run, "PASS").status == "INFRA_ERROR"
