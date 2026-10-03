@@ -644,8 +644,10 @@ def _public_source_excerpts(
         })
     return {
         "schema_version": "traceforge.source-excerpts.v1",
-        "notice": "用于恢复任务初态的部分源码观察；行号对应原文件，缺失区间为闭区间。"
-                  "null 表示总行数或完整缺口未知。不得将这些片段视为完整源码或补造缺失部分。",
+        "notice": "原轨迹直接捕获的部分源码；行号对应原文件。"
+                  "missing_line_ranges 是原始捕获未覆盖的闭区间，不表示当前工作区仍未恢复。"
+                  "null 表示原始总行数或完整捕获缺口未知。请结合当前文件核查，"
+                  "不得将这些片段视为完整原始源码，也不得将补全内容冒充原始观察。",
         "files": files,
     }, texts
 

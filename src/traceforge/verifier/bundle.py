@@ -55,8 +55,10 @@ def compile_bundle(
         raise ValueError("缺少自足的任务指令")
     if (workspace_root / ".traceforge/source-excerpts.json").is_file():
         instruction += (
-            "\n\n请查看 .traceforge/source-excerpts.json 中的部分原始源码观察及未恢复区间；"
-            "不能将其视为完整源码，也不能以报告自述替代验证。"
+            "\n\n.traceforge/source-excerpts.json 记录原轨迹直接捕获的部分源码及捕获覆盖范围，"
+            "不代表当前文件仍未恢复的区间。请结合当前工作区实际文件核查；"
+            "不要仅由片段范围推断当前代码缺失；对于原始片段，不能将其视为完整源码，"
+            "也不能以报告自述替代验证。"
         )
     if not workspace_root.is_dir():
         raise ValueError("初始 workspace 不存在")
