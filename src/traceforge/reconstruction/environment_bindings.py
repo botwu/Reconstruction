@@ -31,6 +31,7 @@ _DIR = re.compile(
     r"(?:^|[\s'\"`=:,(\[])((?:[A-Za-z0-9._-]+/){1,6})(?![A-Za-z0-9_/-]|\.[A-Za-z0-9_])"
 )
 _FENCED_BLOCK = re.compile(r"(?ms)^(`{3,}|~{3,})([^\n]*)\n.*?^\1[ \t]*$")
+_CLOSING_TAG = re.compile(r"</[A-Za-z_][\w:.-]*\s*>")
 _EXAMPLE_CONTEXT = re.compile(r"(?i)(?:\b(?:example|shape|schema)\s*[:：]\s*$|(?:示例|格式如下)\s*[:：]?\s*$)")
 _INLINE_EXAMPLE = re.compile(r"(?i)(?:\be\.g\.|\bfor example\b|例如|比如|示例[:：])[^\n;；。]*")
 _LISTING_TOOLS = frozenset({"ls", "list_dir", "glob", "find", "fd", "tree", "rg", "grep"})
@@ -80,7 +81,7 @@ def _filename_tokens(text: str) -> set[str]:
 
 
 def _request_path_text(text: str) -> str:
-    """格式示例是指令上下文，不是工作区路径的存在声明。"""
+    """仅清理路径提取视图中的格式示例和结束标签，原始记录不变。"""
     def mask_example(match: re.Match[str]) -> str:
         prefix = text[:match.start()].rstrip().rsplit("\n", 1)[-1]
         tag = match.group(2).strip().lower()
@@ -88,7 +89,8 @@ def _request_path_text(text: str) -> str:
             return "\n"
         return match.group(0)
 
-    return _INLINE_EXAMPLE.sub("", _FENCED_BLOCK.sub(mask_example, text or ""))
+    without_examples = _INLINE_EXAMPLE.sub("", _FENCED_BLOCK.sub(mask_example, text or ""))
+    return _CLOSING_TAG.sub(" ", without_examples)
 
 
 def collect_binding_path_aliases(

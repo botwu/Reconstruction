@@ -957,3 +957,25 @@ def test_undeclared_output_is_reported_instead_of_becoming_input() -> None:
     )
     assert "BINDING_OUTPUT_PATH_NOT_EXPLICIT:o1:src/input.py" in errors
     assert bindings[0]["output_paths"] == []
+
+
+def test_harness_closing_tags_are_not_path_aliases_and_real_root_remains() -> None:
+    from traceforge.reconstruction.environment_bindings import collect_binding_path_aliases
+
+    source = {"tool_timeline": [{
+        "call_id": "read", "name": "read_file",
+        "arguments": {"path": "C:/work/repo/src/main.py", "cwd": "C:/work/repo"},
+        "result_text": "print(1)\n",
+    }]}
+    plain = "C:/work/repo /root C:/work/repo/src/main.py"
+    wrapped = (
+        "<environment_context><cwd>C:/work/repo</cwd>"
+        "<filesystem><root>/root</root></filesystem></environment_context>\n"
+        "修改 C:/work/repo/src/main.py"
+    )
+    records = [{"id": "user:1", "text": wrapped}]
+    aliases = collect_binding_path_aliases(source, records)
+    assert aliases == collect_binding_path_aliases(source, [{"id": "user:1", "text": plain}])
+    assert aliases["/root"] == "root"
+    assert aliases["C:/work/repo/src/main.py"] == "src/main.py"
+    assert records[0]["text"] == wrapped
