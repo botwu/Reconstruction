@@ -1,0 +1,167 @@
+{
+  "schema_version": "traceforge.ags-integration-source.v1",
+  "origin": "用户于2026-10-03确认为自行构建的Harbor与AGS连接层",
+  "source_directory": "/mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags",
+  "baseline_snapshot": "artifacts/pipeline-debug-20261002/runtime-compatible/harbor",
+  "original_files": [
+    {
+      "path": "configs/hermes-batch.yaml",
+      "sha256": "0d22400f869f1a294027c7f74213e04dfbe86a167a3b65ce438d0f6c0e672861",
+      "bytes": 1054
+    },
+    {
+      "path": "configs/hermes-certification.yaml",
+      "sha256": "22cdd0fefeb5ee087d08641e654ba578d844d7446e6660c93fa31888ff3b8391",
+      "bytes": 1023
+    },
+    {
+      "path": "configs/nop.yaml",
+      "sha256": "f29716fdd28df0f2b252487715b3a72c1027359a68df6808c0b35179a7c2d675",
+      "bytes": 493
+    },
+    {
+      "path": "configs/oracle.yaml",
+      "sha256": "8f950f428380f13efb49177973ead66e05778bee5644d0b740be5cffdc3eb289",
+      "bytes": 496
+    },
+    {
+      "path": "configs/runtime-appendix.md",
+      "sha256": "3f6b125832a8b270fcbe4f9ea55b2c93b9a0558475918800a4d70b71a8d967b5",
+      "bytes": 1022
+    },
+    {
+      "path": "pyproject.toml",
+      "sha256": "10b9a0c0dfbe53fa6b31eaa9879ee2566188df25904e43aeb9befb71b42d29a3",
+      "bytes": 1042
+    },
+    {
+      "path": "src/harbor_ags/__init__.py",
+      "sha256": "8f5ac5a12ffe6a742366daece30bef5928f5d3e652dce9f0c0fb36be299f4639",
+      "bytes": 493
+    },
+    {
+      "path": "src/harbor_ags/agent.py",
+      "sha256": "8994cc2f5338067dbf4a8c8251825a53a903023f05b7426d9d485af378102dd2",
+      "bytes": 20253
+    },
+    {
+      "path": "src/harbor_ags/artifacts.py",
+      "sha256": "4abed3ae9b7ed9187ade430edef3a95b7b7be3563f1ce69266c7dcf2828ccfca",
+      "bytes": 2385
+    },
+    {
+      "path": "src/harbor_ags/capture.py",
+      "sha256": "ce0a129a1806ea84ce409698e5561153f06a94f3936c6375b7e0b4af7c785761",
+      "bytes": 26361
+    },
+    {
+      "path": "src/harbor_ags/cli.py",
+      "sha256": "71205c6c4707325dff59e67395181c555be3bb7b96efa2250aa45443099ba1bf",
+      "bytes": 5057
+    },
+    {
+      "path": "src/harbor_ags/environment.py",
+      "sha256": "bd76fca3b9d3a09f9ca7b82808e3ef2e1a2e424e609651376472d9a16f705e50",
+      "bytes": 42445
+    },
+    {
+      "path": "src/harbor_ags/evidence.py",
+      "sha256": "98fdc7fc0e98b9c298571d2483d286fc72be16776cab140eb3e718d54846aeba",
+      "bytes": 59356
+    },
+    {
+      "path": "src/harbor_ags/exceptions.py",
+      "sha256": "c89e1fb231a2165a83e3ab3f25457c6d9269f7cdbc6140fc2beb3990cfc2a785",
+      "bytes": 1064
+    },
+    {
+      "path": "src/harbor_ags/input_contract.py",
+      "sha256": "3847c6b75e3013dec5720f154638bce56635217ed5ce0ef00aa354a5b0efa49f",
+      "bytes": 4725
+    },
+    {
+      "path": "src/harbor_ags/preflight.py",
+      "sha256": "e6ef1cf4a7899bc441536af8af6740ed6c78447481bf3427d55ac86a5b061573",
+      "bytes": 23466
+    },
+    {
+      "path": "src/harbor_ags/resources/__init__.py",
+      "sha256": "5550c84b830ed8b5cce89342172c8fc620d46d68eb250d091e72119bcd9ca124",
+      "bytes": 53
+    },
+    {
+      "path": "src/harbor_ags/resources/ags_preflight_probe.py",
+      "sha256": "12ef7e06ba6c37d23f9eeb253ce45d41502c6c5d1a38ac4f3dbaea1b6841e092",
+      "bytes": 4166
+    },
+    {
+      "path": "src/harbor_ags/resources/anthropic-0.86.0-py3-none-any.whl",
+      "sha256": "9d2bbd339446acce98858c5627d33056efe01f70435b22b63546fe7edae0cd57",
+      "bytes": 469400
+    },
+    {
+      "path": "src/harbor_ags/resources/docstring_parser-0.17.0-py3-none-any.whl",
+      "sha256": "cf2569abd23dce8099b300f9b4fa8191e9582dda731fd533daf54c4551658708",
+      "bytes": 36896
+    },
+    {
+      "path": "src/harbor_ags/resources/hermes_harness.py",
+      "sha256": "67999463fa8367800ff0dcec0620b8ab0dd768ea5361d25d56fd2e2f0b0c68d5",
+      "bytes": 9347
+    },
+    {
+      "path": "src/harbor_ags/sandbox_ledger.py",
+      "sha256": "24d34595f18bc81f9063fb45291c89c38f16827887227144ca44961d58f362f6",
+      "bytes": 3267
+    },
+    {
+      "path": "src/harbor_ags/task_bundle.py",
+      "sha256": "c4131232950183950987ff2f777e940ea682689c13196817006940bb71428b57",
+      "bytes": 10091
+    },
+    {
+      "path": "src/harbor_ags/validator.py",
+      "sha256": "e014cfc4aca7941d495654d60072660c1c838bb12e9375bc53f839e59e3b8cb7",
+      "bytes": 135916
+    },
+    {
+      "path": "version-lock.json",
+      "sha256": "50db174f654d8032bb7a53d89d12665f8c8b06e7bc9cbbb57a36353906fa50c7",
+      "bytes": 1421
+    }
+  ],
+  "changes": [
+    "删除未被重建引用的business_demo、smoke和runner及其CLI命令",
+    "改写README为当前重建使用说明",
+    "项目description改为中文",
+    "原连接层独立uv.lock由项目、连接层和固定Hermes统一解析的runtime-requirements.txt取代"
+  ],
+  "excluded": [
+    ".venv",
+    "缓存",
+    "原运行产物",
+    "原测试产物",
+    "过期历史报告"
+  ],
+  "official_harbor_source_copied": false,
+  "superseded_files": [
+    {
+      "path": "uv.lock",
+      "sha256": "211222231ae78619424210695fef1d0c3c18c34c0cb6c349e2f3b1d9d9b8f8cd",
+      "bytes": 180126
+    }
+  ],
+  "runtime_requirements": {
+    "path": "runtime-requirements.txt",
+    "sha256": "d16296eaca8851921b8876af89ee30f9a98028ccc9d54992db48ae36d62ad189",
+    "python": "3.12",
+    "platform": "x86_64-unknown-linux-gnu",
+    "hermes_commit": "83c2ca5b2e250d69ce301c751ea83fd425eb2de1",
+    "dependency_inputs": {
+      "pyproject.toml": "445bb6c647ef553b909c510d1f4094164d2441a55fa51337f5f2d009c7bca61e",
+      "integrations/harbor_ags/pyproject.toml": "7ee8443117e17d1c244d6d84d2e614fb3d26f9b5d408b2754e54b72f9c4654b4",
+      "integrations/harbor_ags/runtime-extras.in": "e5be2be62c6384ea1f207ce301eddd9405a09542e9639c0ba18225906688e116"
+    },
+    "hermes_pyproject_sha256": "118d2e654d8ae78815da55b5439ff163007959de6adc64dd936c34b095effefb"
+  }
+}

@@ -1,0 +1,26 @@
+jobs_dir: runs
+n_attempts: 1
+n_concurrent_trials: 1
+extra_instruction_paths:
+  - configs/runtime-appendix.md
+
+agents:
+  - name: oracle
+
+environment:
+  import_path: harbor_ags.environment:AGSPrebuiltEnvironment
+  delete: true
+  force_build: false
+  kwargs:
+    domain: ap-beijing.tencentags.com
+    template: node-python-hermes
+    workspace_dir: /home/user/workspace
+    sandbox_timeout_sec: 900
+    request_timeout_sec: 120
+
+verifier:
+  include_logs:
+    - verdict.json
+
+retry:
+  max_retries: 0

@@ -1,0 +1,44 @@
+{
+  "schema_version": "traceforge-harbor-ags-version-lock/v1",
+  "python": "3.12",
+  "harbor": {
+    "version": "0.22.0",
+    "git_commit": "4407eb5227a2ff4f0d3f16b2eb48849382fdf276",
+    "wheel": "harbor-0.22.0-py3-none-any.whl",
+    "wheel_sha256": "4c4c6571b3d160ed0cb45b82918136751fb08e7b8596412723ac00dde12eeabb",
+    "task_schema": "1.4",
+    "atif": "1.7"
+  },
+  "e2b": "2.10.2",
+  "e2b_code_interpreter": "2.4.1",
+  "ags": {
+    "domain": "ap-beijing.tencentags.com",
+    "template": "node-python-hermes",
+    "provider_template_digest": null
+  },
+  "hermes": {
+    "version": "0.16.0 (2026.6.5)",
+    "commit": "3c231eb3979ab9c57d5cd6d02f1d577a3b718b43",
+    "executable": "/home/user/.local/bin/hermes",
+    "source_dir": "/home/user/.hermes/hermes-agent",
+    "anthropic_sdk": {
+      "version": "0.86.0",
+      "wheel": "anthropic-0.86.0-py3-none-any.whl",
+      "wheel_sha256": "9d2bbd339446acce98858c5627d33056efe01f70435b22b63546fe7edae0cd57",
+      "vendored_dependencies": [
+        {
+          "name": "docstring-parser",
+          "version": "0.17.0",
+          "wheel": "docstring_parser-0.17.0-py3-none-any.whl",
+          "wheel_sha256": "cf2569abd23dce8099b300f9b4fa8191e9582dda731fd533daf54c4551658708"
+        }
+      ]
+    }
+  },
+  "model": {
+    "provider": "anthropic",
+    "name": "claude-opus-4-8",
+    "base_url": "https://tokenhub.sensetime.com",
+    "messages_path": "/v1/messages"
+  }
+}

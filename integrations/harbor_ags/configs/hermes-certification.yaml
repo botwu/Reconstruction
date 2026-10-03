@@ -1,0 +1,39 @@
+jobs_dir: runs
+n_attempts: 1
+n_concurrent_trials: 1
+extra_instruction_paths:
+  - configs/runtime-appendix.md
+
+agents:
+  - import_path: harbor_ags.agent:LosslessHermesAgent
+    model_name: anthropic/claude-opus-4-8
+    n_concurrent: 1
+    env:
+      ANTHROPIC_API_KEY: "${TOKENHUB_KEY}"
+      ANTHROPIC_BASE_URL: "${TOKENHUB_BASE_URL}"
+    kwargs:
+      expected_commit: 3c231eb3979ab9c57d5cd6d02f1d577a3b718b43
+      hermes_executable: /home/user/.local/bin/hermes
+      hermes_source_dir: /home/user/.hermes/hermes-agent
+      workspace: /home/user/workspace
+      max_iterations: 30
+      toolsets: file,terminal
+      input_profile: traceforge-task-bundle-v1
+
+environment:
+  import_path: harbor_ags.environment:AGSPrebuiltEnvironment
+  delete: true
+  force_build: false
+  kwargs:
+    domain: ap-beijing.tencentags.com
+    template: node-python-hermes
+    workspace_dir: /home/user/workspace
+    sandbox_timeout_sec: 900
+    request_timeout_sec: 120
+
+verifier:
+  include_logs:
+    - verdict.json
+
+retry:
+  max_retries: 0

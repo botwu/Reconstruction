@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "traceforge-harbor-ags"
+version = "0.1.0"
+description = "TraceForge 的 Harbor 与腾讯 AGS 执行连接层"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "harbor==0.22.0",
+  "e2b==2.10.2",
+  "e2b-code-interpreter==2.4.1",
+  "pydantic>=2.11.7,<3",
+  "PyYAML>=6.0.2,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+harbor-ags = "harbor_ags.cli:main"
+harbor-ags-preflight = "harbor_ags.preflight:main"
+harbor-ags-validate = "harbor_ags.validator:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/harbor_ags"]
+
+[tool.hatch.build]
+include = [
+  "src/harbor_ags/**/*.py",
+  "src/harbor_ags/resources/*",
+]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]

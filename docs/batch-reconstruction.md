@@ -29,14 +29,14 @@
   --manifest artifacts/search-inventory/source_manifest.json --domain search \
   --offset 37 --limit 1 --output artifacts/search-batch \
   --config config.yaml --hermes-home "$PWD/.runtime/hermes-agent" \
-  --harbor-root "$PWD/.runtime/harbor-ags" \
+  --harbor-root "$PWD/integrations/harbor_ags" \
   --execute-rollout --rollout-trials 1 --manual-response-review
 
 "$TRACEFORGE_PYTHON" scripts/run_session_batch.py \
   --manifest artifacts/terminal-inventory/source_manifest.json --domain terminal \
   --offset 0 --limit 1 --output artifacts/terminal-batch \
   --config config.yaml --hermes-home "$PWD/.runtime/hermes-agent" \
-  --harbor-root "$PWD/.runtime/harbor-ags" \
+  --harbor-root "$PWD/integrations/harbor_ags" \
   --execute-red --execute-rollout --rollout-trials 2 --manual-response-review
 ```
 
