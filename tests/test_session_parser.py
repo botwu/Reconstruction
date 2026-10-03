@@ -555,3 +555,27 @@ def test_unclosed_json_string_preserves_complete_lines_and_rejects_missing_tail(
 def test_invalid_or_complete_json_is_not_repaired_as_unclosed_string(raw):
     views = reference_views([{"result_blocks": [{"index": 0, "text": raw}]}])
     assert not any("json_string_start" in v for v in views)
+
+
+def test_open_ended_requested_range_preserves_known_file_start():
+    timeline = [{"call_id": "read-tail", "pending": False, "result_blocks": [
+        {"index": 1, "text": '{"output":"155: first\\n156: last\\n"}'},
+    ]}]
+    op = {**_read(), "partial": True, "file_start_line": 155,
+          "requested_range": [155, None],
+          "content_ref": {"block_index": 1, "json_path": ["output"],
+                          "start_line": 1, "end_line": 2, "line_number_separator": ": "}}
+    interpretation = {"workspace_root": "/workspace", "events": [_event(0, [op])]}
+    parsed = materialize_interpretation(timeline, interpretation)
+    observed = parsed[0]["session_parse"]["file_ops"][0]
+    assert observed["requested_range"] == [155, None]
+    assert observed["line_numbers"] == [155, 156]
+    assert observed["content"] == "first\nlast\n"
+    assert observed["partial"] is True
+    op["requested_range"] = [156, None]
+    with pytest.raises(SessionParserError, match="坐标超出"):
+        materialize_interpretation(timeline, interpretation)
+    for invalid in ([0, None], [True, None], [155, True], [155, 154]):
+        op["requested_range"] = invalid
+        with pytest.raises(SessionParserError, match="requested_range"):
+            materialize_interpretation(timeline, interpretation)

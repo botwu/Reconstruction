@@ -83,8 +83,13 @@ domain_route 是调用方已知的领域，只按它解释工具和证据，不�
    声称配对未知时指明具体的子调用或返回槽位及原因，不笼统否定整批可对应的结果。
    根据工具定义和实际参数解释请求动作；轮询没有发送输入，等待返回的进程退出码也不证明
    本次调用触发了退出。前文的计划不覆盖本次实参，原因未知就明确保留未知。
-2. effect 指对文件系统的影响；目录外的已知写入同样记 mutation。只读 Python（如读取工作簿表头）和输出编码设置
-   不等于文件修改；目录列表、grep、git diff 是观察，不是完整文件正文。
+2. effect 根据实际调用参数、工具语义和返回判断文件修改，不把理论上可能发生的副作用当作
+   已有写入依据。目录外的已知写入同样记 mutation；只读 Python、输出编码设置、目录列表、
+   grep、git diff 不等于业务文件修改。仅猜测解释器可能生成缓存，不能把一次读取或导入定位
+   扩大为整个工作区的未知修改；已知缓存写入须按其真实范围记录，不伪称业务源码被改。
+   import 会执行模块顶层逻辑，不能仅凭“导入”判只读；若原文给出自定义初始化、未知脚本执行
+   或其他确实无法确定写范围的调用，保留 unknown 并指明具体依据。失败或空返回不证明没有
+   副作用。只读、未知和已知写入都保留全部有效正文引用，后续初态资格与原文存在分别判断。
    mutation 必须列出全部已知写路径；写范围不明用 unknown。control 表示编排调用，
    不凭空补出子 agent 行为，缺失子轨迹在该事件中说明。pending 无返回，不提供操作。
 3. file_text 专指返回了文件文本原文或其原文切片，不表示所有读取文件的行为。
@@ -126,7 +131,8 @@ domain_route 是调用方已知的领域，只按它解释工具和证据，不�
    已知读取上限时核对实际正文行数不能超过请求范围；包装层在多次打印之间插入的额外空行
    不是文件正文。原始正文自身的空行仍须保留，以调用参数、包装行为和原始行索引共同定位。
    requested_range 记录本次读取请求的原文件起止行（1 起始闭区间），范围由调用参数或包装
-   程序明确给出时必须填写；未知、全文读取或无法换算为文件行时为 null。它不是返回文本坐标。
+   程序明确给出时必须填写；只指定起点并读取到文件末尾时用 [起点, null]，不能虚构结束行。
+   未知、全文读取或无法换算为文件行时整个字段为 null。它不是返回文本坐标。
    requested_range 是你对参数的解读，校验冲突时先核对原始参数，不能把抄错的范围当作事实。
    已识别为正文的连续显示行号段必须完整保留，不能将末尾源码改称包装来满足错误范围。
    调用请求整个文件、执行成功且返回没有截断迹象时，partial=false；不要求额外的 EOF 标记。
@@ -373,16 +379,20 @@ def _materialize_event(item: dict[str, Any], event: Any, index: int, root: str |
             requested = operation["requested_range"]
             if requested is not None:
                 _require(isinstance(requested, list) and len(requested) == 2
-                         and all(type(n) is int for n in requested)
-                         and 1 <= requested[0] <= requested[1], "requested_range 必须为有效文件行区间")
+                         and type(requested[0]) is int and requested[0] >= 1
+                         and (requested[1] is None or (type(requested[1]) is int
+                                                      and requested[1] >= requested[0])),
+                         "requested_range 必须为有效文件行区间；读取到末尾用 [起点, null]")
                 count = len(text.splitlines())
-                _require(count <= requested[1] - requested[0] + 1,
-                         f"path={path or source_path}: 请求文件行 {requested} 最多返回 "
-                         f"{requested[1] - requested[0] + 1} 行，实际引用 {count} 行。"
-                         f"先核对 requested_range 是否抄错原参数 {item.get('arguments')}；"
-                         "保留完整编号源码，只有实际包装插入的分隔及额外空行才能排除")
-                _require(start is None or requested[0] <= start <= requested[1]
-                         and start + count - 1 <= requested[1], "正文文件坐标超出声明的读取请求范围")
+                if requested[1] is not None:
+                    _require(count <= requested[1] - requested[0] + 1,
+                             f"path={path or source_path}: 请求文件行 {requested} 最多返回 "
+                             f"{requested[1] - requested[0] + 1} 行，实际引用 {count} 行。"
+                             f"先核对 requested_range 是否抄错原参数 {item.get('arguments')}；"
+                             "保留完整编号源码，只有实际包装插入的分隔及额外空行才能排除")
+                _require(start is None or (start >= requested[0]
+                         and (requested[1] is None or start + count - 1 <= requested[1])),
+                         "正文文件坐标超出声明的读取请求范围")
             op.update(content=text, partial=partial, content_ref=operation["content_ref"])
             if requested is not None:
                 op["requested_range"] = requested
