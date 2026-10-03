@@ -16,7 +16,7 @@ from traceforge.reconstruction.model_gateway import (
     parse_json_object,
 )
 
-VERIFIER_PROMPT_VERSION = "terminal-universe-verifier-adaptation-v8-file-semantics"
+VERIFIER_PROMPT_VERSION = "terminal-universe-verifier-adaptation-v9-source-grounding"
 VERIFIER_SYSTEM = """你是独立的 code/file 任务验证器构建者。参照 Terminal-Universe 附录 D：
 只测试用户明确规定的接口和功能。期望值必须在测试中独立计算；不得运行待测实现
 来产生 gold。可观察功能缺口由 missing-capability 测试在初态证明；保护性测试必须通过。

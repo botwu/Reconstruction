@@ -24,9 +24,19 @@ from traceforge.verifier.synthesis import (
 
 VERIFIER_RECOVERY_SCHEMA = "traceforge.verifier-recovery.v1"
 VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION = (
-    "terminal-universe-verifier-semantic-review-v10-executed-evidence"
+    "terminal-universe-verifier-semantic-review-v11-source-grounding"
 )
 _FAILURE_REPRODUCTION_RULE = (
+    "对每项测试场景和强制断言，区分原用户要求、实际工具或执行观察、历史助手的假设与实现方案。"
+    "作者在现有expected_value_strategy中按测试名说明原消息或观察来源及断言必要性；"
+    "独立审查在现有reason中逐项核对这些依据，并考虑会被拒绝的合理替代方案。"
+    "历史助手的建议、补丁和自制测试不自动成为验收规范；只见错误摘要或异常文本，"
+    "不能推定缺失的完整响应，也不能把补造的响应形态与处理策略设成唯一故障契约。"
+    "测试以用户目标和已证实行为为准，允许满足同一目标及明确约束的不同恢复策略。"
+    "策略分歧不能成为删除有效故障测试的理由；涉及瞬态失败时仍须验证有界恢复，"
+    "重试应继续原失败操作而非跳过失败页面。纯错误不得伪装为成功或空结果，"
+    "失败不应破坏既有有效状态；正常空响应与明确错误须区分。"
+    "同一作者提供的两个oracle即使都通过，也不证明测试没有附加要求或误拒绝。"
     "根据原始报错和实际调用链定位失败路径，能力缺失测试须复现对应的输入或返回形态；"
     "应用层错误响应不能用同名的网络异常替代。参考解必须处理该路径，不能只通过替身。"
     "优先以小输入执行实际入口、观察返回和副作用，独立计算期望值；"
