@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from traceforge.reconstruction.batch_process import run_batch_process
+from traceforge.reconstruction.session_source import load_raw_line
 
 BATCH_SCHEMA = "traceforge.raw-session-batch.v1"
 
@@ -142,6 +143,53 @@ def _code_sha256(repo: Path) -> str:
     return hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
 
 
+def _completed_attempt_matches(
+    root: Path, row: dict[str, Any], domain: str, process: dict[str, Any],
+) -> bool:
+    """只补记明确成功且仍绑定当前原始行的完整终态，不恢复中间阶段。"""
+    if (process.get("status") != "EXITED" or type(process.get("exit_code")) is not int
+            or process["exit_code"] != 0):
+        return False
+    try:
+        source = _read_json(root / "reconstruction_source.json")
+        name = "manifest.json" if domain == "search" else "reconstruction_manifest.json"
+        final = _read_json(root / name)
+        if (source.get("line_sha256") != row["line_sha256"]
+                or source.get("line_number") != row["line_number"]
+                or source.get("input_domain") != domain):
+            return False
+        if domain == "search":
+            if (final.get("schema_version") != "traceforge.search-reconstruction.v1"
+                    or final.get("status") != "COMPLETED"
+                    or final.get("domain_route") != "retrieval"
+                    or final.get("source_sha256") != row["line_sha256"]):
+                return False
+            ready = {"ENVIRONMENT_READY", "ROLLOUT_COMPLETED"}
+        else:
+            bound = final.get("source")
+            if (final.get("schema_version") != "traceforge.raw-session-reconstruction.v1"
+                    or final.get("status") not in {"READY", "READY_VARIANT"}
+                    or not isinstance(bound, dict)
+                    or bound.get("line_sha256") != row["line_sha256"]
+                    or bound.get("line_number") != row["line_number"]):
+                return False
+            ready = {"READY", "READY_VARIANT"}
+        tasks, selected = final.get("tasks"), source.get("selected_task_ids")
+        if (not isinstance(tasks, list) or not tasks or not isinstance(selected, list)
+                or not all(isinstance(item, str) and item for item in selected)
+                or any(not isinstance(task, dict) or task.get("status") not in ready
+                       or task.get("errors") or not isinstance(task.get("task_id"), str)
+                       for task in tasks)):
+            return False
+        ids = [task["task_id"] for task in tasks]
+        if len(ids) != len(set(ids)) or len(ids) != len(selected) or set(ids) != set(selected):
+            return False
+        load_raw_line(row["input"], line_number=row["line_number"], line_sha256=row["line_sha256"])
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def execute_batch(
     *,
     manifest_path: str | Path,
@@ -236,6 +284,7 @@ def execute_batch(
             for row in selected[len(results):]:
                 session_id = str(row["session_id"])
                 run_root = root / "runs" / session_id
+                recovered = False
                 if run_root.exists():
                     attempts = [run_root, *sorted((run_root / "retries").glob("*"))]
                     latest = attempts[-1]
@@ -250,8 +299,12 @@ def execute_batch(
                             pass
                         else:
                             raise BatchInputError(f"先前进程仍在运行，不能重复启动：{latest}")
-                    run_root = run_root / "retries" / f"{len(attempts):04d}"
-                run_root.mkdir(parents=True, exist_ok=False)
+                    recovered = previous is not None and _completed_attempt_matches(
+                        latest, row, domain, process,
+                    )
+                    run_root = latest if recovered else run_root / "retries" / f"{len(attempts):04d}"
+                if not recovered:
+                    run_root.mkdir(parents=True, exist_ok=False)
                 save_progress("RUNNING", str(run_root))
                 command = [
                     sys.executable,
@@ -290,8 +343,8 @@ def execute_batch(
                 env["PYTHONPATH"] = str(repo / "src") + (
                     os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
                 )
-                started = datetime.now(UTC).isoformat()
-                return_code = run_batch_process(
+                started = None if recovered else datetime.now(UTC).isoformat()
+                return_code = 0 if recovered else run_batch_process(
                     command,
                     cwd=repo,
                     env=env,
@@ -341,7 +394,7 @@ def execute_batch(
                     "exit_code": return_code,
                     "timeout_seconds": session_timeout_seconds,
                     "started_at": started,
-                    "finished_at": datetime.now(UTC).isoformat(),
+                    "finished_at": None if recovered else datetime.now(UTC).isoformat(),
                     "manifest": str(manifest_file_run) if result_manifest is not None else None,
                     "stage_receipt": stage_receipt,
                     "acceptance": (result_manifest or {}).get("acceptance", "NOT_ASSESSED"),
@@ -354,6 +407,8 @@ def execute_batch(
                         for task in (result_manifest or {}).get("tasks", [])
                     ],
                 }
+                if recovered:
+                    result["recovered_at"] = datetime.now(UTC).isoformat()
                 result_stream.write(json.dumps(result, ensure_ascii=False) + "\n")
                 result_stream.flush()
                 results.append(result)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -366,3 +367,106 @@ def test_resume_rejects_changed_content_at_same_path(tmp_path, monkeypatch, chan
     with pytest.raises(batch.BatchInputError, match="配置"):
         batch.execute_batch(**options, resume=True)
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("domain", ["search", "terminal"])
+@pytest.mark.parametrize("damage", [
+    None, "failed_exit", "unknown_exit", "missing_task", "wrong_receipt_hash",
+    "changed_input", "broken_manifest", "pending_task", "missing_contract",
+])
+def test_resume_accounts_for_completed_child_without_restarting(tmp_path, monkeypatch, domain, damage):
+    """真实计数子进程与 EXITED 回执；不调用模型或 AGS。"""
+    manifest, config = inventory(tmp_path)
+    raw = tmp_path / "source.jsonl"
+    raw.write_text('{"messages": []}\n')
+    sessions = Path(json.loads(manifest.read_text())["sessions"])
+    row = json.loads(sessions.read_text())
+    row.update(input=str(raw), line_sha256=hashlib.sha256(raw.read_bytes()).hexdigest())
+    sessions.write_text(json.dumps(row) + "\n")
+    counter = tmp_path / "launch-count"
+    repo = tmp_path / "counted-repo"
+    package = repo / "src/traceforge"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "cli.py").write_text(
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "def main():\n"
+        f"    counter = Path({str(counter)!r})\n"
+        "    counter.write_text(str(int(counter.read_text()) + 1 if counter.exists() else 1))\n"
+        "    root = Path(sys.argv[sys.argv.index('--output') + 1])\n"
+        "    domain = sys.argv[sys.argv.index('--domain') + 1]\n"
+        "    digest = sys.argv[sys.argv.index('--line-sha256') + 1]\n"
+        "    source = {'line_sha256': digest, 'line_number': 1, 'input_domain': domain,\n"
+        "              'selected_task_ids': ['task-1', 'task-2']}\n"
+        "    (root / 'reconstruction_source.json').write_text(json.dumps(source))\n"
+        "    if domain == 'search':\n"
+        "        name = 'manifest.json'\n"
+        "        final = {'schema_version': 'traceforge.search-reconstruction.v1',\n"
+        "                 'status': 'COMPLETED', 'domain_route': 'retrieval',\n"
+        "                 'source_sha256': digest, 'acceptance': 'NOT_ASSESSED',\n"
+        "                 'tasks': [{'task_id': t, 'status': 'ROLLOUT_COMPLETED',\n"
+        "                            'acceptance': 'NOT_ASSESSED'} for t in source['selected_task_ids']]}\n"
+        "    else:\n"
+        "        name = 'reconstruction_manifest.json'\n"
+        "        final = {'schema_version': 'traceforge.raw-session-reconstruction.v1',\n"
+        "                 'status': 'READY', 'source': source, 'task_count': 2, 'ready_count': 2,\n"
+        "                 'tasks': [{'task_id': t, 'status': 'READY'} for t in source['selected_task_ids']]}\n"
+        "    (root / name).write_text(json.dumps(final))\n"
+        f"    return {7 if damage == 'failed_exit' else 0}\n"
+    )
+    real_run = batch.run_batch_process
+
+    def interrupt_after_exit(command, **kwargs):
+        exit_code = real_run(command, **kwargs)
+        if counter.read_text() == "1":
+            raise OSError("controller interrupted after child exit")
+        return exit_code
+
+    monkeypatch.setattr(batch, "run_batch_process", interrupt_after_exit)
+    output = tmp_path / "batch"
+    options = dict(manifest_path=manifest, output_root=output, config=config,
+                   domain=domain, repo_root=repo)
+    with pytest.raises(OSError, match="after child exit"):
+        batch.execute_batch(**options)
+    run_root = output / "runs/r04-one"
+    process = json.loads((run_root / "batch_process.json").read_text())
+    assert process["status"] == "EXITED"
+    assert process["exit_code"] == (7 if damage == "failed_exit" else 0)
+    assert json.loads((output / "batch_manifest.json").read_text())["completed_sessions"] == 0
+    final_path = run_root / ("manifest.json" if domain == "search" else "reconstruction_manifest.json")
+    final = json.loads(final_path.read_text())
+    if damage == "unknown_exit":
+        process.pop("exit_code")
+        (run_root / "batch_process.json").write_text(json.dumps(process))
+    elif damage == "changed_input":
+        raw.write_text('{"messages": [{"role": "user", "content": "changed"}]}\n')
+    elif damage == "broken_manifest":
+        final_path.write_text('{"status":')
+    elif damage in {"missing_task", "wrong_receipt_hash", "pending_task"}:
+        if damage == "missing_task":
+            final["tasks"].pop()
+        elif damage == "wrong_receipt_hash":
+            if domain == "search":
+                final["source_sha256"] = "b" * 64
+            else:
+                final["source"]["line_sha256"] = "b" * 64
+        else:
+            final["tasks"][0]["status"] = "BLOCKED"
+        final_path.write_text(json.dumps(final))
+    original_receipt = final_path.read_bytes()
+    if damage == "missing_contract":
+        (output / "batch_manifest.json").unlink()
+    report = batch.execute_batch(**options, resume=damage != "missing_contract")
+    recovered = damage is None
+    assert counter.read_text() == ("1" if recovered else "2")
+    assert report["status"] == ("COMPLETED_WITH_ERRORS" if damage == "failed_exit" else "COMPLETED")
+    assert report["completed_sessions"] == 1
+    result = report["session_results"][0]
+    assert ("/retries/" not in result["manifest"]) == recovered
+    assert ("recovered_at" in result) == recovered
+    assert result["acceptance"] == "NOT_ASSESSED"
+    assert final_path.read_bytes() == original_receipt
+    assert (run_root / "retries").exists() != recovered
+    batch.execute_batch(**options, resume=True)
+    assert counter.read_text() == ("1" if recovered else "2")
