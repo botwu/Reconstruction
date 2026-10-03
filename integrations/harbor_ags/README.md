@@ -19,6 +19,8 @@
 
 任务包、捕获与验收规则见[Harbor 交付](../../docs/harbor-task-delivery.md)。`harbor-ags` 保留 `preflight`、`validate-trial`、`audit-cleanup` 三个诊断命令；`preflight --probe-ags` 会实际调用外部服务。
 
+原生 Hermes 在导入前设置 `HERMES_REDACT_SECRETS=false`，与本项目宿主入口一致，保留任务文本、源码、工具参数和会话历史。模型服务凭据仍由 capture 代理单独持有，Hermes 使用本地代理凭据；完整轨迹和部署凭据检查仍执行。
+
 ## 版本与边界
 
 `version-lock.json` 固定 Harbor、SDK、模板内 Hermes 提交与离线 wheel 哈希。离线 wheel 保留各自许可证。`configs/` 仅含环境变量占位；模型与 AGS 凭据由运行方提供。

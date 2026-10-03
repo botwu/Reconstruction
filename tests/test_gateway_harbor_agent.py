@@ -148,3 +148,70 @@ def test_gateway_setup_rejects_corrupt_ripgrep_before_upload(monkeypatch):
     agent = object.__new__(GatewayHermesAgent)
     with pytest.raises(ValueError, match="ripgrep.*哈希"):
         asyncio.run(agent.setup(SimpleNamespace()))
+
+
+@pytest.mark.parametrize("return_code", [0, 17])
+def test_native_run_preserves_text_and_capture_credentials_on_both_exits(
+    monkeypatch, return_code
+):
+    import asyncio
+
+    native = pytest.importorskip("harbor_ags.agent")
+    agent_type = native.LosslessHermesAgent
+    agent = object.__new__(agent_type)
+    for name, value in {
+        "model_name": "anthropic/fixture", "workspace": "/home/user/workspace",
+        "toolsets": "file,terminal", "input_profile": native.TASK_BUNDLE_INPUT_PROFILE,
+        "capture_port": 8788, "max_iterations": 3, "context_id": "fixture",
+        "session_id": "fixture", "hermes_source_dir": "/home/user/.hermes/hermes-agent",
+        "_observed_commit": "fixture-commit",
+    }.items():
+        setattr(agent, name, value)
+    uploaded, captures, executions, stopped = [], [], [], []
+
+    async def upload(self, environment, **kwargs):
+        uploaded.append(kwargs)
+
+    async def start(self, environment, **kwargs):
+        captures.append(kwargs)
+
+    async def stop(self, environment):
+        stopped.append(True)
+
+    async def execute(self, environment, **kwargs):
+        executions.append(kwargs)
+        return SimpleNamespace(return_code=return_code)
+
+    monkeypatch.setenv("HERMES_REDACT_SECRETS", "true")
+    monkeypatch.setattr(agent_type, "_model_settings", lambda self: (
+        "fixture", "https://upstream.invalid", "fixture-upstream-credential",
+    ))
+    monkeypatch.setattr(agent_type, "_upload_config_text", upload)
+    monkeypatch.setattr(agent_type, "_start_capture", start)
+    monkeypatch.setattr(agent_type, "_stop_capture", stop)
+    monkeypatch.setattr(agent_type, "exec_as_agent", execute)
+    monkeypatch.setattr(agent_type, "version", lambda self: "fixture")
+    literal = 'BAD_AUTH = {"errors": [{"message": "Denied"}]}'
+    instruction = literal + "\n\n" + native.render_runtime_appendix(
+        workspace_root=agent.workspace, toolsets=agent.toolsets,
+    )
+    if return_code:
+        with pytest.raises(RuntimeError, match="Hermes harness 退出码 17"):
+            asyncio.run(agent._run(instruction, SimpleNamespace(), SimpleNamespace()))
+    else:
+        asyncio.run(agent._run(instruction, SimpleNamespace(), SimpleNamespace()))
+    assert uploaded[0]["content"] == instruction
+    assert captures == [{
+        "upstream": "https://upstream.invalid", "api_key": "fixture-upstream-credential",
+    }]
+    assert stopped == [True]
+    assert len(executions) == 1
+    execution = executions[0]
+    assert execution["env"]["HERMES_REDACT_SECRETS"] == "false"
+    assert execution["env"]["HERMES_LLM_API_KEY"] == "capture-proxy-local"
+    assert execution["env"]["HERMES_LLM_BASE_URL"] == "http://127.0.0.1:8788"
+    assert "fixture-upstream-credential" not in json.dumps(execution)
+    for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "ANTHROPIC_AUTH_TOKEN",
+                 "ANTHROPIC_BASE_URL", "TOKENHUB_KEY", "TOKENHUB_BASE_URL", "OPENAI_API_KEY"):
+        assert f"-u {name}" in execution["command"]
+        assert name not in execution["env"]

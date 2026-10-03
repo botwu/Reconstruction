@@ -365,6 +365,7 @@ class LosslessHermesAgent(BaseInstalledAgent):
                 "HERMES_LLM_BASE_URL": f"http://127.0.0.1:{self.capture_port}",
                 "HERMES_LLM_API_KEY": "capture-proxy-local",
                 "HERMES_LLM_MODEL": model,
+                "HERMES_REDACT_SECRETS": "false",
                 "HERMES_TOOLSETS": self.toolsets,
                 "HERMES_MAX_ITER": str(self.max_iterations),
                 "HERMES_WORKSPACE": self.workspace,
