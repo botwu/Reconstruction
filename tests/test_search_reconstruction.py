@@ -246,6 +246,10 @@ def test_optional_preferences_do_not_replace_required_input_gate(tmp_path, monke
     monkeypatch.setattr(search_environment, "SearchTools", lambda root: network)
     feedback = {"missing_inputs": ["上一轮缺少实现正文"]}
     def complete(**kwargs):
+        if kwargs["role"].name == "search_review":
+            return SimpleNamespace(completed=True, errors=[], payload={
+                "decision": "BLOCKED", "requirements": [],
+            })
         assert json.loads(kwargs["instruction"])["reconstruction_feedback"] == feedback
         return SimpleNamespace(
             payload={"status": "READY", "requires_live_web": True, "retrieval_reason": "任务需要公开文献",
@@ -337,6 +341,10 @@ def test_missing_live_query_returns_to_author_without_faking_readiness(tmp_path,
     attempts = []
 
     def run(**kwargs):
+        if kwargs["role"].name == "search_review":
+            return SimpleNamespace(completed=True, errors=[], payload={
+                "decision": "BLOCKED", "requirements": [],
+            })
         attempts.append(kwargs)
         if len(attempts) == 2:
             feedback = json.loads(kwargs["instruction"])["validation_feedback"]

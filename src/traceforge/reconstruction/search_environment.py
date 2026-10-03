@@ -217,6 +217,7 @@ def _complete_search_environment(
                                       payload.get("context_references", []))
         except ValueError as exc:
             errors.append(str(exc))
+        valid_payload = not errors and payload.get("status") in {"READY", "BLOCKED"}
         read_calls = [event.get("arguments", {}) for event in session.tool_events
                       if event.get("name") == "read_evidence" and event.get("ok")]
         read_ids = {item["evidence_ref_id"] for item in inline_returns} | {
@@ -227,6 +228,7 @@ def _complete_search_environment(
         }
         requires_web = payload.get("requires_live_web")
         if type(requires_web) is not bool or not str(payload.get("retrieval_reason") or "").strip():
+            valid_payload = False
             errors.append("必须根据原任务说明 requires_live_web 和 retrieval_reason，不能从 domain 猜测")
         elif requires_web and not network.ready():
             errors.append("未实证完成公开查询及来源页面读取：须执行成功的 web_search 和含正文的 web_open")
@@ -238,10 +240,12 @@ def _complete_search_environment(
             source_task.get("message_indices", []), source_task.get("user_texts", []),
         ) if text} | {f"message:{item['message_index']}" for item in context}
         available = {item["evidence_ref_id"] for item in captures} | set(network.pages) | context_ids
-        errors.extend(validate_requirement_coverage(
+        coverage_errors = validate_requirement_coverage(
             task, payload.get("requirement_coverage", []), available,
             read_ids | set(network.pages) | context_ids,
-        ))
+        )
+        errors.extend(coverage_errors)
+        valid_payload = valid_payload and not coverage_errors
         _save(attempt_root / "validation.json", {"status": "INVALID" if errors else "VALID", "errors": errors})
         if not errors:
             break
@@ -250,8 +254,10 @@ def _complete_search_environment(
                                  for call in network.calls if call.get("tool") == "web_search"],
             "opened_urls": sorted(network.pages),
         }
-        state = json.dumps([errors, sorted(ref for ref in read_ids if ref), live_access],
-                           sort_keys=True, ensure_ascii=False)
+        state = json.dumps(
+            [errors, sorted(ref for ref in read_ids if ref), _search_recovery_state(network)],
+            sort_keys=True, ensure_ascii=False,
+        )
         if (not result.completed or result.errors or payload.get("status") != "READY"
                 or payload.get("missing_inputs") or state in seen):
             if state in seen:
@@ -280,6 +286,8 @@ def _complete_search_environment(
     environment = {
         "schema_version": SEARCH_ENVIRONMENT_SCHEMA, "status": "BLOCKED" if errors else "READY",
         "source_sha256": source.get("line_sha256"), "task_id": task["task_id"], "task": task,
+        "author_result": {"completed": result.completed, "status": payload.get("status"),
+                          "errors": list(result.errors), "valid_payload": valid_payload},
         "context_messages": context, "limitations": payload.get("limitations", []),
         "missing_inputs": payload.get("missing_inputs", []),
         "requires_live_web": requires_web, "retrieval_reason": payload.get("retrieval_reason"),
@@ -400,14 +408,26 @@ def _review_search_rollouts(
         ],
         "context_messages": environment["context_messages"], "trials": trials,
     }
+    return _run_search_review(
+        request=request, task=task, agent=agent, session=session, role=SEARCH_REVIEW_ROLE,
+        output_root=output_root,
+    )
+
+
+def _run_search_review(
+    *, request: dict[str, Any], task: dict[str, Any], agent: AgentRuntime,
+    session: AgentSession, role: AgentRole, output_root: Path, completion: bool = False,
+) -> dict[str, Any]:
+    """两阶段共用复核契约；补全停止审查不能冒充未发生的解题验收。"""
     expected = {item["id"] for item in task.get("acceptance_obligations", [])}
     seen_errors: set[tuple[str, ...]] = set()
     while True:
-        attempt_root = output_root / "researcher-review"
+        directory = "completion-review" if completion else "researcher-review"
+        attempt_root = output_root / directory
         if seen_errors:
             attempt_root = attempt_root / "attempts" / f"{len(seen_errors):04d}"
         result = agent.run(
-            role=SEARCH_REVIEW_ROLE, session=session, output_root=attempt_root,
+            role=role, session=session, output_root=attempt_root,
             instruction=json.dumps(request, ensure_ascii=False),
         )
         if result.errors or not result.completed:
@@ -441,6 +461,17 @@ def _review_search_rollouts(
         elif (decision == "COMPLETE" and any(item["status"] in {"ENVIRONMENT_GAP", "NOT_EXERCISED"}
                                              for item in checks)):
             errors.append("存在 ENVIRONMENT_GAP 或 NOT_EXERCISED 时不能返回 COMPLETE")
+        if completion:
+            if decision not in {"REPAIR", "BLOCKED"}:
+                errors.append("补全复核只能返回 REPAIR 或 BLOCKED，不能代替作者通过环境门禁")
+            if valid and any(item["status"] == "SOLVER_ERROR" for item in checks):
+                errors.append("尚未执行 rollout，补全复核不能声明 SOLVER_ERROR")
+            if valid and decision == "REPAIR" and any(
+                item["status"] == "ENVIRONMENT_GAP"
+                and (not isinstance(item.get("repair"), str) or not item["repair"].strip())
+                for item in checks
+            ):
+                errors.append("可恢复缺口须在 repair 中引用原文线索和具体后续动作")
         _save(attempt_root / "validation.json", {
             "status": "INVALID" if errors else "VALID",
             "errors": errors,
@@ -453,9 +484,77 @@ def _review_search_rollouts(
         if not errors:
             break
         seen_errors.add(signature)
-        request["review_format_errors"] = errors
-    _save(output_root / "researcher-review.json", review)
+        request = {
+            "review_format_errors": errors,
+            "instruction": "沿用当前复核会话的原任务、材料和实际返回，仅修正复核 JSON 格式。"
+            "保持原义务与证据边界，返回完整复核 JSON。",
+        }
+    filename = "completion-review.json" if completion else "researcher-review.json"
+    _save(output_root / filename, review)
     return review
+
+
+
+def _review_search_completion(
+    *, source: dict[str, Any], task: dict[str, Any], environment: dict[str, Any],
+    agent: AgentRuntime, session: AgentSession, network: SearchTools, output_root: Path,
+) -> dict[str, Any]:
+    """独立核查正常作者的阻塞声明；恢复动作仍交给原作者执行。"""
+    role = replace(
+        SEARCH_REVIEW_ROLE,
+        tools=tuple(tool for tool in SEARCH_REVIEW_ROLE.tools if not tool.startswith("web_")),
+        identity=(
+            "你独立复核检索环境补全的停止依据，不回答原任务，也不替作者继续联网。"
+            "本阶段尚无 rollout，不推断 solver 行为或答案质量。原作者的 BLOCKED 是待核声明。"
+            "SOURCE_SESSION 是完整原轨迹；environment 保留已有材料、缺口和覆盖说明，"
+            "actual_web_calls 是实际成功及失败返回。按原用户义务检查缺口是否必需，"
+            "以及相关原始 URL、已读页面的正文链接、参考文献是否仍有未尝试的恢复路径。"
+            "不能把查询服务故障等同于已知来源不可取得，也不能把未尝试声明为可访问或足够。"
+            "只提出与具体缺口相关、能够引用原文来源的动作，不要求穷尽所有 URL。"
+            "有恢复依据返回 REPAIR，逐项 repair 引用原消息或已读返回中的线索及尝试状态，"
+            "由同一作者实际执行后重新判断。无可恢复依据返回 BLOCKED，说明相关路线的"
+            "真实失败或不适用理由。不能因服务故障降低任务要求、强改 requires_live_web，"
+            "也不能直接接受环境或加入待求结论。"
+            "返回既有复核 JSON：{decision: REPAIR|BLOCKED, requirements: "
+            "[{obligation_id: 原义务id, status: SUPPORTED|ENVIRONMENT_GAP|NOT_EXERCISED, "
+            "reason: 原文与实际返回依据, repair: 后续恢复动作或空字符串}]}。"
+            "REPAIR 至少包含一个 ENVIRONMENT_GAP；全部原义务必须逐项覆盖。"
+        ),
+    )
+    reviewer = AgentSession(
+        conversation=AgentConversation(), evidence=copy.deepcopy(session.evidence),
+        session_context=session.session_context,
+    )
+    return _run_search_review(
+        request={
+            "review_stage": "completion", "SOURCE_SESSION": indexed_session(source["raw_session"]),
+            "environment": environment, "actual_web_calls": copy.deepcopy(network.calls),
+        },
+        task=task, agent=agent, session=reviewer, role=role,
+        output_root=output_root, completion=True,
+    )
+
+
+def _search_recovery_state(network: SearchTools) -> str:
+    """只记录来源变化和不同的实际尝试；重复失败及改写评语不算进展。"""
+    attempts = {
+        json.dumps({key: call[key] for key in (
+            "tool", "query", "url", "ocr_page", "success",
+            *(("raw_sha256",) if call.get("success") else ()),
+            *(("offset",) if call.get("success") and call.get("text") else ()),
+        ) if key in call}, sort_keys=True, ensure_ascii=False)
+        for call in network.calls
+    }
+    materials = {
+        url: {"raw_sha256": page.get("raw_sha256"), "text": page["text"],
+              "ocr": {number: item.get("ocr_raw_sha256")
+                      for number, item in (page.get("ocr_pages") or {}).items()}}
+        for url, page in network.pages.items()
+    }
+    canonical = json.dumps(
+        {"materials": materials, "attempts": sorted(attempts)}, sort_keys=True, ensure_ascii=False,
+    )
+    return "completion:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def save_search_checkpoint(
@@ -648,7 +747,33 @@ def run_search_task(
         if errors:
             outcome.update(status="BLOCKED", stopped_at="search_completion",
                            environment_review="NOT_READY", missing_inputs=environment["missing_inputs"])
-            break
+            author = environment.get("author_result", {})
+            if (
+                not author.get("completed") or author.get("errors")
+                or not author.get("valid_payload")
+            ):
+                break
+            state = _search_recovery_state(network)
+            if state in seen_environments:
+                outcome["errors"] = [*errors, "SEARCH_RECONSTRUCTION_NO_PROGRESS"]
+                break
+            seen_environments.add(state)
+            review = _review_search_completion(
+                source=source, task=task, environment=environment, agent=agent, session=session,
+                network=network, output_root=round_root,
+            )
+            rounds.append({"stage": "completion", "output_root": str(round_root), "review": review})
+            outcome["environment_review"] = (
+                "REVIEW_INCOMPLETE" if review.get("failure_kind") else review["decision"])
+            if review["decision"] != "REPAIR":
+                break
+            instruction = json.dumps({
+                "completion_feedback": review,
+                "instruction": "继续同一原任务补全，依据独立复核引用的原文线索实际恢复资料。"
+                "保持原用户要求、已有材料和真实失败记录；未尝试不等于可访问或足够。"
+                "取得实际结果后逐项重新判断输入供给，提交完整补全 JSON；不得直接套用通过状态。",
+            }, ensure_ascii=False)
+            continue
         state = json.dumps({key: environment[key] for key in (
             "task", "captures", "context_messages", "live_references", "tools", "limitations",
         )}, sort_keys=True, ensure_ascii=False)
