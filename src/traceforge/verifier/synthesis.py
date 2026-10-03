@@ -17,7 +17,7 @@ from traceforge.reconstruction.model_gateway import (
 )
 
 VERIFIER_PROMPT_VERSION = (
-    "terminal-universe-verifier-adaptation-v10-evidence-conditioned-failures"
+    "terminal-universe-verifier-adaptation-v11-explicit-strategy-type"
 )
 VERIFIER_SYSTEM = """你是独立的 code/file 任务验证器构建者。参照 Terminal-Universe 附录 D：
 只测试用户明确规定的接口和功能。期望值必须在测试中独立计算；不得运行待测实现
@@ -47,7 +47,8 @@ repr 字符串写入文件；安装时不要导入目标程序的 ROS/仿真依�
 ([{name,script,justification}])、mutation_solutions(同结构)、missing_capability_tests
 ([pytest函数名])、protective_tests([pytest函数名])、obligation_coverage
 ({每个FILE义务ID:[pytest函数名]})、file_semantic_checks
-({需要产物语义判定的FILE义务ID:原任务支持的具体判据})、expected_value_strategy、open_questions。
+({需要产物语义判定的FILE义务ID:原任务支持的具体判据})、expected_value_strategy
+(非空字符串，可按测试名分段说明来源与独立计算方法)、open_questions。
 仅另有语义判据的义务可以没有对应pytest；不得把FILE改为NON_FILE或删掉义务。
 证据不足时 status=REVIEW，列出缺口。生成不是通过校准，不得声称测试已执行。
 """
@@ -573,7 +574,10 @@ def candidate_from_payload(
         raise VerifierSynthesisError("能力缺失与保护性测试不能重叠")
     strategy = payload.get("expected_value_strategy")
     if not isinstance(strategy, str) or not strategy.strip():
-        raise VerifierSynthesisError("必须说明期望值独立计算方法")
+        raise VerifierSynthesisError(
+            "expected_value_strategy 必须是非空字符串，"
+            "请保留原说明并按测试名分段写明来源与独立计算方法"
+        )
     oracles = _variants(payload.get("oracle_solutions"), "oracle_solutions", 2)
     mutations = _variants(payload.get("mutation_solutions"), "mutation_solutions", 1)
     validate_solution_scripts(oracles, mutations)

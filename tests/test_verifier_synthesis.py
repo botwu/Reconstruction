@@ -44,6 +44,18 @@ def test_synthesis_requires_known_test_references():
         synthesize_verifier(task=_task(), workspace_files={}, model=FakeModel(payload))
 
 
+def test_expected_value_strategy_reports_type_without_discarding_explanation():
+    payload = _payload()
+    payload["expected_value_strategy"] = {"test_output": "依据输入独立计算预期"}
+    with pytest.raises(VerifierSynthesisError, match="expected_value_strategy 必须是非空字符串"):
+        synthesize_verifier(task=_task(), workspace_files={}, model=FakeModel(payload))
+    payload["expected_value_strategy"] = "test_output：依据输入独立计算预期"
+    candidate, _ = synthesize_verifier(
+        task=_task(), workspace_files={}, model=FakeModel(payload)
+    )
+    assert candidate.expected_value_strategy == payload["expected_value_strategy"]
+
+
 def test_synthesis_returns_unvalidated_candidate_and_private_audit():
     candidate, audit = synthesize_verifier(
         task=_task(), workspace_files={"a.txt": "x"}, model=FakeModel(_payload())

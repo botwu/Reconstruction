@@ -389,6 +389,7 @@ def run_verifier_recovery(
             "无法提供完整组合机制时返回REVIEW及具体缺口。",
             "Finish with a JSON object only. status must be exactly READY or REVIEW.",
             "READY schema: {status: 'READY', test_outputs_py: <exact bytes last passed to write_test>, oracle_solutions: [{name, script, justification}, {name, script, justification}], mutation_solutions: [{name, script, justification}], missing_capability_tests: [<bare test name>], protective_tests: [<bare test name>], obligation_coverage: {<each FILE obligation id>: [<test name>; 仅另有语义判据时可空]}, file_semantic_checks: {<FILE obligation id>: <原要求支持的具体语义判据>}, expected_value_strategy: <independent calculation explanation>, response_contract: <完整响应验收契约，纯FILE任务可省略>, open_questions: []}.",
+            "expected_value_strategy 必须是非空字符串，可按测试名分段说明来源与独立计算方法。",
             "Provide exactly two distinct valid reference scripts and exactly one meaningful incorrect implementation script, all starting from the initial workspace. Scripts execute in the workspace and may not access /tests or /solution.",
             "REVIEW schema: {status: 'REVIEW', open_questions: [<specific unresolved problem>]}.",
             "TASK:",
