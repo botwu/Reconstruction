@@ -204,6 +204,9 @@ def test_parsed_file_observation_is_read_without_other_parallel_results():
         "session_parse": {"reason": "UTF8 后段读取", "file_ops": [observation]},
     }])
     result = execute_tool("read_evidence", {"id": "parallel", "path": "module.py"}, session)
-    assert json.loads(result) == {"evidence_ref_id": "parallel", "observations": [observation]}
+    assert json.loads(result) == {
+        "evidence_ref_id": "parallel", "initial_state_eligible": True,
+        "observations": [observation],
+    }
     missing = execute_tool("read_evidence", {"id": "parallel", "path": "missing.py"}, session)
     assert missing.startswith("error:")

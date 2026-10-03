@@ -33,7 +33,11 @@ __TASK__
 完整原始 session（重建者可利用全部轨迹；messages 中的 message 保留全部原字段，message_index 为原消息位置；session_fields 保留其余顶层字段）：
 __SOURCE_SESSION__
 
-按文件组织的全部可用初态观察索引（不是文件正文）：
+按文件组织的原始观察索引（不是文件正文）：
+initial_state_eligible=false 表示参考材料不证明初态，不能直接恢复或自动覆盖原文件。
+initial_state_blockers 保留观察受阻的原因和来源；待核正文与锁定依赖冲突时，先核对完整原文、时序和版本。
+不得将待核观察当作未观察，也不能将已知修改后的答案直接恢复为初态。
+MODEL_COMPLETED 可以如实引用全部唯一可定位的原始工具证据。使用参考材料推断时，在 uncertainties 按路径说明时序依据、推断内容和未采纳的目标改动；不能将推断冒称逐字恢复，候选仍须经过独立 Sufficiency 检查。
 __EVIDENCE_INDEX__
 
 原系统消息的解析与索引（解读辅助导航，原文以上方完整 session 为准）：

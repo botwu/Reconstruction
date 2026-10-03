@@ -78,6 +78,14 @@ class AgentSession:
             ]
 
 
+def source_evidence_refs(evidence: list[dict[str, Any]]) -> set[str]:
+    """引用须唯一可定位；参与模型推断不等于可直接物化为初态。"""
+    from collections import Counter
+
+    counts = Counter(str(item.get("evidence_ref_id") or "") for item in evidence)
+    return {ref for ref, count in counts.items() if ref and count == 1}
+
+
 WORKSPACE_REMOTE_PREFIXES = (
     "/home/user/workspace/",
     "/home/user/workspace",
@@ -373,7 +381,8 @@ def execute_tool(name: str, arguments: Any, session: AgentSession) -> str:
                     "evidence_ref_id": item.get("evidence_ref_id"),
                     "name": item.get("name"),
                     **{key: item[key] for key in
-                       ("url", "query", "title", "source_ref", "source_mode", "content_kind", "retrieved_at")
+                       ("url", "query", "title", "source_ref", "source_mode",
+                        "content_kind", "retrieved_at", "initial_state_eligible")
                        if key in item},
                     "chars": len(_dump(item)),
                 }
@@ -408,7 +417,10 @@ def execute_tool(name: str, arguments: Any, session: AgentSession) -> str:
                                     and args["path"] in {op.get("path"), op.get("source_path")}]
                     if not observations:
                         return "error: no parsed file observation for this path; read the full record"
-                    return _window(_dump({"evidence_ref_id": ref, "observations": observations}), args)
+                    return _window(_dump({"evidence_ref_id": ref,
+                                          "initial_state_eligible": item.get(
+                                              "initial_state_eligible", True),
+                                          "observations": observations}), args)
                 return _window(_dump(item), args)
         return "error: unknown evidence_ref_id"
     if name == "list_dir":
@@ -580,6 +592,8 @@ def _restore_observed_file(session: AgentSession, args: dict[str, Any]) -> str:
     evidence = {str(item.get("evidence_ref_id")): item for item in session.evidence}
     lines: dict[int, str] = {}
     for ref in refs:
+        if evidence.get(ref, {}).get("initial_state_eligible") is False:
+            return f"error: 参考观察不能直接物化为初态：{ref}:{path}"
         observations = [op for op in (evidence.get(ref, {}).get("session_parse") or {}).get("file_ops", [])
                         if op.get("kind") == "read" and op.get("path") == path]
         if not observations:
@@ -621,6 +635,64 @@ def _edit_candidate_file(session: AgentSession, args: dict[str, Any]) -> str:
     return _write_candidate_edit(session, args, content.replace(old, new), reason)
 
 
+
+def _observation_lines(op: dict[str, Any]) -> dict[int, str]:
+    numbers, lines = op.get("line_numbers"), op.get("line_contents")
+    if op.get("partial") is False and isinstance(op.get("content"), str):
+        lines = op["content"].splitlines()
+        numbers = list(range(1, len(lines) + 1))
+    if (not isinstance(numbers, list) or not isinstance(lines, list)
+            or len(numbers) != len(lines) or not numbers):
+        raise ValueError("原始观察缺少可验证行号，不能覆盖")
+    if any(type(number) is not int or number < 1 or not isinstance(line, str)
+           for number, line in zip(numbers, lines, strict=True)):
+        raise ValueError("原始观察行号或正文无效")
+    observed = {}
+    for number, line in zip(numbers, lines, strict=True):
+        if number in observed and observed[number] != line:
+            raise ValueError("原始观察在同一行冲突，不能自动选择")
+        observed[number] = line
+    return observed
+
+
+def _check_unverified_observations(
+    evidence: list[dict[str, Any]], path: str, content: str,
+) -> list[dict[str, Any]]:
+    """待核观察只作冲突检查，不升格为初态或覆盖候选。"""
+    lines = content.splitlines()
+    checks = []
+    conflicts_found = []
+    for event in evidence:
+        for op in (event.get("session_parse") or {}).get("reference_file_ops", []):
+            if op.get("kind") != "read" or op.get("path") != path:
+                continue
+            blockers = [row for row in op.get("initial_state_blockers", [])
+                        if row.get("path") in {None, path}]
+            reasons = {row.get("reason") for row in blockers}
+            if "read_after_first_mutation" in reasons or not reasons.intersection({
+                "read_after_unparsed_mutation", "unparsed_mutation_scope",
+                "unparsed_mutation_unscoped",
+            }):
+                continue
+            check = {"evidence_ref_id": event["evidence_ref_id"], "path": path,
+                     "initial_state_blockers": blockers}
+            try:
+                observed = _observation_lines(op)
+            except ValueError as exc:
+                raise ValueError(
+                    "待核观察无法比较：" + json.dumps(check, ensure_ascii=False)
+                ) from exc
+            conflicts = [number for number, line in observed.items()
+                         if number > len(lines) or lines[number - 1] != line]
+            if conflicts:
+                conflicts_found.append({**check, "line_numbers": conflicts})
+            else:
+                checks.append({**check, "matched_line_count": len(observed)})
+    if conflicts_found:
+        raise ValueError("待核观察冲突：" + json.dumps(conflicts_found, ensure_ascii=False))
+    return checks
+
+
 def _restore_dependency_source(session: AgentSession, args: dict[str, Any]) -> str:
     """原成员正文与全部初态观察合并后，仍经过已有候选写入保护。"""
     import zipfile
@@ -629,12 +701,12 @@ def _restore_dependency_source(session: AgentSession, args: dict[str, Any]) -> s
 
     path = workspace_relpath(session, str(args.get("path") or ""))
     refs = args.get("evidence_ref_ids")
-    known = {str(item.get("evidence_ref_id")) for item in session.evidence}
+    known = source_evidence_refs(session.evidence)
     if not session.allow_write or not path:
         return "error: 没有写入权限或目标路径无效"
     if (not isinstance(refs, list) or not refs
             or any(not isinstance(ref, str) or ref not in known for ref in refs)):
-        return "error: 必须提供已交付的原始 evidence_ref_ids"
+        return "error: 必须提供唯一可定位的原始 evidence_ref_ids"
     if session.dependency_bundle is None:
         return "error: 尚无已锁定依赖；先用 run_candidate 准备并检查依赖"
     requirements = next((item["content"] for item in reversed(session.writes)
@@ -653,20 +725,13 @@ def _restore_dependency_source(session: AgentSession, args: dict[str, Any]) -> s
         observed: dict[int, str] = {}
         observation_refs = []
         for event in session.evidence:
+            if event.get("initial_state_eligible") is False:
+                continue
             for op in (event.get("session_parse") or {}).get("file_ops", []):
                 if op.get("kind") != "read" or op.get("path") != path:
                     continue
-                numbers, lines = op.get("line_numbers"), op.get("line_contents")
-                if op.get("partial") is False and isinstance(op.get("content"), str):
-                    lines = op["content"].splitlines()
-                    numbers = list(range(1, len(lines) + 1))
-                if (not isinstance(numbers, list) or not isinstance(lines, list)
-                        or len(numbers) != len(lines) or not numbers):
-                    raise ValueError("原始观察缺少可验证行号，不能覆盖")
                 observation_refs.append(str(event["evidence_ref_id"]))
-                for number, line in zip(numbers, lines):
-                    if type(number) is not int or number < 1 or not isinstance(line, str):
-                        raise ValueError("原始观察行号或正文无效")
+                for number, line in _observation_lines(op).items():
                     if number in observed and observed[number] != line:
                         raise ValueError("原始观察在同一行冲突，不能自动选择")
                     observed[number] = line
@@ -684,6 +749,7 @@ def _restore_dependency_source(session: AgentSession, args: dict[str, Any]) -> s
                 lines[number - 1] = line + ending
                 changed.append(number)
         content = "".join(lines)
+        unverified_checks = _check_unverified_observations(session.evidence, path, content)
         if path in session.complete_files and content != session.complete_files[path]:
             raise ValueError("完整原始文件不能用上游扩写或替换")
         provenance.update(
@@ -691,6 +757,7 @@ def _restore_dependency_source(session: AgentSession, args: dict[str, Any]) -> s
             content_sha256=hashlib.sha256(content.encode()).hexdigest(),
             observed_line_count=len(observed), overlaid_line_numbers=changed,
             observation_evidence_ref_ids=sorted(set(observation_refs)),
+            unverified_observation_checks=unverified_checks,
             observations_sha256=hashlib.sha256(json.dumps(observed, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
         )
         write_args = {**args, "path": path, "evidence_ref_ids": list(dict.fromkeys([*refs, *observation_refs]))}
@@ -779,7 +846,7 @@ def _write_file(session: AgentSession, args: dict[str, Any]) -> str:
         or any(not isinstance(item, str) or not item for item in refs)
     ):
         return "error: evidence_ref_ids required"
-    known = {str(item.get("evidence_ref_id")) for item in session.evidence}
+    known = source_evidence_refs(session.evidence)
     if any(item not in known for item in refs):
         return "error: unknown evidence_ref_id"
     if session.sandbox is not None:

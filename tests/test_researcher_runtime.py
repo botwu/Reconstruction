@@ -44,6 +44,32 @@ class ReconstructionTests(unittest.TestCase):
         self.assertEqual(json.loads(author_session.session_context), source["raw_session"])
         self.assertIs(author_session.conversation, adapter.conversation)
 
+
+    def test_actual_author_index_exposes_uncertain_observation_without_promoting_it(self) -> None:
+        native = Mock(model_name="test", backend="test")
+        native.run.return_value = AgentResult(
+            role="completion", backend="test", completed=True, payload={})
+        adapter = ReconstructionRuntime(native, source={}, task={}, runtime_factory=Mock())
+        adapter.agent = native
+        state = AgentSession(evidence=[{
+            "evidence_ref_id": "later", "initial_state_eligible": False,
+            "session_parse": {"file_ops": [], "reference_file_ops": [{
+                "kind": "read", "path": "library/source.py", "source_path": "/original/source.py",
+                "line_numbers": [42], "line_contents": ["original body"],
+                "initial_state_blockers": [{"reason": "read_after_unparsed_mutation",
+                                            "source_event_id": "later",
+                                            "path": "library/source.py"}],
+            }]},
+        }])
+        adapter.run(role=COMPLETION_REPLAYED_ROLE, instruction="", session=state,
+                    output_root=self.root / "author")
+        instruction = native.run.call_args.kwargs["instruction"]
+        self.assertIn('"initial_state_eligible": false', instruction)
+        self.assertIn('"path": "library/source.py"', instruction)
+        self.assertIn('"source_path": "/original/source.py"', instruction)
+        self.assertIn('"reason": "read_after_unparsed_mutation"', instruction)
+        self.assertIn("不能直接恢复或自动覆盖原文件", instruction)
+
     def test_probe_history_is_readable_but_not_a_current_candidate_check(self) -> None:
         probe = {"probe_id": "old", "executions": [{"stdout": "完整旧输出"}]}
         adapter = ReconstructionRuntime(Mock(model_name="test"), source={}, task={},

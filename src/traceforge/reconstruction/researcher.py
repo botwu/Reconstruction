@@ -231,20 +231,25 @@ class ReconstructionRuntime:
             index = []
             for event in session.evidence:
                 parsed = event.get("session_parse") or {}
+                observations = [*parsed.get("file_ops", []),
+                                *parsed.get("reference_file_ops", [])]
                 index.append({
                     "id": event["evidence_ref_id"], "interpretation": parsed.get("reason"),
+                    "initial_state_eligible": event.get("initial_state_eligible", True),
                     "assistant_message_index": event.get("assistant_message_index"),
                     "tool_message_index": event.get("tool_message_index"),
-                    "written_paths": [op.get("path") for op in parsed.get("file_ops", [])
+                    "written_paths": [op.get("path") for op in observations
                                       if op["kind"] == "write"],
                     "historical_only_paths": parsed.get("historical_only_paths", []),
                     "observations": [{
-                        **{key: op.get(key) for key in ("path", "partial", "content_ref")},
+                        **{key: op.get(key) for key in (
+                            "path", "source_path", "partial", "content_ref",
+                            "initial_state_blockers")},
                         "observed_lines": {
                             "first": min(op["line_numbers"]), "last": max(op["line_numbers"]),
                             "count": len(op["line_numbers"]),
                         } if op.get("line_numbers") else None,
-                    } for op in parsed.get("file_ops", []) if op["kind"] == "read"],
+                    } for op in observations if op["kind"] == "read"],
                 })
             source_line = "SOURCE_SESSION=" + json.dumps(
                 indexed_session(self.source.get("raw_session", {})), ensure_ascii=False,

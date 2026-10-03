@@ -1,5 +1,6 @@
 """真实依赖源码导入与探针续读不能丢正文，也不能绕过候选保护。"""
 import hashlib
+import json
 import zipfile
 
 import pytest
@@ -187,7 +188,13 @@ def test_formal_completion_excludes_post_mutation_reads_from_dependency_overlay(
         backend = "hermes-sandbox"
 
         def run(self, *, role, instruction, session, output_root):
-            assert "after" not in {item["evidence_ref_id"] for item in session.evidence}
+            after = next(item for item in session.evidence if item["evidence_ref_id"] == "after")
+            assert after["initial_state_eligible"] is False
+            assert "ANSWER" in execute_tool(
+                "read_evidence", {"id": "after", "path": args["path"]}, session)
+            assert execute_tool("restore_observed_file", {
+                "path": args["path"], "evidence_ref_ids": ["after"],
+            }, session).startswith("error:")
             session.dependency_bundle = original.dependency_bundle
             result = execute_tool("restore_dependency_source", args, session)
             assert not result.startswith("error:"), result
@@ -208,3 +215,100 @@ def test_formal_completion_excludes_post_mutation_reads_from_dependency_overlay(
     row = result["candidates"][0]
     assert row["file_provenance"][0]["dependency_source"]["overlaid_line_numbers"] == [2]
     assert row["manifest"]["provenance"][args["path"]]["dependency_source"]["observed_line_count"] == 1
+
+
+@pytest.mark.parametrize("line,expected", [
+    ("value = 3", "RESTORED"), ("value = 9", "待核观察冲突"),
+])
+def test_dependency_checks_unknown_mutation_observation_without_promoting_it(
+    tmp_path, line, expected,
+):
+    state, args, _, _ = bundle_session(tmp_path)
+    state.evidence.append({
+        "evidence_ref_id": "uncertain", "initial_state_eligible": False,
+        "session_parse": {"file_ops": [], "reference_file_ops": [{
+            "kind": "read", "path": args["path"], "partial": True,
+            "line_numbers": [3], "line_contents": [line],
+            "initial_state_blockers": [{"reason": "read_after_unparsed_mutation",
+                                        "source_event_id": "uncertain", "path": args["path"]}],
+        }]},
+    })
+    result = execute_tool("restore_dependency_source", args, state)
+    assert expected in result, result
+    if expected == "RESTORED":
+        provenance = state.writes[-1]["dependency_source"]
+        assert provenance["observed_line_count"] == 1
+        assert provenance["unverified_observation_checks"][0]["evidence_ref_id"] == "uncertain"
+        assert provenance["observation_evidence_ref_ids"] == ["seen"]
+    else:
+        assert "uncertain" in result and "3" in result and args["path"] in result
+        assert not state.writes
+    result = execute_tool("write_file", {
+        "path": "inferred.py", "content": line + "\n", "evidence_ref_ids": ["uncertain"],
+    }, state)
+    assert not result.startswith("error:"), result
+    assert state.writes[-1]["provenance"] == "MODEL_COMPLETED"
+    assert state.writes[-1]["evidence_ref_ids"] == ["uncertain"]
+
+
+def test_completion_retains_history_for_inference_without_direct_restoration(tmp_path):
+    from traceforge.reconstruction.agents.runtime import AgentResult
+    from traceforge.reconstruction.env_replay import replay_from_timeline
+    from traceforge.reconstruction.session_parser import PARSER_SCHEMA
+    from traceforge.reconstruction.workspace_completion import run_workspace_completion
+
+    timeline = [
+        {"call_id": "initial", "name": "read", "result_text": "value = 1\n",
+         "session_parse": {"file_ops": [{"kind": "read", "path": "start.py",
+                                         "partial": False, "content": "value = 1\n"}]}},
+        {"call_id": "unknown", "name": "terminal", "result_text": "opaque execution",
+         "session_parse": {"file_ops": [{"kind": "unknown", "may_mutate": True}]}},
+        {"call_id": "later", "name": "read", "result_text": "value = 9\n",
+         "session_parse": {"file_ops": [{"kind": "read", "path": "later.py", "partial": True,
+                                         "content": "value = 9\n", "line_numbers": [3],
+                                         "line_contents": ["value = 9"]}]}},
+        {"name": "anonymous", "result_text": "anonymous body",
+         "session_parse": {"file_ops": []}},
+    ]
+    for item in timeline:
+        item["session_parse"]["schema_version"] = PARSER_SCHEMA
+        for op in item["session_parse"]["file_ops"]:
+            op["event_id"] = item.get("call_id", "anonymous")
+    replay = replay_from_timeline(timeline)
+    original = json.dumps(timeline, ensure_ascii=False, sort_keys=True)
+
+    class Author:
+        backend = "hermes-sandbox"
+        model_name = "fixture"
+
+        def run(self, *, role, instruction, session, output_root):
+            assert len(session.evidence) == len(timeline)
+            later = next(row for row in session.evidence if row["evidence_ref_id"] == "later")
+            assert later["text"] == "value = 9\n"
+            assert later["session_parse"]["file_ops"] == []
+            page = execute_tool("read_evidence", {"id": "later", "path": "later.py"}, session)
+            assert "value = 9" in page and "read_after_unparsed_mutation" in page
+            assert "initial_state_eligible" in page
+            assert execute_tool("restore_observed_file", {
+                "path": "later.py", "evidence_ref_ids": ["later"],
+            }, session).startswith("error:")
+            result = execute_tool("write_file", {
+                "path": "later.py", "content": "value = 9\n", "evidence_ref_ids": ["later"],
+            }, session)
+            assert not result.startswith("error:"), result
+            # 模型推断如实引用历史，工具与最终候选采用相同引用资格。
+            return AgentResult(role=role.name, backend=self.backend, completed=True, payload={
+                "candidates": [{"decision": "READY", "files": [{"path": "later.py",
+                    "content": "value = 9\n", "evidence_ref_ids": ["later"]}],
+                    "dependencies": [], "runtime_constraints": [],
+                    "uncertainties": [
+                        "later.py：基于后续观察推断初态，时序尚待独立审查，未复制目标改动。",
+                    ]}]})
+
+    result = run_workspace_completion(
+        task={"task_id": "t", "task_instruction": "检查源码"},
+        replay=replay, timeline=timeline, agent=Author(), output_root=tmp_path / "completion")
+    assert result["candidates"][0]["valid"]
+    assert result["candidates"][0]["file_provenance"][0]["evidence_ref_ids"] == ["later"]
+    assert result["candidates"][0]["file_provenance"][0]["provenance"] == "MODEL_COMPLETED"
+    assert json.dumps(timeline, ensure_ascii=False, sort_keys=True) == original

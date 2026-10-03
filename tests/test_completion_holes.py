@@ -892,7 +892,7 @@ def test_placeholder_target_test_skeleton_cannot_satisfy_file_binding() -> None:
     )
 
 
-def test_completion_hides_post_mutation_events_from_prompt_and_session(tmp_path: Path) -> None:
+def test_completion_retains_post_mutation_events_as_readonly_history(tmp_path: Path) -> None:
     timeline = [
         {
             "call_id": "safe-read",
@@ -947,7 +947,11 @@ def test_completion_hides_post_mutation_events_from_prompt_and_session(tmp_path:
     )
     assert result["status"] == "READY"
     refs = {item["evidence_ref_id"] for item in runtime.session_evidence}
-    assert refs == {"safe-read"}
+    assert refs == {"safe-read", "mutation", "post-read"}
+    assert set(result["evidence_ref_ids"]) == refs
+    post = next(row for row in runtime.session_evidence if row["evidence_ref_id"] == "post-read")
+    assert post["initial_state_eligible"] is False
+    assert post["text"] == "SOLUTION_AFTER_MUTATION\n"
     assert "SOLUTION_AFTER_MUTATION" not in runtime.instruction
     assert "secret.py" not in runtime.instruction
 
