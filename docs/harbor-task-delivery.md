@@ -79,6 +79,11 @@ harbor run --path /path/to/search/task --agent nop --env docker \
 `traceforge.harbor_ags.search:SearchAGSEnvironment`，保留任务显式声明的检索变量，
 继续剥离模型凭据；初始化脚本按实际上传目录定位，不依赖 Docker 中的安装路径。
 
+search 的原生求解角色另部署一行标准 rg 配置，统一上下文行与匹配行的字段分隔符，
+避免正文中的 `-数字-` 被 Hermes 误当路径或行号。配置生成随环境适配源码冻结；
+上传失败直接终止。terminal 和 verifier 不启用该配置，原始文件、二进制判断、
+文件名查询和错误报告保持不变。
+
 在已配置的 Harbor/AGS 运行时目录执行，令 `SEARCH_TASK` 指向本次新导出的任务目录，
 `HARBOR_JOBS` 指向本次结果目录。项目 `src` 必须在 `PYTHONPATH` 中：
 
