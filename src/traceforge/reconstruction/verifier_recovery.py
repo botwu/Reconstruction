@@ -24,7 +24,7 @@ from traceforge.verifier.synthesis import (
 
 VERIFIER_RECOVERY_SCHEMA = "traceforge.verifier-recovery.v1"
 VERIFIER_SEMANTIC_REVIEW_PROMPT_VERSION = (
-    "terminal-universe-verifier-semantic-review-v11-source-grounding"
+    "terminal-universe-verifier-semantic-review-v12-evidence-conditioned-failures"
 )
 _FAILURE_REPRODUCTION_RULE = (
     "对每项测试场景和强制断言，区分原用户要求、实际工具或执行观察、历史助手的假设与实现方案。"
@@ -33,8 +33,12 @@ _FAILURE_REPRODUCTION_RULE = (
     "历史助手的建议、补丁和自制测试不自动成为验收规范；只见错误摘要或异常文本，"
     "不能推定缺失的完整响应，也不能把补造的响应形态与处理策略设成唯一故障契约。"
     "测试以用户目标和已证实行为为准，允许满足同一目标及明确约束的不同恢复策略。"
-    "策略分歧不能成为删除有效故障测试的理由；涉及瞬态失败时仍须验证有界恢复，"
-    "重试应继续原失败操作而非跳过失败页面。纯错误不得伪装为成功或空结果，"
+    "异常名称或一条重复报错摘要不能证明瞬态失败序列、唯一致因或必须重试。"
+    "原轨迹中的真实成功请求或替代方案须作为反例核对；自造故障注入只证明该假设下的行为，"
+    "没有原始依据或用户目标的必要性论证，不得用它排他性拒绝其他方案。"
+    "缺少同条件复现时，既不能宣称某方案已证正确，也不能靠扩造故障补齐因果证据，"
+    "应明确留下未验证的范围。已有依据要求重试时，检查其有界且继续原失败操作而非跳页。"
+    "策略分歧不能成为删除有依据的故障测试的理由。纯错误不得伪装为成功或空结果，"
     "失败不应破坏既有有效状态；正常空响应与明确错误须区分。"
     "同一作者提供的两个oracle即使都通过，也不证明测试没有附加要求或误拒绝。"
     "根据原始报错和实际调用链定位失败路径，能力缺失测试须复现对应的输入或返回形态；"
