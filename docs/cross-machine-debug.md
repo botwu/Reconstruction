@@ -116,7 +116,7 @@ uv pip compile --default-index https://pypi.org/simple --no-header --no-annotate
   --output artifacts/new-machine-search38 --config config.yaml \
   --hermes-home "$PWD/.runtime/hermes-agent" \
   --harbor-root "$PWD/integrations/harbor_ags" \
-  --execute-rollout --rollout-trials 1 --manual-response-review
+  --disable-verification --execute-rollout --rollout-trials 2
 
 "$TRACEFORGE_PYTHON" -m traceforge reconstruct raw-run \
   --input return_data/four_batch/by-rubric/R04.jsonl \
@@ -124,8 +124,13 @@ uv pip compile --default-index https://pypi.org/simple --no-header --no-annotate
   --output artifacts/new-machine-terminal1 --config config.yaml \
   --hermes-home "$PWD/.runtime/hermes-agent" \
   --harbor-root "$PWD/integrations/harbor_ags" \
-  --execute-red --execute-rollout --rollout-trials 2 --manual-response-review
+  --disable-verification --execute-rollout --rollout-trials 2
 ```
+
+以上先交付任务与环境，并完成两次未评分求解；这是本轮实际跑通的路径。
+如需另行生成和校准自动文件评分器，terminal 示例将 `--disable-verification`
+替换为 `--execute-red`；分析回答的人工核查另加 `--manual-response-review`，
+它不代表模型回答已自动通过。
 
 `R01:38` 与 `R04:1` 指从 1 起算的物理行，不能用筛选后的序号替代。
 数据清单中的样本哈希用于确认抽取了同一条原始会话。
