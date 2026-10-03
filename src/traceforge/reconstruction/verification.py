@@ -38,6 +38,7 @@ from traceforge.verifier.red_check import RedCheckCase, evaluate_red_check
 from traceforge.verifier.synthesis import (
     VerifierCandidate,
     VerifierSynthesisError,
+    candidate_from_payload,
     synthesize_verifier,
     validate_solution_scripts,
 )
@@ -916,6 +917,21 @@ def run_reconstruction_verification(
                         break
                     if not recovered.get("semantic_review"):
                         payload = feedback.get("previous_candidate")
+                        if (isinstance(payload, dict) and payload.get("status") == "REVIEW"
+                                and recovered.get("status") == "REVIEW"
+                                and (recovered.get("agent") or {}).get("completed") is True):
+                            try:
+                                _, declared_review = candidate_from_payload(
+                                    payload, obligation_ids=[], model_name=config.model_name,
+                                    prompt_sha256="", response_sha256="",
+                                )
+                            except VerifierSynthesisError:
+                                pass
+                            else:
+                                # 合法且正常完成的证据缺口说明是终态，不是生成失败。
+                                if errors == declared_review["open_questions"]:
+                                    result["errors"] = errors
+                                    break
                         if not isinstance(payload, dict) or not payload:
                             result["errors"] = errors
                             break

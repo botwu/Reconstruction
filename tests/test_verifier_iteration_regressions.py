@@ -392,3 +392,59 @@ def test_invalid_candidate_progress_compares_actual_payload_not_only_error(
     assert result["status"] == ("READY" if changed is True else "REVIEW")
     assert ("VERIFIER_NO_PROGRESS" in result["errors"]) is (changed is not True)
     assert all("测试代码语法无效" in row["errors"] for row in result["iterations"][:2])
+
+@pytest.mark.parametrize(
+    "questions,completed,agent_errors,expected_calls,expected_status,first_error",
+    [
+        (["缺少同条件失败响应", "安全测试不证明原故障已修复"], True, [], 1, "REVIEW", None),
+        (None, True, [], 2, "READY", "open_questions 必须为字符串数组"),
+        ([], True, [], 2, "READY", "open_questions 不能为空"),
+        (["重复", "重复"], True, [], 2, "READY", "open_questions 含重复条目"),
+        ([" "], True, [], 2, "READY", "open_questions 必须为字符串数组"),
+        (["证据缺口"], False, [], 1, "REVIEW", "AGENT_INCOMPLETE"),
+        (["证据缺口"], True, ["AGENT_POLICY_ERROR"], 2, "READY", "AGENT_POLICY_ERROR"),
+    ],
+    ids=["completed-review", "missing-questions", "empty-questions", "duplicate-questions",
+         "blank-question", "incomplete-agent", "agent-error"],
+)
+def test_completed_author_review_stops(
+    monkeypatch, tmp_path, questions, completed, agent_errors,
+    expected_calls, expected_status, first_error,
+):
+    class ReviewThenReady(_Agent):
+        def run(self, **kwargs):
+            result = super().run(**kwargs)
+            if (kwargs["role"].result_schema != "traceforge.verifier-semantic-review.v1"
+                    and len(self.calls) == 1):
+                result.payload = {"status": "REVIEW", "open_questions": questions}
+                result.final_text = json.dumps(result.payload, ensure_ascii=False)
+                result.completed = completed
+                result.errors.extend(agent_errors)
+            return result
+
+    agent = ReviewThenReady()
+    executor = _Executor(root=tmp_path)
+    executor.calls = 1
+    monkeypatch.setattr(verification_module, "HarborCalibrationExecutor", lambda **kw: executor)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "input.txt").write_text("x")
+    result = run_reconstruction_verification(
+        task={"task_instruction": "do x",
+              "acceptance_obligations": [{"id": "o", "text": "output"}]},
+        workspace_root=workspace, model=None, agent=agent, output_root=tmp_path / "out",
+        config=VerificationConfig(
+            harbor_root=tmp_path, model_name="fake", rollout_model="test/model",
+            execute_red=True,
+        ),
+        start_round=4,
+    )
+    assert len(agent.calls) == expected_calls
+    assert result["status"] == expected_status
+    if first_error is None:
+        assert result["errors"] == questions
+        assert result["iterations"] == [{"round": 4, "status": "REVIEW", "errors": questions}]
+        assert executor.calls == 1
+        assert not (tmp_path / "out/agent/round-05").exists()
+    else:
+        assert first_error in result["iterations"][0]["errors"]
