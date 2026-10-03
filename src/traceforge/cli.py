@@ -197,7 +197,7 @@ def _parser() -> argparse.ArgumentParser:
     raw_run.add_argument(
         "--harbor-root",
         type=Path,
-        default=Path("/mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags"),
+        default=Path(__file__).resolve().parents[2] / "integrations/harbor_ags",
     )
     raw_run.add_argument("--sandbox", action=argparse.BooleanOptionalAction, default=True,
                          help="默认在 AGS 执行连续研究者；--no-sandbox 仅用于离线调试")

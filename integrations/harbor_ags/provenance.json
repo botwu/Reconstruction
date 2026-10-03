@@ -134,7 +134,8 @@
     "删除未被重建引用的business_demo、smoke和runner及其CLI命令",
     "改写README为当前重建使用说明",
     "项目description改为中文",
-    "原连接层独立uv.lock由项目、连接层和固定Hermes统一解析的runtime-requirements.txt取代"
+    "原连接层独立uv.lock由项目、连接层和固定Hermes统一解析的runtime-requirements.txt取代",
+    "四份正式运行配置回收pytest.stdout、pytest.stderr与junit.xml，供绑定后的文件语义审查读取"
   ],
   "excluded": [
     ".venv",

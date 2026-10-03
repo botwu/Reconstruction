@@ -280,3 +280,48 @@ def test_new_collection_hook_requires_complete_matching_receipt(tmp_path, defect
         (final / "business.py").write_text("未记入收集清单的内容")
     with pytest.raises(HarborResultError, match="COLLECTION"):
         build_file_artifact_snapshot(trial)
+
+
+@pytest.mark.parametrize("filename", ["pytest.stdout", "pytest.stderr", "junit.xml"])
+@pytest.mark.parametrize("change", ["rewrite", "remove", "add"])
+def test_verifier_diagnostic_change_invalidates_semantic_receipt(tmp_path, filename, change):
+    trial, _, contract = _trial(tmp_path)
+    target = trial / "verifier" / filename
+    if change != "add":
+        target.write_bytes("实际执行日志\n".encode())
+    snapshot = build_file_artifact_snapshot(trial)
+    _write(trial / "verifier/file-semantic-review.json", _receipt(snapshot))
+    if change == "remove":
+        target.unlink()
+    else:
+        target.write_bytes("另一份执行日志\n".encode())
+    result = _apply(trial, contract)
+    assert result["status"] == "REVIEW"
+    assert any("BINDING_MISMATCH" in error for error in result["errors"])
+
+
+def test_legacy_trial_without_verifier_diagnostics_remains_readable(tmp_path):
+    trial, _, contract = _trial(tmp_path)
+    snapshot = build_file_artifact_snapshot(trial)
+    _write(trial / "verifier/file-semantic-review.json", _receipt(snapshot))
+    assert _apply(trial, contract)["status"] == "READY"
+    for filename in ["pytest.stdout", "pytest.stderr", "junit.xml"]:
+        assert "verifier/" + filename not in snapshot["evidence_files"]
+        assert not (trial / "verifier" / filename).exists()
+
+
+@pytest.mark.parametrize("unsafe", ["file_symlink", "parent_symlink", "directory"])
+def test_verifier_diagnostic_rejects_unsafe_paths(tmp_path, unsafe):
+    trial, task, _ = _trial(tmp_path)
+    target = trial / "verifier/pytest.stdout"
+    if unsafe == "file_symlink":
+        target.symlink_to(task / "tests/test_outputs.py")
+    elif unsafe == "parent_symlink":
+        verifier = trial / "verifier"
+        moved = tmp_path / "outside-verifier"
+        verifier.rename(moved)
+        verifier.symlink_to(moved, target_is_directory=True)
+    else:
+        target.mkdir()
+    with pytest.raises(HarborResultError, match="FILE_SNAPSHOT_EXECUTION_UNSAFE"):
+        build_file_artifact_snapshot(trial)

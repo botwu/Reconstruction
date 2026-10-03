@@ -92,7 +92,7 @@ harbor run --path /path/to/search/task --agent nop --env docker \
 任务包、模型提示或日志。环境变量是运行时传递方式，不提供对有终端权限的进程的密钥隔离。
 模型 ID 与 `expected_commit` 必须匹配实际通道和 AGS 模板中的 Hermes 版本。
 `--print-config` 只核对配置，不能替代实际创建、工具执行、回答、轨迹收集和沙盒清理。
-正式入口使用 `harbor-ags prepare-rollout` / `execute-rollout`，复用冻结、执行和清理回执；
+正式入口使用 `traceforge harbor-ags prepare-rollout` / `traceforge harbor-ags execute-rollout`，复用冻结、执行和清理回执；
 原始会话管线也调用同一执行层。计划根据显式 search metadata 和完整 `delivery.json`
 哈希识别任务，自动选择此环境并禁用评分。无需生成 `solution/` 或 `tests/control/`。
 上述直接 Harbor 命令仅供诊断。原生结果须完成请求/响应对账、任务输入绑定和沙盒清理，

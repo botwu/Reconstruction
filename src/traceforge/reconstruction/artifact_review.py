@@ -82,8 +82,10 @@ def review_file_artifact(
     )
     instruction = "\n".join([
         "使用 list_dir/read_file 阅读 initial/、final/、changes.diff、changes.json 和 execution.json 的真实证据。",
-        "execution/ 提供本次实际 pytest 源码及已绑定的真实轨迹、Oracle 日志（存在时）；"
-        "按需用 read_file 分页读取，不能只凭测试名、PASS 标签或文件哈希推断行为。",
+        "execution/ 提供本次实际 pytest 源码及已绑定的 pytest.stdout、pytest.stderr、junit.xml、"
+        "真实轨迹和 Oracle 日志（存在时）；按 execution_files 列表用 read_file 分页读取。"
+        "未列出的日志表示缺失，不等于执行无输出或成功；"
+        "不能只凭测试名、PASS 标签或文件哈希推断行为。",
         "按原用户要求逐项判断 file_semantic_checks；它们补充行为 pytest，不替代或篡改其结果。",
         "对提取/重构任务，核对实际业务实现是否迁入新模块、主程序是否真实调用并消费它；"
         "空包装器委托原程序全部业务不能算完成。接口名、参数形式、辅助层级和返回容器由实现选择，"

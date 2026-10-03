@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Any
 
 ROLLOUT_RESULTS_SCHEMA = "traceforge.harbor-ags-rollout-results.v1"
-_HARBOR_AGS_SRC = Path(
-    "/mnt/afs_toolcall/wujian1/Projects/workspace/harbor_ags/src"
+_VERIFIER_DIAGNOSTIC_FILES = (
+    "verifier/pytest.stdout", "verifier/pytest.stderr", "verifier/junit.xml",
 )
+_HARBOR_AGS_SRC = Path(__file__).resolve().parents[3] / "integrations/harbor_ags/src"
 
 
 class HarborResultError(RuntimeError):
@@ -117,14 +118,8 @@ def _import_audit_sandbox_ledger() -> Any:
         return audit_sandbox_ledger
     except ImportError:
         pass
-    candidates = (
-        _HARBOR_AGS_SRC,
-        Path(__file__).resolve().parents[4] / "harbor_ags" / "src",
-    )
-    for source in candidates:
-        if not (source / "harbor_ags" / "sandbox_ledger.py").is_file():
-            continue
-        inserted = str(source)
+    if (_HARBOR_AGS_SRC / "harbor_ags/sandbox_ledger.py").is_file():
+        inserted = str(_HARBOR_AGS_SRC)
         if inserted not in sys.path:
             sys.path.insert(0, inserted)
         try:
@@ -132,7 +127,7 @@ def _import_audit_sandbox_ledger() -> Any:
 
             return audit_sandbox_ledger
         except ImportError:
-            continue
+            pass
     raise HarborResultError("无法导入 harbor_ags.sandbox_ledger.audit_sandbox_ledger")
 
 
@@ -209,7 +204,7 @@ def certify_hermes_job(job_dir: Path | str, *, harbor_root: Path | str | None = 
     """保存可信 validator 结果，并将认证绑定到当前轨迹与 manifest 字节。"""
     root = Path(job_dir).resolve()
     sources = ([Path(harbor_root).resolve() / "src"] if harbor_root is not None else []) + [
-        _HARBOR_AGS_SRC, Path(__file__).resolve().parents[4] / "harbor_ags" / "src",
+        _HARBOR_AGS_SRC,
     ]
     for source in sources:
         if (source / "harbor_ags/artifacts.py").is_file():
@@ -467,7 +462,15 @@ def build_file_artifact_snapshot(
         collected_files = {row["path"]: row["sha256"] for row in rows}
         if len(collected_files) != len(rows) or collected_files != final_files:
             raise HarborResultError("FILE_SNAPSHOT_COLLECTION_FILES_MISMATCH")
-    execution_files = ["config.json", "result.json", "verifier/verdict.json"]
+    diagnostic_files = []
+    for name in _VERIFIER_DIAGNOSTIC_FILES:
+        path = root / name
+        if (path.is_symlink() or path.parent.is_symlink()
+                or (path.exists() and not path.is_file())):
+            raise HarborResultError(f"FILE_SNAPSHOT_EXECUTION_UNSAFE:{name}")
+        if path.is_file():
+            diagnostic_files.append(name)
+    execution_files = ["config.json", "result.json", "verifier/verdict.json", *diagnostic_files]
     execution_files.extend(name for name in (
         "agent/trajectory.full.json", "agent/trajectory.json", "agent/hermes-result.json",
         "agent/anthropic-exchanges.jsonl", "agent/anthropic-sse.jsonl",
@@ -499,7 +502,8 @@ def build_file_artifact_snapshot(
     evidence_files = {"verifier/test_outputs.py": str(task / "tests/test_outputs.py")}
     evidence_files.update({
         name: str(root / name) for name in (
-            "verifier/verdict.json", "agent/trajectory.full.json", "agent/trajectory.json",
+            "verifier/verdict.json", *diagnostic_files,
+            "agent/trajectory.full.json", "agent/trajectory.json",
             "agent/oracle.txt", "agent/exit-code.txt",
         ) if name in execution
     })

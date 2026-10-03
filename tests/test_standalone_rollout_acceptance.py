@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import shutil
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -13,6 +14,7 @@ from test_response_receipt import acceptance_contract, trajectory
 
 from traceforge.cli import main
 from traceforge.harbor_ags.rollout import HarborRolloutConfig, build_rollout_plan
+from traceforge.workspace_snapshot import collect_workspace
 
 pytestmark = pytest.mark.usefixtures("harbor_cleanup")
 
@@ -73,8 +75,10 @@ def _fixture(tmp_path, monkeypatch, *, trials=1, contract=True, runtime=False, f
         (trial / "reconstruction-certification.json").unlink()
         if file_semantics:
             final = trial / "artifacts/logs/artifacts/traceforge/workspace"
-            final.mkdir(parents=True)
-            (final / "input.txt").write_text("public\n")
+            collect_workspace(
+                plan_dir / "dataset" / relative / "workspace", final,
+                initial_paths=["input.txt"], output_paths=[],
+            )
 
     _write_ledger(job / "_control/ags-sandbox-ledger.jsonl")
     calls = []
@@ -429,7 +433,11 @@ def test_standalone_requires_bound_file_semantics_in_addition_to_reward(
             }],
         })
     if state == "changed_final":
-        (trial / "artifacts/logs/artifacts/traceforge/workspace/input.txt").write_text("changed")
+        final = trial / "artifacts/logs/artifacts/traceforge/workspace"
+        changed = tmp_path / "changed-final"
+        shutil.copytree(final, changed)
+        (changed / "input.txt").write_text("changed")
+        collect_workspace(changed, final, initial_paths=["input.txt"], output_paths=[])
     report = _read(plan, job)
     assert report["trials"][0]["reward"] == 1.0
     assert report["trials"][0]["status"] == "PASS"

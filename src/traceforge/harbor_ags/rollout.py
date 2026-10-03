@@ -38,9 +38,7 @@ from traceforge.trajectory.json_codec import stable_id
 
 from .adapter import validate_bundle_layout, validate_harbor_bundle
 
-DEFAULT_RUNTIME_CONFIG = Path(
-    "/mnt/afs_toolcall/wujian1/Projects/workspace/TraceRconstruction/config.yaml"
-)
+DEFAULT_RUNTIME_CONFIG = Path(__file__).resolve().parents[3] / "config.yaml"
 
 ROLLOUT_BRIDGE_SCHEMA = "traceforge.harbor-ags-rollout-bridge.v1"
 ROLLOUT_RECEIPT_SCHEMA = "traceforge.harbor-ags-rollout-receipt.v1"

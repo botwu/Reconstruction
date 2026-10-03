@@ -169,3 +169,17 @@ def test_raw_run_preserves_configured_gateway_model_id(tmp_path, monkeypatch, ov
         args += ["--rollout-model", override]
     assert cli.main(args) == 0
     assert received[0].rollout_model == expected
+
+
+def test_runtime_defaults_stay_in_current_checkout(tmp_path: Path) -> None:
+    from traceforge import cli
+    from traceforge.harbor_ags.rollout import DEFAULT_RUNTIME_CONFIG
+
+    repo = Path(cli.__file__).resolve().parents[2]
+    args = ["reconstruct", "raw-run", "--input", "source.jsonl", "--domain", "terminal",
+            "--line-number", "1", "--output", str(tmp_path / "out"), "--config", "private.yaml"]
+    parsed = cli._parser().parse_args(args)
+    assert parsed.harbor_root == repo / "integrations/harbor_ags"
+    assert DEFAULT_RUNTIME_CONFIG == repo / "config.yaml"
+    explicit = tmp_path / "frozen-runtime"
+    assert cli._parser().parse_args([*args, "--harbor-root", str(explicit)]).harbor_root == explicit

@@ -2,9 +2,11 @@
 
 import json
 import shutil
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from traceforge.harbor_ags.results import build_file_artifact_snapshot
 from traceforge.harbor_ags.response_acceptance import apply_file_semantic_receipts
@@ -232,6 +234,12 @@ def test_readonly_artifact_review_uses_bound_snapshot_through_real_runtime_wrapp
     trial, run, _ = trial_fixture(tmp_path)
     (trial / "agent").mkdir()
     (trial / "agent/oracle.txt").write_text("真实执行日志替身")
+    for name, content in {
+        "pytest.stdout": "stdout：实测分页得到 2 项结果\n",
+        "pytest.stderr": "stderr：执行诊断正文\n",
+        "junit.xml": '<testsuite tests="1"><testcase name="test_preserved"/></testsuite>\n',
+    }.items():
+        (trial / "verifier" / name).write_text(content)
     calls = []
 
     class NativeAgent:
@@ -249,6 +257,9 @@ def test_readonly_artifact_review_uses_bound_snapshot_through_real_runtime_wrapp
                 "final/main.py": "def main",
                 "execution/verifier/test_outputs.py": "test_preserved",
                 "execution/agent/oracle.txt": "真实执行日志替身",
+                "execution/verifier/pytest.stdout": "stdout：实测分页得到 2 项结果",
+                "execution/verifier/pytest.stderr": "stderr：执行诊断正文",
+                "execution/verifier/junit.xml": '<testcase name="test_preserved"/>',
                 "execution.json": "PASS",
             }.items():
                 assert expected in self._invoke_tool("read_file", {"path": path}, task_id)
@@ -298,3 +309,43 @@ def test_completed_trial_is_reviewed_when_another_trial_fails_capture(tmp_path):
     assert valid["results"]["quality_gate"]["ok"] is False
     assert invalid_row["reward"] is None
     assert (valid_dir / "verifier/file-semantic-review.json").is_file()
+
+
+@pytest.mark.parametrize("name", ["nop", "oracle", "hermes-certification", "hermes-batch"])
+def test_official_configs_collect_verifier_diagnostics(name):
+    config_dir = Path(__file__).resolve().parents[1] / "integrations/harbor_ags/configs"
+    config = config_dir / (name + ".yaml")
+    logs = yaml.safe_load(config.read_text())["verifier"]["include_logs"]
+    assert {"verdict.json", "pytest.stdout", "pytest.stderr", "junit.xml"} <= set(logs)
+
+
+def test_actual_grader_stdout_reaches_file_review_without_byte_changes(tmp_path):
+    from traceforge.verifier.grading import grade
+
+    trial, _, _ = trial_fixture(tmp_path)
+    task = Path(json.loads((trial / "config.json").read_text())["task"]["path"])
+    tests = task / "tests/test_outputs.py"
+    tests.write_text(
+        "def test_preserved():\n"
+        "    print('业务诊断：分页已返回 2 项')\n"
+        "    assert False, '有意失败的离线日志交付 fixture'\n"
+    )
+    verdict = grade(workspace=task / "workspace", tests=tests, log_dir=trial / "verifier")
+    assert verdict["status"] == "TASK_FAIL"
+    assert "业务诊断：分页已返回 2 项" in (trial / "verifier/pytest.stdout").read_text()
+
+    class LogReviewer(Reviewer):
+        def run(self, *, role, instruction, session, output_root):
+            for name in ["pytest.stdout", "pytest.stderr", "junit.xml"]:
+                original = trial / "verifier" / name
+                copied = session.workspace / "execution/verifier" / name
+                assert copied.read_bytes() == original.read_bytes()
+            assert "业务诊断：分页已返回 2 项" in execute_tool(
+                "read_file", {"path": "execution/verifier/pytest.stdout"}, session)
+            return super().run(
+                role=role, instruction=instruction, session=session, output_root=output_root)
+
+    receipt = review_file_artifact(
+        snapshot=build_file_artifact_snapshot(trial), task=TASK, checks=CHECKS,
+        agent=LogReviewer("REVISE"), output_root=tmp_path / "review", execution_evidence={})
+    assert receipt["status"] == "REVISE"

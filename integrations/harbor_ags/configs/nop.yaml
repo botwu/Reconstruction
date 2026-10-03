@@ -21,6 +21,9 @@ environment:
 verifier:
   include_logs:
     - verdict.json
+    - pytest.stdout
+    - pytest.stderr
+    - junit.xml
 
 retry:
   max_retries: 0
