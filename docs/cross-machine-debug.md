@@ -57,7 +57,7 @@ Hermes 源码及其依赖；search 和 terminal 的原生 rollout 都需要 Harb
 | Harbor 核心 | [PyPI Harbor 0.22.0](https://pypi.org/project/harbor/0.22.0/)，对应源码提交 `4407eb5227a2ff4f0d3f16b2eb48849382fdf276`；现有 335 个 Python 文件与官方 wheel 一致，无须复制或修改核心源码。 |
 | 宿主 Hermes | `git@github.com:SenseTime-FVG/hermes-agent.git`，固定提交 `83c2ca5b2e250d69ce301c751ea83fd425eb2de1`，需要该私有仓库访问权限；当前选取的 842 个运行源码文件均与提交匹配。 |
 | 自建 `harbor_ags` | 已纳入 [integrations/harbor_ags](../integrations/harbor_ags/README.md)，来自真实实跑快照；`provenance.json` 记录原始哈希及精简范围。官方 Harbor 核心仍通过 PyPI 安装。 |
-| AGS 模板 | 需要北京 AGS 服务 `ap-beijing.tencentags.com` 的凭据及 `node-python-hermes` 模板使用权限；当前原生 rollout 核对的模板内 Hermes 提交为 `3c231eb3979ab9c57d5cd6d02f1d577a3b718b43`，与宿主 Hermes 分别固定。模板镜像构建定义和 digest 尚未随仓库交付。 |
+| AGS 模板 | 需要北京 AGS 服务 `ap-beijing.tencentags.com` 的凭据及 `node-python-hermes` 模板使用权限；当前原生 rollout 核对的模板内 Hermes 提交为 `3c231eb3979ab9c57d5cd6d02f1d577a3b718b43`，与宿主 Hermes 分别固定。跨机调用同一云模板无需重新构建；只有独立复建镜像才需要目前尚未交付的构建定义与 digest。 |
 
 官方 `harbor-0.22.0-py3-none-any.whl` 的 SHA256 为
 `4c4c6571b3d160ed0cb45b82918136751fb08e7b8596412723ac00dde12eeabb`。

@@ -35,7 +35,7 @@ READY 初态同时导出 `harbor/<digest>/task/`，`result.json.harbor_task` 返
 
 补全者可调用 `web_open(url, ocr_page=1, offset=0, limit=8000)`。页号从 1 开始；未传页号仍读取原 PDF 文本层。配置 `TRACEFORGE_OCR_PYTHON` 或私有 `search.json` 的 `ocr_python` 指定已有 OCR 解释器，未配置或版本/模型哈希不符时明确失败，不自动安装、换引擎或切到远端模型。
 
-工作进程按 `pdf_ocr_lock.json` 核对实际包版本和 RapidOCR 模型/配置哈希。当前锁定的是已完成五页真实诊断的 Python 3.10 环境；其中 OpenCV 5 的依赖元数据要求 numpy>=2，而已安装 numpy1.26.4，因此它仅是现有诊断能力记录，**不是另一台机器的推荐安装方案**。独立且依赖相容的 Python 3.12 安装尚待授权和验证；不能声称公开 clone 后 OCR 可直接运行。
+工作进程按 `pdf_ocr_lock.json` 核对实际包版本和 RapidOCR 模型/配置哈希。当前锁定的是已完成五页真实诊断的 Python 3.10 环境；其中 OpenCV 5 的依赖元数据要求 numpy>=2，而已安装 numpy1.26.4，因此它仅是现有诊断能力记录，**不是另一台机器的推荐安装方案**。独立且依赖相容的 Python 3.12 OCR 安装尚未验证；只有新机器需要新做 OCR 时才处理，不能声称公开 clone 后 OCR 可直接运行。已有 PDF、页图和识别结果可直接复用，不阻塞当前重建或 rollout。
 
 OCR 返回带像素坐标和置信度的原检测块，保留检测顺序。双栏段落未经重排，公式、上下标、表格和署名可能误识别；不得据此宣称精确恢复。原 PDF 和原文本层保留不变，原文件、页图、识别原始 JSON 分别以 SHA256 绑定。默认最多返回 8000 字符，余下用同一页号和 offset 续读。
 

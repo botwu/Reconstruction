@@ -36,4 +36,4 @@
 
 `version-lock.json` 固定 Harbor、SDK、模板内 Hermes 提交与离线 wheel 哈希。离线 wheel 保留各自许可证。`configs/` 仅含环境变量占位；模型与 AGS 凭据由运行方提供。
 
-AGS 模板 `node-python-hermes` 的构建定义和镜像摘要尚未交付，模板访问权限仍必需。当前捕获适配使用 Anthropic Messages，不能仅更换模型名就转为 Responses。现有 `.venv` 不随 Git 发布；干净安装及实际验证进度以[当前状态](../../docs/current-status.md)为准。
+跨机使用既有 `node-python-hermes` 模板只需配置与访问权限，不要求重建镜像；构建定义和镜像摘要仅在独立复建时需要，目前尚未交付。当前捕获适配使用 Anthropic Messages，不能仅更换模型名就转为 Responses。现有 `.venv` 不随 Git 发布；干净安装及实际验证进度以[当前状态](../../docs/current-status.md)为准。
