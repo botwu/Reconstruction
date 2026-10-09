@@ -163,7 +163,7 @@ def test_channel_context_window_reaches_hermes_and_turn_receipt(
 
     def apply_window(**kwargs):
         compressor.context_length = kwargs["context_length"]
-        compressor.threshold_tokens = 500_000
+        compressor.threshold_tokens = int(compressor.context_length * compressor.threshold_percent)
 
     compressor.update_model = Mock(side_effect=apply_window)
     auxiliary = types.SimpleNamespace(
@@ -205,8 +205,8 @@ def test_channel_context_window_reaches_hermes_and_turn_receipt(
     assert auxiliary._get_task_timeout("compression") == 30
     assert turn["agent_context_length"] == context_length
     assert turn["resolved_context_length"] == (context_length or 256_000)
-    assert turn["compression_threshold_tokens"] == (500_000 if context_length else 128_000)
-    assert turn["compression_threshold_percent"] == 0.5
+    assert turn["compression_threshold_tokens"] == (850_000 if context_length else 128_000)
+    assert turn["compression_threshold_percent"] == (0.85 if context_length else 0.5)
     assert turn["compression_count"] == 0
     trace = json.loads((tmp_path / "out/private/agent_trace.json").read_text())
     assert trace["turns"][0]["resolved_context_length"] == turn["resolved_context_length"]

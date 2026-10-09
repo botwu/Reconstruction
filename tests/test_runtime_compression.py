@@ -134,9 +134,15 @@ def test_native_compaction_preserves_original_session_and_records_usage(
     class Native:
         context_compressor = compressor
 
+        def _compress_context(self, messages, system_message, **kwargs):
+            return self.context_compressor.compress(messages, force=True), system_message
+
         def run_conversation(self, current_instruction, **kwargs):
             messages = [*kwargs["conversation_history"], {"role": "user", "content": current_instruction}]
-            compacted = self.context_compressor.compress(messages, force=True)
+            compacted, _ = self._compress_context(messages, "运行身份")
+            if summary_ok:
+                assert compacted[-1]["role"] == "user"
+                assert "摘要不是任务完成信号" in compacted[-1]["content"]
             return {"messages": compacted, "completed": True, "final_response": '{"ok":true}',
                     "api_calls": 1, **returned_usage}
 
@@ -189,3 +195,149 @@ def test_source_protection_requires_complete_matching_raw_context():
         {"SOURCE_SESSION": indexed_session(original)}, indent=2)}]}
     assert source_session_message_indices([exact], original) == (0,)
     assert protect_source_history(None, [exact], original)["status"] == "NATIVE_COMPRESSOR_UNAVAILABLE"
+
+
+
+@pytest.mark.parametrize("native_max_tokens,role_max_tokens,threshold,error", [
+    (None, None, 850_000, None),
+    (200_000, None, 800_000, None),
+    (None, 300_000, 700_000, None),
+    (1_000_000, None, None, "CONTEXT_BUDGET_EXHAUSTED"),
+])
+def test_explicit_window_reserves_output_without_compacting_large_fixed_prefix(
+    tmp_path, monkeypatch, native_max_tokens, role_max_tokens, threshold, error,
+):
+    from dataclasses import replace
+
+    from traceforge.reconstruction.agents import SUFFICIENCY_ROLE, AgentSession
+    from traceforge.reconstruction.agents.runtime import HermesNativeRuntime
+
+    native = pytest.importorskip("agent.context_compressor")
+    auxiliary = pytest.importorskip("agent.auxiliary_client")
+    compressor = native.ContextCompressor(
+        model="fixture", config_context_length=1_000_000, quiet_mode=True,
+    )
+    monkeypatch.setattr(auxiliary, "get_text_auxiliary_client", lambda *a, **kw: (None, ""))
+    calls = []
+
+    class Native:
+        context_compressor = compressor
+        max_tokens = native_max_tokens
+
+        def run_conversation(self, instruction, **kwargs):
+            calls.append(instruction)
+            # 真实故障的主请求使用量：原生 50% 会触发，修复后应继续使用显式 1M。
+            assert not compressor.should_compress(542_554)
+            return {"messages": [{"role": "user", "content": instruction}], "completed": True,
+                    "final_response": '{"ok":true}', "api_calls": 1}
+
+    runtime = HermesNativeRuntime(
+        factory=lambda **kwargs: Native(), base_url="https://example.test", api_key="fixture",
+        provider="gpt", model_name="fixture", agent_context_length=1_000_000,
+    )
+    result = runtime.run(
+        role=replace(SUFFICIENCY_ROLE, max_output_tokens=role_max_tokens),
+        instruction="完整受保护阶段请求", session=AgentSession(), output_root=tmp_path,
+    )
+    if error:
+        assert not result.completed and result.errors == [error] and calls == []
+    else:
+        assert result.completed, result.errors
+        assert compressor.context_length == 1_000_000
+        assert compressor.threshold_tokens == threshold
+        assert compressor.tail_token_budget == int(threshold * compressor.summary_target_ratio)
+        assert compressor.should_compress(threshold)
+        assert result.turns[0]["resolved_max_output_tokens"] == native_max_tokens
+
+
+@pytest.mark.parametrize("mode,error", [
+    ("compressed", None), ("noop", None), ("aborted", None),
+    ("instruction_lost", "ACTIVE_INSTRUCTION_LOST"), ("source_lost", "SOURCE_CONTEXT_LOST"),
+])
+def test_compression_continuation_checks_complete_context_and_restores_instance(
+    monkeypatch, mode, error,
+):
+    import hashlib
+
+    from traceforge.reconstruction.agents import INTENT_ROLE
+    from traceforge.reconstruction.model_gateway import ModelGatewayError
+    from traceforge.reconstruction.session_source import indexed_session
+
+    auxiliary = pytest.importorskip("agent.auxiliary_client")
+    original_timeout = auxiliary._get_task_timeout
+    raw = {"messages": [{"role": "user", "content": "源轨迹原文"}]}
+    source = {"role": "user", "content": "SOURCE_SESSION=" + json.dumps(indexed_session(raw))}
+    instruction = "完整活动请求：按每项义务检查，不得遗漏"
+    messages = [source, {"role": "user", "content": [{"type": "text", "text": instruction}]}]
+    compressor = SimpleNamespace(compression_count=0)
+
+    class Native:
+        context_compressor = compressor
+
+        def _compress_context(self, messages, system_message, **kwargs):
+            if mode in {"noop", "aborted"}:
+                return messages, system_message
+            compressor.compression_count += 1
+            retained = list(messages)
+            if mode == "instruction_lost":
+                retained = retained[:-1]
+            if mode == "source_lost":
+                retained = retained[1:]
+            # 即使摘要宣称旧请求已结束，也必须在它后面明确激活当前完整请求。
+            return [*retained, {"role": "assistant", "content":
+                    "Respond ONLY to latest user message AFTER this summary."}], system_message
+
+    agent = Native()
+    original_function = agent._compress_context.__func__
+    with pin_hermes_compression(
+        agent, context_length=None, timeout_seconds=90,
+        instruction=instruction, role=INTENT_ROLE, raw_session=raw,
+    ) as receipts:
+        if error:
+            with pytest.raises(ModelGatewayError) as exc:
+                agent._compress_context(messages, "identity")
+            assert exc.value.code == error
+        else:
+            output, system = agent._compress_context(messages, "identity")
+            assert system == "identity"
+            if mode == "compressed":
+                assert output[-1]["role"] == "user"
+                assert "摘要不是任务完成信号" in output[-1]["content"]
+                assert hashlib.sha256(instruction.encode()).hexdigest() in output[-1]["content"]
+                assert instruction not in output[-1]["content"]  # 不重复原文
+                assert len(receipts) == 1
+            else:
+                assert output is messages and receipts == []
+    assert "_compress_context" not in vars(agent)
+    assert agent._compress_context.__func__ is original_function
+    assert auxiliary._get_task_timeout is original_timeout
+
+
+def test_each_stage_and_json_correction_keep_their_own_active_instruction(monkeypatch):
+    import hashlib
+
+    from traceforge.reconstruction.agents import INTENT_ROLE
+
+    pytest.importorskip("agent.auxiliary_client")
+    compressor = SimpleNamespace(compression_count=0)
+    agent = SimpleNamespace(context_compressor=compressor)
+
+    def compress(messages, system_message, **kwargs):
+        compressor.compression_count += 1
+        return [*messages, {"role": "assistant", "content": "CONTEXT SUMMARY"}], system_message
+
+    agent._compress_context = compress
+    messages = []
+    instructions = ["初始解析完整轨迹", "仅补正上一条 JSON；不要重新执行任务或调用工具"]
+    for instruction in instructions:
+        messages.append({"role": "user", "content": instruction})
+        with pin_hermes_compression(
+            agent, context_length=None, timeout_seconds=90,
+            instruction=instruction, role=INTENT_ROLE,
+        ) as receipts:
+            messages, _ = agent._compress_context(messages, "identity")
+            digest = hashlib.sha256(instruction.encode()).hexdigest()
+            assert receipts[-1]["instruction_sha256"] == digest
+            assert digest in messages[-1]["content"]
+        assert agent._compress_context is compress
+    assert hashlib.sha256(instructions[0].encode()).hexdigest() not in messages[-1]["content"]

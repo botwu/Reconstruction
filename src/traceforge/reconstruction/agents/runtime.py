@@ -251,7 +251,17 @@ class HermesNativeRuntime:
                 if self.agent_context_length is not None:
                     if not callable(getattr(compressor, "update_model", None)):
                         raise HermesUnavailableError("Hermes 缺少可配置上下文的原生压缩器")
-                    # 网关别名可能缺少窗口元数据；沿用原生预算更新，不能提前摘要完整轨迹。
+                    # 为输出和工具往返留出预算；不能在完整固定前缀刚超过半窗时立即摘要。
+                    output_limits = (role.max_output_tokens, getattr(agent, "max_tokens", None))
+                    reserve = max([
+                        (self.agent_context_length * 15 + 99) // 100,
+                        *(value for value in output_limits if type(value) is int and value > 0),
+                    ])
+                    if reserve >= self.agent_context_length:
+                        raise ModelGatewayError(
+                            "输出预留已占满显式模型上下文窗口", code="CONTEXT_BUDGET_EXHAUSTED",
+                        )
+                    compressor.threshold_percent = 1 - reserve / self.agent_context_length
                     compressor.update_model(
                         model=compressor.model,
                         context_length=self.agent_context_length,
@@ -270,9 +280,7 @@ class HermesNativeRuntime:
                 # Hermes native dispatch must use the role-scoped proxy.
                 trace_path = Path(output_root) / "private" / "tool_events.jsonl"
                 _bind_agent_tools(agent, role=role, session=session, trace_path=trace_path)
-                with pin_hermes_compression(
-                    agent, context_length=self.agent_context_length, timeout_seconds=request_timeout,
-                ), _scoped_hermes_dispatch(agent, role=role):
+                with _scoped_hermes_dispatch(agent, role=role):
                     current_instruction = instruction
                     history = copy.deepcopy(session.conversation.messages) if session.conversation is not None else None
                     try:
@@ -287,10 +295,15 @@ class HermesNativeRuntime:
                             source_session,
                         )
                         kwargs = {"conversation_history": history} if history else {}
-                        raw = agent.run_conversation(
-                            current_instruction, system_message=role.identity,
-                            task_id=role.name, **kwargs,
-                        )
+                        with pin_hermes_compression(
+                            agent, context_length=self.agent_context_length,
+                            timeout_seconds=request_timeout, instruction=current_instruction,
+                            role=role, raw_session=source_session,
+                        ) as continuations:
+                            raw = agent.run_conversation(
+                                current_instruction, system_message=role.identity,
+                                task_id=role.name, **kwargs,
+                            )
                         if not isinstance(raw, dict):
                             raise TypeError("Hermes result must be a dict")
                         if session.conversation is not None and isinstance(raw.get("messages"), list) and raw["messages"]:
@@ -312,6 +325,8 @@ class HermesNativeRuntime:
                             "compression_threshold_tokens": getattr(compressor, "threshold_tokens", None),
                             "compression_threshold_percent": getattr(compressor, "threshold_percent", None),
                             "compression_count": getattr(compressor, "compression_count", None),
+                            "compression_continuations": continuations,
+                            "resolved_max_output_tokens": getattr(agent, "max_tokens", None),
                             "aux_compression_context_length": getattr(
                                 agent, "_aux_compression_context_length_config", None),
                             "compression_request_timeout_seconds": request_timeout if compressor else None,
@@ -609,11 +624,14 @@ def protect_source_history(
 @contextmanager
 def pin_hermes_compression(
     agent: Any, *, context_length: int | None, timeout_seconds: float,
-) -> Iterator[None]:
-    """在现有进程锁内绑定摘要预算，退出时恢复原生辅助超时读取。"""
+    instruction: str | None = None, role: AgentRole | None = None,
+    raw_session: dict[str, Any] | None = None,
+) -> Iterator[list[dict[str, Any]]]:
+    """绑定摘要预算，并在原生摘要后续接仍完整保留的当前阶段请求。"""
+    continuations: list[dict[str, Any]] = []
     compressor = getattr(agent, "context_compressor", None)
     if compressor is None:
-        yield
+        yield continuations
         return
     auxiliary = importlib.import_module("agent.auxiliary_client")
     if context_length is not None:
@@ -635,11 +653,57 @@ def pin_hermes_compression(
             return timeout_seconds
         return original_timeout(task, *args, **kwargs)
 
+    original_compress = getattr(agent, "_compress_context", None)
+    saved_compress = vars(agent).get("_compress_context", _MISSING_DISPATCH)
+
+    def compress_context(_agent: Any, messages: list, system_message: str, **kwargs: Any) -> tuple:
+        before = compressor.compression_count
+        source_present = bool(
+            raw_session is not None and source_session_message_indices(messages, raw_session)
+        )
+        compressed, system = original_compress(messages, system_message, **kwargs)
+        if compressor.compression_count > before:
+            # 摘要模板把旧请求视为已完成；先核对原指令，再以新 user 明确续接，不能复制巨型原文。
+            def contains_instruction(message: dict[str, Any]) -> bool:
+                content = message.get("content")
+                parts = ([content] if isinstance(content, str) else [
+                    item.get("text", "") for item in content if isinstance(item, dict)
+                ] if isinstance(content, list) else [])
+                return message.get("role") == "user" and any(
+                    isinstance(part, str) and instruction in part for part in parts
+                )
+
+            if not any(contains_instruction(message) for message in compressed):
+                raise ModelGatewayError(
+                    "原生压缩后当前阶段完整指令已丢失，停止续接", code="ACTIVE_INSTRUCTION_LOST",
+                )
+            if source_present and not source_session_message_indices(compressed, raw_session):
+                raise ModelGatewayError(
+                    "原生压缩后完整原始轨迹已丢失，停止续接", code="SOURCE_CONTEXT_LOST",
+                )
+            digest = hashlib.sha256(instruction.encode()).hexdigest()
+            compressed.append({"role": "user", "content": (
+                f"继续当前 TraceForge {role.name} 阶段。摘要不是任务完成信号。"
+                f"会话中仍逐字保留的当前完整指令（SHA256={digest}）继续生效；"
+                "按该指令和现有工具状态完成剩余工作，不重做已完成的调用。"
+                "若当前指令只要求 JSON 语法补正，则只补正，不重新执行任务。"
+                f"输出契约：{role.result_schema}。"
+            )})
+            continuations.append({"compression_count": compressor.compression_count,
+                                  "instruction_sha256": digest, "status": "CONTINUED"})
+        return compressed, system
+
     auxiliary._get_task_timeout = task_timeout
+    if callable(original_compress) and instruction and role is not None:
+        agent._compress_context = MethodType(compress_context, agent)
     try:
-        yield
+        yield continuations
     finally:
         auxiliary._get_task_timeout = original_timeout
+        if saved_compress is _MISSING_DISPATCH:
+            vars(agent).pop("_compress_context", None)
+        else:
+            agent._compress_context = saved_compress
 
 
 def _traceforge_model_timeout_seconds(default: float = 120.0) -> float:
