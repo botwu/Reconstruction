@@ -80,7 +80,8 @@ def _expectations(path: Path, source_codes: Sequence[str]) -> tuple[dict[str, So
     raw = path.read_bytes()
     value = json.loads(raw)
     entries = value.get("distribution") if isinstance(value, dict) else None
-    if entries is None and isinstance(value, dict) and isinstance(value.get("datasets"), list):
+    if (not isinstance(entries, list) and isinstance(value, dict)
+            and isinstance(value.get("datasets"), list)):
         entries = [
             {"code": item.get("name"), "records": item.get("physical_lines"),
              "bytes": item.get("bytes"), "sha256": item.get("sha256")}

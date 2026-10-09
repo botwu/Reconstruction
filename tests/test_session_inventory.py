@@ -103,15 +103,20 @@ def test_requires_all_selected_source_coverage_declarations(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize("published_manifest", [False, True])
-def test_search_inventory_uses_only_explicit_source_without_terminal_pair(tmp_path: Path, published_manifest: bool) -> None:
+@pytest.mark.parametrize("corrupt_digest", [False, True])
+def test_search_inventory_uses_only_explicit_source_without_terminal_pair(
+    tmp_path: Path, published_manifest: bool, corrupt_digest: bool,
+) -> None:
     raw = b'{"messages":[{"role":"user","content":"search"}]}\n'
     source = _source(tmp_path, raw, b'{"messages":[]}\n')
     (source / "R04.jsonl").rename(source / "R01.jsonl")
     metadata = source / "distribution.json"
     value = json.loads(metadata.read_text())
     value["distribution"][0]["code"] = "R01"
+    if corrupt_digest:
+        value["distribution"][0]["sha256"] = "f" * 64
     if published_manifest:
-        value = {"datasets": [
+        value = {"distribution": {"status": "GIT_LFS"}, "datasets": [
             {"name": item["code"], "physical_lines": item["records"],
              "bytes": item["bytes"], "sha256": item["sha256"]}
             for item in value["distribution"]
@@ -120,6 +125,11 @@ def test_search_inventory_uses_only_explicit_source_without_terminal_pair(tmp_pa
     frozen, output = tmp_path / "frozen", tmp_path / "output"
     result = prepare_session_batch(source, frozen, output, source_codes=["R01"], domain="search")
     assert result["domain"] == "search"
+    if corrupt_digest:
+        assert result["status"] == "PARTIAL_SOURCE"
+        assert not (frozen / "R01.jsonl").exists()
+        assert not (output / "sessions.jsonl").exists()
+        return
     assert result["rubrics"] == ["R01"]
     assert result["total_sessions"] == 1
     assert (frozen / "R01.jsonl").read_bytes() == raw

@@ -18,6 +18,8 @@
   --frozen-dir artifacts/batch-inputs --output artifacts/terminal-inventory
 ```
 
+发布清单 data/debug-datasets.json 的覆盖声明取自 datasets 数组；其 distribution 对象只是发布元信息。上游 distribution.json 的数组格式继续支持。
+
 准备会复制原始字节并生成每条的物理行号、字节位置和 SHA256；已有冻结文件不会被覆盖。两类清单分别传入对应 domain，混用会在启动模型前报错。
 
 ## 先执行小批次
