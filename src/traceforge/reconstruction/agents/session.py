@@ -291,10 +291,14 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
             ["probe_id"],
         ),
         "restore_dependency_source": (
-            "从已校验的锁定 wheel 原成员恢复 UTF-8 源码，按行保留全部原始观察及占位。"
+            "从已校验的锁定 wheel 原成员恢复 UTF-8 源码，按行保留已确认的初态观察。"
             "仅恢复当前任务必要依赖，不代表原机器完整快照；返回 wheel、成员和候选哈希。"
-            "仍执行原文件保护与 capture_repairs 校验；无需模型抄写正文。",
+            "待核观察的采集损坏可显式声明 capture_repairs："
+            "old_text 来自原观察，new_text 来自锁定成员；"
+            "须引用冲突来源，声明只能证明候选与 wheel 原成员一致，不能晋升观察的初态资格。"
+            "仍执行原文件保护，无需模型抄写正文。",
             {"distribution": text, "version": text, "member": text, "path": text,
+             "capture_repairs": CAPTURE_REPAIRS_SCHEMA,
              "evidence_ref_ids": {"type": "array", "items": text, "minItems": 1}},
             ["distribution", "version", "member", "path", "evidence_ref_ids"],
         ),
@@ -658,12 +662,14 @@ def _observation_lines(op: dict[str, Any]) -> dict[int, str]:
 
 
 def _check_unverified_observations(
-    evidence: list[dict[str, Any]], path: str, content: str,
+    evidence: list[dict[str, Any]], path: str, content: str, *,
+    capture_repairs: list[dict[str, str]], evidence_ref_ids: list[str],
 ) -> list[dict[str, Any]]:
-    """待核观察只作冲突检查，不升格为初态或覆盖候选。"""
+    """待核观察只作比较；显式修复不改变原始观察的初态资格。"""
     lines = content.splitlines()
     checks = []
     conflicts_found = []
+    combined: dict[int, str] = {}
     for event in evidence:
         for op in (event.get("session_parse") or {}).get("reference_file_ops", []):
             if op.get("kind") != "read" or op.get("path") != path:
@@ -684,14 +690,40 @@ def _check_unverified_observations(
                 raise ValueError(
                     "待核观察无法比较：" + json.dumps(check, ensure_ascii=False)
                 ) from exc
+            for number, line in observed.items():
+                if number in combined and combined[number] != line:
+                    raise ValueError(
+                        f"待核观察在同一行冲突，不能自动选择：{path}:{number}"
+                    )
+                combined[number] = line
             conflicts = [number for number, line in observed.items()
                          if number > len(lines) or lines[number - 1] != line]
+            checks.append({**check, "matched_line_count": len(observed) - len(conflicts),
+                           **({"capture_repair_line_numbers": conflicts} if conflicts else {})})
             if conflicts:
                 conflicts_found.append({**check, "line_numbers": conflicts})
-            else:
-                checks.append({**check, "matched_line_count": len(observed)})
-    if conflicts_found:
-        raise ValueError("待核观察冲突：" + json.dumps(conflicts_found, ensure_ascii=False))
+    if not capture_repairs:
+        if conflicts_found:
+            raise ValueError("待核观察冲突：" + json.dumps(conflicts_found, ensure_ascii=False))
+        return checks
+    if not conflicts_found:
+        raise ValueError("capture_repairs 没有对应的待核观察差异")
+    missing_refs = {row["evidence_ref_id"] for row in conflicts_found} - set(evidence_ref_ids)
+    if missing_refs:
+        raise ValueError("待核观察修复必须明确引用冲突来源：" + ", ".join(sorted(missing_refs)))
+    # 仅用于校验声明；未观察的行来自候选，不将拼接正文物化为历史初态。
+    original_lines = content.splitlines(keepends=True)
+    for number, line in combined.items():
+        if number > len(original_lines):
+            raise ValueError("待核观察超出锁定依赖成员，不能用修复声明截掉")
+        prior = original_lines[number - 1]
+        ending = prior[len(prior.rstrip("\r\n")):]
+        original_lines[number - 1] = line + ending
+    repair_error = capture_repair_error(
+        "".join(original_lines), content, capture_repairs, complete=True, diagnostics=True,
+    )
+    if repair_error:
+        raise ValueError(repair_error)
     return checks
 
 
@@ -724,6 +756,10 @@ def _restore_dependency_source(session: AgentSession, args: dict[str, Any]) -> s
             session.dependency_bundle, requirements, distribution=args.get("distribution"),
             version=args.get("version"), member=args.get("member"),
         )
+        locked_content = content
+        repairs = args.get("capture_repairs", [])
+        if not isinstance(repairs, list):
+            raise ValueError("CAPTURE_REPAIRS_INVALID")
         observed: dict[int, str] = {}
         observation_refs = []
         for event in session.evidence:
@@ -751,7 +787,11 @@ def _restore_dependency_source(session: AgentSession, args: dict[str, Any]) -> s
                 lines[number - 1] = line + ending
                 changed.append(number)
         content = "".join(lines)
-        unverified_checks = _check_unverified_observations(session.evidence, path, content)
+        if repairs and content != locked_content:
+            raise ValueError("待核观察修复只能恢复锁定 wheel 原成员，不能覆盖已确认的初态观察")
+        unverified_checks = _check_unverified_observations(
+            session.evidence, path, content, capture_repairs=repairs, evidence_ref_ids=refs,
+        )
         if path in session.complete_files and content != session.complete_files[path]:
             raise ValueError("完整原始文件不能用上游扩写或替换")
         provenance.update(
@@ -762,7 +802,13 @@ def _restore_dependency_source(session: AgentSession, args: dict[str, Any]) -> s
             unverified_observation_checks=unverified_checks,
             observations_sha256=hashlib.sha256(json.dumps(observed, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
         )
-        write_args = {**args, "path": path, "evidence_ref_ids": list(dict.fromkeys([*refs, *observation_refs]))}
+        if repairs:
+            provenance["capture_repairs"] = [dict(item) for item in repairs]
+        # 此声明针对待核观察，不冒充新文件中并不存在的 Replay 原片段。
+        write_args = {key: value for key, value in args.items() if key != "capture_repairs"}
+        write_args.update(
+            path=path, evidence_ref_ids=list(dict.fromkeys([*refs, *observation_refs])),
+        )
         reason = "从锁定依赖恢复缺失正文并保留全部初态观察：" + json.dumps(provenance, ensure_ascii=False)
         result = (_write_candidate_edit(session, write_args, content, reason)
                   if original else _write_file(session, {**write_args, "content": content}))

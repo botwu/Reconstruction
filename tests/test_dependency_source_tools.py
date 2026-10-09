@@ -312,3 +312,100 @@ def test_completion_retains_history_for_inference_without_direct_restoration(tmp
     assert result["candidates"][0]["file_provenance"][0]["evidence_ref_ids"] == ["later"]
     assert result["candidates"][0]["file_provenance"][0]["provenance"] == "MODEL_COMPLETED"
     assert json.dumps(timeline, ensure_ascii=False, sort_keys=True) == original
+
+
+def uncertain_dependency_session(tmp_path):
+    state, args, wheel, body = bundle_session(tmp_path)
+    state.partial_files.clear()
+    state.replay_files.pop(args["path"])
+    observed = ["label = '[PII_EMAIL_example_LEN6]'", "value = [INFRA_IPV4_example_LEN1]"]
+    state.evidence = [{
+        "evidence_ref_id": "uncertain", "initial_state_eligible": False,
+        "session_parse": {"file_ops": [], "reference_file_ops": [{
+            "kind": "read", "path": args["path"], "partial": True,
+            "line_numbers": [2, 3], "line_contents": observed,
+            "initial_state_blockers": [{"reason": "read_after_unparsed_mutation",
+                                        "source_event_id": "uncertain", "path": args["path"]}],
+        }]},
+    }]
+    args["evidence_ref_ids"] = ["uncertain"]
+    args["capture_repairs"] = [
+        {"old_text": before, "new_text": after,
+         "reason": "明确核对锁定成员；保留原观察，仅修复候选。"}
+        for before, after in zip(observed, body.splitlines()[1:], strict=True)
+    ]
+    return state, args, wheel, body
+
+
+def test_explicit_reference_repairs_restore_exact_locked_bytes_and_preserve_evidence(tmp_path):
+    from traceforge.reconstruction.agents.session import tool_schemas
+    from traceforge.reconstruction.env_replay import ReplayResult
+    from traceforge.reconstruction.terminal_universe_environment import materialize_environment
+
+    state, args, _, body = uncertain_dependency_session(tmp_path)
+    before = json.dumps(state.evidence, ensure_ascii=False, sort_keys=True)
+    strict_args = {k: v for k, v in args.items() if k != "capture_repairs"}
+    assert "待核观察冲突" in execute_tool("restore_dependency_source", strict_args, state)
+    result = execute_tool("restore_dependency_source", args, state)
+    assert not result.startswith("error:"), result
+    assert (state.workspace / args["path"]).read_bytes() == body.encode()
+    written = state.writes[-1]
+    provenance = written["dependency_source"]
+    assert written["provenance"] == "MODEL_COMPLETED"
+    assert "capture_repairs" not in written
+    assert provenance["capture_repairs"] == args["capture_repairs"]
+    assert provenance["content_sha256"] == provenance["member_sha256"]
+    assert provenance["observed_line_count"] == 0
+    assert provenance["observation_evidence_ref_ids"] == []
+    assert provenance["unverified_observation_checks"][0]["capture_repair_line_numbers"] == [2, 3]
+    assert json.dumps(state.evidence, ensure_ascii=False, sort_keys=True) == before
+    assert not state.partial_files and not state.complete_files
+    schema = tool_schemas(("restore_dependency_source",))[0]["function"]["parameters"]
+    assert "capture_repairs" in schema["properties"] and "capture_repairs" not in schema["required"]
+    candidate = {"files": state.writes, "dependencies": [],
+                 "runtime_constraints": [], "uncertainties": []}
+    manifest = materialize_environment(
+        ReplayResult(files=(), withheld_changes=(), partial_evidence=(),
+                     unknown_mutation_barriers=()),
+        candidate, tmp_path / "materialized",
+        evidence_refs={"uncertain"}, env_origin="DEFAULT_EMPTY",
+    )
+    assert manifest["provenance"][args["path"]]["dependency_source"] == provenance
+
+
+@pytest.mark.parametrize("damage", [
+    "missing_ref", "missing_repair", "wrong_replacement", "conflicting_observation",
+    "outside_member", "initial_observation", "known_mutation", "protected",
+])
+def test_declared_reference_repair_does_not_bypass_source_constraints(tmp_path, damage):
+    state, args, _, _ = uncertain_dependency_session(tmp_path)
+    reference = state.evidence[0]["session_parse"]["reference_file_ops"][0]
+    if damage == "missing_ref":
+        state.evidence.append({"evidence_ref_id": "other", "session_parse": {"file_ops": []}})
+        args["evidence_ref_ids"] = ["other"]
+    elif damage == "missing_repair":
+        args["capture_repairs"].pop()
+    elif damage == "wrong_replacement":
+        args["capture_repairs"][1]["new_text"] = "value = 99"
+    elif damage == "conflicting_observation":
+        other = json.loads(json.dumps(state.evidence[0]))
+        other["evidence_ref_id"] = "conflict"
+        other["session_parse"]["reference_file_ops"][0]["line_contents"][0] = "label = 'different'"
+        state.evidence.append(other)
+        args["evidence_ref_ids"].append("conflict")
+    elif damage == "outside_member":
+        reference["line_numbers"][1] = 4
+    elif damage == "initial_observation":
+        state.evidence.append({"evidence_ref_id": "initial", "session_parse": {"file_ops": [{
+            "kind": "read", "path": args["path"],
+            "line_numbers": [1], "line_contents": ["import os"],
+        }]}})
+    elif damage == "known_mutation":
+        reference["initial_state_blockers"][0]["reason"] = "read_after_first_mutation"
+    else:
+        state.protected_paths.add(args["path"])
+    before = json.dumps(state.evidence, ensure_ascii=False, sort_keys=True)
+    result = execute_tool("restore_dependency_source", args, state)
+    assert result.startswith("error:"), result
+    assert not state.writes and not (state.workspace / args["path"]).exists()
+    assert json.dumps(state.evidence, ensure_ascii=False, sort_keys=True) == before
