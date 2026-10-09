@@ -23,7 +23,7 @@ from traceforge.reconstruction.session_parser import indexed_system_messages
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v19-consistent-binding-repair"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v20-failure-evidence-boundary"
 _STUB_OBSERVABLE = "replayed excerpts still present"
 _REVIEW_ONLY = re.compile(
     r"(?i)(只读(?:代码)?(?:评审|审查)|只审查(?:并)?不修改|只查看.*不修改|"
@@ -158,6 +158,14 @@ def _prompt(
         "when explicitly requested; do not discard them as context.",
         "Do not invent a different product goal or a nearby unrelated coding task. Keep the same task_id.",
         "Use only explicit user intent and evidence refs; never turn assistant/tool actions into requirements.",
+        "用户报错后要求继续处理时，保留定位问题、实施必要修复并验证的目标，不能降为仅报告。"
+        "错误现象本身不证明本地代码、某个参数或外部服务是根因；原助手的判断、补丁或测试成功"
+        "也不能直接升级为已证实因果。由实际诊断决定修复方式，不预先要求特定参数或重试方案。",
+        "区分所报故障、已观察到的程序行为与尚未证实的根因。受控输入或模拟服务响应只能证明"
+        "实际执行覆盖的局部行为，不能据此承诺原线上故障已复现或恢复。"
+        "这条证据边界必须在 task_instruction、core_objective、义务 text、observable 和 "
+        "success_criteria 中一致：不能一处声明限制，另一处仍要求证明未经证实的代码致因或线上恢复。"
+        "用户明确要求的线上验证仍须保留；缺少其条件时留下待验证义务，不能用模拟结果替代。",
         "原轨迹中的实现方式和助手选定文件名可供补全参考，不能升级为用户指定约束。"
         "这一边界同时适用于任务说明、目标、义务文字、成功标准和路径绑定；"
         "用户只要求新增文件而未命名时，保留实现者的命名选择。",
