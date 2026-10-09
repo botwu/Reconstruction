@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from traceforge.curation.sft import write_reconstruction_sft_curation
+from traceforge.harbor_ags.results import HarborResultError
 from traceforge.harbor_task import export_terminal_task
 from traceforge.reconstruction.agents import AgentRuntime, SandboxedAgentRuntime
 from traceforge.reconstruction.env_replay import (
@@ -50,6 +51,7 @@ from traceforge.reconstruction.task_fit import (
     fit_task_environment,
     generate_task_variant,
 )
+from traceforge.reconstruction.terminal_rollout_review import build_terminal_rollout_evidence
 from traceforge.reconstruction.terminal_universe_environment import select_sufficient_candidate
 from traceforge.reconstruction.verification import (
     VerificationConfig,
@@ -825,11 +827,19 @@ def _task_result(
                       stopped_at="environment" if execution_blockers else None,
                       errors=execution_blockers)
         if not execution_blockers and verification_config.execute_rollout:
-            execution, _ = run_native_unassessed_rollouts(
+            execution, trials = run_native_unassessed_rollouts(
                 harbor_task=harbor_task, config=verification_config, output_root=task_root,
             )
             result.update(execution)
             result["stopped_at"] = None if result["status"] == "ROLLOUT_COMPLETED" else "rollout"
+            if result["status"] == "ROLLOUT_COMPLETED":
+                try:
+                    evidence = build_terminal_rollout_evidence(trials)
+                    _write_stage_json(task_root, "rollout-evidence.json", evidence)
+                    result["rollout_evidence_path"] = str(task_root / "rollout-evidence.json")
+                except (HarborResultError, OSError, ValueError) as exc:
+                    result.update(status="REVIEW", stopped_at="rollout_review",
+                                  errors=["ROLLOUT_EVIDENCE_UNAVAILABLE", str(exc)])
         _write_stage_json(task_root / "verification", "verification.json", verification)
         return result
     if not support.get("allow_file_verifier"):
@@ -961,7 +971,17 @@ def _run_task_loop(
         audit.append(row)
         verification = result.get("verification") or {}
         rollout = verification.get("rollout")
-        if (not isinstance(agent, ReconstructionRuntime)
+        unassessed_review = bool(
+            verification_config is not None and verification_config.disable_verification
+            and result["status"] == "ROLLOUT_COMPLETED"
+        )
+        if unassessed_review and not isinstance(agent, ReconstructionRuntime):
+            result.update(status="REVIEW", stopped_at="rollout_review",
+                          errors=["ROLLOUT_REVIEW_RUNTIME_REQUIRED"])
+            row["stop_reason"] = "ROLLOUT_REVIEW_RUNTIME_REQUIRED"
+            break
+        if not unassessed_review and (
+                not isinstance(agent, ReconstructionRuntime)
                 or result.get("stopped_at") != "verification" or not result.get("workspace")
                 or result["status"] != "REVIEW" or verification.get("unverified_obligations")
                 or "VERIFIER_CALIBRATION_INFRA_ERROR" in verification.get("errors", [])
@@ -989,8 +1009,22 @@ def _run_task_loop(
                 task_start=task_start_message_index(task),
             )
         diagnosis_root = task_root / "downstream_environment_review"
+        review_input = {}
+        if unassessed_review:
+            try:
+                evidence_path = Path(result["rollout_evidence_path"]).resolve()
+                if not evidence_path.is_relative_to(task_root.resolve()):
+                    raise ValueError("实跑后审证据不属于当前任务")
+                review_input["rollout_evidence"] = json.loads(evidence_path.read_text())
+            except (KeyError, OSError, ValueError) as exc:
+                result.update(status="REVIEW", stopped_at="rollout_review",
+                              errors=["ROLLOUT_EVIDENCE_UNAVAILABLE", str(exc)])
+                row["stop_reason"] = "ROLLOUT_EVIDENCE_UNAVAILABLE"
+                break
+            feedback = {"stage": "rollout", "evidence_path": str(evidence_path)}
+        review_task = result.get("executed_task", task) if unassessed_review else task
         judge = run_workspace_sufficiency(
-            task=task, workspace_root=candidate["workspace"], agent=agent,
+            task=review_task, workspace_root=candidate["workspace"], agent=agent,
             output_root=diagnosis_root, observed_paths=observed_body_paths(source),
             reconstruction_context=completion_evidence_context(replay, candidate),
             repair_feedback={
@@ -999,6 +1033,7 @@ def _run_task_loop(
                 "只有任务目标之外的初态缺口才返回 INSUFFICIENT；用户要求修复的原缺陷必须保留。"
                 "不要在 solver 修改后的工作区检查，不修改验收目标，不靠降低测试要求让它通过。",
             },
+            **review_input,
         )
         environment = build_environment_contract(
             workspace_root=candidate["workspace"], env_root=candidate.get("env_root"),
@@ -1006,6 +1041,51 @@ def _run_task_loop(
         )
         diagnosis = _environment_feedback(judge, environment)
         row["diagnosis_path"] = str(diagnosis_root / "sufficiency.json")
+        if unassessed_review:
+            review = {**(judge.get("rollout_review") or {}),
+                      "sufficiency_path": row["diagnosis_path"],
+                      "initial_environment_label": judge.get("label")}
+            result["rollout_review"] = review
+            _write_stage_json(task_root, "rollout-review.json", review)
+            if review.get("status") != "COMPLETE":
+                result.update(status="REVIEW", stopped_at="rollout_review",
+                              errors=review.get("errors") or ["ROLLOUT_REVIEW_INCOMPLETE"])
+                row["stop_reason"] = "ROLLOUT_REVIEW_INCOMPLETE"
+                break
+            gaps = [item for item in review["requirements"]
+                    if item["status"] == "ENVIRONMENT_GAP"]
+            if not gaps:
+                if judge.get("status") != "READY" or environment_execution_blockers(environment):
+                    result.update(status="REVIEW", stopped_at="rollout_review",
+                                  errors=["INITIAL_ENVIRONMENT_REVIEW_UNRESOLVED",
+                                          *judge.get("errors", [])])
+                row["stop_reason"] = "NO_CONFIRMED_INITIAL_ENVIRONMENT_GAP"
+                break
+            result.update(status="REVIEW", stopped_at="rollout_review",
+                          errors=["ROLLOUT_ENVIRONMENT_GAP"])
+            # 后审可以运行终态；初态返修必须由不持有终态代码的新会话再次确认。
+            diagnosis_root = diagnosis_root / "initial-confirmation"
+            judge = run_workspace_sufficiency(
+                task=review_task, workspace_root=candidate["workspace"], agent=agent,
+                output_root=diagnosis_root, observed_paths=observed_body_paths(source),
+                reconstruction_context=completion_evidence_context(replay, candidate),
+                repair_feedback={
+                    "suspected_gaps": gaps,
+                    "instruction": "只在当前原候选初态复查这些疑似缺口；"
+                    "不要运行、复制或修复solver终态。"
+                    "先前终态失败不证明初态不足；只记录本次原初态探针和源证据。"
+                    "用户指定待修的缺陷仍应保留，不为满足后审意见新增要求。",
+                },
+            )
+            environment = build_environment_contract(
+                workspace_root=candidate["workspace"], env_root=candidate.get("env_root"),
+                sufficiency=judge, replay=replay,
+            )
+            diagnosis = _environment_feedback(judge, environment)
+            row["diagnosis_path"] = str(diagnosis_root / "sufficiency.json")
+            review["initial_confirmation_path"] = row["diagnosis_path"]
+            _write_stage_json(task_root, "rollout-review.json", review)
+            feedback.update(rollout_review=review, **review_input)
         if (judge.get("label") != "INSUFFICIENT"
                 or environment.get("status") in {"INFRA_ERROR", "PIPELINE_ERROR", ENVIRONMENT_UNRECONSTRUCTABLE}
                 or any(p.get("status") == "INFRA_ERROR" for p in diagnosis["failed_probes"])
@@ -1021,6 +1101,7 @@ def _run_task_loop(
             break
         seen.add(state)
         row["action"] = "REPAIR_INITIAL_ENVIRONMENT"
+        row["status"] = result["status"]
         completion_seed = candidate
         preserved = {
             key: value for key, value in (completion_feedback or {}).items()
@@ -1029,6 +1110,7 @@ def _run_task_loop(
         completion_feedback = {**diagnosis, "downstream_failure": feedback, **preserved}
         _write_stage_json(diagnosis_root, "repair_feedback.json", completion_feedback)
         _write_stage_json(root / "tasks" / str(task["task_id"]), "task_repair_audit.json", {"attempts": audit})
+    audit[-1]["status"] = result["status"]
     result["task_repair_audit"] = audit
     _write_stage_json(root / "tasks" / str(task["task_id"]), "task_repair_audit.json", {"attempts": audit})
     return result

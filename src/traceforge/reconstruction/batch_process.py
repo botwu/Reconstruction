@@ -10,6 +10,9 @@ from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
 from pathlib import Path
 
+# AGS 单次停止请求可等待 60 秒，先留出在途调用及删除请求的清理时间。
+_CLEANUP_GRACE_SECONDS = 180
+
 
 def run_batch_process(
     command: Sequence[str],
@@ -40,11 +43,14 @@ def run_batch_process(
             start_new_session=True,
         )
         state_path = stdout_path.parent / "batch_process.json"
+        forced_kill = False
 
         def save_state(status: str) -> None:
             temporary = state_path.with_suffix(".tmp")
             temporary.write_text(json.dumps({"status": status, "pid": process.pid,
-                                             "exit_code": process.poll()}) + "\n")
+                                             "exit_code": process.poll(),
+                                             "cleanup_grace_seconds": _CLEANUP_GRACE_SECONDS,
+                                             "forced_kill": forced_kill}) + "\n")
             temporary.replace(state_path)
 
         try:
@@ -56,9 +62,13 @@ def run_batch_process(
             if process.poll() is None:
                 try:
                     os.killpg(process.pid, signal.SIGINT)
-                    process.wait(timeout=30)
+                    process.wait(timeout=_CLEANUP_GRACE_SECONDS)
                 except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        forced_kill = True
+                    except ProcessLookupError:
+                        pass
                     process.wait()
                 except ProcessLookupError:
                     process.wait()

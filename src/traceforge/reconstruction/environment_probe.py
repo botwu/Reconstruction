@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from traceforge.reconstruction.agents.session import AgentSession
 
 ENVIRONMENT_PROBE_SCHEMA = "traceforge.environment-probe.v1"
-PROBE_PURPOSES = frozenset({"load", "reset", "dependency", "task_conflict"})
+PROBE_PURPOSES = frozenset({"load", "reset", "dependency", "task_conflict", "rollout"})
 
 # 包装器只在 binding.runtime.exec 的远程进程中执行。子进程的 stdout 与
 # 包装器收据分离，防止探针打印的 JSON 被误当作执行元数据。

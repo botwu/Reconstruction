@@ -47,7 +47,7 @@ PYTHONPATH=src python -m traceforge reconstruct raw-run \
   --disable-verification --execute-rollout --rollout-trials 2
 ```
 
-上述命令交付任务与环境，并执行两次未评分求解；`NOT_ASSESSED` 不代表验收或 SFT 通过。terminal 需要自动文件评分时，将 `--disable-verification` 换为 `--execute-red`，生成评分器并做 RED 校准。该评分模式中，`--manual-response-review` 可保留自由文本分析供逐份人工核查，文件验证照常执行；它不等于禁用文件评分。
+上述命令交付任务与环境，并执行两次未评分求解；`NOT_ASSESSED` 不代表验收或 SFT 通过。 terminal 会自动读取实际输出并逐项复核，确认初态缺口后返回重建作者；求解错误与环境缺口分别记录。terminal 需要自动文件评分时，将 `--disable-verification` 换为 `--execute-red`，生成评分器并做 RED 校准。该评分模式中，`--manual-response-review` 可保留自由文本分析供逐份人工核查，文件验证照常执行；它不等于禁用文件评分。
 
 terminal 默认使用 AGS；`--no-sandbox` 仅供离线诊断。search 使用已交付语料，按任务需要启用公开检索和网页读取；重建主链不依赖 AGS，不走文件初态补全与 pytest 路径。模型、凭据和执行预算从配置读取，配置说明见 [模型连接](docs/model-gateway-config.md)。
 

@@ -240,7 +240,8 @@ def test_batch_passes_same_runtime_and_review_options_as_single_session(
     assert report["status"] == "COMPLETED_WITH_ERRORS"
 
 
-def test_resume_keeps_finished_session_and_interrupted_attempt(tmp_path, monkeypatch):
+@pytest.mark.parametrize("interruption", [OSError, KeyboardInterrupt])
+def test_resume_keeps_finished_session_and_interrupted_attempt(tmp_path, monkeypatch, interruption):
     manifest, config = inventory(tmp_path)
     data = json.loads(manifest.read_text())
     sessions = Path(data["sessions"])
@@ -260,12 +261,12 @@ def test_resume_keeps_finished_session_and_interrupted_attempt(tmp_path, monkeyp
         if len(calls) == 2:
             (root / "batch_stdout.txt").write_text("中断前的真实进度")
             (root / "batch_process.json").write_text(json.dumps({"status": "EXITED"}))
-            raise OSError("控制端连接中断")
+            raise interruption("控制端连接中断")
         (root / "reconstruction_manifest.json").write_text(json.dumps({"status": "READY"}))
         return 0
 
     monkeypatch.setattr(batch, "run_batch_process", run)
-    with pytest.raises(OSError, match="中断"):
+    with pytest.raises(interruption, match="中断"):
         batch.execute_batch(manifest_path=manifest, output_root=output, config=config,
                             domain="terminal", repo_root=_REPO)
     progress = json.loads((output / "batch_manifest.json").read_text())

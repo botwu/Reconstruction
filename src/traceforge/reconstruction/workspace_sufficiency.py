@@ -23,7 +23,53 @@ from traceforge.reconstruction.workspace_integrity import (
 )
 
 SUFFICIENCY_SCHEMA = "traceforge.workspace-sufficiency.v1"
-SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v17-target-grounded-validation"
+SUFFICIENCY_PROMPT_VERSION = "workspace-sufficiency-agent-v18-rollout-evidence-review"
+
+
+def _validate_rollout_review(
+    task: dict[str, Any], evidence: dict[str, Any], payload: Any,
+    agent_errors: list[str],
+) -> dict[str, Any]:
+    """只验证逐 trial/义务覆盖和真实证据引用，不把模型意见升级为答案验收。"""
+    expected = {
+        (trial["trial"], obligation["id"])
+        for trial in evidence["trials"] for obligation in task["acceptance_obligations"]
+    }
+    available = set(evidence["evidence_refs"])
+    rows = payload.get("requirements") if isinstance(payload, dict) else None
+    errors = list(agent_errors)
+    seen: set[tuple[str, str]] = set()
+    if not isinstance(rows, list):
+        errors.append("ROLLOUT_REVIEW_REQUIREMENTS_MISSING")
+        rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            errors.append("ROLLOUT_REVIEW_ROW_INVALID")
+            continue
+        pair = (row.get("trial"), row.get("obligation_id"))
+        if not all(isinstance(value, str) for value in pair):
+            errors.append("ROLLOUT_REVIEW_ID_INVALID")
+            continue
+        if pair not in expected or pair in seen:
+            errors.append("ROLLOUT_REVIEW_COVERAGE_INVALID")
+        seen.add(pair)
+        if row.get("status") not in {"SUPPORTED", "SOLVER_ERROR", "ENVIRONMENT_GAP", "UNVERIFIED"}:
+            errors.append("ROLLOUT_REVIEW_STATUS_INVALID")
+        if not isinstance(row.get("reason"), str) or not row["reason"].strip():
+            errors.append("ROLLOUT_REVIEW_REASON_MISSING")
+        refs = row.get("evidence_refs")
+        if (not isinstance(refs, list) or not refs
+                or any(not isinstance(ref, str) or ref not in available
+                       or not ref.startswith(pair[0] + "/") for ref in refs)):
+            errors.append("ROLLOUT_REVIEW_EVIDENCE_INVALID")
+    if seen != expected or not expected:
+        errors.append("ROLLOUT_REVIEW_COVERAGE_INCOMPLETE")
+    return {
+        "schema_version": "traceforge.terminal-rollout-review.v1",
+        "status": "REVIEW_INCOMPLETE" if errors else "COMPLETE",
+        "requirements": rows, "errors": list(dict.fromkeys(errors)),
+        "acceptance": "NOT_ASSESSED", "sft_eligible": False,
+    }
 
 
 def run_workspace_sufficiency(
@@ -35,6 +81,7 @@ def run_workspace_sufficiency(
     observed_paths: Iterable[str] = (),
     repair_feedback: dict[str, Any] | None = None,
     reconstruction_context: dict[str, Any] | None = None,
+    rollout_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     workspace = Path(workspace_root).resolve()
     known_task_refs = sorted(task_evidence_ref_ids(task))
@@ -143,6 +190,34 @@ def run_workspace_sufficiency(
             '"task_fit":{"decision":"READY_ORIGINAL|INCOMPATIBLE|REVIEW_TASK_FIT",'
             '"reason":"...","requirements":[]},"variant_proposal":null,',
             '"environment_checks":[{"kind":"load|reset|dependency","probe_ids":[],"reason":"..."}]}',
+
+            *([
+                "POST_ROLLOUT_EVIDENCE 是经过原生捕获、初态与终态哈希核对的真实执行记录。"
+                "除原初态充分性检查外，必须逐 trial、逐 TASK.acceptance_obligations "
+                "复核实际答卷与实现，"
+                "在最终 JSON 增加 rollout_review.requirements。"
+                "每对 trial/obligation_id 恰好一项，"
+                "字段为 trial、obligation_id、status、reason、evidence_refs（引用下方真实目录）。",
+                "status 仅限 SUPPORTED（证据支持）、SOLVER_ERROR（输入够用但实现/论述错误）、"
+                "ENVIRONMENT_GAP（原任务起点必要条件缺失）、UNVERIFIED（现有证据不能判断）。"
+                "逐项核对实际工具参数与返回、最终文件正文和回答中的事实，不以最终回复自述或进程退出0证明正确。"
+                "SUPPORTED 仍只是复核意见，不能宣称答案自动验收或SFT合格。"
+                "模拟测试的前提不是历史事实；自设阈值、替身返回不能证明线上唯一根因或恢复效果。"
+                "没有实际执行 main 不能宣称跑过 main；看见文件哈希不能宣称读过二进制内容。"
+                "实际实现未被调用、仅检查字符串时，应具体保留未验证范围。"
+                "需要新增终态业务核验时，必须用 run_environment_probe(purpose=rollout)，"
+                "在隔离临时目录执行交付终态正文；load/reset/dependency 只用于当前初态，"
+                "不得覆盖当前初态；外部HTTP可以受控，但本地实现必须真实调用并记录路径/正文哈希。",
+                "当前工作区始终是原始候选初态；initial_files 与 final_files 必须分开解释。"
+                "最终实现缺陷和用户指定的原待修缺陷不能归为环境缺口。"
+                "ENVIRONMENT_GAP 必须同时在 missing_context 说明原任务依据、具体缺失条件，"
+                "并在原初态用实际探针、必要路径或源码诊断确认；"
+                "不得为了纠正 solver 答案改写任务或预装解法。"
+                "若没有这类缺口，不因答错就返回 INSUFFICIENT。无法证明的线上结论按 SOLVER_ERROR"
+                "或 UNVERIFIED 如实解释，不强加用户未要求的重试次数、请求参数或故障策略。",
+                "POST_ROLLOUT_EVIDENCE:",
+                json.dumps(rollout_evidence, ensure_ascii=False),
+            ] if rollout_evidence is not None else []),
             "TASK:",
             json.dumps(workspace_task_context(task), ensure_ascii=False),
             "TASK_EVIDENCE_REF_IDS:",
@@ -204,9 +279,13 @@ def run_workspace_sufficiency(
     # The model may still judge contextual sufficiency without it, but it must
     # never be reported as execution-ready with zero or partial probes.
     execution_probe_errors: list[str] = []
+    initial_probes = [item for item in session.environment_probes
+                      if item.get("purpose") != "rollout"]
+    rollout_probes = [item for item in session.environment_probes
+                      if item.get("purpose") == "rollout"]
     probe_kinds = {
         item.get("purpose")
-        for item in session.environment_probes
+        for item in initial_probes
         if isinstance(item, dict) and item.get("status") == "PASS"
     }
     if not {"load", "reset", "dependency"} <= probe_kinds:
@@ -297,18 +376,24 @@ def run_workspace_sufficiency(
             "completed": ran.completed,
         },
     }
+    if rollout_evidence is not None:
+        result["rollout_review"] = _validate_rollout_review(
+            task, rollout_evidence, payload.get("rollout_review"),
+            [*ran.errors, *([] if ran.completed else ["AGENT_INCOMPLETE"])],
+        )
+        result["rollout_review"]["probes"] = rollout_probes
     if isinstance(payload.get("task_fit"), dict):
         result["task_fit"] = payload["task_fit"]
     if isinstance(payload.get("variant_proposal"), dict):
         result["variant_proposal"] = payload["variant_proposal"]
     if isinstance(payload.get("environment_checks"), list):
         result["environment_checks"] = payload["environment_checks"]
-    if session.environment_probes:
-        result["environment_probes"] = session.environment_probes
+    if initial_probes:
+        result["environment_probes"] = initial_probes
     result["execution_preflight"] = {
         "status": "READY" if not preflight_errors else "REVIEW",
         "errors": preflight_errors,
-        "probe_count": len(session.environment_probes),
+        "probe_count": len(initial_probes),
     }
     (root / "sufficiency.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"

@@ -777,9 +777,12 @@ def test_public_delivery_does_not_require_a_grader(tmp_path, monkeypatch, execut
     )
     payload = json.loads(manifest.read_text())
     result = payload["tasks"][0]
-    assert payload["status"] == "COMPLETED"
+    assert payload["status"] == ("REVIEW" if execute else "COMPLETED")
     assert payload["ready_count"] == 0
-    assert result["status"] == ("ROLLOUT_COMPLETED" if execute else "ENVIRONMENT_READY")
+    assert result["status"] == ("REVIEW" if execute else "ENVIRONMENT_READY")
+    if execute:
+        assert result["stopped_at"] == "rollout_review"
+        assert "ROLLOUT_EVIDENCE_UNAVAILABLE" in result["errors"]
     assert result["verification"]["status"] == "NOT_ASSESSED"
     assert result["verification"]["unverified_obligations"]
     assert result["sft_eligible"] is False

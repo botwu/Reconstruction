@@ -162,6 +162,7 @@ def workspace_relpath(session: AgentSession, value: str) -> str | None:
 
 def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
     """OpenAI schemas consumed directly by Hermes' native conversation loop."""
+    from traceforge.reconstruction.environment_probe import PROBE_PURPOSES
     text = {"type": "string"}
     page = {
         "offset": {
@@ -309,6 +310,7 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
         ),
         "run_environment_probe": (
             "在只读工作区的沙盒中运行环境探针；reset 和 task_conflict 在独立临时目录重复运行。"
+            "核验 solver 终态必须用 purpose=rollout，在临时副本运行；该结果不证明初态缺口。"
             "Python 当前目录已是沙盒 workspace 根目录，读取文件请用相对路径，"
             "或 os.environ['TRACEFORGE_WORKSPACE']；宿主机的产物绝对路径在沙盒中不可用。"
             "临时写入仅使用 os.environ['TRACEFORGE_PROBE_SCRATCH']，不得修改 workspace。"
@@ -318,7 +320,7 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
                 "python_code": text,
                 "purpose": {
                     "type": "string",
-                    "enum": ["load", "reset", "dependency", "task_conflict"],
+                    "enum": sorted(PROBE_PURPOSES),
                 },
                 "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 60},
             },
