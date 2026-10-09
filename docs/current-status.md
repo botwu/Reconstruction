@@ -11,7 +11,7 @@
 | R04:1 提取 Likes 模块并分析代码 | 冻结 7f7efdc，从原始行冷处理；14 文件初态、标准 Harbor、2 次原生求解及自动后审 | 后审 COMPLETE，4 条义务裁决均为 SOLVER_ERROR，未发现需要返修的初态缺口。答卷有事实或覆盖表述问题；对“复用 SDK 是否完成提取”的判断仍须与实际功能错误区分 |
 | R04:1 DeadlineExceeded | 新冷批次先暴露任务合同预设代码致因；v20 从同一完整原文纠正诊断、修复、验证的因果边界，再在 19eeb53 正式接续补全、充分性、Harbor、2 次原生求解和自动后审 | 两份新答卷不再声称已验证线上恢复，受控重试等有实际输出；仍有 HTTP 200、瞬时性及覆盖范围的过度断言。后审 COMPLETE、2 条 SOLVER_ERROR，无初态返修。接续不是全新原始冷运行 |
 | R04:2179 Excel 表头兼容 | 在 79a20fa 从原始行重新冷处理，完整解析、恢复、自测、独立初态检查、Harbor、2 次原生求解与后审均完成 | 14 个原测试、实际 XLSX 保存回读及两次独立重置通过，初态未预解目标。两次功能义务均获 SUPPORTED，实际分别 21/17 测试通过；答卷仍有隐藏文件存在性与非 Git 仓库的错误推断，后审明确识别，未误修环境。未知 TXT 格式不声称完整恢复 |
-| search R01:38 | 既有完整资料交付为 55 文件；两次原生 Harbor/AGS 求解、完整捕获、初终态材料哈希核对及自动后审已完成 | 两份答卷有误引和过度归纳，后审识别为 SOLVER_ERROR；材料可用不代表答案正确。本轮未重新调用外部检索服务 |
+| search R01:38 | 既有完整资料交付为 55 文件；两次原生 Harbor/AGS 求解、完整捕获、初终态材料哈希核对及自动后审已完成 | 两份答卷有误引和过度归纳，后审识别为 SOLVER_ERROR；材料可用不代表答案正确。本轮仅追加真实联网探针，未重跑此样本 |
 
 以上未评分求解均保持 **NOT_ASSESSED / SFT=false**，不会因为进程退出、工具执行成功或后审 COMPLETE 获得正确答案资格。后审是诊断意见；证据充分且正确的答案仍需要独立的内容或行为验收。
 
@@ -62,7 +62,11 @@ domain 由调用方指定。search 恢复证据语料、历史与检索能力；
 
 ## 外部服务与当前范围
 
-最近一次服务复测在 10 月 8 日：Serper 查询和抓取均返回 HTTP 400 / Not enough credits；Jina 未取得 HTTP 响应，IPv4 TCP 超时、IPv6 不可达。正式直连 HTML 可用。此结果不能推出服务全局不可用；用户更换 Serper 后再核新账户。terminal 当前样本的执行不依赖这些检索服务。
+10 月 9 日使用同一 Serper 账户复测，查询与抓取均成功，额度已可用；接口返回的 credits 是本次消耗，不能据此推断账户剩余额度。dev-wj 原搜索失败定位到宿主 DNS/连接路径，使用用户提供的代理后，正式 SearchTools 的搜索、静态 HTML 读取及 Serper 抓取均成功。代理通过私有配置按搜索实例加载，不改系统 DNS、全局代理环境、模型或 AGS 控制请求。后续宿主批次使用 TRACEFORGE_SEARCH_CONFIG 指向 artifacts/private-config/search-proxy.json；该文件权限为 0600，不入 Git。
+
+AGS 的 node-python-hermes 模板另做真实核验：移除全部代理变量，使用冻结源码直接查询和抓取均成功，沙箱已回收。因此当前原生 rollout 保持直连，不向沙箱传入宿主代理。探针前两次分别因回执字段使用错误、上传后文件属主不匹配而未形成有效结果，原失败与清理证据均保留；修正一次性探针后成功。这些是服务链路验证，没有新增 session 重建或模型请求。
+
+读取服务已显式选用 Serper，本次没有复测 Jina，不将旧 Jina 失败视为当前阻塞。terminal 当前样本的执行不依赖这些检索服务。先逐条核查每个 domain 的前 10 条，再继续至约 100 条；保持 workers=1，质量确认前不增加并发。
 
 自建 Harbor/AGS 已随仓库交付；使用既有云模板只需运行时、配置和访问权限，无须重建模板。OCR 安装仅在新机器需要处理新的扫描 PDF 时验证，不作为本轮 terminal 阻塞。本地 AgenticFoundry 保持只读参考。
 
@@ -81,6 +85,8 @@ domain 由调用方指定。search 恢复证据语料、历史与检索能力；
 | pipeline-debug-20261009/python-runtime-crlf-ags-reuse-run02 | 同一真实候选仅换行差异的离线依赖复用；真实导入与原测试通过，旧私有探针参数错误另保留 |
 | pipeline-debug-20261009/dependency-source-ags-check-run01 | 锁定源码恢复及实际本地业务链的 AGS 核验 |
 | pipeline-debug-20261004/search-full-assets-native-run01 | search 的 55 文件双原生执行及内容核查 |
+| service-probes/search-tools-proxy-20261009T133548Z | 正式宿主搜索工具经独立代理完成搜索、原站 HTML 与 Serper 抓取 |
+| service-probes/ags-serper-direct-20261009T133923Z-retry02 | AGS 无代理实际查询、抓取及回收；此前两次探针失败目录另保留 |
 | deliverables | 可搬运 Harbor 任务、完整原生证据、原答卷、核查说明和 SHA256 回执 |
 
 三组 terminal 私有交付已生成：artifacts/deliverables/terminal-feedback-20261009.tar.gz（379 文件，27,693,913 字节）。全部文件哈希与归档权限复开通过，3 组 Harbor 任务重新加载、6 份搬运后的原生 trial 重新认证通过；未包含配置凭据。SHA256：dcfff810548ab05650a4d99a59e95b303b3def3172fb4fe0863dbcc65d4d19ac。历史包与原始失败记录均保留。实现见[源码地图](rebuild-live-map.md)、[反馈流程](researcher-pipeline.md)、[Harbor 格式](harbor-task-delivery.md)与[批量运行](batch-reconstruction.md)。

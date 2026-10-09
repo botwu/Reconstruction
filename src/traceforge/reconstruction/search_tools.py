@@ -213,6 +213,37 @@ class SearchTools:
         self._fetch_provider = os.environ.get("TRACEFORGE_FETCH_PROVIDER") or config.get(
             "fetch_provider", "jina",
         )
+        self._proxy = os.environ.get("TRACEFORGE_SEARCH_PROXY") or config.get("proxy")
+        self._proxy_secrets: set[str] = set()
+        self._proxy_opener = None
+        if self._proxy:
+            try:
+                if not isinstance(self._proxy, str):
+                    raise ValueError
+                parsed = urllib.parse.urlsplit(self._proxy)
+                if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                        or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+                    raise ValueError
+                _ = parsed.port
+            except (TypeError, ValueError):
+                raise ValueError("检索代理必须为有效 HTTP(S) 代理地址") from None
+            self._proxy_secrets.add(self._proxy)
+            for value in (parsed.username, parsed.password):
+                if value:
+                    self._proxy_secrets.update((value, urllib.parse.unquote(value)))
+            if parsed.username is not None and parsed.password is not None:
+                credentials = urllib.parse.unquote(parsed.username + ":" + parsed.password)
+                self._proxy_secrets.add(base64.b64encode(credentials.encode()).decode())
+            self._proxy_opener = urllib.request.build_opener(urllib.request.ProxyHandler(
+                {"http": self._proxy, "https": self._proxy},
+            ))
+
+    def _error_detail(self, value: str) -> str:
+        """只清除错误诊断中的部署凭据；原始来源内容保持不变。"""
+        secrets = self._proxy_secrets | {self._serper_key, self._jina_key}
+        for secret in sorted(filter(None, secrets), key=len, reverse=True):
+            value = value.replace(secret, "[credential]")
+        return value
 
     def _record(self, kind: str, value: dict[str, Any]) -> dict[str, Any]:
         entry = {"tool": kind, "retrieved_at": datetime.now(UTC).isoformat(), **value}
@@ -223,16 +254,14 @@ class SearchTools:
 
     def _response(self, request: urllib.request.Request) -> tuple[dict[str, Any], str]:
         try:
-            with urllib.request.urlopen(request, timeout=90) as response:
+            open_request = self._proxy_opener.open if self._proxy_opener else urllib.request.urlopen
+            with open_request(request, timeout=90) as response:
                 raw = response.read(8_000_001)
         except urllib.error.HTTPError as exc:
             raw = exc.read(8_000_001)
             digest = hashlib.sha256(raw).hexdigest()
             (self.root / f"{digest}.error.raw").write_bytes(raw)
-            detail = raw.decode("utf-8", errors="replace")
-            for key in (self._serper_key, self._jina_key):
-                if key:
-                    detail = detail.replace(key, "[credential]")
+            detail = self._error_detail(raw.decode("utf-8", errors="replace"))
             suffix = "（错误正文展示已截断）" if len(detail) > 2000 else ""
             raise ValueError(
                 f"检索服务 HTTP {exc.code}: {detail[:2000]}{suffix}; "
@@ -264,7 +293,8 @@ class SearchTools:
                      "source_mode": "live_search", "provider": "serper",
                      "content_kind": "search_snippets", "raw_sha256": digest}
         except Exception as exc:
-            value = {"success": False, "query": query, "error": f"{type(exc).__name__}: {exc}"}
+            value = {"success": False, "query": query,
+                     "error": f"{type(exc).__name__}: {self._error_detail(str(exc))}"}
         return self._record("web_search", value)
 
     def _fetch(self, url: str) -> dict[str, Any]:
@@ -297,10 +327,15 @@ class SearchTools:
                 "git_blob_sha1": blob, "source_ref": urllib.parse.unquote(ref)}
 
     def _fetch_document(self, url: str) -> dict[str, Any] | None:
-        # 单次直连按实际响应区分 PDF 与静态 HTML；其他内容仍由既定读取服务处理。
+        # 单次原站请求按实际响应区分 PDF 与静态 HTML；其他内容仍由既定读取服务处理。
         pdf_expected = urllib.parse.urlsplit(url).path.lower().endswith(".pdf")
         request = urllib.request.Request(_wire_url(url), headers={"User-Agent": "TraceForge/0.3"})
-        opener = urllib.request.build_opener(PublicSourceRedirect())
+        handlers: list[urllib.request.BaseHandler] = [PublicSourceRedirect()]
+        if self._proxy:
+            handlers.append(urllib.request.ProxyHandler(
+                {"http": self._proxy, "https": self._proxy},
+            ))
+        opener = urllib.request.build_opener(*handlers)
         try:
             with opener.open(request, timeout=90 if pdf_expected else 20) as response:
                 prefix = response.read(5)
@@ -453,7 +488,7 @@ class SearchTools:
         except Exception as exc:
             value = {"success": False, "url": url, "offset": offset, "limit": limit,
                      **({"ocr_page": ocr_page} if ocr_page is not None else {}),
-                     "error": f"{type(exc).__name__}: {exc}"}
+                     "error": f"{type(exc).__name__}: {self._error_detail(str(exc))}"}
         return self._record("web_open", {**value, "cache_hit": cache_hit})
 
     def restore(

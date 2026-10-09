@@ -40,14 +40,19 @@ def response(raw, url):
     return stream
 
 
+@pytest.mark.parametrize("use_proxy", [False, True])
 @pytest.mark.parametrize("raw,success", [
     (pdf_bytes(["Source page one", "Source page two", ""]), True),
     (pdf_bytes([""]), False),
     (b"<html>Login required</html>", False),
 ], ids=["text-and-blank-pages", "no-text-layer", "html-response"])
-def test_pdf_uses_original_bytes_and_preserves_extraction_boundary(tmp_path, monkeypatch, raw, success):
+def test_pdf_uses_original_bytes_and_preserves_extraction_boundary(
+    tmp_path, monkeypatch, raw, success, use_proxy,
+):
     from traceforge.reconstruction import search_tools
 
+    if use_proxy:
+        monkeypatch.setenv("TRACEFORGE_SEARCH_PROXY", "http://proxy.example:3128")
     url = "https://example.org/source.pdf"
     monkeypatch.setattr(search_tools, "_public_url", lambda value: None)
     monkeypatch.setattr(search_tools.urllib.request, "build_opener", lambda *args: SimpleNamespace(
