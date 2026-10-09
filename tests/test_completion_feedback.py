@@ -125,7 +125,7 @@ def test_repair_keeps_untouched_completed_context(tmp_path):
 
 def _feedback_case(tmp_path, monkeypatch, *, context="REVIEW", execute="FAILED",
                    repair="READY", failed_probe=False, progressing=False,
-                   ready_after=1, max_repair_rounds=2):
+                   ready_after=1, **repair_options):
     seed, replay = repair_seed(tmp_path)
     calls = {"judge": [], "repair": []}
     task = {"task_id": "one", "task_instruction": "审查 original.py", "core_objective": "源码审查"}
@@ -168,7 +168,7 @@ def _feedback_case(tmp_path, monkeypatch, *, context="REVIEW", execute="FAILED",
     result = pipeline._judge_and_repair_candidate(
         task=task, candidate=seed, replay=replay, timeline=[], task_source={},
         agent=RepairAgent(), task_root=tmp_path / "task", index=0, origin="REPLAYED",
-        max_repair_rounds=max_repair_rounds,
+        **repair_options,
     )
     return result, calls, seed
 
@@ -186,7 +186,7 @@ def test_sufficiency_gap_returns_to_completion_then_rejudges(tmp_path, monkeypat
 
 def test_researcher_can_continue_past_two_repairs_while_making_progress(tmp_path, monkeypatch):
     (_, _, environment, audit), calls, _ = _feedback_case(
-        tmp_path, monkeypatch, ready_after=4, progressing=True, max_repair_rounds=None,
+        tmp_path, monkeypatch, ready_after=4, progressing=True,
     )
     assert len(calls["repair"]) == 4 and len(calls["judge"]) == 5
     assert environment["execution_readiness"] == "PROBED"
@@ -255,9 +255,9 @@ def test_failed_probe_requires_a_confirmed_gap_before_rewriting(tmp_path, monkey
     assert audit["stop_reason"] == "READY"
 
 
-def test_changing_but_insufficient_candidates_stop_at_two_repair_rounds(tmp_path, monkeypatch):
+def test_explicit_limit_stops_changing_but_insufficient_candidates(tmp_path, monkeypatch):
     (_, _, env, audit), calls, _ = _feedback_case(
-        tmp_path, monkeypatch, repair="UNCHANGED", progressing=True,
+        tmp_path, monkeypatch, repair="UNCHANGED", progressing=True, max_repair_rounds=2,
     )
     assert len(calls["repair"]) == 2
     assert len(calls["judge"]) == 3

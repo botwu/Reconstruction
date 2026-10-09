@@ -363,9 +363,6 @@ def _support_route_result(
     }
 
 
-MAX_ENVIRONMENT_REPAIR_ROUNDS = 2
-
-
 def _environment_feedback(
     judge: dict[str, Any], environment: dict[str, Any],
 ) -> dict[str, Any]:
@@ -424,9 +421,9 @@ def _judge_and_repair_candidate(
     *, task: dict[str, Any], candidate: dict[str, Any], replay: Any,
     timeline: list[dict[str, Any]], task_source: dict[str, Any], agent: AgentRuntime,
     task_root: Path, index: int, origin: str,
-    max_repair_rounds: int | None = MAX_ENVIRONMENT_REPAIR_ROUNDS,
+    max_repair_rounds: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
-    """评估与具体执行反馈驱动返修；可由持续研究者取消固定返修轮数。"""
+    """评估与具体执行反馈驱动返修；默认不限制轮数，无进展时停止。"""
     observed = {str(item.path) for item in replay.files if getattr(item, "path", None)}
     observed.update(observed_body_paths(task_source))
     audit: dict[str, Any] = {
@@ -534,7 +531,7 @@ def _task_result(
     replay: Any | None = None,
     support: dict[str, Any] | None = None,
     task_source: dict[str, Any] | None = None,
-    max_environment_repair_rounds: int | None = MAX_ENVIRONMENT_REPAIR_ROUNDS,
+    max_environment_repair_rounds: int | None = None,
     completion_seed: dict[str, Any] | None = None,
     completion_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -900,7 +897,7 @@ def run_prepared_task(
     verifier_agent: AgentRuntime | None = None,
     verification_config: VerificationConfig | None = None,
     search_rollout_agent: AgentRuntime | None = None,
-    max_environment_repair_rounds: int | None = MAX_ENVIRONMENT_REPAIR_ROUNDS,
+    max_environment_repair_rounds: int | None = None,
     completion_seed: dict[str, Any] | None = None,
     completion_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:

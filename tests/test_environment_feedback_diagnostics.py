@@ -108,6 +108,7 @@ def test_repair_loop_distinguishes_new_diagnostics_from_probe_noise(
         task={"task_id": "one", "task_instruction": "审查 original.py"},
         candidate=seed, replay=replay, timeline=[], task_source={},
         agent=RepairAgent(), task_root=tmp_path / "task", index=0, origin="REPLAYED",
+        max_repair_rounds=2,
     )
     assert len(calls["judge"]) == expected_calls
     assert len(calls["repair"]) == expected_repairs
