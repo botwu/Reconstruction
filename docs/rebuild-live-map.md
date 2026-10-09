@@ -14,7 +14,7 @@ flowchart TD
   D -->|search| E[恢复历史与证据语料\n沿原线索检索真实来源]
   D -->|terminal| F[按读写时序回放初态\n补齐文件与真实依赖]
   E --> G[检查交接与实际读取\n导出 Harbor 检索任务]
-  F --> H[执行入口与行为检查\n校准隐藏测试并导出 Harbor]
+  F --> H[执行入口与行为检查\n导出 Harbor；评分时另行校准]
   G --> I[真实 solver 与逐项结果复核]
   H --> I
   I -->|有实证的环境缺口| J[带具体来源或执行错误的返修]
@@ -22,7 +22,7 @@ flowchart TD
   I -->|solver 错误或基础设施故障| K[保留失败归属\n不借此改写初态或原任务]
 ```
 
-共享的是原文、来源契约和错误记录，不是同一套环境判定。search 的缺口是资料、版本、历史或检索能力；terminal 的缺口是初态文件、依赖、接口或运行行为。每次修改后重新执行受影响的检查；相同候选和同一诊断不重复生成。格式错误回到对应模型修正，服务拒绝需保留具体参数/模型原因，不能伪装成“语义不合格”。通道重试复用Hermes原有退避；恢复失败阶段时保留既有作者会话和产物，不重放已完成的阶段。
+共享的是原文、来源契约和错误记录，不是同一套环境判定。search 的缺口是资料、版本、历史或检索能力；terminal 的缺口是初态文件、依赖、接口或运行行为。每次修改后重新执行受影响的检查；相同候选和同一诊断不重复生成。格式错误回到对应模型修正，服务拒绝需保留具体参数/模型原因，不能伪装成“语义不合格”。通道重试复用 Hermes 原有退避；同一运行中的返修保留作者会话与产物。批次中断恢复是 session 级：跳过已记账条目，未完成条目在新 attempt 整条重跑；不冒称阶段级续跑。
 
 ## 逐模块的产物预期
 
@@ -34,7 +34,7 @@ flowchart TD
 | terminal 补全 | 初态文件、片段和缺口可追溯；必要依赖及业务探针实际执行，保留原任务已有缺陷。 |
 | Harbor 交付 | 用实际任务包执行；检索凭据在执行时注入，测试及参考答案保持隐藏；任务包和运行依赖有哈希绑定。 |
 | 真实 rollout | 完整原生调用和返回、最终回答、异常及沙箱清理记录齐全。search 不用固定文件评分器冒充内容验收。 |
-| 内容与行为核查 | search 按实际读取核对每项引用；terminal 校准行为测试并复验，人工核查分析回答。环境缺口才返修环境。 |
+| 内容与行为核查 | 按实际输出与证据逐项后审；terminal 疑似初态缺口须独立确认后才返修。评分模式另行校准测试；未评分答卷保持 NOT_ASSESSED。 |
 
 正式 search 入口复用 Harbor 计划、执行和结果读取，再进入已有 researcher 反馈循环。
 宿主机工具代理保留用于独立模块调试；其结果与原生 Harbor 运行明确区分。
@@ -76,6 +76,8 @@ flowchart TD
 | [workspace_sufficiency.py](../src/traceforge/reconstruction/workspace_sufficiency.py) | 只读判断上下文是否足够，单列执行 preflight；`sufficiency.json` |
 | [environment_probe.py](../src/traceforge/reconstruction/environment_probe.py) | 真实沙盒探针收据、输入不变与有限范围 reset 检查 |
 | [researcher.py](../src/traceforge/reconstruction/researcher.py) | terminal 作者保持会话，执行候选自测；独立审查后反馈修订 |
+| [researcher_instruction.md](../src/traceforge/reconstruction/researcher_instruction.md) | 正式 terminal 作者的实际提示模板，包含完整原文、任务、观察索引与真实反馈；researcher 会用它替换基础补全提示 |
+| [terminal_rollout_review.py](../src/traceforge/reconstruction/terminal_rollout_review.py) | 重新认证原生 trial 并组装完整后审证据；不授予答案正确性或 SFT 资格 |
 | [python_runtime.py](../src/traceforge/reconstruction/python_runtime.py) | 按候选依赖准备并冻结 Python wheel，供自测和交付包复用 |
 | [search_environment.py](../src/traceforge/reconstruction/search_environment.py)、[search_tools.py](../src/traceforge/reconstruction/search_tools.py) | search 上下文重建、历史捕获引用、真实检索和网页读取及 rollout |
 | [reconstructability.py](../src/traceforge/reconstruction/reconstructability.py) | 对必要环境缺口、基础设施问题和管线错误分类 |
