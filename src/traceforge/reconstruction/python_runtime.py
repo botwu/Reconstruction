@@ -65,12 +65,16 @@ def freeze_wheels(
     return manifest
 
 
+def _same_requirements(original: bytes, current: bytes) -> bool:
+    """只允许 CRLF/LF 差异；不改写、解析或放宽依赖声明。"""
+    return original.replace(b"\r\n", b"\n") == current.replace(b"\r\n", b"\n")
+
+
 def validate_python_runtime(
     root: Path, requirements: Path, *, install_script: str = INSTALL_SCRIPT,
 ) -> dict[str, Any]:
     manifest = json.loads((root / "manifest.json").read_text())
-    if (manifest.get("schema_version") != "traceforge.python-runtime.v1"
-            or manifest.get("requirements_sha256") != _hash(requirements)):
+    if manifest.get("schema_version") != "traceforge.python-runtime.v1":
         raise ValueError("PYTHON_RUNTIME_REQUIREMENTS_CHANGED")
     expected = {"manifest.json", *(item["file"] for item in manifest["files"])}
     actual = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()}
@@ -83,6 +87,11 @@ def validate_python_runtime(
             raise ValueError("PYTHON_RUNTIME_CHANGED")
     if (root / "install.sh").read_text() != install_script:
         raise ValueError("PYTHON_RUNTIME_INSTALLER_CHANGED")
+    source = root / "requirements.source.txt"
+    if manifest.get("requirements_sha256") != _hash(source):
+        raise ValueError("PYTHON_RUNTIME_CHANGED")
+    if not _same_requirements(source.read_bytes(), requirements.read_bytes()):
+        raise ValueError("PYTHON_RUNTIME_REQUIREMENTS_CHANGED")
     return manifest
 
 
@@ -91,7 +100,8 @@ def read_locked_wheel_member(
 ) -> tuple[str, dict[str, Any]]:
     """仅从已校验的运行时锁读取指定依赖成员，不接受模型提供的宿主路径。"""
     manifest = validate_python_runtime(bundle, bundle / "requirements.source.txt")
-    if hashlib.sha256(requirements.encode()).hexdigest() != manifest["requirements_sha256"]:
+    if not _same_requirements((bundle / "requirements.source.txt").read_bytes(),
+                              requirements.encode()):
         raise ValueError("PYTHON_RUNTIME_REQUIREMENTS_CHANGED")
     if not isinstance(member, str) or safe_relpath(member) != member:
         raise ValueError("依赖成员路径无效")

@@ -71,6 +71,23 @@ def test_locked_source_preserves_observation_and_records_byte_origins(tmp_path):
     assert state.partial_files[args["path"]] == "label = '原占位'\n"
 
 
+def test_locked_source_accepts_only_newline_changed_requirements(tmp_path):
+    state, args, wheel, body = bundle_session(tmp_path)
+    requirements = state.workspace / "requirements.txt"
+    requirements.write_bytes(b"sample-package==1.2\r\n")
+    original_manifest = freeze_wheels(state.dependency_bundle, requirements)
+    # 候选文本传递采用 LF；已冻结的原始声明仍保留 CRLF。
+    requirements.write_bytes(b"sample-package==1.2\n")
+    result = execute_tool("restore_dependency_source", args, state)
+
+    assert not result.startswith("error:"), result
+    assert (state.workspace / args["path"]).read_text() == body.replace("'public'", "'原占位'")
+    assert (state.dependency_bundle / "requirements.source.txt").read_bytes().endswith(b"\r\n")
+    assert json.loads((state.dependency_bundle / "manifest.json").read_text()) == original_manifest
+    digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    assert state.writes[-1]["dependency_source"]["wheel_sha256"] == digest
+
+
 @pytest.mark.parametrize("change", ["wheel", "requirements", "version", "member_escape", "target_escape", "unknown_ref", "readonly", "protected"])
 def test_dependency_source_rejects_changed_or_unpermitted_inputs(tmp_path, change):
     state, args, wheel, _ = bundle_session(tmp_path)
