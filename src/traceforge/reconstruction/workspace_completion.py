@@ -42,7 +42,7 @@ from traceforge.reconstruction.terminal_universe_environment import (
 from traceforge.reconstruction.tool_process_sketch import build_tool_process_sketch
 
 COMPLETION_SCHEMA = "traceforge.workspace-completion.v1"
-COMPLETION_PROMPT_VERSION = "workspace-completion-agent-v17-readable-history"
+COMPLETION_PROMPT_VERSION = "workspace-completion-agent-v18-task-scoped-context"
 TASK_Q_EVIDENCE_ID = "task:q"
 ENV_REPLAYED = "REPLAYED"
 ENV_DEFAULT_EMPTY = "DEFAULT_EMPTY"
