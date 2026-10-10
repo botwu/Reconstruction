@@ -138,6 +138,7 @@ def test_supported_reassessment_cannot_bypass_postrollout_or_omit_action(
     from traceforge.reconstruction.search_environment import SEARCH_REVIEW_ROLE, _run_search_review
 
     result = _run_search_review(
+        source={},
         request={}, task={"acceptance_obligations": [{"id": "analysis"}]},
         agent=SimpleNamespace(run=lambda **_: SimpleNamespace(
             completed=True, errors=[], payload={"decision": "REPAIR", "requirements": [{
@@ -211,6 +212,7 @@ def test_completion_review_cannot_accept_environment_or_invent_solver_results(tm
         })
 
     result = _run_search_review(
+        source={},
         request=original_request,
         task={"acceptance_obligations": [{"id": "analysis"}]},
         agent=SimpleNamespace(run=run), session=reviewer, role=SEARCH_REVIEW_ROLE,

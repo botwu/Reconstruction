@@ -558,3 +558,64 @@ def test_all_runtime_files_are_bound_before_review(tmp_path, monkeypatch, change
             runtime_factory=lambda: pytest.fail("不得创建 AGS"),
         )
     assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [None, "intent_outside", "foreign_anchor", "foreign_task", "result_outside", "result_task"],
+)
+def test_retry_uses_explicit_new_contract_and_result_without_overwriting_old(
+    tmp_path, monkeypatch, damage
+):
+    manifest, _, output = _fixture(tmp_path, monkeypatch)
+    root = manifest.parent
+    source_path = root / "reconstruction_source.json"
+    source = json.loads(source_path.read_text())
+    source["tasks"] = [{
+        "task_id": "task-1", "message_indices": [0],
+        "user_texts": [source["raw_session"]["messages"][0]["content"]],
+    }]
+    source["domain_route"] = "terminal"
+    _write(source_path, source)
+    value = json.loads(manifest.read_text())
+    previous = value["tasks"][0]
+    task = previous["executed_task"]
+    task["source_task"] = {**source["tasks"][0], "domain_route": "terminal"}
+    previous["task_contract"] = build_task_contract(task=task)
+    new_root = root / "task-contract-repairs/task-1/0001"
+    intent_path = new_root / "intent/tasks/task-1/intent.json"
+    result_path = new_root / "tasks/task-1/result.json"
+    selected = {"status": "READY", "errors": [], "task": task}
+    if damage == "intent_outside":
+        intent_path = tmp_path / "foreign/intent.json"
+    elif damage == "foreign_anchor":
+        selected = json.loads(json.dumps(selected))
+        selected["task"]["source_task"]["message_indices"] = [99]
+    elif damage == "foreign_task":
+        selected = json.loads(json.dumps(selected))
+        selected["task"]["task_id"] = "another"
+    if damage == "result_outside":
+        result_path = tmp_path / "foreign/result.json"
+    stored = json.loads(json.dumps(previous))
+    if damage == "result_task":
+        stored["task_id"] = "another"
+    _write(intent_path, selected)
+    _write(result_path, stored)
+    previous.update(intent_path=str(intent_path), result_path=str(result_path))
+    _write(manifest, value)
+    before = workspace_tree_hash(root)
+    if damage:
+        with pytest.raises(ValueError, match=r"越界|锚点|结果"):
+            review_retry.prepare_review_retry(
+                manifest_path=manifest, task_id="task-1", output_root=output
+            )
+    else:
+        prepared = review_retry.prepare_review_retry(
+            manifest_path=manifest, task_id="task-1", output_root=output
+        )
+        assert prepared["task"] == task
+        assert str(intent_path) in prepared["input_hashes"]
+        assert str(result_path) in prepared["input_hashes"]
+        assert str(root / "intent/intent.json") not in prepared["input_hashes"]
+    assert workspace_tree_hash(root) == before
+    assert not output.exists()

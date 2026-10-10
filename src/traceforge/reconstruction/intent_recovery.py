@@ -22,11 +22,34 @@ from traceforge.reconstruction.session_source import indexed_session
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v27-goal-completeness"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v28-contract-repair"
 
 
 class IntentRecoveryError(RuntimeError):
     """Intent Agent 无法安全产出任务。"""
+
+
+def validate_task_contract_issue(
+    issue: Any, *, task: dict[str, Any], source: dict[str, Any],
+) -> None:
+    """合同诊断只允许引用本任务真实用户消息，具体语义仍由意图模型核对。"""
+    if issue is None:
+        return
+    if not isinstance(issue, dict) or set(issue) != {"source_message_indices", "reason", "repair"}:
+        raise IntentRecoveryError("TASK_CONTRACT_ISSUE_INVALID")
+    indices = issue["source_message_indices"]
+    anchor = task.get("source_task") or task
+    messages = (source.get("raw_session") or {}).get("messages", [])
+    if (not isinstance(indices, list) or not indices
+            or any(type(index) is not int for index in indices)
+            or len(set(indices)) != len(indices)
+            or any(index not in anchor.get("message_indices", [])
+                   or not 0 <= index < len(messages)
+                   or messages[index].get("role") != "user" for index in indices)):
+        raise IntentRecoveryError("TASK_CONTRACT_SOURCE_INVALID")
+    if any(not isinstance(issue[key], str) or not issue[key].strip()
+           for key in ("reason", "repair")):
+        raise IntentRecoveryError("TASK_CONTRACT_REASON_OR_REPAIR_REQUIRED")
 
 
 def _message_text(message: Any) -> str:
@@ -300,9 +323,23 @@ def run_intent_recovery(
     agent: AgentRuntime,
     output_root: str | Path,
     replay_files_by_task: dict[str, list[str]] | None = None,
+    correction_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     tasks = selected_task_views(source)
     if not tasks: raise IntentRecoveryError("会话分组没有任务")
+    if correction_feedback is not None:
+        if (len(tasks) != 1 or not isinstance(correction_feedback, dict)
+                or set(correction_feedback) != {"previous_task", "task_contract_issue"}):
+            raise IntentRecoveryError("合同纠正仅接受同一原任务及合同诊断")
+        previous = correction_feedback["previous_task"]
+        anchor = {**tasks[0],
+                  "domain_route": source.get("domain_route") or tasks[0].get("domain_route")}
+        if (not isinstance(previous, dict) or previous.get("task_id") != anchor["task_id"]
+                or previous.get("source_task") != anchor
+                or not correction_feedback["task_contract_issue"]):
+            raise IntentRecoveryError("合同纠正的原始任务锚点不一致")
+        validate_task_contract_issue(
+            correction_feedback["task_contract_issue"], task=previous, source=source)
     root = Path(output_root); root.mkdir(parents=True, exist_ok=True)
     outputs: list[dict[str, Any]] = []
     system_records = [
@@ -333,6 +370,15 @@ def run_intent_recovery(
         )
         user_blob = " ".join(str(item.get("text") or "") for item in records)
         instruction = _prompt(source, task, records, allowed_paths, file_binding_paths, path_aliases)
+        if correction_feedback is not None:
+            instruction += (
+                "\n重新依据同一原用户目标和完整 SOURCE_SESSION 恢复任务。"
+                "以下旧合同及后审诊断只是待核意见，不是新用户要求，不是标准答案；先对照原文确认矛盾。"
+                "保留原目标、任务边界与真实约束，不能因材料不足缩目标或推迟当次义务。"
+                "可重新拆分、补回或合并派生义务，不必沿用旧义务编号、数量或顺序；"
+                "每项仍须引用本任务原用户证据。原任务本来正确时应保持，不为满足诊断强改。"
+                "\nTASK_CONTRACT_FEEDBACK=" + json.dumps(correction_feedback, ensure_ascii=False)
+            )
         task_root = root / "tasks" / task_id; task_root.mkdir(parents=True, exist_ok=True)
         known_ids = {x["id"] for x in records}
         attempts: list[dict[str, Any]] = []

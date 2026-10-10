@@ -100,12 +100,24 @@ def prepare_review_retry(
         != {**indexed["session_fields"], "messages": indexed["messages"]}
     ):
         raise ValueError("后审原始 session 与已捕获的完整解析请求不一致")
-    intent = _read(root / "intent/intent.json", root, hashes)
-    items = [
-        item
-        for item in intent.get("tasks", [])
-        if (item.get("task") or {}).get("task_id") == task_id
-    ]
+    if previous.get("intent_path"):
+        result = _read(previous["result_path"], root, hashes)
+        if result != {key: value for key, value in previous.items()
+                      if key not in {"intent_path", "result_path", "task_contract_attempts"}}:
+            raise ValueError("后审汇总与实际任务结果不一致")
+        items = [_read(previous["intent_path"], root, hashes)]
+        originals = [row for row in source.get("tasks", []) if row.get("task_id") == task_id]
+        original = ({**originals[0], "domain_route": source.get("domain_route")
+                     or originals[0].get("domain_route")} if len(originals) == 1 else None)
+        if (original is None or (items[0].get("task") or {}).get("task_id") != task_id
+                or items[0]["task"].get("source_task") != original):
+            raise ValueError("后审修正合同与原任务锚点不一致")
+    else:
+        intent = _read(root / "intent/intent.json", root, hashes)
+        items = [
+            item for item in intent.get("tasks", [])
+            if (item.get("task") or {}).get("task_id") == task_id
+        ]
     if len(items) != 1 or items[0].get("status") != "READY" or items[0].get("errors"):
         raise ValueError("后审任务缺少原 READY intent")
     task = items[0]["task"]

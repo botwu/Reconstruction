@@ -17,7 +17,11 @@ from traceforge.reconstruction.agents import AgentRuntime, AgentSession
 from traceforge.reconstruction.agents.roles import AgentRole
 from traceforge.reconstruction.agents.runtime import load_tool_results
 from traceforge.reconstruction.agents.session import AgentConversation
-from traceforge.reconstruction.intent_recovery import run_intent_recovery
+from traceforge.reconstruction.intent_recovery import (
+    IntentRecoveryError,
+    run_intent_recovery,
+    validate_task_contract_issue,
+)
 from traceforge.reconstruction.search_handoff import (
     SEARCH_ENVIRONMENT_SCHEMA,
     deliver_captures,
@@ -165,7 +169,9 @@ SEARCH_REVIEW_ROLE = replace(
         "你在独立会话中核查原要求与实际交付，不沿用作者的充分性判断，不生成答案奖励或替代人工验收。"
         "先对照 SOURCE_SESSION 中选定用户请求与 environment.task，再核交付材料及实际轨迹；"
         "原要求优先于派生任务，不能因合同把必要范围推给以后核对、缩成条件模板就认定环境充分。"
-        "缺少原任务必需范围或进度材料仍是缺口，来源免责声明不能补齐；这类偏差不能 COMPLETE。"
+        "来源限制不能补齐原目标所需信息，也不能反向增加必须取得全部私有全文或附件的要求。"
+        "list_evidence 为空不等于完整 SOURCE_SESSION 没有上下文；带来源的历史摘录可作输入，"
+        "但不冒充已核原件。BLOCKED 须指出完成原目标所缺的最低不可替代信息。"
         "派生 task 及 environment 的 status、requirement_coverage、limitations 都是待核声明，"
         "不能先接受其中的条件性规划边界。captures 仅省去与 SOURCE_SESSION "
         "原消息完全相同的 result_text/result_blocks，"
@@ -193,8 +199,13 @@ SEARCH_REVIEW_ROLE = replace(
         "只按已知来源修复缺口，不能编造材料。返回 JSON："
         "{decision: COMPLETE|REPAIR|BLOCKED, requirements: [{obligation_id: 原要求id, "
         "status: SUPPORTED|ENVIRONMENT_GAP|SOLVER_ERROR|NOT_EXERCISED, "
-        "reason: 原要求与实际读取/回答的具体证据, repair: 需要恢复的来源或空字符串}]}。"
-        "可恢复环境缺口返回 REPAIR；必需输入无法恢复或验证不足返回 BLOCKED；"
+        "reason: 原要求与实际读取/回答的具体证据, repair: 需要恢复的来源或空字符串}], "
+        "task_contract_issue: null 或 {source_message_indices: [本任务原用户消息索引], "
+        "reason: 派生合同与原请求的具体矛盾, repair: 依据原文应纠正的方向}}。"
+        "每个原义务恰好一项，同一义务多个事实合写 reason；合同问题独立报告，不硬配旧义务ID。"
+        "合同漏项、缩目标或无依据加码用 task_contract_issue 并 REPAIR，不能 COMPLETE；"
+        "正确合同下的材料、工具及交付说明缺口仍归 ENVIRONMENT_GAP，可恢复时返回 REPAIR。"
+        "无合同问题时该字段可省略或为 null；必需输入无法恢复或验证不足返回 BLOCKED；"
         "环境足够时 COMPLETE；若对应回答有错，条目仍须标 SOLVER_ERROR 并引用具体错误。"
         "COMPLETE 不会更正已有回答，也不表示回答验收通过；不能用补写答案修理环境。"
     ),
@@ -469,13 +480,15 @@ def _review_search_rollouts(
         "actual_web_calls": copy.deepcopy(network.calls) if network is not None else [],
     }
     return _run_search_review(
-        request=request, task=task, agent=agent, session=reviewer, role=SEARCH_REVIEW_ROLE,
+        source=source, request=request, task=task, agent=agent, session=reviewer,
+        role=SEARCH_REVIEW_ROLE,
         output_root=output_root,
     )
 
 
 def _run_search_review(
-    *, request: dict[str, Any], task: dict[str, Any], agent: AgentRuntime,
+    *, source: dict[str, Any], request: dict[str, Any], task: dict[str, Any],
+    agent: AgentRuntime,
     session: AgentSession, role: AgentRole, output_root: Path, completion: bool = False,
 ) -> dict[str, Any]:
     """两阶段共用复核契约；补全停止审查不能冒充未发生的解题验收。"""
@@ -511,12 +524,19 @@ def _run_search_review(
                      for item in checks))
         decision = review.get("decision")
         errors = []
+        issue = review.get("task_contract_issue")
+        try:
+            validate_task_contract_issue(issue, task=task, source=source)
+        except IntentRecoveryError as exc:
+            errors.append(str(exc))
+        if issue is not None and decision != "REPAIR":
+            errors.append("TASK_CONTRACT_ISSUE_REQUIRES_REPAIR")
         if decision not in {"COMPLETE", "REPAIR", "BLOCKED"}:
             errors.append("decision 必须为 COMPLETE、REPAIR 或 BLOCKED；READY 属于之前的补全阶段")
         if not valid:
             errors.append("requirements 须逐项对应 " + ", ".join(sorted(expected))
                           + "，每项包含 obligation_id、合法 status 和非空 reason")
-        elif (not completion and decision == "REPAIR"
+        elif (not completion and decision == "REPAIR" and issue is None
               and not any(item["status"] == "ENVIRONMENT_GAP" for item in checks)):
             errors.append("只有真实 ENVIRONMENT_GAP 才能返回 REPAIR；solver 错误不能通过改写环境修复")
         elif (decision == "COMPLETE" and any(item["status"] in {"ENVIRONMENT_GAP", "NOT_EXERCISED"}
@@ -527,7 +547,7 @@ def _run_search_review(
                 errors.append("补全复核只能返回 REPAIR 或 BLOCKED，不能代替作者通过环境门禁")
             if valid and any(item["status"] == "SOLVER_ERROR" for item in checks):
                 errors.append("尚未执行 rollout，补全复核不能声明 SOLVER_ERROR")
-            if valid and decision == "REPAIR" and not any(
+            if valid and decision == "REPAIR" and issue is None and not any(
                 item["status"] in {"SUPPORTED", "ENVIRONMENT_GAP"}
                 and isinstance(item.get("repair"), str) and item["repair"].strip()
                 for item in checks
@@ -616,12 +636,17 @@ def _review_search_completion(
             "repair 须引用具体已交付材料，说明额外条件为何不是原要求，由原作者重新核对，"
             "不能只要求改状态、设 requires_live_web=false 或补写答案。"
             "未核实的义务记 NOT_EXERCISED。"
-            "必要输入无法恢复或判断依据不足时返回 BLOCKED，说明具体限制。"
+            "list_evidence 为空时仍应核完整 SOURCE_SESSION；带来源历史摘录可作为输入，"
+            "不默认要求全部私有全文或附件。BLOCKED 须说明原目标最低不可替代的信息缺口。"
+            "派生任务合同本身有误时按 task_contract_issue 独立报告，返回 REPAIR。"
             "不能因服务故障降低原要求，也不能直接接受环境或加入待求结论。"
             "返回既有复核 JSON：{decision: REPAIR|BLOCKED, requirements: "
             "[{obligation_id: 原义务id, status: SUPPORTED|ENVIRONMENT_GAP|NOT_EXERCISED, "
-            "reason: 原文与实际返回依据, repair: 后续恢复动作或空字符串}]}。"
-            "REPAIR 至少包含一个有具体 repair 的 ENVIRONMENT_GAP 或 SUPPORTED；"
+            "reason: 原文与实际返回依据, repair: 后续恢复动作或空字符串}], "
+            "task_contract_issue: null 或 {source_message_indices: [本任务原用户消息索引], "
+            "reason: 合同与原请求的矛盾, repair: 原文支持的修正方向}}。"
+            "每个原义务恰好一项，多个事实合写 reason；合同问题不硬配旧义务ID。"
+            "无合同问题时，REPAIR 至少包含一个有具体 repair 的 ENVIRONMENT_GAP 或 SUPPORTED；"
             "全部原义务必须逐项覆盖，某项已有输入不能代替其他缺口。"
         ),
     )
@@ -635,7 +660,7 @@ def _review_search_completion(
             "environment": _review_environment(source, environment),
             "actual_web_calls": copy.deepcopy(network.calls),
         },
-        task=task, agent=agent, session=reviewer, role=role,
+        source=source, task=task, agent=agent, session=reviewer, role=role,
         output_root=output_root, completion=True,
     )
 
@@ -876,6 +901,9 @@ def run_search_task(
             rounds.append({"stage": "completion", "output_root": str(round_root), "review": review})
             outcome["environment_review"] = (
                 "REVIEW_INCOMPLETE" if review.get("failure_kind") else review["decision"])
+            if review.get("task_contract_issue") and review["decision"] == "REPAIR":
+                outcome.update(search_review_outcome(review))
+                break
             if review["decision"] != "REPAIR":
                 break
             instruction = json.dumps({
@@ -921,7 +949,7 @@ def run_search_task(
         rounds.append({"output_root": str(round_root), "review": review})
         outcome["researcher_rounds"] = rounds
         outcome.update(search_review_outcome(review))
-        if review["decision"] != "REPAIR":
+        if review["decision"] != "REPAIR" or review.get("task_contract_issue"):
             break
         instruction = json.dumps({
             "rollout_feedback": review,
@@ -1000,6 +1028,26 @@ def run_search_rollouts(
     return outcome
 
 
+def _task_contract_state(task: dict[str, Any]) -> str:
+    """规范化义务已附带文件绑定；只改编号或顺序不算修复进展。"""
+    value = {key: item for key, item in task.items() if key not in {
+        "task_id", "source_task", "evidence_refs", "environment_path_aliases",
+        "environment_bindings",
+    }}
+    obligations = {
+        row["id"]: json.dumps({key: item for key, item in row.items() if key != "id"},
+                              sort_keys=True, ensure_ascii=False)
+        for row in task.get("acceptance_obligations", [])
+    }
+    value["acceptance_obligations"] = sorted(obligations.values())
+    if isinstance(task.get("response_contract"), dict):
+        contract = copy.deepcopy(task["response_contract"])
+        for check in contract.get("checks", []):
+            check["obligation_id"] = obligations.get(check["obligation_id"], check["obligation_id"])
+        value["response_contract"] = contract
+    return json.dumps(value, sort_keys=True, ensure_ascii=False)
+
+
 def run_search_reconstruction(
     *, source: dict[str, Any], agent: AgentRuntime, output_root: Path,
     rollout_agent: AgentRuntime | None = None, rollout_trials: int = 2,
@@ -1010,27 +1058,63 @@ def run_search_reconstruction(
         source=source, agent=agent, output_root=output_root / "intent",
         replay_files_by_task={item["task_id"]: [] for item in source["tasks"]},
     )
-    results = []
+    results, intent_statuses = [], []
     for item in intent["tasks"]:
-        if item["status"] != "READY":
-            results.append({"task_id": item.get("task_id"), "status": "BLOCKED",
-                            "stopped_at": "intent", "errors": item["errors"]})
-            continue
-        task = item["task"]
-        results.append(run_search_task(
-            source=source, task=task, agent=agent,
-            output_root=output_root / "tasks" / task["task_id"],
-            rollout_agent=rollout_agent, rollout_trials=rollout_trials,
-            rollout_max_iterations=rollout_max_iterations,
-            verification_config=verification_config,
-        ))
+        task_id = str((item.get("task") or {}).get("task_id") or item.get("task_id"))
+        attempt_root, attempts, seen = output_root, [], set()
+        while True:
+            intent_path = (attempt_root / "intent/tasks" / task_id / "intent.json").resolve()
+            result_path = (attempt_root / "tasks" / task_id / "result.json").resolve()
+            if item["status"] != "READY":
+                result = {"task_id": task_id, "status": "BLOCKED",
+                          "stopped_at": "intent", "errors": item["errors"]}
+                _save(result_path, result)
+            else:
+                task = item["task"]
+                state = _task_contract_state(task)
+                if state in seen:
+                    result = {"task_id": task_id, "status": "BLOCKED", "stopped_at": "intent",
+                              "errors": ["TASK_CONTRACT_NO_PROGRESS"]}
+                    _save(result_path, result)
+                else:
+                    seen.add(state)
+                    result = run_search_task(
+                        source=source, task=task, agent=agent, output_root=result_path.parent,
+                        rollout_agent=rollout_agent, rollout_trials=rollout_trials,
+                        rollout_max_iterations=rollout_max_iterations,
+                        verification_config=verification_config,
+                    )
+            result = {**result, "intent_path": str(intent_path), "result_path": str(result_path)}
+            attempts.append({"intent_path": str(intent_path), "result_path": str(result_path)})
+            issue = result.get("task_contract_issue")
+            if result.get("environment_review") != "REPAIR" or not issue:
+                break
+            # 保留所有原文；只固定原始分组，诊断不能替换用户锚点或携入 solver 答案。
+            correction_source = copy.deepcopy(source)
+            correction_source["tasks"] = [
+                copy.deepcopy(row) for row in source["tasks"] if row["task_id"] == task_id
+            ]
+            correction_source["selected_task_ids"] = [task_id]
+            attempt_root = output_root / "task-contract-repairs" / task_id / f"{len(attempts):04d}"
+            corrected = run_intent_recovery(
+                source=correction_source, agent=agent, output_root=attempt_root / "intent",
+                replay_files_by_task={task_id: []},
+                correction_feedback={"previous_task": task, "task_contract_issue": issue},
+            )
+            item = corrected["tasks"][0]
+        if len(attempts) > 1:
+            result["task_contract_attempts"] = attempts
+        intent_statuses.append(item["status"])
+        results.append(result)
     path = output_root / "manifest.json"
     _save(path, {"schema_version": "traceforge.search-reconstruction.v1",
                  "status": "COMPLETED" if results and all(
                      item["status"] in {"ENVIRONMENT_READY", "ROLLOUT_COMPLETED"}
                      for item in results) else "BLOCKED",
                  "domain_route": "retrieval", "source_sha256": source.get("line_sha256"),
-                 "intent_status": intent["status"], "tasks": results,
+                 "intent_status": ("READY" if all(status == "READY" for status in intent_statuses)
+                                   else "REVIEW"),
+                 "tasks": results,
                  "acceptance": "NOT_ASSESSED"})
     return path
 
@@ -1047,6 +1131,8 @@ def search_review_outcome(review: dict[str, Any]) -> dict[str, Any]:
         "errors": errors,
         "environment_review": "REVIEW_INCOMPLETE" if incomplete else review["decision"],
         "acceptance": "NOT_ASSESSED", "sft_eligible": False,
+        **({"task_contract_issue": review["task_contract_issue"], "stopped_at": "intent"}
+           if review.get("task_contract_issue") and review["decision"] == "REPAIR" else {}),
     }
 
 
