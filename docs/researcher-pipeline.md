@@ -24,6 +24,8 @@ search 补全使用同一持续 researcher 会话，读取原始对话、system 
 
 READY 前，researcher 按原任务的每项要求说明支持材料，代码核对来源已交付且实际读过。若 solver 仍须继续公网研究（requires_live_web=true），还必须实证查询与页面读取可用；若交付资料已逐项充分，须说明依据，不能因来源曾是网页而机械要求在线查询，也不能为绕过服务故障把未覆盖义务判为充分。此阶段是输入供给审查，并非自动证明语义正确。执行真实 solver 后，同一 researcher 读取答案和工具轨迹，区分环境缺口、solver 错误及尚未验证的要求。可恢复的环境缺口返回补全后重跑；环境未发生变化时停止为 NO_PROGRESS；资料无法恢复时明确 BLOCKED。solver 推理错误不通过预写答案修理环境。
 
+两个 domain 的原生后审共用同一轨迹读取器，交付经原件绑定的 system prompt、工具定义和按原序保留的完整消息；中间计划、阅读笔记和工具调用不能只由最终回答替代。捕获对账中的压缩或缺失提示随轨迹交付，未观察到不等于未执行；派生对账时间不参与同一原件的身份比较。
+
 真实复核仍可能漏报语义错误；作者对环境的判断是诊断意见，不能自我认证回答通过。原始误判和后续人工反馈均保留。
 
 ROLLOUT_COMPLETED 只表示模型执行完整、没有执行错误且产生非空回答；回答仍为 NOT_ASSESSED。environment_review 单独记录 researcher 的实跑复核结果，不能代替人工回答验收。仅调用独立的 run_search_rollouts 恢复执行时，environment_review 为 NOT_REVIEWED。旧 v2 环境需要从原 source 重新补全，不能跳过新的来源边界。

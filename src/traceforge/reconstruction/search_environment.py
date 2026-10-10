@@ -419,7 +419,9 @@ def _review_search_rollouts(
     request = {
         "current_stage_instruction": (
             "补全和真实 rollout 已结束，现在复核 trials 中的实际读取与回答。"
-            "已回收的检索缓存不代表 solver 已读全文；实际所见以原始 tool_events.result 为准。"
+            "中间计划、阅读笔记和回复按 trajectory.messages 原序核查，不能只看最终回答。"
+            "结合 trajectory.reconciliation 的压缩或缺失提示区分未观察与未执行，不能从缺记录推断未执行。"
+            "已回收的检索缓存不代表 solver 已读全文；工具实际所见以原始 tool_events.result 为准。"
             "终端可提取字段、截断输出或返回解析错误，不得用缓存全文替代这些实际结果，"
             "也不得仅因终端没有保留完整 JSON 判为环境缺口。"
             "source_snapshots 按 trial 保留完整来源及版本，仅用于审核；"

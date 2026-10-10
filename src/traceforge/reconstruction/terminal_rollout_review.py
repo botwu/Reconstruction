@@ -97,10 +97,6 @@ def build_terminal_rollout_evidence(native_trials: list[dict[str, Any]]) -> dict
         ])
         reviews.append({
             **copy.deepcopy(trial),
-            "trajectory": {
-                "sha256": evidence[trajectory_path],
-                **{key: full[key] for key in ("messages", "system_prompt", "tools")},
-            },
             "initial_files": _file_rows(task / "workspace", initial_hashes),
             "final_files": _file_rows(final, final_hashes),
         })

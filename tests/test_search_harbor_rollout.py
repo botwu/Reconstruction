@@ -371,3 +371,68 @@ def test_native_reader_rejects_unsafe_collected_cache(tmp_path, monkeypatch, fai
     assert not result["completed"]
     assert result["web_cache_root"] is None
     assert result["errors"][0].startswith(("NATIVE_WEB_CACHE_", "FILE_SNAPSHOT_UNSAFE"))
+
+
+def test_native_reader_preserves_ordered_conversation_and_capture_boundary(tmp_path, monkeypatch):
+    trial, raw = _native_trial(tmp_path, monkeypatch)
+    messages = [
+        {"role": "user", "content": "原任务"},
+        {"role": "assistant", "content": "中间中文计划", "reasoning": "保留原有推理字段",
+         "_anthropic_call_index": 0,
+         "tool_calls": [{"id": "t1", "type": "function",
+                         "function": {"name": "terminal", "arguments": '{"command":"read"}'}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "原工具正文"},
+        {"role": "assistant", "content": "原页笔记", "_anthropic_call_index": 1},
+        {"role": "assistant", "content": "有出处的回答。"},
+    ]
+    raw.update(messages=messages, system_prompt="原系统", tools=[{"name": "terminal"}])
+    warnings = [{"code": "CAPTURE_CALLS_COMPACTED", "count": 1, "tool_call_ids": ["older"]}]
+    reconciliation = {"ok": True, "issues": [], "warnings": warnings}
+    monkeypatch.setattr(sys.modules["harbor_ags.evidence"], "reconcile_evidence",
+                        lambda *a, **k: copy.deepcopy(reconciliation))
+    path = trial / "agent/trajectory.full.json"
+    path.write_text(json.dumps(raw))
+    result = read_native_trial(trial, domain="search")
+    assert result["completed"], result["errors"]
+    trajectory = result["trajectory"]
+    assert trajectory["messages"] == messages
+    assert trajectory["system_prompt"] == raw["system_prompt"]
+    assert trajectory["tools"] == raw["tools"]
+    assert trajectory["reconciliation"] == reconciliation
+    assert trajectory["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert trajectory["sha256"] == result["receipt"]["evidence_files"]["agent/trajectory.full.json"]
+    changed = copy.deepcopy(raw)
+    changed["messages"][1]["content"] = "伪造计划"
+    path.write_text(json.dumps(changed))
+    rejected = read_native_trial(trial, domain="search")
+    assert not rejected["completed"]
+    assert rejected["errors"] == ["NATIVE_CAPTURE_BINDING_MISMATCH:messages"]
+
+@pytest.mark.parametrize("system_prompt", ["", None, []])
+def test_native_reader_preserves_legal_empty_conversation_fields(
+    tmp_path, monkeypatch, system_prompt,
+):
+    trial, raw = _native_trial(tmp_path, monkeypatch)
+    raw.update(messages=[], system_prompt=system_prompt, tools=[])
+    (trial / "agent/trajectory.full.json").write_text(json.dumps(raw))
+    result = read_native_trial(trial, domain="search")
+    assert result["completed"], result["errors"]
+    for field in ("messages", "system_prompt", "tools"):
+        assert result["trajectory"][field] == raw[field]
+
+
+def test_native_reader_is_stable_across_revalidation_times(tmp_path, monkeypatch):
+    trial, raw = _native_trial(tmp_path, monkeypatch)
+    raw.update(messages=[], system_prompt="", tools=[])
+    (trial / "agent/trajectory.full.json").write_text(json.dumps(raw))
+    times = iter(["2026-10-10T12:43:30Z", "2026-10-10T12:45:00Z"])
+    monkeypatch.setattr(
+        sys.modules["harbor_ags.evidence"], "reconcile_evidence",
+        lambda *args, **kwargs: {
+            "ok": True, "issues": [], "warnings": [], "generated_at": next(times),
+        },
+    )
+    first = read_native_trial(trial, domain="search")
+    second = read_native_trial(trial, domain="search")
+    assert first["completed"] and second["completed"]
+    assert first == second

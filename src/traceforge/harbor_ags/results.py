@@ -401,6 +401,13 @@ def read_native_trial(
             f"artifacts/logs/artifacts/search/{name}": digest
             for name, digest in cache_files.items()
         })
+        # 重算时间不是原轨迹证据；不能使同一原件的严格重验回执变化。
+        reconciliation.pop("generated_at", None)
+        output["trajectory"] = {
+            "sha256": output["receipt"]["evidence_files"]["agent/trajectory.full.json"],
+            **{key: full[key] for key in ("messages", "system_prompt", "tools") if key in full},
+            "reconciliation": reconciliation,
+        }
         if output["final_stop_reason"] in {"max_tokens", "length", "model_context_window_exceeded"}:
             raise HarborResultError("NATIVE_FINAL_RESPONSE_TRUNCATED")
         if any(block.get("type") == "tool_use" for block in final):

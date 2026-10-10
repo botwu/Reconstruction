@@ -41,6 +41,7 @@ def test_review_preserves_complete_evidence_and_marks_binary(tmp_path, monkeypat
     assert "trial/files/opaque.bin" in evidence["evidence_refs"]
     assert result["answer"] == native["answer"]
     assert result["tool_events"] == native["tool_events"]
+    assert result["trajectory"] == native["trajectory"]
     for field in ("messages", "system_prompt", "tools"):
         assert result["trajectory"][field] == full[field]
     before = {row["path"]: row for row in result["initial_files"]}
