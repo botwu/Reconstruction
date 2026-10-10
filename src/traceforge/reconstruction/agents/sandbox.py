@@ -17,6 +17,7 @@ from typing import Any
 from traceforge.reconstruction.agents.roles import AgentRole
 from traceforge.reconstruction.agents.session import AgentSession, safe_relpath
 from traceforge.reconstruction.container_verification import (
+    READ_ONLY_WORKSPACE_COMMAND,
     ContainerRuntime,
     pytest_test_runner,
 )
@@ -278,7 +279,7 @@ async def prepare_role_sandbox(
             raise RuntimeError("COMPLETION_WORKSPACE_SETUP_FAILED: " + _failure_detail(writable))
     if role.name == "sufficiency":
         chmod = await runtime.exec(
-            "chmod -R a-w /home/user/workspace && find /home/user/workspace -type f -exec chmod a+r {} +",
+            READ_ONLY_WORKSPACE_COMMAND,
             cwd="/",
             timeout_sec=30,
             user="root",
@@ -311,7 +312,7 @@ async def prepare_role_sandbox(
     if role.name == "verifier":
         # Verifier tests may use a disposable copy, never the initial input.
         protect = await runtime.exec(
-            "chmod -R a-w /home/user/workspace && find /home/user/workspace -type f -exec chmod a+r {} +",
+            READ_ONLY_WORKSPACE_COMMAND,
             cwd="/", timeout_sec=30, user="root",
         )
         if getattr(protect, "return_code", 1) != 0:

@@ -416,7 +416,6 @@ def _normalize_one_binding(
     declared_outputs: set[str] = set()
     all_paths: list[str] = []
     hinted_outputs = _explicit_output_paths(context_text, allowed_paths)
-    bindable = set(file_binding_paths) if file_binding_paths is not None else None
     for raw in [*raw_paths, *raw_outputs]:
         path = _canonical_binding_path(raw, path_aliases or {})
         if path is None:
@@ -427,10 +426,8 @@ def _normalize_one_binding(
             continue
         if raw in raw_outputs and path not in hinted_outputs:
             errors.append(f"BINDING_OUTPUT_PATH_NOT_EXPLICIT:{oid}:{path}")
-        # 明确要求修改或读取的缺失输入仍是输入；仅 listing 的名字不能冒充正文。
-        if (kind == FILE and bindable is not None and path not in bindable
-                and path not in mentioned_allowed_paths(context_text, allowed_paths)):
-            continue
+        # 显式绑定描述任务所需文件，不宣称 Replay 已有正文。
+        # 缺失正文交给补全和实际路径检查，不能删除绑定再从报错文本猜测替代项。
         if path not in all_paths:
             all_paths.append(path)
         if raw in raw_outputs and path in hinted_outputs:

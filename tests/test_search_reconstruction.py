@@ -409,12 +409,17 @@ def test_local_search_requires_actual_corpus_reading_without_public_web(tmp_path
         return SimpleNamespace(completed=True, errors=[], payload={
             "status": "READY", "requires_live_web": False, "retrieval_reason": "只读比较已捕获源码",
             "reference_event_indices": [0], "missing_inputs": [],
+            "requirement_coverage": [{
+                "obligation_id": "compare", "evidence_ref_ids": ["captured:0"],
+                "reason": "比较义务依赖原始源码正文",
+            }],
         })
 
     result = search_environment.run_search_task(
         source={"domain_route": "retrieval", "raw_session": {"messages": []},
                 "tool_timeline": [{"name": "Read", "result_text": "class Reference: pass"}]},
-        task={"task_id": "code-search", "task_instruction": "比较源码，引用路径和行号。"},
+        task={"task_id": "code-search", "task_instruction": "比较源码，引用路径和行号。",
+              "acceptance_obligations": [{"id": "compare", "text": "比较原始源码"}]},
         agent=SimpleNamespace(run=run), output_root=tmp_path,
     )
     assert result["status"] == ("ENVIRONMENT_READY" if read_source else "BLOCKED")

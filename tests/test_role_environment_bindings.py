@@ -164,7 +164,7 @@ def test_l22_style_bindings_split_file_and_research() -> None:
     assert non_file_obligation_ids(task) == ["obl-001"]
 
 
-def test_file_bindings_drop_listing_only_names() -> None:
+def test_explicit_file_bindings_preserve_observed_names_without_bodies() -> None:
     source = {"tool_timeline": _timeline()}
     allowed = collect_allowed_paths(source, [{"id": "user:0", "text": "读注入器"}])
     bindable = collect_file_binding_paths(source)
@@ -201,8 +201,13 @@ def test_file_bindings_drop_listing_only_names() -> None:
     )
     assert status == "READY"
     assert errors == []
-    assert "RobloxDLL.cpp" not in file_required_paths(gated)
-    assert "Injector.cpp" in file_required_paths(gated)
+    assert file_required_paths(gated) == ["RobloxDLL.cpp", "Injector.cpp"]
+    valid, missing = validate_completion_candidate(
+        {"files": [], "decision": "READY"}, replay_from_timeline(_timeline()), set(),
+        required_paths=file_required_paths(gated),
+    )
+    assert not valid
+    assert "BINDING_PATH_MISSING:RobloxDLL.cpp" in missing
 
 
 def test_listing_real_body_allowed_stub_forbidden() -> None:
@@ -979,3 +984,45 @@ def test_harness_closing_tags_are_not_path_aliases_and_real_root_remains() -> No
     assert aliases["/root"] == "root"
     assert aliases["C:/work/repo/src/main.py"] == "src/main.py"
     assert records[0]["text"] == wrapped
+
+
+def test_explicit_binding_survives_missing_replay_body_and_error_log_tokens() -> None:
+    paths = ["apps/web/components/share.tsx", "apps/web/app/share/page.tsx"]
+    request = (
+        "修复渲染错误。可能涉及 Date.now() 或 Math.random()。\n"
+        "at Share (components/share.tsx:69:13)\n"
+        "at Page (app/share/page.tsx:19:9)\n"
+        'className="gap-1.5"; Next.js version: 15.5.20'
+    )
+    records = [{"id": "user:0", "text": request}]
+    source = {"tool_timeline": [
+        {"name": "read_file", "arguments": {"path": path}, "result_text": "原始片段"}
+        for path in paths
+    ]}
+    replay_paths = ["apps/web/components/other.tsx"]
+    allowed = collect_allowed_paths(source, records, replay_files=replay_paths)
+    assert "Date.now" in allowed
+    payload = {
+        "task_id": "render-task", "task_instruction": "修复渲染错误",
+        "core_objective": "恢复服务端与客户端渲染一致性",
+        "acceptance_obligations": [{
+            "id": "o1", "text": "渲染一致", "evidence_ref_ids": ["user:0"],
+        }],
+        "environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "FILE", "required_paths": paths,
+            "observable": "真实渲染验证不再出现不一致",
+        }],
+    }
+    status, errors, task = _gate(
+        payload, {"task_id": "render-task"}, {"user:0"}, allowed_paths=allowed,
+        user_blob=request, user_records=records,
+        file_binding_paths=collect_file_binding_paths(source, replay_files=replay_paths),
+    )
+    assert status == "READY", errors
+    assert file_required_paths(task) == paths
+    valid, missing = validate_completion_candidate(
+        {"files": [], "decision": "READY"}, replay_from_timeline([]), set(),
+        required_paths=file_required_paths(task),
+    )
+    assert not valid
+    assert set(missing) == {f"BINDING_PATH_MISSING:{path}" for path in paths}

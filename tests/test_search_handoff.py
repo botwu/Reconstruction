@@ -590,3 +590,80 @@ def test_later_harness_context_cannot_become_initial_input(role):
             {"source_task": {"message_indices": [0, 2]}},
             [{"message_index": 1, "used_by_user_message_index": 2, "quote": "已完成后的状态"}],
         )
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_original_user_input_without_returned_tools_is_delivered(tmp_path, pending):
+    original = "只整理并翻译可见商品资料：title=Brass Sink Drain；bullet_points=[原文截断]"
+    source = {"raw_session": {"messages": [{"role": "user", "content": original}]},
+              "tool_timeline": [{"name": "history", "pending": True}] if pending else []}
+    task = {"task_id": "user-only", "task_instruction": "整理并翻译用户原文",
+            "source_task": {"message_indices": [0], "user_texts": [original]},
+            "acceptance_obligations": [{"id": "translate", "text": "只翻译实际可见资料"}]}
+    calls = []
+
+    def author(**kwargs):
+        calls.append(kwargs["role"].name)
+        assert kwargs["session"].evidence == []
+        return SimpleNamespace(completed=True, errors=[], payload={
+            "status": "READY", "requires_live_web": False,
+            "retrieval_reason": "任务仅需要完整交付的用户原文，不补全截断内容",
+            "excluded_events": [], "context_references": [], "missing_inputs": [],
+            "requirement_coverage": [{
+                "obligation_id": "translate", "evidence_ref_ids": ["message:0"],
+                "reason": "原始标题及截断边界已经交付，不借用后续助手回答",
+            }],
+        })
+
+    outcome = run_search_task(source=source, task=task, agent=SimpleNamespace(run=author),
+                              output_root=tmp_path)
+    assert outcome["status"] == "ENVIRONMENT_READY"
+    assert calls == ["search_completion"]
+    environment = json.loads((tmp_path / "environment.json").read_text())
+    assert environment["captures"] == []
+    assert environment["evidence_handoff"]["pending_event_indices"] == ([0] if pending else [])
+    assert original in (Path(outcome["harbor_task"]) / "instruction.md").read_text()
+
+
+@pytest.mark.parametrize("gap", ["pending_return", "unread_return", "private_history"])
+def test_user_input_does_not_erase_required_evidence_gap(tmp_path, gap):
+    original = "依据先前的私有方案比较两个实现，不用新编方案替代。"
+    event = ({"name": "history", "result_text": "两个实现的原始源码"}
+             if gap == "unread_return" else {"name": "history", "pending": True})
+    source = {"raw_session": {"messages": [{"role": "user", "content": original}]},
+              "tool_timeline": [event]}
+    task = {"task_id": "required-evidence", "task_instruction": original,
+            "source_task": {"message_indices": [0], "user_texts": [original]},
+            "acceptance_obligations": [{"id": "compare", "text": "按先前方案比较"}]}
+    missing = ["先前私有方案正文未交付"] if gap == "private_history" else []
+
+    def author(**kwargs):
+        if kwargs["role"].name == "search_review":
+            return SimpleNamespace(completed=True, errors=[], payload={
+                "decision": "BLOCKED", "requirements": [{
+                    "obligation_id": "compare", "status": "ENVIRONMENT_GAP",
+                    "reason": "用户要求不含私有方案正文，当前工具没有恢复该正文的入口",
+                    "repair": "",
+                }],
+            })
+        return SimpleNamespace(completed=True, errors=[], payload={
+            "status": "BLOCKED" if missing else "READY", "requires_live_web": False,
+            "retrieval_reason": "私有方案必须来自原始输入，公网不能替代",
+            "excluded_events": [], "context_references": [], "missing_inputs": missing,
+            "requirement_coverage": [{
+                "obligation_id": "compare",
+                "evidence_ref_ids": ["message:0"] if missing else ["message:0", "captured:0"],
+                "reason": "原请求已交付，仍须核对对应私有材料正文",
+            }],
+        })
+
+    outcome = run_search_task(source=source, task=task, agent=SimpleNamespace(run=author),
+                              output_root=tmp_path)
+    assert outcome["status"] == "BLOCKED"
+    assert "harbor_task" not in outcome
+    if missing:
+        assert outcome["missing_inputs"] == missing
+        assert outcome["researcher_rounds"][0]["review"]["decision"] == "BLOCKED"
+    else:
+        expected = "来源尚未实际读取" if gap == "unread_return" else "来源未交付"
+        assert any(expected in error and "captured:0" in error for error in outcome["errors"])

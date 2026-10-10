@@ -226,8 +226,6 @@ def _complete_search_environment(
             errors.append("必须根据原任务说明 requires_live_web 和 retrieval_reason，不能从 domain 猜测")
         elif requires_web and not network.ready():
             errors.append("未实证完成公开查询及来源页面读取：须执行成功的 web_search 和含正文的 web_open")
-        elif not requires_web and not any(record["evidence_ref_id"] in read_ids for record in captures):
-            errors.append("本地检索缺少原始证据：未提供对应原始返回时，须执行 read_evidence 读取")
         source_task = task.get("source_task") or {}
         # 当前用户原文已经同时进入作者和 solver 的任务输入，无须为引用再复制成历史。
         context_ids = {f"message:{index}" for index, text in zip(

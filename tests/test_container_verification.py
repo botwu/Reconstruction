@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shlex
 import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from traceforge.reconstruction.container_verification import (
     AGSRuntimeAdapter,
@@ -255,5 +259,60 @@ def test_local_exec_runtime_stages_vendor_and_separates_import_infra(tmp_path):
         assert [run.status for run in runs] == ["PASS", "FAIL", "INFRA_ERROR"]
         assert runs[2].error_code == "PYTEST_IMPORT_ERROR"
         await runtime.stop()
+
+    asyncio.run(case())
+
+
+@pytest.mark.parametrize("directory_mode,file_mode", [(0o755, 0o644), (0o700, 0o600)])
+def test_sufficiency_keeps_nested_upload_readable_and_read_only(
+    tmp_path, directory_mode, file_mode,
+):
+    class PermissionRuntime(FakeRuntime):
+        async def upload_dir(self, source_dir, target_dir):
+            await super().upload_dir(source_dir, target_dir)
+            for path in [self.remote, *self.remote.rglob("*")]:
+                path.chmod(directory_mode if path.is_dir() else file_mode)
+            (self.remote / "tests/run.sh").chmod(0o700)
+
+        async def exec(self, command, **kwargs):
+            if command.startswith("chmod "):
+                # 实际执行生产权限命令，覆盖私有输出 umask=077 导致目录不可遍历的回归。
+                result = subprocess.run(
+                    [str(self.remote) if arg == "/home/user/workspace" else arg
+                     for arg in shlex.split(command)],
+                    capture_output=True, text=True,
+                )
+                return SimpleNamespace(return_code=result.returncode, stderr=result.stderr)
+            return await super().exec(command, **kwargs)
+
+    async def case():
+        source = tmp_path / "source"
+        (source / "tests/nested").mkdir(parents=True)
+        (source / "tests/nested/test_input.py").write_text("original test body")
+        (source / "tests/run.sh").write_text("#!/bin/sh\nexit 0\n")
+        runtime = PermissionRuntime(tmp_path)
+
+        async def judge(runtime, prompt):
+            for path in [runtime.remote, *runtime.remote.rglob("*")]:
+                mode = path.stat().st_mode & 0o777
+                assert mode & 0o222 == 0, f"write permission retained: {path}"
+                assert mode & 0o444 == 0o444, f"not readable by sandbox user: {path}"
+                if path.is_dir():
+                    assert mode & 0o111 == 0o111, f"not traversable: {path}"
+            regular = runtime.remote / "tests/nested/test_input.py"
+            assert regular.stat().st_mode & 0o111 == 0
+            assert regular.read_text() == "original test body"
+            assert (runtime.remote / "tests/run.sh").stat().st_mode & 0o100
+            return {"label": "sufficient", "confidence": 0.9, "missing_critical": []}
+
+        try:
+            result = await run_sufficiency_container(
+                runtime=runtime, workspace=source, task_prompt="inspect", judge_runner=judge,
+            )
+            assert result.errors == ()
+            assert result.write_blocked
+        finally:
+            for path in [runtime.remote, *runtime.remote.rglob("*")]:
+                path.chmod(0o700 if path.is_dir() else 0o600)
 
     asyncio.run(case())

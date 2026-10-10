@@ -20,6 +20,8 @@ from typing import Any, Protocol
 from traceforge.reconstruction.model_gateway import load_e2b_api_key
 from traceforge.reconstruction.tls import pin_process_tls
 
+READ_ONLY_WORKSPACE_COMMAND = "chmod -R a+rX,a-w /home/user/workspace"
+
 
 class ContainerVerificationError(RuntimeError):
     """容器阶段违反了可审计边界。"""
@@ -318,7 +320,7 @@ async def run_sufficiency_container(
         started = True
         await runtime.upload_dir(workspace, "/home/user/workspace")
         chmod = await runtime.exec(
-            "chmod -R a-w /home/user/workspace && find /home/user/workspace -type f -exec chmod a+r {} +",
+            READ_ONLY_WORKSPACE_COMMAND,
             cwd="/",
             timeout_sec=30,
             user="root",
