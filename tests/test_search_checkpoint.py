@@ -260,14 +260,14 @@ def test_interrupted_checkpoint_save_preserves_previous_snapshot(tmp_path, monke
 
 
 @pytest.mark.parametrize("tampered", [False, True])
-def test_native_cli_cache_is_bound_to_complete_terminal_stdout(
+def test_native_cli_stdout_and_collected_cache_are_bound_independently(
     tmp_path, monkeypatch, tampered,
 ):
     from types import SimpleNamespace
 
     from traceforge.reconstruction.search_environment import _review_search_rollouts
 
-    original, _, _ = recorded_network(tmp_path / "native-cache", monkeypatch)
+    original, trial = native_cache_trial(tmp_path, monkeypatch, "")
     stdout = (original.root / "calls.jsonl").read_text()
     result = json.dumps({"output": stdout, "exit_code": 0}, ensure_ascii=False)
     event = {
@@ -279,13 +279,17 @@ def test_native_cli_cache_is_bound_to_complete_terminal_stdout(
     }
     if tampered:
         event["result"] = result + "伪造"
+    trial["tool_events"] = [event]
     network = SearchTools(tmp_path / "researcher-web")
 
     def review(**kwargs):
         assert not tampered
-        assert network.pages["https://example.org/paper"]["text"] == "前段正文与未读尾部"
-        assert network.calls[0]["native_result_sha256"] == event["result_sha256"]
-        assert network.calls[0]["native_tool_name"] == "terminal"
+        delivered = json.loads(kwargs["instruction"])["trials"][0]
+        assert delivered["source_snapshots"]["pages"][0]["text"] == "前段正文与未读尾部"
+        assert delivered["tool_events"] == [event]
+        assert (delivered["source_snapshots"]["calls"][0]["raw_sha256"]
+                == original.calls[0]["raw_sha256"])
+        assert network.pages == {} and network.calls == []
         return SimpleNamespace(completed=True, errors=[], payload={
             "decision": "COMPLETE", "requirements": [],
         })
@@ -295,9 +299,7 @@ def test_native_cli_cache_is_bound_to_complete_terminal_stdout(
         environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
                      "context_messages": []},
         agent=SimpleNamespace(run=review), session=AgentSession(), output_root=tmp_path,
-        native_trials=[{
-            "trial": "native-01", "tool_events": [event], "web_cache_root": str(original.root),
-        }], network=network,
+        native_trials=[trial], network=network,
     )
     assert output["decision"] == ("BLOCKED" if tampered else "COMPLETE")
     if tampered:
@@ -417,3 +419,163 @@ def test_legacy_text_snapshot_without_format_keeps_original_body(tmp_path, monke
     resumed.restore(original.root, origin="solver:legacy", tool_results=events)
     assert resumed.pages["https://example.org/paper"]["text"] == data["text"]
     assert resumed.open("https://example.org/paper")["text"] == data["text"]
+
+
+def native_cache_trial(root, monkeypatch, visible_output):
+    """实际回收的来源和模型看到的终端输出分别绑定。"""
+    cache = root / "native-1/artifacts/logs/artifacts/search"
+    original, _, _ = recorded_network(cache, monkeypatch)
+    manifest = root / "native-1/artifacts/manifest.json"
+    manifest.write_text('{"diagnostic_fixture": true}')
+    terminal = json.dumps({"output": visible_output, "exit_code": 0}, ensure_ascii=False)
+    value = [{"type": "text", "text": terminal}]
+    trial = {
+        "trial": "native-1", "completed": True, "answer": "实际回答",
+        "web_cache_root": str(cache),
+        "receipt": {
+            "backend": "native_harbor",
+            "evidence_files": {
+                **{f"artifacts/logs/artifacts/search/{path.name}":
+                   hashlib.sha256(path.read_bytes()).hexdigest()
+                   for path in cache.iterdir()},
+                "artifacts/manifest.json": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            },
+        },
+        "tool_events": [{
+            "tool_call_id": "native-open", "name": "terminal",
+            "arguments": {"command": "traceforge-search open https://example.org/paper | head"},
+            "result": value, "ok": True,
+            "result_sha256": hashlib.sha256(
+                json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
+        }],
+    }
+    return original, trial
+
+
+@pytest.mark.parametrize("visible_output", [
+    "段正文",
+    '{"text":"段正文"}',
+    '{"tool":"web_open","text":"截断',
+    "json.decoder.JSONDecodeError: invalid JSON",
+])
+def test_native_filtered_stdout_does_not_erase_collected_sources(
+    tmp_path, monkeypatch, visible_output,
+):
+    from types import SimpleNamespace
+
+    from traceforge.reconstruction.search_environment import _review_search_rollouts
+
+    original, trial = native_cache_trial(tmp_path, monkeypatch, visible_output)
+    network = SearchTools(tmp_path / "restored")
+
+    def review(**kwargs):
+        request = json.loads(kwargs["instruction"])
+        delivered = request["trials"][0]
+        assert {key: delivered[key] for key in trial} == trial
+        assert "不代表 solver 已读全文" in request["current_stage_instruction"]
+        snapshots = delivered["source_snapshots"]
+        assert snapshots["pages"][0]["text"] == "前段正文与未读尾部"
+        assert network.pages == {} and network.calls == []
+        assert len(snapshots["calls"]) == len(original.calls)
+        for original_call, restored in zip(original.calls, snapshots["calls"], strict=True):
+            assert {key: restored[key] for key in original_call} == original_call
+            assert restored["restored_from"] == "native_solver:native-1"
+            assert "native_result_sha256" not in restored
+        return SimpleNamespace(completed=True, errors=[], payload={
+            "decision": "COMPLETE", "requirements": [{
+                "obligation_id": "inspect", "status": "SOLVER_ERROR",
+                "reason": "来源已交付，模型所见仅是局部或错误输出",
+            }],
+        })
+
+    result = _review_search_rollouts(
+        task={"acceptance_obligations": [{"id": "inspect"}]},
+        environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
+                     "context_messages": []},
+        agent=SimpleNamespace(run=review), session=AgentSession(), output_root=tmp_path / "review",
+        native_trials=[trial], network=network,
+    )
+    assert result["decision"] == "COMPLETE"
+
+
+@pytest.mark.parametrize("damage", ["unbound", "cache", "manifest", "tool_result"])
+def test_native_cache_recovery_rejects_unbound_or_changed_evidence(
+    tmp_path, monkeypatch, damage,
+):
+    from types import SimpleNamespace
+
+    from traceforge.reconstruction.search_environment import _review_search_rollouts
+
+    original, trial = native_cache_trial(tmp_path, monkeypatch, "段正文")
+    if damage == "unbound":
+        trial["receipt"]["evidence_files"] = {}
+    elif damage == "cache":
+        with (original.root / "calls.jsonl").open("a") as stream:
+            stream.write("{}\n")
+    elif damage == "manifest":
+        (tmp_path / "native-1/artifacts/manifest.json").write_text("{}")
+    else:
+        trial["tool_events"][0]["result"] = "伪造工具返回"
+
+    def review(**kwargs):
+        pytest.fail("未绑定或已改变的证据不能发给复核模型")
+
+    result = _review_search_rollouts(
+        task={"acceptance_obligations": [{"id": "inspect"}]},
+        environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
+                     "context_messages": []},
+        agent=SimpleNamespace(run=review), session=AgentSession(), output_root=tmp_path / "review",
+        native_trials=[trial], network=SearchTools(tmp_path / "restored"),
+    )
+    assert result["failure_kind"] == "TRACE_UNAVAILABLE"
+    assert result["decision"] == "BLOCKED"
+
+
+def test_native_trials_keep_distinct_snapshots_of_same_url(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from traceforge.reconstruction.search_environment import _review_search_rollouts
+
+    _, trial1 = native_cache_trial(tmp_path / "first", monkeypatch, "前段正文")
+    second, trial2 = native_cache_trial(tmp_path / "second", monkeypatch, "段正文")
+    trial2["trial"] = "native-2"
+    old_raw = next(second.root.glob("*.raw"))
+    raw = old_raw.read_bytes() + b" "
+    digest = hashlib.sha256(raw).hexdigest()
+    old_digest = old_raw.stem
+    old_raw.unlink()
+    (second.root / f"{digest}.raw").write_bytes(raw)
+    for path in [*second.root.glob("*.json"), second.root / "calls.jsonl"]:
+        path.write_text(path.read_text().replace(old_digest, digest))
+    trial2["receipt"]["evidence_files"].update({
+        f"artifacts/logs/artifacts/search/{path.name}":
+        hashlib.sha256(path.read_bytes()).hexdigest() for path in second.root.iterdir()
+    })
+    del trial2["receipt"]["evidence_files"][f"artifacts/logs/artifacts/search/{old_digest}.raw"]
+    original_trials = json.loads(json.dumps([trial1, trial2]))
+    network = SearchTools(tmp_path / "author")
+
+    def review(**kwargs):
+        request = json.loads(kwargs["instruction"])
+        snapshots = [t["source_snapshots"] for t in request["trials"]]
+        assert [s["pages"][0]["raw_sha256"] for s in snapshots] == [old_digest, digest]
+        assert all(s["pages"][0]["text"] == "前段正文与未读尾部" for s in snapshots)
+        assert [t["tool_events"] for t in request["trials"]] == [
+            trial1["tool_events"], trial2["tool_events"]]
+        assert network.pages == {} and network.calls == []
+        return SimpleNamespace(completed=True, errors=[], payload={
+            "decision": "COMPLETE", "requirements": [{
+                "obligation_id": "inspect", "status": "SUPPORTED",
+                "reason": "分别保留真实抓取，正文相同不构成环境缺口",
+            }],
+        })
+
+    result = _review_search_rollouts(
+        task={"acceptance_obligations": [{"id": "inspect"}]},
+        environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
+                     "context_messages": []},
+        agent=SimpleNamespace(run=review), session=AgentSession(), output_root=tmp_path / "review",
+        native_trials=[trial1, trial2], network=network,
+    )
+    assert result["decision"] == "COMPLETE"
+    assert [trial1, trial2] == original_trials

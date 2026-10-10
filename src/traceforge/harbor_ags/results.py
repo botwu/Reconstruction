@@ -387,10 +387,20 @@ def read_native_trial(
             root / "agent/task-input.json", root / "agent/workspace-initial-manifest.json",
             *final_sources,
         ]
+        web_cache = root / "artifacts/logs/artifacts/search"
+        cache_files: dict[str, str] = {}
+        if domain == "search" and (web_cache.exists() or web_cache.is_symlink()):
+            collection, cache_files = _collected_web_cache(root, web_cache)
+            sources.append(collection)
+            output["web_cache_root"] = str(web_cache)
         output["receipt"]["evidence_files"] = {
             path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sources
         }
+        output["receipt"]["evidence_files"].update({
+            f"artifacts/logs/artifacts/search/{name}": digest
+            for name, digest in cache_files.items()
+        })
         if output["final_stop_reason"] in {"max_tokens", "length", "model_context_window_exceeded"}:
             raise HarborResultError("NATIVE_FINAL_RESPONSE_TRUNCATED")
         if any(block.get("type") == "tool_use" for block in final):
@@ -399,11 +409,6 @@ def read_native_trial(
             raise HarborResultError("NATIVE_FINAL_RESPONSE_INCOMPLETE")
         if not answer.strip():
             raise HarborResultError("NATIVE_FINAL_RESPONSE_EMPTY")
-        web_cache = root / "artifacts/logs/artifacts/search"
-        if domain == "search" and web_cache.is_dir():
-            if not web_cache.resolve().is_relative_to(root):
-                raise HarborResultError("NATIVE_WEB_CACHE_PATH_INVALID")
-            output["web_cache_root"] = str(web_cache.resolve())
         output["completed"] = True
     except (OSError, ValueError, KeyError, TypeError, ImportError, RuntimeError, AttributeError) as exc:
         output["errors"] = [str(exc) if isinstance(exc, HarborResultError) else type(exc).__name__]
@@ -427,6 +432,33 @@ def _workspace_hashes(root: Path) -> dict[str, str]:
             raise HarborResultError(f"FILE_SNAPSHOT_UNSAFE:{path}")
         files[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
     return files
+
+
+def _collected_web_cache(root: Path, cache: Path) -> tuple[Path, dict[str, str]]:
+    """绑定控制端回收的完整来源；不把缓存全文当作 solver 已见的工具返回。"""
+    collection = root / "artifacts/manifest.json"
+    if (any(path.is_symlink() for path in [cache, *cache.parents]
+            if path != root and root in path.parents)
+            or collection.is_symlink() or not cache.is_dir()):
+        raise HarborResultError("NATIVE_WEB_CACHE_PATH_INVALID")
+    if not collection.is_file():
+        raise HarborResultError("NATIVE_WEB_CACHE_COLLECTION_MISSING")
+    try:
+        rows = json.loads(collection.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise HarborResultError("NATIVE_WEB_CACHE_COLLECTION_INVALID") from exc
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise HarborResultError("NATIVE_WEB_CACHE_COLLECTION_INVALID")
+    matches = [row for row in rows if row.get("source") == "/logs/artifacts"
+               or row.get("destination") == "artifacts/logs/artifacts"]
+    if (len(matches) != 1
+            or matches[0].get("source") != "/logs/artifacts"
+            or matches[0].get("destination") != "artifacts/logs/artifacts"
+            or matches[0].get("type") != "directory"
+            or matches[0].get("status") != "ok"
+            or matches[0].get("service") is not None):
+        raise HarborResultError("NATIVE_WEB_CACHE_COLLECTION_INVALID")
+    return collection, _workspace_hashes(cache)
 
 
 def _collected_workspace(

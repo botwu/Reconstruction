@@ -265,8 +265,109 @@ def test_native_reader_only_exposes_recovered_web_cache(tmp_path, monkeypatch, c
         else:
             cache.mkdir()
             (cache / "calls.jsonl").write_text("{}\n")
+            _web_collection(trial)
     result = read_native_trial(trial, domain="search")
     assert result["web_cache_root"] == (str(cache) if cache_state == "present" else None)
     assert result["completed"] is (cache_state != "outside")
     if cache_state == "outside":
         assert result["errors"] == ["NATIVE_WEB_CACHE_PATH_INVALID"]
+
+
+def _web_collection(trial):
+    manifest = trial / "artifacts/manifest.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps([{
+        "source": "/logs/artifacts", "destination": "artifacts/logs/artifacts",
+        "type": "directory", "status": "ok", "service": None,
+    }]))
+    return manifest
+
+
+def _web_cache(trial):
+    cache = trial / "artifacts/logs/artifacts/search"
+    cache.mkdir(parents=True)
+    (cache / "calls.jsonl").write_text('{"tool":"web_open","text":"完整缓存正文"}\n')
+    (cache / "page.raw").write_bytes(b"complete source")
+    (cache / "page.pdf").write_bytes(b"%PDF-source")
+    return cache, _web_collection(trial)
+
+
+def test_native_reader_binds_collected_cache_without_replacing_visible_result(
+    tmp_path, monkeypatch,
+):
+    trial, _ = _native_trial(tmp_path, monkeypatch)
+    cache, manifest = _web_cache(trial)
+    before = {p.relative_to(trial).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+              for p in trial.rglob("*") if p.is_file()}
+    result = read_native_trial(trial, domain="search")
+    assert result["completed"], result["errors"]
+    assert result["web_cache_root"] == str(cache)
+    assert result["tool_events"][0]["result"] == "正文" * 1000
+    files = result["receipt"]["evidence_files"]
+    for path in (manifest, *cache.iterdir()):
+        name = path.relative_to(trial).as_posix()
+        assert files[name] == before[name]
+    assert {p.relative_to(trial).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in trial.rglob("*") if p.is_file()} == before
+    (cache / "page.raw").write_bytes(b"changed source")
+    reread = read_native_trial(trial, domain="search")
+    name = "artifacts/logs/artifacts/search/page.raw"
+    assert reread["receipt"]["evidence_files"][name] != files[name]
+    assert reread["tool_events"] == result["tool_events"]
+
+
+@pytest.mark.parametrize("failure", [
+    "missing", "failed", "destination", "source", "duplicate", "service", "object",
+])
+def test_native_reader_rejects_unbound_cache_collection(tmp_path, monkeypatch, failure):
+    trial, _ = _native_trial(tmp_path, monkeypatch)
+    _, manifest = _web_cache(trial)
+    rows = json.loads(manifest.read_text())
+    if failure == "missing":
+        manifest.unlink()
+    else:
+        if failure == "failed":
+            rows[0]["status"] = "failed"
+        elif failure == "destination":
+            rows[0]["destination"] = "artifacts/other"
+        elif failure == "source":
+            rows[0]["source"] = "/other"
+        elif failure == "duplicate":
+            rows.append(dict(rows[0]))
+        elif failure == "service":
+            rows[0]["service"] = "other"
+        else:
+            rows = {"files": []}
+        manifest.write_text(json.dumps(rows))
+    result = read_native_trial(trial, domain="search")
+    assert not result["completed"]
+    assert result["web_cache_root"] is None
+    assert result["errors"] == [
+        "NATIVE_WEB_CACHE_COLLECTION_MISSING" if failure == "missing"
+        else "NATIVE_WEB_CACHE_COLLECTION_INVALID"
+    ]
+
+
+@pytest.mark.parametrize("failure", ["file_symlink", "parent_symlink", "manifest_symlink", "fifo"])
+def test_native_reader_rejects_unsafe_collected_cache(tmp_path, monkeypatch, failure):
+    trial, _ = _native_trial(tmp_path, monkeypatch)
+    cache, manifest = _web_cache(trial)
+    if failure == "file_symlink":
+        (cache / "alias.raw").symlink_to(cache / "page.raw")
+    elif failure == "parent_symlink":
+        original = cache.parent
+        moved = trial / "moved"
+        original.rename(moved)
+        original.symlink_to(moved, target_is_directory=True)
+    elif failure == "manifest_symlink":
+        target = tmp_path / "manifest.json"
+        manifest.rename(target)
+        manifest.symlink_to(target)
+    else:
+        import os
+
+        os.mkfifo(cache / "unsafe.pipe")
+    result = read_native_trial(trial, domain="search")
+    assert not result["completed"]
+    assert result["web_cache_root"] is None
+    assert result["errors"][0].startswith(("NATIVE_WEB_CACHE_", "FILE_SNAPSHOT_UNSAFE"))

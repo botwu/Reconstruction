@@ -336,43 +336,30 @@ def _complete_search_environment(
     return environment
 
 
-def _native_cache_tool_results(trial: dict[str, Any]) -> list[dict[str, Any]]:
-    """将原生 terminal 完整 stdout 绑定到 CLI 回执，不由分页返回生成原始抓取。"""
-    returned = []
+def _native_cache_files(trial: dict[str, Any]) -> dict[str, str]:
+    """绑定已回收的来源快照；终端实际所见另由原始 tool_events 保留。"""
     for event in trial.get("tool_events", []):
-        if (event.get("name") != "terminal"
-                or "traceforge-search" not in event.get("arguments", {}).get("command", "")):
-            continue
-        result = event.get("result")
-        digest = hashlib.sha256(
-            json.dumps(result, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        digest = hashlib.sha256(json.dumps(
+            event.get("result"), ensure_ascii=False, sort_keys=True,
+        ).encode()).hexdigest()
         if digest != event.get("result_sha256"):
-            raise ValueError(f"原生检索工具正文哈希不匹配：{event.get('tool_call_id')}")
-        if isinstance(result, list):
-            result = "\n".join(block["text"] for block in result
-                               if block.get("type") == "text" and isinstance(block.get("text"), str))
-        if not isinstance(result, str):
-            raise ValueError(f"原生检索工具没有完整文本返回：{event.get('tool_call_id')}")
-        try:
-            terminal = json.loads(result)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"原生检索 terminal 返回不可解析：{event['tool_call_id']}") from exc
-        if not isinstance(terminal, dict) or not isinstance(terminal.get("output"), str):
-            raise ValueError(f"原生检索 terminal 缺少 output：{event['tool_call_id']}")
-        for line in terminal["output"].splitlines():
-            try:
-                call = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(call, dict) or call.get("tool") not in {"web_open", "web_search"}:
-                continue
-            body = json.dumps(call, ensure_ascii=False)
-            returned.append({
-                "name": call["tool"], "tool_call_id": event["tool_call_id"], "result": body,
-                "result_sha256": hashlib.sha256(body.encode()).hexdigest(),
-                "native_result_sha256": digest, "native_tool_name": event["name"],
-            })
-    return returned
+            raise ValueError(f"原生工具正文哈希不匹配：{event.get('tool_call_id')}")
+    prefix = "artifacts/logs/artifacts/search/"
+    evidence = trial.get("receipt", {}).get("evidence_files", {})
+    files = {name[len(prefix):]: digest for name, digest in evidence.items()
+             if name.startswith(prefix)}
+    if not files or "artifacts/manifest.json" not in evidence:
+        raise ValueError("原生检索缓存缺少已绑定的回收快照，请重新读取完整 native trial")
+    cache = Path(trial["web_cache_root"]).resolve()
+    if cache.parts[-4:] != ("artifacts", "logs", "artifacts", "search"):
+        raise ValueError("原生检索缓存不在已约定的回收目录")
+    manifest = cache.parents[3] / "artifacts/manifest.json"
+    try:
+        if hashlib.sha256(manifest.read_bytes()).hexdigest() != evidence["artifacts/manifest.json"]:
+            raise ValueError("原生检索回收记录哈希不匹配")
+    except OSError as exc:
+        raise ValueError("原生检索回收记录缺失") from exc
+    return files
 
 
 def _review_search_rollouts(
@@ -381,17 +368,21 @@ def _review_search_rollouts(
     native_trials: list[dict[str, Any]] | None = None,
     network: SearchTools | None = None,
 ) -> dict[str, Any]:
-    trials = list(native_trials) if native_trials is not None else []
+    trials = [dict(trial) for trial in native_trials] if native_trials is not None else []
     trial_name = ""
     try:
-        if network is not None:
-            for trial in trials:
-                trial_name = trial["trial"]
-                if trial.get("web_cache_root"):
-                    network.restore(
-                        Path(trial["web_cache_root"]), origin=f"native_solver:{trial_name}",
-                        tool_results=_native_cache_tool_results(trial),
-                    )
+        for index, trial in enumerate(trials):
+            trial_name = trial["trial"]
+            if trial.get("web_cache_root"):
+                # 各次抓取拥有独立版本；后审资料不能覆盖作者的任务初态。
+                snapshots = SearchTools(output_root / "researcher-review/sources" / str(index))
+                snapshots.restore(
+                    Path(trial["web_cache_root"]), origin=f"native_solver:{trial_name}",
+                    checkpoint_files=_native_cache_files(trial),
+                )
+                trial["source_snapshots"] = {
+                    "pages": list(snapshots.pages.values()), "calls": snapshots.calls,
+                }
         for root in (() if native_trials is not None else
                      sorted((output_root / "rollouts").glob("trial-*"))):
             trial_name = root.name
@@ -428,6 +419,14 @@ def _review_search_rollouts(
     request = {
         "current_stage_instruction": (
             "补全和真实 rollout 已结束，现在复核 trials 中的实际读取与回答。"
+            "已回收的检索缓存不代表 solver 已读全文；实际所见以原始 tool_events.result 为准。"
+            "终端可提取字段、截断输出或返回解析错误，不得用缓存全文替代这些实际结果，"
+            "也不得仅因终端没有保留完整 JSON 判为环境缺口。"
+            "source_snapshots 按 trial 保留完整来源及版本，仅用于审核；"
+            "新增或更新来源本身不证明初态缺口。"
+            "必要资料须由作者真实取得并纳入交付，不能仅引用后审缓存绕过材料覆盖检查。"
+            "view_image 访问作者缓存，仅在 raw_sha256 相同时代表对应 trial 的图片；"
+            "未取得像素不得声称已看图。"
             "按 search_review 角色返回 decision 和逐项 requirements；"
             "不能再返回补全阶段的 status=READY、excluded_events 或 requirement_coverage。"
         ),

@@ -63,7 +63,7 @@ traceforge-search search "查询内容"
 traceforge-search open "https://example.org/source" --offset 0 --limit 8000
 ```
 
-原始返回、抓取摘要和调用记录写入 `/logs/artifacts/search/`；不同命令进程的翻页复用第一次保存的正文。任务配置仅包含 `SERPER_API_KEY`、`JINA_API_KEY`、`TRACEFORGE_FETCH_PROVIDER` 的环境变量模板，实际凭据由运行方注入，不随任务交付。
+原始返回、抓取摘要和调用记录写入 `/logs/artifacts/search/`；不同命令进程的翻页复用第一次保存的正文。 原生轨迹读取器核对 Harbor 的目录回收记录，并将检索缓存逐文件 SHA256 加入同一证据清单。缓存说明实际回收了哪些来源，solver 实际看到的内容仍取完整原生工具返回：`python` 提取字段、`head` 截断及解析错误都原样保留。后审不要求这些终端输出仍是完整 JSON，也不能以缓存全文代替实际所见；缺少绑定或哈希不一致时仍停止后审。任务配置仅包含 `SERPER_API_KEY`、`JINA_API_KEY`、`TRACEFORGE_FETCH_PROVIDER` 的环境变量模板，实际凭据由运行方注入，不随任务交付。
 
 目前 search 自由文本回答没有自动 verifier。按已约定的人工核查方式，使用 Harbor 的 `--disable-verification`，不伪造 `test.sh`、参考答案或成功奖励。`tests/README.md` 和任务外的 `delivery.json` 明确记录此限制。
 
