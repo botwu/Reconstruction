@@ -217,6 +217,32 @@ def test_native_run_preserves_text_and_capture_credentials_on_both_exits(
         assert name not in execution["env"]
 
 
+def _vision_registry(monkeypatch, native):
+    """只替代注册表存储；可用性判断由实际 gateway 提供。"""
+    def auxiliary_check():
+        raise AssertionError("原生模式不得解析辅助视觉客户端")
+
+    entry = SimpleNamespace(
+        name="vision_analyze", toolset="vision", schema={"name": "vision_analyze"},
+        handler=object(), check_fn=auxiliary_check, requires_env=[], is_async=True,
+        description="读取原图", emoji="👁️", max_result_size_chars=8192,
+        dynamic_schema_overrides=None,
+    )
+    video = SimpleNamespace(name="video_analyze", check_fn=auxiliary_check)
+    entries = {entry.name: entry, video.name: video}
+
+    def register(**kwargs):
+        entries[kwargs["name"]] = SimpleNamespace(**kwargs)
+
+    registry = SimpleNamespace(
+        get_entry=entries.get, deregister=entries.pop, register=register,
+    )
+    vision = SimpleNamespace(_should_use_native_vision_fast_path=native)
+    monkeypatch.setitem(sys.modules, "tools.vision_tools", vision)
+    monkeypatch.setitem(sys.modules, "tools.registry", SimpleNamespace(registry=registry))
+    return vision, registry, entry, video
+
+
 @pytest.mark.parametrize("fails", [False, True])
 def test_native_vision_uses_private_hermes_home_and_restores_outer_state(
     tmp_path, monkeypatch, fails,
@@ -234,9 +260,14 @@ def test_native_vision_uses_private_hermes_home_and_restores_outer_state(
     def native():
         return True
 
-    vision = SimpleNamespace(_should_use_native_vision_fast_path=native)
-    monkeypatch.setitem(sys.modules, "tools.vision_tools", vision)
+    vision, registry, original_entry, video = _vision_registry(monkeypatch, native)
     observed = []
+    callbacks = []
+    monkeypatch.setattr(
+        gateway_harness.atexit, "register",
+        lambda callback, *args, **kwargs: callbacks.append((callback, args, kwargs)),
+    )
+    exit_log = []
 
     def run_path(*args, **kwargs):
         import os
@@ -249,6 +280,14 @@ def test_native_vision_uses_private_hermes_home_and_restores_outer_state(
         config = yaml.safe_load((home / "config.yaml").read_text())
         assert config["model"]["supports_vision"] is True
         assert config["agent"]["image_input_mode"] == "native"
+        assert registry.get_entry("vision_analyze").check_fn() is True
+        assert registry.get_entry("video_analyze") is video
+
+        def hermes_exit():
+            (home / "agent.log").write_text("退出清理")
+            exit_log.append("写入成功")
+
+        gateway_harness.atexit.register(hermes_exit)
         if fails:
             raise RuntimeError("actual runner failed")
 
@@ -262,9 +301,15 @@ def test_native_vision_uses_private_hermes_home_and_restores_outer_state(
 
     assert os.environ["HERMES_HOME"] == str(old_home)
     assert (old_home / "config.yaml").read_text() == "model: {supports_vision: false}\n"
-    assert observed and not observed[0].exists()
+    assert observed and observed[0].exists()
     assert module.AIAgent is NativeAgent
     assert vision._should_use_native_vision_fast_path is native
+    assert vars(registry.get_entry("vision_analyze")) == vars(original_entry)
+    assert registry.get_entry("video_analyze") is video
+    for callback, args, kwargs in reversed(callbacks):
+        callback(*args, **kwargs)
+    assert exit_log == ["写入成功"]
+    assert not observed[0].exists()
 
 
 def test_native_configs_offer_vision_and_match_exact_input_appendix():
@@ -292,8 +337,7 @@ def test_native_vision_shared_dispatch_never_calls_auxiliary(monkeypatch, native
             raise RuntimeError("读取原生能力失败")
         return native_route
 
-    module = SimpleNamespace(_should_use_native_vision_fast_path=original_native)
-    monkeypatch.setitem(sys.modules, "tools.vision_tools", module)
+    module, registry, original_entry, video = _vision_registry(monkeypatch, original_native)
     monkeypatch.setenv("HERMES_TOOLSETS", "file,terminal,vision")
 
     # 原版公共 handler 的分支结构；顺序与并发都直接调用模块，不经过 Agent 方法。
@@ -305,6 +349,13 @@ def test_native_vision_shared_dispatch_never_calls_auxiliary(monkeypatch, native
         return "辅助摘要"
 
     with gateway_harness._native_vision_home(), ThreadPoolExecutor(max_workers=1) as pool:
+        check = registry.get_entry("vision_analyze").check_fn
+        assert registry.get_entry("video_analyze") is video
+        if native_route is True:
+            assert check() is True
+        else:
+            with pytest.raises(RuntimeError):
+                check()
         for run in (dispatch, lambda: pool.submit(dispatch).result()):
             if native_route is True:
                 assert run() == "原图"
@@ -313,3 +364,4 @@ def test_native_vision_shared_dispatch_never_calls_auxiliary(monkeypatch, native
                     run()
     assert calls == (["native", "native"] if native_route is True else [])
     assert module._should_use_native_vision_fast_path is original_native
+    assert vars(registry.get_entry("vision_analyze")) == vars(original_entry)

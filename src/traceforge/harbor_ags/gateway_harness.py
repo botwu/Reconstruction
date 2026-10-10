@@ -1,7 +1,9 @@
 """AGS 内执行的小入口；原生 harness 的输入、工具和轨迹写入保持复用。"""
 
+import atexit
 import os
 import runpy
+import shutil
 import tempfile
 from contextlib import contextmanager
 from importlib import import_module
@@ -39,34 +41,56 @@ def _native_vision_home():
         yield
         return
     previous = os.environ.get("HERMES_HOME")
-    with tempfile.TemporaryDirectory(prefix="traceforge-native-vision-") as home:
-        config = Path(home) / "config.yaml"
-        config.write_text(
-            "model:\n  supports_vision: true\nagent:\n  image_input_mode: native\n",
-            encoding="utf-8",
-        )
-        config.chmod(0o600)
-        os.environ["HERMES_HOME"] = home
+    home = tempfile.mkdtemp(prefix="traceforge-native-vision-")
+    # 先注册，退出时最后清理，让 Hermes 后注册的清理函数仍可写入日志。
+    atexit.register(shutil.rmtree, home, ignore_errors=True)
+    config = Path(home) / "config.yaml"
+    config.write_text(
+        "model:\n  supports_vision: true\nagent:\n  image_input_mode: native\n",
+        encoding="utf-8",
+    )
+    config.chmod(0o600)
+    os.environ["HERMES_HOME"] = home
+    try:
+        vision = import_module("tools.vision_tools")
+        registry = import_module("tools.registry").registry
+        original_entry = registry.get_entry("vision_analyze")
+        if original_entry is None:
+            raise RuntimeError("Hermes 未注册原生图像工具 vision_analyze")
+        original_native = vision._should_use_native_vision_fast_path
+        metadata = {
+            key: getattr(original_entry, key)
+            for key in (
+                "name", "toolset", "schema", "handler", "requires_env", "is_async",
+                "description", "emoji", "max_result_size_chars", "dynamic_schema_overrides",
+            )
+        }
+
+        def require_native():
+            if original_native() is not True:
+                raise RuntimeError("原生图像通路未启用，禁止调用辅助视觉模型")
+            return True
+
+        def register_vision(check_fn):
+            registry.deregister("vision_analyze")
+            registry.register(**metadata, check_fn=check_fn)
+
+        # 模板的可用性检查要求辅助模型；原生模式只检查实际像素通路。
+        # 同一判断也覆盖公共 handler 的顺序和并发工具执行。
+        vision._should_use_native_vision_fast_path = require_native
         try:
-            vision = import_module("tools.vision_tools")
-            original_native = vision._should_use_native_vision_fast_path
-
-            def require_native():
-                if original_native() is not True:
-                    raise RuntimeError("原生图像通路未启用，禁止调用辅助视觉模型")
-                return True
-
-            # 公共 handler 的判断函数同时覆盖顺序和并发工具执行。
-            vision._should_use_native_vision_fast_path = require_native
+            register_vision(require_native)
+            yield
+        finally:
             try:
-                yield
+                register_vision(original_entry.check_fn)
             finally:
                 vision._should_use_native_vision_fast_path = original_native
-        finally:
-            if previous is None:
-                os.environ.pop("HERMES_HOME", None)
-            else:
-                os.environ["HERMES_HOME"] = previous
+    finally:
+        if previous is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = previous
 
 
 def main():
