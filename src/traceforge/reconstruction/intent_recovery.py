@@ -23,7 +23,7 @@ from traceforge.reconstruction.session_parser import indexed_system_messages
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v20-failure-evidence-boundary"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v21-input-necessity"
 _STUB_OBSERVABLE = "replayed excerpts still present"
 _REVIEW_ONLY = re.compile(
     r"(?i)(只读(?:代码)?(?:评审|审查)|只审查(?:并)?不修改|只查看.*不修改|"
@@ -179,11 +179,22 @@ def _prompt(
         "意图提取阶段不要联网搜索或发明工作区路径；只绑定 ALLOWED_OBSERVED_PATHS。"
         "这是当前解析角色的运行约束，不能复制成原任务的 mandatory_constraints/prohibitions。"
         "这些字段只能保留原用户或原系统对该任务实际声明的约束；只读要求不自动等于禁止网络或运行测试。",
-        "路径按证据角色绑定：引用用户消息中实际要求读取/修改的路径是初始输入；明确新增/生成的路径是执行输出，不要求 task-start 已存在。格式示例、分类词、工具正文中的字符串不是环境依赖。每条义务只使用其 evidence_ref_ids 引用的用户要求，不能把其他消息的平台说明转成依赖。",
+        "路径和附件按原用户目的绑定：对象定位或背景引用不同于必须读取的数据、复刻或比较的设计基准。"
+        "若其他原始证据已足以定位对象，不额外要求读取该引用或与之比较；明确要求的资料和视觉目标仍须保留，不按文件类型免检。"
+        "格式示例、分类词、工具正文中的字符串不是环境依赖。"
+        "每条义务只使用其 evidence_ref_ids 引用的用户要求，不能把其他消息的平台说明转成依赖。",
         "PATH_ALIASES 是由原始路径和 Replay 工作目录确定的坐标转换；task_instruction、environment_bindings 和 response_contract 中的路径统一使用右侧工作区路径。不能按 basename 猜测路径。",
-        "initial_required_paths are task-start inputs; they may name an explicitly referenced but currently missing input and must remain a blocker. output_paths are only explicit new/generated final files. required_paths is their union. Listing-only names are not bindings. When FILE_BINDING_PATHS is empty, do not invent a project.",
+        "initial_required_paths 只绑定完成原义务确需其内容的初态输入；"
+        "必要内容即使未捕获，仍须保留缺口。"
+        "output_paths 是明确新增或生成的最终文件，不要求初态存在；required_paths 是二者并集。"
+        "Listing-only names are not bindings. "
+        "When FILE_BINDING_PATHS is empty, do not invent a project.",
         "Classify every acceptance obligation exactly once in environment_bindings. Do not omit an obligation or infer a missing binding from shared context; missing bindings are a REVIEW error.",
-        "FILE 表示该义务的完成状态可以从沙盒文件或本地程序行为中完整验证。observable 只描述用户要求的最终行为，不规定实现步骤、修改测试文件或运行某个测试命令，除非原用户明确提出这些要求。不能仅检查初始文件仍然存在。",
+        "FILE 表示该义务的完成状态可以从沙盒文件或本地程序行为中完整验证。"
+        "observable 只描述用户要求的最终行为，不规定实现步骤、修改测试文件或运行某个测试命令，"
+        "除非原用户明确提出这些要求。"
+        "原用户明确的验证范围须在任务说明、observable 和 success_criteria 中一致保留；"
+        "仅代码／语法检查不能扩为全系统联调或生产构建。不能仅检查初始文件仍然存在。",
         "每条义务应对应可独立判定的原用户要求；用户的省略、指代和“继续”可结合真实上下文还原。"
         "代码或行为修复及其必要验证可属于同一 FILE 义务，不因助手承诺测试就新增交付。"
         "原用户确实要求分析、报告或回答时，须保留该响应要求并独立归为 NON_FILE；"
