@@ -12,13 +12,14 @@ from traceforge.reconstruction.search_tools import SearchTools
 from traceforge.reconstruction.session_source import indexed_session
 
 
-def recorded_network(root, monkeypatch):
+def recorded_network(root, monkeypatch, *, markdown=None):
     tools = SearchTools(root)
     tools._fetch_provider = "serper"
     tools._serper_key = "test-only"
     raw = json.dumps({
         "text": "前段正文与未读尾部", "metadata": {"title": "真实资料"},
         "jsonld": {"author": [{"name": "甲"}, {"name": "乙"}]},
+        **({"markdown": markdown} if markdown is not None else {}),
     }, ensure_ascii=False).encode()
     digest = hashlib.sha256(raw).hexdigest()
 
@@ -352,3 +353,67 @@ def test_result_points_to_latest_review_checkpoint_including_new_sources(
     assert session.messages[-1]["content"] == "真实review阶段反馈"
     assert "https://example.org/new-review-paper" in restored.pages
     assert outcome["environment_review"] == decision
+
+
+def test_markdown_restore_preserves_unread_links_and_jsonld(tmp_path, monkeypatch):
+    markdown = "# 费率\n\n![未读取的费率图](https://example.org/rates.jpeg)\n尾部"
+    original, events, _ = recorded_network(tmp_path / "old", monkeypatch, markdown=markdown)
+    resumed = SearchTools(tmp_path / "new")
+    resumed.restore(original.root, origin="solver:trial-01", tool_results=events)
+    page = resumed.open("https://example.org/paper", offset=5)
+    assert page["text"] == markdown[5:] and page["body_format"] == "markdown"
+    assert page["jsonld"] == original.pages["https://example.org/paper"]["jsonld"]
+    assert "image_sha256" not in page and resumed.ready() is False
+
+
+@pytest.mark.parametrize("damage", ["page_format", "call_format", "unknown_format", "body"])
+def test_markdown_restore_rejects_format_or_body_mismatch(tmp_path, monkeypatch, damage):
+    original, events, _ = recorded_network(tmp_path / "old", monkeypatch, markdown="# 原始正文")
+    page_path = next(original.root.glob("*.json"))
+    page = json.loads(page_path.read_text())
+    if damage == "call_format":
+        call = json.loads(events[0]["result"])
+        call["body_format"] = "text"
+        result = json.dumps(call, ensure_ascii=False)
+        events[0]["result"] = result
+        events[0]["result_sha256"] = hashlib.sha256(result.encode()).hexdigest()
+        (original.root / "calls.jsonl").write_text(result + "\n")
+    elif damage == "page_format":
+        page["body_format"] = "text"
+    elif damage == "unknown_format":
+        page["body_format"] = "html"
+    else:
+        page["text"] += "伪造"
+    page_path.write_text(json.dumps(page, ensure_ascii=False))
+    resumed = SearchTools(tmp_path / "new")
+    with pytest.raises(ValueError):
+        resumed.restore(original.root, origin="solver:trial-01", tool_results=events)
+    assert resumed.pages == {} and resumed.calls == []
+
+
+def test_legacy_text_snapshot_without_format_keeps_original_body(tmp_path, monkeypatch):
+    original, events, digest = recorded_network(tmp_path / "old", monkeypatch)
+    raw_path = original.root / f"{digest}.raw"
+    data = json.loads(raw_path.read_bytes())
+    data["markdown"] = "# 旧版未选用的 Markdown"
+    raw = json.dumps(data, ensure_ascii=False).encode()
+    new_digest = hashlib.sha256(raw).hexdigest()
+    raw_path.unlink()
+    (original.root / f"{new_digest}.raw").write_bytes(raw)
+    page_path = next(original.root.glob("*.json"))
+    page = json.loads(page_path.read_text())
+    page.pop("body_format", None)
+    page["raw_sha256"] = new_digest
+    page_path.write_text(json.dumps(page, ensure_ascii=False))
+    call = json.loads(events[0]["result"])
+    call.pop("body_format", None)
+    call["raw_sha256"] = new_digest
+    result = json.dumps(call, ensure_ascii=False)
+    events[0]["result"] = result
+    events[0]["result_sha256"] = hashlib.sha256(result.encode()).hexdigest()
+    (original.root / "calls.jsonl").write_text(result + "\n")
+
+    resumed = SearchTools(tmp_path / "new")
+    resumed.restore(original.root, origin="solver:legacy", tool_results=events)
+    assert resumed.pages["https://example.org/paper"]["text"] == data["text"]
+    assert resumed.open("https://example.org/paper")["text"] == data["text"]

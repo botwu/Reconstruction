@@ -66,3 +66,64 @@ def test_jsonld_does_not_replace_missing_page_body(serper_tools, monkeypatch):
 
     assert page["success"] is False
     assert "未返回可读正文" in page["error"]
+
+
+def test_serper_markdown_keeps_real_rate_image_and_source_link(serper_tools, monkeypatch):
+    # 真实 FBT 返回的最小等价片段：纯文本没有图片 URL，Markdown 保留来源。
+    image = (
+        '![](https://p16-oec-general-useast5.ttcdn-us.com/'
+        'tos-useast5-i-omjb5zjo8w-tx/9e76a19c14b04385be1e17913340a4e0'
+        '~tplv-fhlh96nyum-origin-jpeg.jpeg?'
+        'dr=10761&'
+        'amp;t=e19dd3fe&'
+        'amp;ps=933b5bde&'
+        'amp;shp=f36fc0ff&'
+        'amp;shcp=9b759fb9&'
+        'amp;idc=useast5&'
+        'amp;from=4084187391)'
+    )
+    link = (
+        '[Free Shipping Program](https://seller-us.tiktok.com/university/essay?'
+        'course_type=1&'
+        'from=search%7BcontentIdParams%7D&'
+        'identity=1&'
+        'knowledge_id=4442975095555886&'
+        'role=1)'
+    )
+    markdown = "## FBT Fees\n\n" + image + "\n\n" + link
+    response = {"text": "FBT Fees", "markdown": markdown,
+                "metadata": {"title": "FBT Fees"}, "credits": 1}
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.data))
+        return response, "raw-hash"
+
+    monkeypatch.setattr(serper_tools, "_response", respond)
+    first = serper_tools.open("https://example.org/fbt", limit=20)
+    second = serper_tools.open("https://example.org/fbt", offset=20)
+
+    assert first["text"] + second["text"] == markdown
+    assert first["body_format"] == second["body_format"] == "markdown"
+    assert first["total_chars"] == len(markdown)
+    assert requests == [{"url": "https://example.org/fbt", "includeMarkdown": True}]
+    assert "ocr_page" not in first and "image_sha256" not in first
+
+
+@pytest.mark.parametrize("markdown", [None, "", "   ", 17])
+def test_serper_empty_or_invalid_markdown_uses_text(serper_tools, monkeypatch, markdown):
+    response = {"text": "纯文本正文", "markdown": markdown}
+    monkeypatch.setattr(serper_tools, "_response", lambda request: (response, "raw-hash"))
+    page = serper_tools.open("https://example.org/paper")
+    assert page["success"] and page["text"] == response["text"]
+    assert page["body_format"] == "text"
+
+
+def test_serper_markdown_only_preserves_table_and_jsonld(serper_tools, monkeypatch):
+    markdown = "| 项目 | 金额 |\n| --- | --- |\n| 示例 | 1 |"
+    jsonld = {"@type": "Article", "author": [{"name": "甲"}, {"name": "乙"}]}
+    response = {"markdown": markdown, "metadata": {"title": "表格"}, "jsonld": jsonld}
+    monkeypatch.setattr(serper_tools, "_response", lambda request: (response, "raw-hash"))
+    page = serper_tools.open("https://example.org/table")
+    assert page["success"] and page["text"] == markdown
+    assert page["body_format"] == "markdown" and page["jsonld"] == jsonld

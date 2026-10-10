@@ -482,13 +482,17 @@ class SearchTools:
             if not self._serper_key:
                 raise ValueError("未配置 Serper 凭据")
             request = urllib.request.Request(
-                "https://scrape.serper.dev/", data=json.dumps({"url": url}).encode(),
+                "https://scrape.serper.dev/",
+                data=json.dumps({"url": url, "includeMarkdown": True}).encode(),
                 headers={"X-API-KEY": self._serper_key, "Content-Type": "application/json"},
             )
             data, digest = self._response(request)
-            if not isinstance(data.get("text"), str) or not data["text"].strip():
+            body_format = ("markdown" if isinstance(data.get("markdown"), str)
+                           and data["markdown"].strip() else "text")
+            text = data.get(body_format)
+            if not isinstance(text, str) or not text.strip():
                 raise ValueError("Serper 未返回可读正文")
-            return {"success": True, "url": url, "text": data["text"],
+            return {"success": True, "url": url, "text": text, "body_format": body_format,
                     "title": (data.get("metadata") or {}).get("title", ""),
                     "metadata": data.get("metadata", {}), "raw_sha256": digest,
                     **({"jsonld": data["jsonld"]} if "jsonld" in data else {}),
@@ -629,8 +633,13 @@ class SearchTools:
                     _validate_html_page(page, root)
                 elif page.get("content_kind") == "page_text":
                     data = json.loads(raw_path.read_bytes())
-                    text = data.get("text") if page.get("provider") == "serper" else (
-                        data.get("data") or {}).get("content")
+                    if page.get("provider") == "serper":
+                        body_format = page.get("body_format", "text")
+                        if body_format not in {"text", "markdown"}:
+                            raise ValueError(f"Serper 缓存正文格式无效：{path}")
+                        text = data.get(body_format)
+                    else:
+                        text = (data.get("data") or {}).get("content")
                     if text != page["text"]:
                         raise ValueError(f"缓存正文与原始抓取不一致：{path}")
                     if page.get("provider") == "serper" and "jsonld" in data:
@@ -640,7 +649,10 @@ class SearchTools:
                 fields = ("raw_sha256", "text", "metadata", "jsonld", "content_kind", "source_ref")
                 if page.get("provider") == "direct_html":
                     fields += ("title", "links", "encoding", "resolved_url")
-                if existing and any(existing.get(key) != page.get(key) for key in fields):
+                if existing and (
+                    any(existing.get(key) != page.get(key) for key in fields)
+                    or existing.get("body_format", "text") != page.get("body_format", "text")
+                ):
                     raise ValueError(f"同一来源快照内容冲突：{url}（{origin}）")
                 for number, item in (existing or {}).get("ocr_pages", {}).items():
                     if number in page.get("ocr_pages", {}) and page["ocr_pages"][number] != item:
@@ -669,6 +681,9 @@ class SearchTools:
                                   "extraction_scope", "limitations")
                         if any(call.get(key) != page.get(key) for key in fields):
                             raise ValueError(f"HTML 工具回执与原始页面来源不一致：{origin}")
+                    if (page is not None and page.get("provider") == "serper"
+                            and call.get("body_format", "text") != page.get("body_format", "text")):
+                        raise ValueError(f"Serper 工具回执与缓存正文格式不一致：{origin}")
                     if call.get("ocr_page") is not None and page is not None:
                         fields = ("content_kind", "extraction_scope", "image_sha256", "ocr_raw_sha256",
                                   "limitations", "versions", "model_sha256", "image_size")
