@@ -7,6 +7,7 @@ import hashlib
 import json
 import shutil
 import tempfile
+from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -28,6 +29,7 @@ from traceforge.reconstruction.session_source import (
     indexed_session,
     message_text,
     source_session_message_indices,
+    tool_timeline,
 )
 from traceforge.reconstruction.verification import run_native_unassessed_rollouts
 
@@ -534,6 +536,35 @@ def _run_search_review(
 
 
 
+def _completion_review_environment(
+    source: dict[str, Any], environment: dict[str, Any],
+) -> dict[str, Any]:
+    """仅在复核请求副本中省去与原消息逐值相同的返回正文。"""
+    originals: dict[int, list[dict[str, Any]]] = {}
+    for record in tool_timeline(source["raw_session"]["messages"], []):
+        index = record.get("tool_message_index")
+        if type(index) is int:
+            originals.setdefault(index, []).append(record)
+    projected = copy.deepcopy(environment)
+    captures = projected.get("captures", [])
+    counts = Counter(capture["tool_message_index"] for capture in captures
+                     if type(capture.get("tool_message_index")) is int)
+    fields = ("call_id", "assistant_message_index", "tool_message_index",
+              "result_text", "result_blocks")
+    for capture in captures:
+        index = capture.get("tool_message_index")
+        if type(index) is not int or counts[index] != 1:
+            continue
+        matches = originals.get(index, [])
+        if len(matches) == 1 and all(
+            key in capture and key in matches[0] and capture[key] == matches[0][key]
+            for key in fields
+        ):
+            capture.pop("result_text")
+            capture.pop("result_blocks")
+    return projected
+
+
 def _review_search_completion(
     *, source: dict[str, Any], task: dict[str, Any], environment: dict[str, Any],
     agent: AgentRuntime, session: AgentSession, network: SearchTools, output_root: Path,
@@ -546,6 +577,8 @@ def _review_search_completion(
             "你独立复核检索环境补全的停止依据，不回答原任务，也不替作者继续联网。"
             "本阶段尚无 rollout，不推断 solver 行为或答案质量。原作者的 BLOCKED 是待核声明。"
             "SOURCE_SESSION 是完整原轨迹；environment 保留已有材料、缺口和覆盖说明，"
+            "captures 仅省去与原消息完全相同的 result_text/result_blocks；按 tool_message_index 查 "
+            "SOURCE_SESSION 原消息，或用 read_evidence 读取完整记录。引用可读取不等于已核实内容。"
             "actual_web_calls 是实际成功及失败返回。按原用户义务检查缺口是否必需，"
             "以及相关原始 URL、已读页面的正文链接、参考文献是否仍有未尝试的恢复路径。"
             "不能把查询服务故障等同于已知来源不可取得，也不能把未尝试声明为可访问或足够。"
@@ -573,7 +606,8 @@ def _review_search_completion(
     return _run_search_review(
         request={
             "review_stage": "completion", "SOURCE_SESSION": indexed_session(source["raw_session"]),
-            "environment": environment, "actual_web_calls": copy.deepcopy(network.calls),
+            "environment": _completion_review_environment(source, environment),
+            "actual_web_calls": copy.deepcopy(network.calls),
         },
         task=task, agent=agent, session=reviewer, role=role,
         output_root=output_root, completion=True,

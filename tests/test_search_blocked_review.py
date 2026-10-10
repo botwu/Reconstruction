@@ -1,5 +1,6 @@
 """补全阻塞须复核原始恢复路径，不能被重复失败查询或评审文字驱动空转。"""
 
+import copy
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -392,3 +393,97 @@ def test_completion_agent_failure_preserves_material_without_semantic_gaps(
     checkpoint = json.loads(Path(result["researcher_checkpoint"]).read_text())
     assert "conversation.json" in checkpoint["files"]
     assert "web/calls.jsonl" in checkpoint["files"]
+
+
+def review_projection(tmp_path, *, change=None):
+    from traceforge.reconstruction.agents.session import AgentSession
+    from traceforge.reconstruction.search_environment import (
+        _review_search_completion,
+        captured_evidence,
+    )
+    from traceforge.reconstruction.session_source import tool_timeline
+
+    raw = {"tools": [{"name": "lookup"}], "messages": [
+        {"role": "system", "content": "保留原始工具内容"},
+        {"role": "user", "content": "比较资料"},
+        {"role": "assistant", "tool_calls": [
+            {"id": "lookup-1", "function": {"name": "lookup", "arguments": '{"query":"资料"}'}},
+        ]},
+        {"role": "tool", "tool_call_id": "lookup-1", "content": [
+            {"type": "text", "text": "第一段正文"}, {"type": "text", "text": "第二段正文"},
+        ]},
+        {"role": "assistant", "tool_calls": [
+            {"id": "lookup-2", "function": {"name": "lookup", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "lookup-2", "content": "后续求解答案"},
+    ]}
+    source = {"raw_session": raw, "tool_timeline": tool_timeline(raw["messages"], [])}
+    evidence = captured_evidence(source)
+    evidence[0]["session_parse"] = {"file_ops": [{"kind": "read", "content": "解析保留的正文"}]}
+    environment = {
+        "captures": [copy.deepcopy(evidence[0])],
+        "evidence_handoff": {"excluded_events": [{"event_index": 1, "reason": "task_answer"}]},
+    }
+    if change:
+        change(environment["captures"])
+    original = copy.deepcopy(environment)
+    session = AgentSession(evidence=evidence, session_context=json.dumps(raw, ensure_ascii=False))
+    observed = {}
+
+    def run(**kwargs):
+        observed.update(request=json.loads(kwargs["instruction"]), session=kwargs["session"])
+        return SimpleNamespace(completed=False, errors=["MODEL_RATE_LIMIT"])
+
+    _review_search_completion(
+        source=source, task={}, environment=environment, agent=SimpleNamespace(run=run),
+        session=session, network=SimpleNamespace(calls=[]), output_root=tmp_path,
+    )
+    assert environment == original
+    assert observed["request"]["SOURCE_SESSION"] == indexed_session(raw)
+    assert observed["session"].evidence == evidence
+    assert observed["session"].session_context == session.session_context
+    return original, observed
+
+
+def test_review_projection_omits_only_exact_duplicate_returns(tmp_path):
+    from traceforge.reconstruction.agents.session import execute_tool
+
+    original, observed = review_projection(tmp_path)
+    projected = observed["request"]["environment"]
+    capture = projected["captures"][0]
+    assert "result_text" not in capture and "result_blocks" not in capture
+    assert {key: value for key, value in original["captures"][0].items()
+            if key not in {"result_text", "result_blocks"}} == capture
+    assert projected["evidence_handoff"] == original["evidence_handoff"]
+    assert len(projected["captures"]) == 1
+    full = json.loads(execute_tool(
+        "read_evidence", {"id": capture["evidence_ref_id"]}, observed["session"],
+    ))
+    assert full == original["captures"][0]
+    message = json.loads(execute_tool(
+        "read_session_message", {"index": capture["tool_message_index"]}, observed["session"],
+    ))
+    assert message == observed["request"]["SOURCE_SESSION"]["messages"][3]["message"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("result_text", "裁剪后正文"),
+    ("result_blocks", [{"index": 0, "text": "不同正文"}]),
+    ("call_id", "另一个调用"),
+    ("assistant_message_index", 0),
+    ("tool_message_index", 5),
+    ("tool_message_index", "3"),
+])
+def test_review_projection_keeps_changed_or_unmatched_capture(tmp_path, field, value):
+    original, observed = review_projection(
+        tmp_path, change=lambda captures: captures[0].update({field: value}),
+    )
+    assert observed["request"]["environment"] == original
+
+
+def test_review_projection_keeps_multiple_returns_at_same_coordinate(tmp_path):
+    def duplicate(captures):
+        captures.append({**copy.deepcopy(captures[0]), "evidence_ref_id": "captured:split"})
+
+    original, observed = review_projection(tmp_path, change=duplicate)
+    assert observed["request"]["environment"] == original
