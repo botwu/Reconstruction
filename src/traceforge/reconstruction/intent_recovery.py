@@ -22,7 +22,7 @@ from traceforge.reconstruction.session_source import indexed_session
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v26-answer-boundary"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v27-goal-completeness"
 
 
 class IntentRecoveryError(RuntimeError):
@@ -82,7 +82,6 @@ def _prompt(
     bindable = list(file_binding_paths or [])
     raw = source.get("raw_session") or {}
     return "\n".join([
-        "Recover a sandbox-solvable task q from the tagged user request.",
         "The original user query is the anchor. task_instruction and core_objective must preserve its main goal and intent type.",
         "Use observed files to ground the same task, but never replace an implementation, repair, or review request with a plan or report unless the user explicitly asked for one.",
         "If the observed environment is incomplete, retain the original acceptance obligations; Completion may enrich the workspace and later sufficiency/verifier gates may return REVIEW.",

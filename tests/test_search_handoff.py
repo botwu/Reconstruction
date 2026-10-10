@@ -122,14 +122,14 @@ def test_actual_rollout_gap_returns_to_same_researcher_and_stops_without_change(
     ]}
 
     def author_run(**kwargs):
-        author_sessions.append(kwargs["session"])
         session = kwargs["session"]
         session.conversation.messages.append({"role": "assistant", "content": "已核对原始材料"})
         if kwargs["role"].name == "search_review":
             prompt = json.loads(kwargs["instruction"])
             assert prompt["trials"][0]["tool_events"]
-            assert prompt["available_evidence_ref_ids"] == [
+            assert [item["evidence_ref_id"] for item in prompt["environment"]["captures"]] == [
                 item["evidence_ref_id"] for item in solver_inputs[-1]]
+            assert session is not author_sessions[0]
             assert prompt["trials"][0]["read_evidence_calls"][0]["id"] == "captured:1"
             assert "requirement_coverage" not in prompt
             missing = len(solver_inputs[-1]) == 1
@@ -140,6 +140,7 @@ def test_actual_rollout_gap_returns_to_same_researcher_and_stops_without_change(
                                   "reason": "实际 read_evidence 不能读取 B" if missing else "A、B 均可读取",
                                   "repair": "恢复 captured:1" if missing else ""}],
             })
+        author_sessions.append(session)
         completions.append(kwargs)
         if len(completions) > 1:
             assert "rollout_feedback" in json.loads(kwargs["instruction"])
@@ -413,13 +414,16 @@ def test_review_phase_retries_wrong_completion_shape_without_rebuilding_environm
         return SimpleNamespace(completed=True, errors=[], payload=payload)
 
     result = _review_search_rollouts(
+        source={"raw_session": {"messages": []}},
         task={"acceptance_obligations": [{"id": "compare"}]},
         environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
                      "context_messages": []},
         agent=SimpleNamespace(run=review), session=session, output_root=tmp_path,
     )
     assert len(calls) == 2
-    assert all(call["role"].name == "search_review" and call["session"] is session for call in calls)
+    assert all(call["role"].name == "search_review" for call in calls)
+    assert calls[0]["session"] is calls[1]["session"]
+    assert calls[0]["session"] is not session
     assert (trial / "answer.md").read_text() == "基于原文完成的回答"
     assert result["decision"] == ("COMPLETE" if corrects_response else "BLOCKED")
 
@@ -484,6 +488,7 @@ def test_review_resolves_solver_reads_from_its_own_input_not_author_inventory(tm
             "decision": "COMPLETE", "requirements": []})
 
     _review_search_rollouts(
+        source={"raw_session": {"messages": []}},
         task={"acceptance_obligations": []},
         environment={"evidence_handoff": {}, "captures": [], "context_messages": [],
                      "requirement_coverage": [{"obligation_id": "q",
@@ -529,6 +534,7 @@ def test_review_api_failure_does_not_become_format_or_material_gap(tmp_path):
                                final_text="Your requests have exceeded token rate limit.")
 
     result = _review_search_rollouts(
+        source={"raw_session": {"messages": []}},
         task={"acceptance_obligations": [{"id": "compare"}]},
         environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
                      "context_messages": []},

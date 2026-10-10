@@ -295,6 +295,7 @@ def test_native_cli_stdout_and_collected_cache_are_bound_independently(
         })
 
     output = _review_search_rollouts(
+        source={"raw_session": {"messages": []}},
         task={"acceptance_obligations": []},
         environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
                      "context_messages": []},
@@ -304,57 +305,6 @@ def test_native_cli_stdout_and_collected_cache_are_bound_independently(
     assert output["decision"] == ("BLOCKED" if tampered else "COMPLETE")
     if tampered:
         assert output["failure_kind"] == "TRACE_UNAVAILABLE"
-
-
-@pytest.mark.parametrize("decision", ["COMPLETE", "BLOCKED"])
-def test_result_points_to_latest_review_checkpoint_including_new_sources(
-    tmp_path, monkeypatch, decision,
-):
-    from types import SimpleNamespace
-
-    from traceforge.reconstruction import search_environment
-
-    network, _, _ = recorded_network(tmp_path / "active-web", monkeypatch)
-    monkeypatch.setattr(search_environment, "SearchTools", lambda root: network)
-    source = {"line_sha256": "fixed-source", "raw_session": {"messages": []}, "tool_timeline": []}
-    task = {"task_id": "q1"}
-    environment = {
-        "task": task, "captures": [], "context_messages": [], "live_references": [],
-        "tools": [], "limitations": [], "errors": [], "missing_inputs": [],
-    }
-
-    def complete(**kwargs):
-        kwargs["session"].conversation.messages.append({
-            "role": "user", "content": kwargs["instruction"],
-        })
-        return environment
-
-    def review(**kwargs):
-        kwargs["session"].conversation.messages.append({
-            "role": "user", "content": "真实review阶段反馈",
-        })
-        kwargs["network"].open("https://example.org/new-review-paper")
-        return {"decision": decision, "errors": ["明确反馈缺口"] if decision == "BLOCKED" else []}
-
-    monkeypatch.setattr(search_environment, "_complete_search_environment", complete)
-    monkeypatch.setattr(search_environment, "export_search_task", lambda *args, **kwargs: tmp_path / "harbor")
-    monkeypatch.setattr(search_environment, "run_search_rollouts", lambda **kwargs: {
-        "status": "ROLLOUT_COMPLETED", "errors": [], "rollouts": [],
-    })
-    monkeypatch.setattr(search_environment, "_review_search_rollouts", review)
-    outcome = search_environment.run_search_task(
-        source=source, task=task, agent=object(), output_root=tmp_path / "run",
-        rollout_agent=SimpleNamespace(),
-    )
-    stored = json.loads((tmp_path / "run/result.json").read_text())
-    assert stored["researcher_checkpoint"] == outcome["researcher_checkpoint"]
-    restored = SearchTools(tmp_path / "restored")
-    session = search_environment._restore_search_checkpoint(
-        Path(stored["researcher_checkpoint"]), source=source, task=task, network=restored,
-    )
-    assert session.messages[-1]["content"] == "真实review阶段反馈"
-    assert "https://example.org/new-review-paper" in restored.pages
-    assert outcome["environment_review"] == decision
 
 
 def test_markdown_restore_preserves_unread_links_and_jsonld(tmp_path, monkeypatch):
@@ -489,6 +439,7 @@ def test_native_filtered_stdout_does_not_erase_collected_sources(
         })
 
     result = _review_search_rollouts(
+        source={"raw_session": {"messages": []}},
         task={"acceptance_obligations": [{"id": "inspect"}]},
         environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
                      "context_messages": []},
@@ -521,6 +472,7 @@ def test_native_cache_recovery_rejects_unbound_or_changed_evidence(
         pytest.fail("未绑定或已改变的证据不能发给复核模型")
 
     result = _review_search_rollouts(
+        source={"raw_session": {"messages": []}},
         task={"acceptance_obligations": [{"id": "inspect"}]},
         environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
                      "context_messages": []},
@@ -571,6 +523,7 @@ def test_native_trials_keep_distinct_snapshots_of_same_url(tmp_path, monkeypatch
         })
 
     result = _review_search_rollouts(
+        source={"raw_session": {"messages": []}},
         task={"acceptance_obligations": [{"id": "inspect"}]},
         environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
                      "context_messages": []},
@@ -579,3 +532,164 @@ def test_native_trials_keep_distinct_snapshots_of_same_url(tmp_path, monkeypatch
     )
     assert result["decision"] == "COMPLETE"
     assert [trial1, trial2] == original_trials
+
+
+def test_postreview_is_fresh_and_keeps_full_evidence_and_author_cache(tmp_path, monkeypatch):
+    import copy
+    from types import SimpleNamespace
+
+    from traceforge.reconstruction.search_environment import _review_search_rollouts
+
+    network, _, _ = recorded_network(tmp_path / "author-web", monkeypatch)
+    raw = {"tools": [{"name": "history"}], "messages": [
+        {"role": "system", "content": "阶段先退回，补证后完成；下一阶段尚未完成"},
+        {"role": "user", "content": "继续安排全部后续任务"},
+    ]}
+    source = {"raw_session": raw}
+    task = {"task_id": "next", "source_task": {"message_indices": [1]},
+            "acceptance_obligations": [{"id": "remaining", "text": "安排全部后续任务"}]}
+    environment = {
+        "task": task, "captures": [], "context_messages": [],
+        "requirement_coverage": [{"obligation_id": "remaining", "evidence_ref_ids": ["message:0"],
+                                 "reason": "作者认为阶段名称足够"}],
+        "evidence_handoff": {}, "limitations": ["只有历史摘要"], "missing_inputs": [],
+        "live_references": list(network.pages.values()), "tools": ["web_open"],
+    }
+    trials = [{"trial": str(i), "answer": "条件计划", "completed": True,
+               "trajectory": {"messages": [{"role": "system", "content": "真实 solver 系统"},
+                                          {"role": "assistant", "content": f"完整思考记录{i}"}],
+                              "tools": [{"name": "terminal"}]},
+               "tool_events": [{"name": "terminal", "arguments": {"command": "read"},
+                                "result": [{"type": "text", "text": "实际局部返回"}]}]}
+              for i in range(2)]
+    author = AgentSession(
+        conversation=AgentConversation(messages=[
+            {"role": "assistant", "content": "作者此前已认为充分"},
+        ]),
+        evidence=[{"evidence_ref_id": "captured:0", "result_text": "原始证据"}],
+        session_context=json.dumps(raw, ensure_ascii=False),
+        web_open_handler=network.open, web_search_handler=network.search,
+        view_image_handler=network.view_image,
+    )
+    before = copy.deepcopy((
+        author.conversation.messages, author.evidence, network.pages, network.calls,
+        source, environment, trials,
+    ))
+    files = {p.name: p.read_bytes() for p in network.root.iterdir()}
+    calls = []
+
+    def review(**kwargs):
+        calls.append(kwargs)
+        reviewer = kwargs["session"]
+        assert reviewer is not author
+        assert reviewer.conversation.messages == []
+        request = json.loads(kwargs["instruction"])
+        assert request["SOURCE_SESSION"] == indexed_session(raw)
+        assert request["environment"] == environment
+        assert request["trials"] == trials
+        assert request["actual_web_calls"] == before[3]
+        assert reviewer.session_context == author.session_context
+        assert reviewer.evidence == author.evidence
+        opened = reviewer.web_open_handler("https://example.org/paper", offset=5)
+        assert opened["text"] == "未读尾部"
+        assert callable(reviewer.web_search_handler) and callable(reviewer.view_image_handler)
+        reviewer.evidence[0]["result_text"] = "只改独立 reviewer"
+        reviewer.conversation.messages.append({"role": "assistant", "content": "独立检查记录"})
+        return SimpleNamespace(completed=True, errors=[], payload={
+            "decision": "REPAIR", "requirements": [{
+                "obligation_id": "remaining", "status": "ENVIRONMENT_GAP",
+                "reason": "交付遗漏影响当前进度的更正链",
+                "repair": "恢复原 system 中的完整进度线索",
+            }],
+        })
+
+    result = _review_search_rollouts(
+        source=source, task=task, environment=environment, agent=SimpleNamespace(run=review),
+        session=author, output_root=tmp_path / "review", native_trials=trials, network=network,
+    )
+    assert result["decision"] == "REPAIR" and len(calls) == 1
+    assert (author.conversation.messages, author.evidence, network.pages, network.calls,
+            source, environment, trials) == before
+    assert {p.name: p.read_bytes() for p in network.root.iterdir()} == files
+
+
+@pytest.mark.parametrize("final_decision", ["COMPLETE", "BLOCKED"])
+def test_postreview_feedback_resumes_author_without_review_history(
+    tmp_path, monkeypatch, final_decision,
+):
+    from types import SimpleNamespace
+
+    from traceforge.reconstruction import search_environment as module
+
+    source = {"line_sha256": "original", "raw_session": {"messages": [
+        {"role": "system", "content": "前一阶段已补证，尚有后续工作"},
+        {"role": "user", "content": "安排后续任务"},
+    ]}, "tool_timeline": []}
+    task = {"task_id": "next", "task_instruction": "安排后续任务",
+            "source_task": {"message_indices": [1]},
+            "acceptance_obligations": [{"id": "remaining"}]}
+    authors, reviewers, inputs = [], [], []
+    progress = source["raw_session"]["messages"][0]["content"]
+    native_calls = []
+
+    def complete(**kwargs):
+        authors.append(kwargs["session"])
+        inputs.append(json.loads(kwargs["instruction"]))
+        if len(authors) > 1:
+            assert authors[-1] is authors[0]
+            assert inputs[-1]["rollout_feedback"]["decision"] == "REPAIR"
+            assert all(
+                m["content"] != "独立 reviewer 推理" for m in authors[-1].conversation.messages
+            )
+        authors[-1].conversation.messages.append({
+            "role": "user", "content": kwargs["instruction"],
+        })
+        return {
+            "task": task, "errors": [], "missing_inputs": [], "captures": [],
+            "context_messages": [{"message_index": 0, "content": progress}]
+            if len(authors) > 1 else [],
+            "live_references": [], "tools": [], "limitations": [], "evidence_handoff": {},
+            "requirement_coverage": [],
+        }
+
+    def native(**kwargs):
+        native_calls.append(kwargs)
+        return {"status": "ROLLOUT_COMPLETED", "errors": []}, [
+            {"trial": "one", "answer": "实际答卷", "tool_events": []},
+            {"trial": "two", "answer": "另一答卷", "tool_events": []},
+        ]
+
+    def review(**kwargs):
+        reviewer = kwargs["session"]
+        reviewers.append(reviewer)
+        assert reviewer is not authors[0]
+        assert reviewer.conversation.messages == []
+        reviewer.conversation.messages.append({
+            "role": "assistant", "content": "独立 reviewer 推理",
+        })
+        gap = len(reviewers) == 1 or final_decision == "BLOCKED"
+        return SimpleNamespace(completed=True, errors=[], payload={
+            "decision": "REPAIR" if len(reviewers) == 1 else final_decision,
+            "requirements": [{"obligation_id": "remaining",
+                              "status": "ENVIRONMENT_GAP" if gap else "SOLVER_ERROR",
+                              "reason": "必要的历史范围仍无法恢复" if final_decision == "BLOCKED"
+                              else "按原请求检查交付的进度链",
+                              "repair": "恢复原始进度" if len(reviewers) == 1 else ""}],
+        })
+
+    monkeypatch.setattr(module, "_complete_search_environment", complete)
+    monkeypatch.setattr(
+        module, "export_search_task", lambda *a, **kw: tmp_path / "harbor",
+    )
+    monkeypatch.setattr(module, "run_native_unassessed_rollouts", native)
+    result = module.run_search_task(
+        source=source, task=task, agent=SimpleNamespace(run=review), output_root=tmp_path / "run",
+        verification_config=SimpleNamespace(execute_rollout=True),
+    )
+    assert len(authors) == len(reviewers) == len(native_calls) == 2
+    assert reviewers[0] is not reviewers[1]
+    assert result["environment_review"] == final_decision
+    checkpoint = Path(result["researcher_checkpoint"])
+    saved = json.loads((checkpoint.parent / "conversation.json").read_text())
+    assert saved == authors[0].conversation.messages
+    assert all(m["content"] != "独立 reviewer 推理" for m in authors[0].conversation.messages)

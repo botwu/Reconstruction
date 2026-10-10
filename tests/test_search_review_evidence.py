@@ -133,6 +133,7 @@ def test_researcher_receives_actual_return_instead_of_preview(tmp_path):
         })
 
     result = _review_search_rollouts(
+        source={"raw_session": {"messages": []}},
         task={"acceptance_obligations": [{"id": "inspect"}]},
         environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
                      "context_messages": []},
@@ -160,6 +161,7 @@ def test_unbound_tool_return_stops_review_without_inventing_environment_gap(
         pytest.fail("工具完整回执不可信时不能发起模型复核")
 
     result = _review_search_rollouts(
+        source={"raw_session": {"messages": []}},
         task={"acceptance_obligations": [{"id": "inspect"}]},
         environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
                      "context_messages": []},
@@ -245,6 +247,7 @@ def test_native_review_keeps_harness_tool_names_and_full_blocks(tmp_path):
         })
 
     result = _review_search_rollouts(
+        source={"raw_session": {"messages": []}},
         task={"acceptance_obligations": [{"id": "inspect"}]},
         environment={"evidence_handoff": {}, "captures": [], "requirement_coverage": [],
                      "context_messages": []},
