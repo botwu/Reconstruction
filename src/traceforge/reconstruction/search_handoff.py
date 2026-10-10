@@ -30,11 +30,21 @@ def deliver_captures(
             texts = [record.get("result_text"), *[
                 block.get("text") for block in record.get("result_blocks", [])
                 if isinstance(block, dict)]]
+            arguments = [record.get("arguments")]
+            while arguments:
+                value = arguments.pop()
+                if isinstance(value, str):
+                    texts.append(value)
+                elif isinstance(value, dict):
+                    arguments.extend(value.values())
+                elif isinstance(value, list):
+                    arguments.extend(value)
             if (item.get("kind") not in {"task_answer", "post_task_state"}
                     or not isinstance(quote, str) or not quote.strip()
                     or not any(isinstance(text, str) and quote in text for text in texts)):
                 raise ValueError(
-                    f"事件 {index} 的排除缺少任务答案/解题后状态分类及逐字原文依据。"
+                    f"事件 {index} 的排除缺少任务答案/解题后状态分类"
+                    "及调用参数或返回中的逐字原文依据。"
                     "仅允许 kind=task_answer|post_task_state，并提供 quote 和 reason；"
                     "历史、摘要、重复、已有新来源都不能作为删除资料的依据。"
                     "没有需隔离的答案或终态时使用 excluded_events=[]。")

@@ -101,6 +101,41 @@ def test_explicit_exclusion_is_audited_and_does_not_leave_false_support(tmp_path
     assert env["evidence_handoff"]["excluded_events"][0]["event_index"] == 1
 
 
+@pytest.mark.parametrize("arguments", [
+    {"input": "读取已选项目\nhttps://example.test/chosen"},
+    {"calls": [{"function": {"arguments": "读取已选项目\nhttps://example.test/chosen"}}]},
+    "读取已选项目\nhttps://example.test/chosen",
+])
+def test_answer_exclusion_can_cite_original_call_arguments(arguments):
+    from traceforge.reconstruction.search_handoff import deliver_captures
+
+    records = [
+        {"event_index": 0, "arguments": {"path": "original-candidates.md"},
+         "result_text": "完整候选及比较材料"},
+        {"event_index": 1, "arguments": arguments, "result_text": "browser is not defined"},
+    ]
+    original = json.dumps(records, ensure_ascii=False)
+    exclusion = [{"event_index": 1, "kind": "task_answer",
+                  "quote": "读取已选项目\nhttps://example.test/chosen",
+                  "reason": "后续任务调用透露本题已选结果，失败返回没有新增事实"}]
+    delivered, handoff = deliver_captures(records, exclusion, event_count=2)
+    assert delivered == [records[0]]
+    assert handoff["excluded_events"] == exclusion
+    assert handoff["returned_event_indices"] == [0, 1]
+    assert json.dumps(records, ensure_ascii=False) == original
+
+
+def test_answer_exclusion_cannot_cite_parser_opinion_as_raw_evidence():
+    from traceforge.reconstruction.search_handoff import deliver_captures
+
+    records = [{"event_index": 0, "arguments": {"path": "original.md"},
+                "result_text": "原始材料", "session_parse": {"reason": "模型猜测的已选项目"}}]
+    with pytest.raises(ValueError, match="逐字原文"):
+        deliver_captures(records, [{"event_index": 0, "kind": "task_answer",
+                                   "quote": "模型猜测的已选项目", "reason": "猜测不是原始调用"}],
+                         event_count=1)
+
+
 def test_access_to_one_source_does_not_cover_unaccounted_requirement(tmp_path):
     outcome, _, _ = run_fixture(tmp_path, requirement_coverage=[])
     assert outcome["status"] == "BLOCKED"
