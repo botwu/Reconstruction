@@ -477,7 +477,9 @@ def _review_search_rollouts(
         ),
         "SOURCE_SESSION": indexed_session(source["raw_session"]),
         "environment": _review_environment(source, environment), "trials": trials,
-        "actual_web_calls": copy.deepcopy(network.calls) if network is not None else [],
+        "actual_web_calls": _review_web_calls(
+            network.calls, environment.get("live_references", []),
+        ) if network is not None else [],
     }
     return _run_search_review(
         source=source, request=request, task=task, agent=agent, session=reviewer,
@@ -492,6 +494,13 @@ def _run_search_review(
     session: AgentSession, role: AgentRole, output_root: Path, completion: bool = False,
 ) -> dict[str, Any]:
     """两阶段共用复核契约；补全停止审查不能冒充未发生的解题验收。"""
+    if any("links_ref" in call for call in request.get("actual_web_calls", [])):
+        request = {**request, "web_call_representation": (
+            "actual_web_calls.links_ref.path 指向本请求中"
+            " URL、raw_sha256 与完整链接表均相同的来源。"
+            "展开该引用即为原调用的完整 links，不代表原调用省略过链接；"
+            "这只是请求去重，正文、分页及 trials 的实际工具返回保持原样。"
+        )}
     expected = {item["id"] for item in task.get("acceptance_obligations", [])}
     seen_errors: set[tuple[str, ...]] = set()
     while True:
@@ -611,6 +620,37 @@ def _review_environment(
     return projected
 
 
+def _review_web_calls(
+    calls: list[dict[str, Any]], live_references: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """同版完整链接表仅存一次；引用展开后必须等于原调用记录。"""
+    pages: dict[tuple[str, str], list[int]] = {}
+    for index, page in enumerate(live_references):
+        url, digest = page.get("url"), page.get("raw_sha256")
+        if url and digest:
+            pages.setdefault((url, digest), []).append(index)
+    projected = copy.deepcopy(calls)
+    for call in projected:
+        matches = pages.get((call.get("url"), call.get("raw_sha256")), [])
+        if len(matches) != 1 or "links_ref" in call:
+            continue
+        index = matches[0]
+        links = call.get("links")
+        if not isinstance(links, list) or not links or links != live_references[index].get("links"):
+            continue
+        reference = {
+            "path": f"/environment/live_references/{index}/links",
+            "raw_sha256": call["raw_sha256"],
+        }
+        if len(json.dumps(links, ensure_ascii=False)) <= len(
+            json.dumps(reference, ensure_ascii=False),
+        ):
+            continue
+        call.pop("links")
+        call["links_ref"] = reference
+    return projected
+
+
 def _review_search_completion(
     *, source: dict[str, Any], task: dict[str, Any], environment: dict[str, Any],
     agent: AgentRuntime, session: AgentSession, network: SearchTools, output_root: Path,
@@ -658,7 +698,9 @@ def _review_search_completion(
         request={
             "review_stage": "completion", "SOURCE_SESSION": indexed_session(source["raw_session"]),
             "environment": _review_environment(source, environment),
-            "actual_web_calls": copy.deepcopy(network.calls),
+            "actual_web_calls": _review_web_calls(
+                network.calls, environment.get("live_references", []),
+            ),
         },
         source=source, task=task, agent=agent, session=reviewer, role=role,
         output_root=output_root, completion=True,
