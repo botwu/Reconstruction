@@ -275,7 +275,9 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
             ["url"],
         ),
         "web_open": (
-            "读取公开来源正文；offset/limit 分页。PDF 文本层不可读时可显式传 ocr_page"
+            "读取公开来源正文；offset/limit 仅截取本次返回窗口，不裁剪缓存。"
+            "total_chars 为已缓存提取文本的长度，next_offset 用于续读。"
+            "PDF 文本层不可读时可显式传 ocr_page"
             "（从 1 开始）识别单页；返回带坐标/置信度的原检测序列，公式和双栏顺序未经核实。"
             "需已配置本地 OCR；不会自动 OCR 所有 PDF。",
             {"url": text, **page, "ocr_page": {"type": "integer", "minimum": 1}},
