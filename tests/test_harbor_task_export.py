@@ -116,18 +116,28 @@ def test_container_python_matches_frozen_binary_wheels(tmp_path):
 
 
 @pytest.mark.parametrize("install_exit", [0, 7])
-def test_search_setup_uses_its_uploaded_directory(tmp_path, install_exit):
+@pytest.mark.parametrize("private_modes", [False, True])
+def test_search_setup_uses_its_uploaded_directory(tmp_path, install_exit, private_modes):
     task = export_search_task(search_environment(), tmp_path / "export")
     relocated = tmp_path / "ags uploaded environment"
     (task / "environment").rename(relocated)
+    dependency = relocated / "python/example/__init__.py"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_text("VALUE = 1\n")
+    if private_modes:
+        # 复现私有批次 umask=077 的公开工具安装来源。
+        for path in [relocated, *relocated.rglob("*")]:
+            path.chmod(0o700 if path.is_dir() else 0o600)
     commands = tmp_path / "commands"
     commands.mkdir()
     log = tmp_path / "setup-arguments.jsonl"
     recorder = (
         "#!/usr/bin/env python3\n"
-        "import json, os, pathlib, sys\n"
+        "import json, os, pathlib, subprocess, sys\n"
         "with open(os.environ['SETUP_TEST_LOG'], 'a') as out:\n"
         "    out.write(json.dumps(sys.argv) + '\\n')\n"
+        "if pathlib.Path(sys.argv[0]).name == 'chmod':\n"
+        "    raise SystemExit(subprocess.call(['/bin/chmod', *sys.argv[1:]]))\n"
         "raise SystemExit(int(os.environ['SETUP_TEST_EXIT']) "
         "if pathlib.Path(sys.argv[0]).name == 'python3' else 0)\n"
     )
@@ -149,10 +159,17 @@ def test_search_setup_uses_its_uploaded_directory(tmp_path, install_exit):
                               "-r", str(relocated / "python_runtime/requirements.lock")]
     assert Path(calls[0][calls[0].index("--target") + 1]).resolve() == relocated / "python"
     assert "--no-index" in calls[0] and "--require-hashes" in calls[0]
-    assert len(calls) == (3 if install_exit == 0 else 1)
+    assert len(calls) == (4 if install_exit == 0 else 1)
     if install_exit == 0:
         assert calls[-1][-2:] == [
             str(relocated / "traceforge-search"), "/usr/local/bin/traceforge-search"]
+        for path in [relocated, *relocated.rglob("*")]:
+            mode = path.stat().st_mode & 0o777
+            assert mode & 0o444 == 0o444
+            if path.is_dir():
+                assert mode & 0o111 == 0o111
+        assert (relocated / "traceforge-search").stat().st_mode & 0o777 == 0o755
+        assert (relocated / "search_tools.py").stat().st_mode & 0o111 == 0
 
 
 def test_search_command_follows_its_installed_symlink(tmp_path):
