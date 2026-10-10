@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 from traceforge.reconstruction.agents.roles import INTENT_ROLE
+from traceforge.reconstruction.session_source import indexed_session
 from traceforge.reconstruction.pipeline import execution_support_route
 from traceforge.reconstruction.environment_bindings import (
     collect_allowed_paths,
@@ -341,7 +342,7 @@ def test_stub_observable_does_not_satisfy_file_gate() -> None:
 
 
 def test_intent_role_and_prompt_name_the_anchor() -> None:
-    assert INTENT_PROMPT_VERSION == "intent-recovery-agent-v22-explicit-bindings"
+    assert INTENT_PROMPT_VERSION == "intent-recovery-agent-v23-full-source"
     assert "original user query is the anchor" in INTENT_ROLE.identity
     assert "deepen" in INTENT_ROLE.identity
     assert "Research, forum lookup, production publish" in INTENT_ROLE.identity
@@ -357,9 +358,13 @@ def test_intent_role_and_prompt_name_the_anchor() -> None:
     )
     assert "The original user query is the anchor" in text
     assert "SOURCE_SYSTEM_CONTEXT=" + json.dumps(system_context, ensure_ascii=False) in text
-    assert "SOURCE_SYSTEM_MESSAGES=" + json.dumps([
-        {"message_index": 0, "message": {"role": "system", "content": "原环境声明只读。"}},
-    ], ensure_ascii=False) in text
+    delivered = json.loads(next(
+        line.removeprefix("SOURCE_SESSION=")
+        for line in text.splitlines() if line.startswith("SOURCE_SESSION=")
+    ))
+    assert delivered == indexed_session({
+        "messages": [{"role": "system", "content": "原环境声明只读。"}],
+    })
     assert "FILE_BINDING_PATHS" in text
     assert "Research, forum lookup, production publish" in text
     assert "at least one FILE obligation is required" not in text

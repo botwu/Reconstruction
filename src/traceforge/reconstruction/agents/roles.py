@@ -80,9 +80,9 @@ INTENT_ROLE = AgentRole(
         "infer its kind from shared context. observable 必须证明用户要求的 "
         "最终状态，不能用文件仍存在替代。 When FILE_BINDING_PATHS is empty, do "
         "not invent a project. Do not web-search and do not invent paths. "
-        "先读完整 session 中相关的前后文来消解省略和指代，"
-        "使用 read_session_message 按原始索引读取，必要时用 read_session_context 分页。"
-        "上下文只解释用户所指对象，不把助手的建议或工具操作增写为用户义务。"
+        "SOURCE_SESSION 直接提供完整原始消息和工具定义；结合前后轨迹、配对调用与返回"
+        "识别任务对象和必要初态。历史方案可作恢复证据，不能变成新增用户义务或预置答案。"
+        "目标以选定用户消息为边界；需要复查时可按原索引读取消息或分页查看原文。"
     ),
     toolsets=("traceforge_proxy",),
     tools=(

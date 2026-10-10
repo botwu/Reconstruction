@@ -257,7 +257,7 @@ def test_intent_can_read_multiple_original_context_messages():
 
 
 
-def test_intent_prompt_previews_context_without_changing_raw_session():
+def test_intent_prompt_keeps_full_source_with_selected_user_boundary():
     from traceforge.reconstruction.intent_recovery import _prompt
     source = {"raw_session": {"messages": [
         {"role": "assistant", "content": "采集工作流尚未发布到生产"},
@@ -268,7 +268,16 @@ def test_intent_prompt_previews_context_without_changing_raw_session():
     before = json.dumps(source, ensure_ascii=False)
     prompt = _prompt(source, {"task_id": "t"}, [{"id": "user:1", "message_index": 1, "text": "发布并补采"}], [])
     assert "采集工作流尚未发布到生产" in prompt
-    assert "另一个任务" not in prompt
+    delivered = json.loads(next(
+        line.removeprefix("SOURCE_SESSION=")
+        for line in prompt.splitlines() if line.startswith("SOURCE_SESSION=")
+    ))
+    assert [row["message"] for row in delivered["messages"]] == source["raw_session"]["messages"]
+    anchors = json.loads(next(
+        line.removeprefix("TASK_USER_MESSAGES=")
+        for line in prompt.splitlines() if line.startswith("TASK_USER_MESSAGES=")
+    ))
+    assert [row["id"] for row in anchors] == ["user:1"]
     assert json.dumps(source, ensure_ascii=False) == before
 
 
