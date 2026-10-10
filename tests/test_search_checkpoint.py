@@ -49,7 +49,8 @@ def test_restored_cache_preserves_unread_body_jsonld_and_actual_range(tmp_path, 
     assert resumed.pages["https://example.org/paper"]["text"] == "前段正文与未读尾部"
     result = resumed.open("https://example.org/paper", offset=5, limit=8)
     assert result["text"] == "未读尾部"
-    assert result["jsonld"] == original.pages["https://example.org/paper"]["jsonld"]
+    metadata = json.loads(resumed.open("https://example.org/paper", section="metadata")["text"])
+    assert metadata["jsonld"] == original.pages["https://example.org/paper"]["jsonld"]
     assert resumed.calls[0]["offset"] == 2 and resumed.calls[0]["next_offset"] == 5
     assert resumed.calls[0]["restored"] is True
     assert resumed.ready() is False
@@ -314,7 +315,8 @@ def test_markdown_restore_preserves_unread_links_and_jsonld(tmp_path, monkeypatc
     resumed.restore(original.root, origin="solver:trial-01", tool_results=events)
     page = resumed.open("https://example.org/paper", offset=5)
     assert page["text"] == markdown[5:] and page["body_format"] == "markdown"
-    assert page["jsonld"] == original.pages["https://example.org/paper"]["jsonld"]
+    metadata = json.loads(resumed.open("https://example.org/paper", section="metadata")["text"])
+    assert metadata["jsonld"] == original.pages["https://example.org/paper"]["jsonld"]
     assert "image_sha256" not in page and resumed.ready() is False
 
 

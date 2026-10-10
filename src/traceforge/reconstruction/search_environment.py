@@ -175,9 +175,13 @@ SEARCH_REVIEW_ROLE = replace(
         "read_evidence_calls.source 按该次 solver 输入映射来源；仅成功调用算实际读取，分页不一定覆盖整份材料。"
         "逐项比较回答中的具体主张与原文，不能用一串来源编号代替核查；"
         "未取得实现正文时，不能把调用处、docstring 或测试预期当作已逐行核实的实现。"
-        "区分环境缺口和 solver 错误：已有可检索原文但 solver 漏读/误推断，属于 SOLVER_ERROR；"
-        "有效原文被漏交、影响当前状态的进度或更正链缺失、历史方案截短、初态包含待求答案"
-        "或必要工具不可用，属于 ENVIRONMENT_GAP。"
+        "先核任务说明与实际交付是否一致，再区分环境缺口和 solver 错误。"
+        "经原件核实、会误导必要材料使用的错误交付范围或访问约束，属于 ENVIRONMENT_GAP；"
+        "即使正文已在，也须返修错误说明，不能把全部责任归给 solver。"
+        "有效原文漏交、影响当前状态的进度或更正链缺失、历史方案截短、初态包含待求答案"
+        "或必要工具不可用同样是环境缺口。说明与交付一致时，"
+        "solver 自身漏读或误推断才归 SOLVER_ERROR；"
+        "一般措辞瑕疵不扩大为额外验收义务。"
         "核对已交付调用的参数、查询和标题是否透露本题旧选择或结论，不能只查返回正文。"
         "对 context_messages 的历史助手摘录逐项核对：是否只是必要输入记述、是否保留未核原件的来源标注，"
         "是否混入旧排名、推荐、推导结果或无原始依据的假设。"
@@ -642,7 +646,7 @@ def _search_recovery_state(network: SearchTools) -> str:
         json.dumps({key: call[key] for key in (
             "tool", "query", "url", "ocr_page", "success",
             *(("raw_sha256",) if call.get("success") else ()),
-            *(("offset",) if call.get("success") and call.get("text") else ()),
+            *(("offset", "section") if call.get("success") and call.get("text") else ()),
         ) if key in call}, sort_keys=True, ensure_ascii=False)
         for call in network.calls
     }
@@ -921,9 +925,10 @@ def run_search_task(
             break
         instruction = json.dumps({
             "rollout_feedback": review,
-            "instruction": "继续同一重建任务，依据刚才真实轨迹恢复缺失输入并提交完整补全 JSON。"
-            "保留所有仍有用的材料和历史方案；不得预写答案或修改原用户要求。"
-            "仅 solver 推理错误不构成修改环境的依据。无可恢复来源时说明 missing_inputs 并 BLOCKED。",
+            "instruction": "继续同一重建任务，依据真实轨迹修正经核对的任务说明、材料或工具问题，"
+            "提交完整补全 JSON。保留所有仍有用的材料和历史方案；不得预写答案或修改原用户要求。"
+            "仅 solver 推理错误不构成修改环境的依据。"
+            "必需材料无可恢复来源时说明 missing_inputs 并 BLOCKED。",
         }, ensure_ascii=False)
     outcome["researcher_rounds"] = rounds
     _save(output_root / "result.json", outcome)

@@ -77,8 +77,9 @@ def test_open_preserves_original_image_and_view_sends_exact_pixels(
     assert result["content_kind"] == "source_image"
     assert result["mime_type"] == mime and result["source_bytes"] == len(raw)
     assert result["url"] == URL and result["resolved_url"] == RESOLVED
-    assert result["extraction_scope"] == "image_bytes"
-    assert "未" in result["text"] and result["limitations"]
+    metadata = json.loads(tools.open(URL, section="metadata")["text"])
+    assert metadata["extraction_scope"] == "image_bytes"
+    assert "未" in result["text"] and metadata["limitations"]
     digest = hashlib.sha256(raw).hexdigest()
     assert result["raw_sha256"] == digest
     assert search_tools.image_assets(tools.pages[URL], tools.root) == [tmp_path / (digest + suffix)]

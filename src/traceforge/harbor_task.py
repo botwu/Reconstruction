@@ -447,7 +447,9 @@ def export_search_task(
         if requires_web:
             instruction += (
                 '\n公开网页工具：traceforge-search search "查询内容"；'
-                'traceforge-search open "https://来源地址" --offset 0 --limit 8000。'
+                'traceforge-search open "https://来源地址" --section text --offset 0 --limit 8000。'
+                "section 可选 text（正文）、links（链接表 JSON）、metadata（其余元数据 JSON）；"
+                "返回 text 是所选分区的字符窗口，按 next_offset 续读可还原完整内容，缓存不裁剪。"
                 "返回保留抓取时间与原始内容哈希；历史片段不能当作已读取当前全文。\n"
             )
         else:

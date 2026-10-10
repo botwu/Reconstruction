@@ -487,3 +487,21 @@ def test_review_projection_keeps_multiple_returns_at_same_coordinate(tmp_path):
 
     original, observed = review_projection(tmp_path, change=duplicate)
     assert observed["request"]["environment"] == original
+
+
+@pytest.mark.parametrize("success,text", [(True, "正文"), (True, ""), (False, "错误说明")])
+def test_recovery_counts_new_successful_sections_but_not_repeats(success, text):
+    from traceforge.reconstruction.search_environment import _search_recovery_state
+
+    call = {
+        "tool": "web_open", "url": "https://example.org/paper", "section": "text",
+        "offset": 0, "success": success, "raw_sha256": "fixed", "text": text,
+    }
+    network = SimpleNamespace(calls=[call], pages={})
+    states = [_search_recovery_state(network)]
+    for section in ("links", "metadata"):
+        network.calls.append({**call, "section": section})
+        states.append(_search_recovery_state(network))
+        network.calls.append(dict(network.calls[-1]))
+        assert _search_recovery_state(network) == states[-1]
+    assert len(set(states)) == (3 if success and text else 1)

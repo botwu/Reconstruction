@@ -275,12 +275,16 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
             ["url"],
         ),
         "web_open": (
-            "读取公开来源正文；offset/limit 仅截取本次返回窗口，不裁剪缓存。"
-            "total_chars 为已缓存提取文本的长度，next_offset 用于续读。"
+            "读取公开来源。section 默认 text（正文）；links 为完整链接表 JSON，"
+            "metadata 为标题、出版信息等其余元数据 JSON。三者均以 text 字符串返回，"
+            "offset/limit 仅截取所选分区的本次字符窗口，不裁剪缓存；"
+            "total_chars 为该分区总字符数，按 next_offset 续读后可还原完整内容。"
             "PDF 文本层不可读时可显式传 ocr_page"
             "（从 1 开始）识别单页；返回带坐标/置信度的原检测序列，公式和双栏顺序未经核实。"
             "需已配置本地 OCR；不会自动 OCR 所有 PDF。",
-            {"url": text, **page, "ocr_page": {"type": "integer", "minimum": 1}},
+            {"url": text, **page, "section": {
+                "type": "string", "enum": ["text", "links", "metadata"], "default": "text",
+            }, "ocr_page": {"type": "integer", "minimum": 1}},
             ["url"],
         ),
         "write_test": (
@@ -465,6 +469,7 @@ def execute_tool(
         return _dump(session.web_open_handler(
             str(args.get("url") or ""), offset=args.get("offset", 0),
             limit=args.get("limit", MAX_TOOL_RESULT_CHARS),
+            **({"section": args["section"]} if "section" in args else {}),
             **({"ocr_page": args["ocr_page"]} if "ocr_page" in args else {}),
         ))
     if name == "view_image":

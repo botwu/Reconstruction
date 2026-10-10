@@ -11,11 +11,11 @@ from traceforge.reconstruction.agents.session import AgentSession, execute_tool
 from traceforge.reconstruction.search_tools import SearchTools
 
 
-def ocr_network(tmp_path, monkeypatch):
+def ocr_network(tmp_path, monkeypatch, text_layer="Original text layer"):
     from traceforge.reconstruction import search_tools
 
     url = "https://example.org/paper.pdf"
-    raw = pdf_bytes(["Original text layer"])
+    raw = pdf_bytes([text_layer])
     monkeypatch.setattr(search_tools, "_public_url", lambda value: None)
     monkeypatch.setattr(search_tools.urllib.request, "build_opener", lambda *args: SimpleNamespace(
         open=lambda *args, **kwargs: response(raw, url),
@@ -156,3 +156,20 @@ def test_ocr_worker_version_mismatch_is_explicit(tmp_path, monkeypatch):
     monkeypatch.setattr(pdf_ocr.sys, "version_info", (0, 0))
     with pytest.raises(ValueError, match="解释器版本"):
         pdf_ocr.run(tmp_path / "unused.pdf", 1, tmp_path)
+
+
+@pytest.mark.parametrize("section,ocr_page,expected", [
+    ("text", 1, True), ("metadata", 1, True),
+    ("links", None, False), ("metadata", None, False),
+])
+def test_ready_uses_selected_ocr_body_not_empty_pdf_or_metadata(
+    tmp_path, monkeypatch, section, ocr_page, expected,
+):
+    tools, url, _ = ocr_network(tmp_path, monkeypatch, text_layer="")
+    monkeypatch.setattr(tools, "_search", lambda _: ([], "search-sha"))
+    tools.search("扫描论文")
+    result = tools.open(url, section=section, ocr_page=ocr_page)
+    assert result["success"] and not result["cache_hit"]
+    assert tools.pages[url]["empty_text_pages"] == [1]
+    assert result["text"]
+    assert tools.ready() is expected

@@ -266,6 +266,38 @@ def _page_view(page: dict[str, Any], ocr_page: int | None) -> dict[str, Any]:
     return value
 
 
+def _open_result(
+    page: dict[str, Any], *, section: str, offset: int, limit: int,
+    ocr_page: int | None = None,
+) -> dict[str, Any]:
+    """同一完整快照生成有界工具视图；恢复时按同一规则核对回执。"""
+    if section not in {"text", "links", "metadata"}:
+        raise ValueError("section 必须为 text、links 或 metadata")
+    if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 8000:
+        raise ValueError("offset 须为非负整数，limit 须为 1–8000 的整数")
+    view = _page_view(page, ocr_page)
+    if section == "text":
+        text = view["text"]
+    elif section == "links":
+        text = json.dumps(view.get("links", []), ensure_ascii=False)
+    else:
+        text = json.dumps(
+            {key: value for key, value in view.items()
+             if key not in {"text", "links", "cache_provenance"}},
+            ensure_ascii=False,
+        )
+    return {
+        **{key: view[key] for key in (
+            "success", "url", "resolved_url", "raw_sha256", "provider", "source_mode",
+            "content_kind", "body_format", "mime_type", "source_bytes", "ocr_page", "retrieved_at",
+            "image_sha256", "ocr_raw_sha256",
+        ) if key in view},
+        "section": section, "offset": offset, "limit": limit, "total_chars": len(text),
+        "next_offset": offset + limit if offset + limit < len(text) else None,
+        "text": text[offset:offset + limit],
+    }
+
+
 class SearchTools:
     """同一次运行的分页固定使用首次抓取的页面，记录真实来源和抓取时间。"""
 
@@ -607,9 +639,12 @@ class SearchTools:
         page["ocr_pages"] = candidate["ocr_pages"]
 
     def open(self, url: str, *, offset: int = 0, limit: int = 8000,
-             ocr_page: int | None = None) -> dict[str, Any]:
+             section: str = "text", ocr_page: int | None = None) -> dict[str, Any]:
         cache_hit = url in self.pages
         try:
+            if section not in {"text", "links", "metadata"}:
+                raise ValueError("section 必须为 text、links 或 metadata")
+            offset, limit = max(0, int(offset)), max(1, min(8000, int(limit)))
             if not cache_hit:
                 self.pages[url] = self._fetch(url)
             page = self.pages[url]
@@ -620,17 +655,15 @@ class SearchTools:
                 self._ocr(page, ocr_page)
             name = hashlib.sha256(url.encode()).hexdigest() + ".json"
             (self.root / name).write_text(json.dumps(page, ensure_ascii=False, indent=2), encoding="utf-8")
-            if (ocr_page is None and page.get("page_count")
+            if (section == "text" and ocr_page is None and page.get("page_count")
                     and len(page.get("empty_text_pages", [])) == page["page_count"]):
                 raise ValueError("PDF 没有可读取的文本层，需要显式 ocr_page 或其他真实来源；未生成正文")
-            page = _page_view(page, ocr_page)
-            text = page["text"]
-            offset, limit = max(0, int(offset)), max(1, min(8000, int(limit)))
-            value = {**page, "text": text[offset:offset + limit], "total_chars": len(text),
-                     "offset": offset, "next_offset": offset + limit
-                     if offset + limit < len(text) else None}
+            value = _open_result(
+                page, section=section, offset=offset, limit=limit, ocr_page=ocr_page,
+            )
         except Exception as exc:
-            value = {"success": False, "url": url, "offset": offset, "limit": limit,
+            value = {"success": False, "url": url, "section": section,
+                     "offset": offset, "limit": limit,
                      **({"ocr_page": ocr_page} if ocr_page is not None else {}),
                      "error": f"{type(exc).__name__}: {self._error_detail(str(exc))}"}
         return self._record("web_open", {**value, "cache_hit": cache_hit})
@@ -774,6 +807,22 @@ class SearchTools:
                         raise ValueError(f"检索摘要与原始抓取不一致：{origin}")
                 if call["tool"] == "web_open":
                     page = pages.get(call.get("url"))
+                    if "section" in call:
+                        if page is None:
+                            raise ValueError(f"检索分页缺少绑定来源：{origin}")
+                        expected = _open_result(
+                            page, section=call["section"], offset=call.get("offset"),
+                            limit=call.get("limit"), ocr_page=call.get("ocr_page"),
+                        )
+                        envelope = {
+                            "tool", "retrieved_at", "cache_hit", "restored", "restored_from",
+                            "restore_history", "tool_call_id", "tool_result_sha256",
+                            "native_result_sha256", "native_tool_name",
+                        }
+                        if {key: value for key, value in call.items()
+                                if key not in envelope or key in expected} != expected:
+                            raise ValueError(f"检索分区分页与缓存来源不一致：{origin}")
+                        continue
                     if page is not None:
                         page = _page_view(page, call.get("ocr_page"))
                     if page is not None and page.get("provider") == "direct_html":
@@ -850,8 +899,15 @@ class SearchTools:
                         and not call.get("restored")), {})
             for kind in ("web_search", "web_open")
         }
-        return bool(latest["web_search"].get("success")
-                    and latest["web_open"].get("success") and latest["web_open"].get("text"))
+        opened = latest["web_open"]
+        page = self.pages.get(opened.get("url"), {})
+        view = _page_view(page, opened.get("ocr_page")) if opened.get("success") else {}
+        return bool(
+            latest["web_search"].get("success") and opened.get("success")
+            and view.get("text", "").strip()
+            and not (opened.get("ocr_page") is None and page.get("page_count")
+                     and len(page.get("empty_text_pages", [])) == page["page_count"])
+        )
 
 
 def main() -> int:
@@ -867,6 +923,7 @@ def main() -> int:
     page.add_argument("url")
     page.add_argument("--offset", type=int, default=0)
     page.add_argument("--limit", type=int, default=8000)
+    page.add_argument("--section", choices=("text", "links", "metadata"), default="text")
     args = parser.parse_args()
     tools = SearchTools(args.output_root)
     if args.command == "search":
@@ -876,7 +933,7 @@ def main() -> int:
         cache = args.output_root / (hashlib.sha256(args.url.encode()).hexdigest() + ".json")
         if cache.is_file():
             tools.pages[args.url] = json.loads(cache.read_text(encoding="utf-8"))
-        result = tools.open(args.url, offset=args.offset, limit=args.limit)
+        result = tools.open(args.url, section=args.section, offset=args.offset, limit=args.limit)
     print(json.dumps(result, ensure_ascii=False))
     return 0 if result.get("success") else 1
 

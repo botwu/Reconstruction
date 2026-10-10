@@ -242,7 +242,10 @@ def test_optional_preferences_do_not_replace_required_input_gate(tmp_path, monke
 
     from traceforge.reconstruction import search_environment
 
-    network = SimpleNamespace(ready=lambda: True, search=None, open=None, calls=[], pages={})
+    network = SimpleNamespace(
+        ready=lambda: True, search=None, open=None, calls=[], pages={},
+        view_image=lambda _: pytest.fail("本用例不应读取图片"),
+    )
     monkeypatch.setattr(search_environment, "SearchTools", lambda root: network)
     feedback = {"missing_inputs": ["上一轮缺少实现正文"]}
     def complete(**kwargs):
@@ -275,7 +278,10 @@ def test_unknown_reference_feedback_keeps_context_and_stops_without_progress(tmp
 
     from traceforge.reconstruction import search_environment
 
-    network = SimpleNamespace(ready=lambda: True, search=None, open=None, calls=[], pages={})
+    network = SimpleNamespace(
+        ready=lambda: True, search=None, open=None, calls=[], pages={},
+        view_image=lambda _: pytest.fail("本用例不应读取图片"),
+    )
     monkeypatch.setattr(search_environment, "SearchTools", lambda root: network)
     sessions = []
 
@@ -335,8 +341,10 @@ def test_missing_live_query_returns_to_author_without_faking_readiness(tmp_path,
     from traceforge.reconstruction import search_environment
 
     queries = []
-    network = SimpleNamespace(ready=lambda: bool(queries), search=queries.append,
-                              open=None, calls=[], pages={})
+    network = SimpleNamespace(
+        view_image=lambda _: pytest.fail("本用例不应读取图片"),
+        ready=lambda: bool(queries), search=queries.append, open=None, calls=[], pages={},
+    )
     monkeypatch.setattr(search_environment, "SearchTools", lambda root: network)
     attempts = []
 
@@ -396,7 +404,10 @@ def test_local_search_requires_actual_corpus_reading_without_public_web(tmp_path
     def no_network(*args, **kwargs):
         pytest.fail("本地代码检索不需要网络验证")
 
-    network = SimpleNamespace(ready=no_network, search=no_network, open=no_network, calls=[], pages={})
+    network = SimpleNamespace(
+        ready=no_network, search=no_network, open=no_network, calls=[], pages={},
+        view_image=lambda _: pytest.fail("本用例不应读取图片"),
+    )
     monkeypatch.setattr(search_environment, "SearchTools", lambda root: network)
 
     def run(**kwargs):
@@ -456,8 +467,9 @@ def test_github_source_preserves_bytes_and_rejects_corruption(tmp_path, monkeypa
     assert result["success"] is valid_hash
     if valid_hash:
         assert result["text"].encode() == original
-        assert result["content_sha256"] == hashlib.sha256(original).hexdigest()
-        assert result["git_blob_sha1"] == blob
+        metadata = json.loads(tools.open(url, section="metadata")["text"])
+        assert metadata["content_sha256"] == hashlib.sha256(original).hexdigest()
+        assert metadata["git_blob_sha1"] == blob
         assert isinstance(ast.parse(result["text"]).body[0], ast.ClassDef)
         assert result["url"] == url
     else:

@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -66,14 +67,15 @@ def test_pdf_uses_original_bytes_and_preserves_extraction_boundary(
         assert "error" in result
         return
     assert result["content_kind"] == "pdf_text"
-    assert result["extraction_scope"] == "text_layer"
-    assert result["empty_text_pages"] == [3]
-    assert result["page_count"] == 3
+    metadata = json.loads(tools.open(url, section="metadata")["text"])
+    assert metadata["extraction_scope"] == "text_layer"
+    assert metadata["empty_text_pages"] == [3]
+    assert metadata["page_count"] == 3
     assert "Source page one" in result["text"]
     assert "Source page two" in result["text"]
     assert result["raw_sha256"] == hashlib.sha256(raw).hexdigest()
     assert (tmp_path / (result["raw_sha256"] + ".pdf")).read_bytes() == raw
-    assert result["limitations"]
+    assert metadata["limitations"]
 
 
 def test_pdf_redirect_is_checked_before_contacting_destination(monkeypatch):
