@@ -22,7 +22,7 @@ from traceforge.reconstruction.session_source import indexed_session
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v23-full-source"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v24-evidence-boundary"
 
 
 class IntentRecoveryError(RuntimeError):
@@ -152,7 +152,12 @@ def _prompt(
         "messages 保留原始索引、角色、消息全文、非文本内容、工具调用与返回。"
         "结合任务前后的真实证据消解用户省略和指代，按原调用 ID 核对调用与返回；"
         "后续源码、补丁和回答可以定位任务对象、解释现有行为与必要输入，"
-        "但历史方案和助手自选实现不能新增用户要求，后续解答不能预置进初态。"
+        "但历史方案和助手自选实现不能新增用户要求，待求结论不能预置进初态。"
+        "历史回答中可逐字定位的输入记述与其分析结论分开：前者可标明原消息来源及未核原件，"
+        "供有条件分析；不能冒充原始工具观察、已读附件或已验证事实。"
+        "历史排名、推荐、推导结果及无来源依据的假设不能成为输入事实或标准答案。"
+        "原任务明确要求识图、视觉比较或逐项核验原件时，仍保留原载体要求；"
+        "仅需比较已知数据时，不因数据曾来自图片就额外规定必须取回原图。"
         "先核对轨迹是否已解释对象和附件用途，再判断缺失资料是否不可替代；"
         "保留仍真实必要的输入，不按文件类型免检或强加依赖。"
         "TASK_USER_MESSAGES 的选定用户 ID 仍是当前目标边界，不能合并其他任务。"

@@ -76,19 +76,23 @@ def restore_context(
         index = ref.get("message_index") if isinstance(ref, dict) else None
         user = ref.get("used_by_user_message_index") if isinstance(ref, dict) else None
         if (type(index) is not int or type(user) is not int or user not in task_users
-                or not 0 <= index <= user or (index, user) in seen
-                or messages[index].get("role") not in {"system", "developer", "user", "assistant"}):
+                or not 0 <= index < len(messages)
+                or messages[index].get("role") not in {"system", "developer", "user", "assistant"}
+                or (index > user and messages[index].get("role") != "assistant")):
             raise ValueError(
                 f"历史引用 message_index={index} → used_by_user_message_index={user} 无效。"
-                f"来源不能晚于所支持的用户请求；本任务用户索引为 {sorted(task_users)}。"
-                "原用户要求可以作为输入，但之后的回答不能倒置为该问题的输入。"
+                f"本任务用户索引为 {sorted(task_users)}；较晚的助手来源须逐字摘录输入事实，"
+                "不能把之后的答案或结论倒置为该问题的输入。"
             )
         role = messages[index]["role"]
-        if role != "user" and index >= min(task_users):
+        later_assistant = role == "assistant" and index >= min(task_users)
+        if role != "user" and index >= min(task_users) and not (
+            later_assistant and "quote" in ref
+        ):
             raise ValueError(
-                f"message:{index} 属于本任务开始后的非用户消息，不能交付为任务初态。"
-                f"本任务从 user:{min(task_users)} 开始；继续和格式纠正不改变初态。"
-                "这些原文仍供重建者参考；只有任务开始前的依赖可交付，用户约束已由任务正文保留。"
+                f"message:{index} 属于本任务开始后的非用户消息，不能整份交付为任务初态。"
+                "仅助手记述的必要输入事实或观察可用逐字 quote 摘录，"
+                "不包括本任务答案、分析结论、排名或无依据假设。"
             )
         if role in {"system", "developer"} and "quote" not in ref:
             raise ValueError("原 system/developer 中的任务依赖必须逐字摘录 quote，不能整份交付旧工具协议")
@@ -102,9 +106,18 @@ def restore_context(
             content = quote
         if not content:
             raise ValueError("引用的历史消息没有可交付正文")
-        restored.append({"message_index": index, "used_by_user_message_index": user,
-                         "role": original["role"], "content": content})
-        seen.add((index, user))
+        key = (index, user, ref.get("quote"))
+        if key in seen:
+            raise ValueError(f"历史引用 message:{index} → user:{user} 的摘录重复")
+        restored_message = {"message_index": index, "used_by_user_message_index": user,
+                            "role": original["role"], "content": content}
+        if later_assistant:
+            restored_message["source_note"] = (
+                "历史助手记述，未与原始载体核对；仅作有条件分析输入，"
+                "不表示原件内容已验证或本任务结论成立。"
+            )
+        restored.append(restored_message)
+        seen.add(key)
     return restored
 
 

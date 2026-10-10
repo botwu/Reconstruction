@@ -667,3 +667,73 @@ def test_user_input_does_not_erase_required_evidence_gap(tmp_path, gap):
     else:
         expected = "来源尚未实际读取" if gap == "unread_return" else "来源未交付"
         assert any(expected in error and "captured:0" in error for error in outcome["errors"])
+
+
+@pytest.mark.parametrize("source_index", [2, 4])
+def test_later_assistant_quotes_keep_source_level_in_solver_input(tmp_path, source_index):
+    from traceforge.harbor_task import export_search_task
+    from traceforge.reconstruction.search_handoff import SEARCH_ENVIRONMENT_SCHEMA, restore_context
+
+    # 与真实多轮报价恢复同形；使用合成金额，不把运行原文纳入测试仓库。
+    messages = [
+        {"role": "system", "content": "旧会话约定"},
+        {"role": "user", "content": "比较两家物流的报价及条件"},
+        {"role": "assistant", "content": "处理费：每票 2 元。\n历史结论：选 A。\n包材另计。"},
+        {"role": "user", "content": "这是报价截图，继续比较"},
+        {"role": "assistant", "content": "处理费：每票 2 元。\n历史结论：选 A。\n包材另计。"},
+    ]
+    task = {"task_id": "quote-comparison", "task_instruction": "根据可用报价作条件比较",
+            "source_task": {"message_indices": [1, 3]}}
+    quotes = ["处理费：每票 2 元。", "包材另计。"]
+    context = restore_context(messages, task, [
+        {"message_index": source_index, "used_by_user_message_index": 3, "quote": quote}
+        for quote in quotes
+    ])
+    assert [item["content"] for item in context] == quotes
+    assert all(item["role"] == "assistant" and item["message_index"] == source_index
+               and item["used_by_user_message_index"] == 3 for item in context)
+    note = ("历史助手记述，未与原始载体核对；仅作有条件分析输入，"
+            "不表示原件内容已验证或本任务结论成立。")
+    assert all(item["source_note"] == note for item in context)
+    harbor = export_search_task({
+        "schema_version": SEARCH_ENVIRONMENT_SCHEMA, "status": "READY", "task": task,
+        "context_messages": context, "requires_live_web": False,
+    }, tmp_path)
+    instruction = (harbor / "instruction.md").read_text()
+    assert note in instruction
+    assert all(quote in instruction for quote in quotes)
+    assert "历史结论：选 A" not in instruction
+
+
+@pytest.mark.parametrize("reference", [
+    {"message_index": 2, "used_by_user_message_index": 1},
+    {"message_index": 2, "used_by_user_message_index": 1, "quote": ""},
+    {"message_index": 2, "used_by_user_message_index": 1, "quote": "处理费每票 3 元"},
+    {"message_index": 2, "used_by_user_message_index": 0, "quote": "处理费每票 2 元"},
+    {"message_index": 2, "used_by_user_message_index": 3, "quote": "处理费每票 2 元"},
+    {"message_index": 9, "used_by_user_message_index": 1, "quote": "处理费每票 2 元"},
+])
+def test_later_assistant_context_requires_exact_quote_and_task_user(reference):
+    from traceforge.reconstruction.search_handoff import restore_context
+
+    messages = [
+        {"role": "system", "content": "旧会话约定"},
+        {"role": "user", "content": "比较物流报价"},
+        {"role": "assistant", "content": "处理费每票 2 元；历史结论选 A"},
+        {"role": "user", "content": "新的无关问题"},
+    ]
+    with pytest.raises(ValueError):
+        restore_context(messages, {"source_task": {"message_indices": [1]}}, [reference])
+
+
+def test_later_assistant_duplicate_quote_is_rejected():
+    from traceforge.reconstruction.search_handoff import restore_context
+
+    messages = [
+        {"role": "user", "content": "比较物流报价"},
+        {"role": "assistant", "content": "处理费每票 2 元；包材另计"},
+    ]
+    reference = {"message_index": 1, "used_by_user_message_index": 0, "quote": "处理费每票 2 元"}
+    with pytest.raises(ValueError):
+        restore_context(messages, {"source_task": {"message_indices": [0]}},
+                        [reference, reference])
