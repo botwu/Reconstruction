@@ -70,6 +70,6 @@ PYTHONPATH=src:integrations/harbor_ags/src "$TRACEFORGE_PYTHON" -m traceforge re
   --output artifacts/review-retry-01 --check-only
 ```
 
-`--check-only` 离线认证原 session、任务、初态、完整原生捕获、检索缓存及清理回执，不创建模型或沙箱客户端，也不创建目标目录。实际后审使用同一命令，去掉 `--check-only`，加上 `--config config.yaml --hermes-home "$PWD/.runtime/hermes-agent" --harbor-root "$PWD/integrations/harbor_ags"`；terminal 后审可执行必要的隔离诊断。
+`--check-only` 离线认证原 session、任务、初态及其冻结依赖、完整原生捕获、检索缓存及清理回执，不创建模型或沙箱客户端，也不创建目标目录。实际后审使用同一命令，去掉 `--check-only`，加上 `--config config.yaml --hermes-home "$PWD/.runtime/hermes-agent" --harbor-root "$PWD/integrations/harbor_ags"`；terminal 后审可执行必要的隔离诊断。
 
 这个入口只重新后审，不重新解析、补全或运行 solver。新结果写入新目录的 `result.json`，原件及原批次记账保持不变；REPAIR 保留为待返修结果，不自动启动修复。后审完成仍为 `NOT_ASSESSED`，不表示答卷已评分或可直接用于训练。
