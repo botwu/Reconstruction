@@ -3,6 +3,7 @@
 import json
 from copy import deepcopy
 
+from traceforge.reconstruction.agents.roles import INTENT_ROLE
 from traceforge.reconstruction.intent_recovery import _prompt
 from traceforge.reconstruction.session_source import indexed_session, source_session_message_indices
 
@@ -76,3 +77,35 @@ def test_prompt_does_not_cut_long_late_messages_or_discourage_evidence_reading()
     assert "末尾独有证据" in prompt
     assert "不要穷举读取工具输出、调查实现细节" not in prompt
     assert "意图明确后立即提交 JSON" not in prompt
+
+
+def test_historical_input_policy_is_in_system_identity_and_preserves_source() -> None:
+    raw = {
+        "messages": [
+            {"role": "system", "content": "确需看图时，调用历史媒体工具；文字不能冒充看图。"},
+            {"role": "user", "content": "比较附件里的两家报价，给出适用条件。"},
+            {"role": "assistant", "content": (
+                "图中甲报价 10，乙报价 12。我推荐甲，假设订单重 1kg。"
+            )},
+            {"role": "user", "content": "另一任务：逐项核验原图的数字，不能只使用转述。"},
+        ],
+    }
+    prompt = _prompt(
+        {"raw_session": raw},
+        {"task_id": "compare", "message_indices": [1]},
+        [{"id": "user:1", "message_index": 1, "text": raw["messages"][1]["content"]}],
+        [],
+    )
+    delivered = json.loads(next(
+        line.removeprefix("SOURCE_SESSION=")
+        for line in prompt.splitlines() if line.startswith("SOURCE_SESSION=")
+    ))
+    assert delivered == indexed_session(raw)
+    identity = INTENT_ROLE.identity
+    assert "输入记述可作为有条件分析的输入" in identity
+    assert "条件性分析的完成不等于原件真实性已核验" in identity
+    assert "明确要求识图、视觉比较或核验原件" in identity
+    assert "历史排名、推荐、推导结果和无依据假设" in identity
+    assert "user requirements, values" not in identity
+    assert "输入记述可作为有条件分析的输入" not in prompt
+    assert "历史回答中可逐字定位的输入记述与其分析结论分开" not in prompt
