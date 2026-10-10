@@ -29,7 +29,7 @@ PDF 返回保留原文件 SHA256、物理页码、提取器版本、空文本页
 
 缺失输入或能力进入恢复后重跑；资料已交付但 solver 漏读或推断错误时保留解题错误，不能把答案写进环境。重复失败调用、空页分页和改写说明不算进展；重复状态时停止，无法取得的必要资料明确记录。完整停止规则见[研究者管线](researcher-pipeline.md)。
 
-模型请求失败单独记为 `AGENT_FAILURE`，限流保留 `MODEL_RATE_LIMIT` 和上游原因；环境复核标为 `REVIEW_INCOMPLETE`。失败请求不进入 JSON 格式或材料充分性判断。恢复时复用已冻结的任务、环境、作者会话和 rollout，只重试失败阶段，并核对原产物哈希；不得将原始失败回执改写成成功。
+模型请求失败单独记为 `AGENT_FAILURE`，限流保留 `MODEL_RATE_LIMIT` 和上游原因；环境复核标为 `REVIEW_INCOMPLETE`。 没有有效模型输出时，不生成缺少来源或义务覆盖等次生资料缺口；批次任务摘要保留失败类型。失败请求不进入 JSON 格式或材料充分性判断。恢复时复用已冻结的任务、环境、作者会话和 rollout，只重试失败阶段，并核对原产物哈希；不得将原始失败回执改写成成功。
 
 READY 初态同时导出 `harbor/<digest>/task/`，`result.json.harbor_task` 返回可交给下游的原生任务路径。该目录包含任务说明、捕获证据和可执行检索工具；使用原生 Harbor 时仍须 `--disable-verification`，内容留待核查。详见 [Harbor 任务交付](harbor-task-delivery.md)。
 

@@ -481,3 +481,26 @@ def test_resume_accounts_for_completed_child_without_restarting(
     assert (run_root / "retries").exists() != recovered
     batch.execute_batch(**options, resume=True)
     assert counter.read_text() == ("1" if recovered else "2")
+
+
+
+def test_session_batch_preserves_agent_failure_kind(tmp_path, monkeypatch):
+    manifest, config = inventory(tmp_path)
+
+    def run(command, **kwargs):
+        root = Path(command[command.index("--output") + 1])
+        (root / "manifest.json").write_text(json.dumps({
+            "status": "BLOCKED", "tasks": [{
+                "task_id": "t", "status": "BLOCKED", "failure_kind": "AGENT_FAILURE",
+                "environment_review": "REVIEW_INCOMPLETE", "errors": ["MODEL_RATE_LIMIT"],
+            }],
+        }))
+        return 0
+
+    monkeypatch.setattr(batch, "run_batch_process", run)
+    output = tmp_path / "batch"
+    batch.execute_batch(manifest_path=manifest, output_root=output,
+                        config=config, repo_root=_REPO, domain="search")
+    task = result_row(output)["tasks"][0]
+    assert task["failure_kind"] == "AGENT_FAILURE"
+    assert task["errors"] == ["MODEL_RATE_LIMIT"]

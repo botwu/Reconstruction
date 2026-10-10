@@ -215,6 +215,26 @@ def _complete_search_environment(
         payload = result.payload or {}
         errors = list(result.errors)
         captures, handoff, context = [], {}, []
+        read_calls = [event.get("arguments", {}) for event in session.tool_events
+                      if event.get("name") == "read_evidence" and event.get("ok")]
+        evidence_access = {
+            "inline_returns": inline_returns, "inline_observations": inline_observations,
+            "read_calls": read_calls,
+        }
+        agent_failure = bool(result.errors) or not result.completed
+        if agent_failure:
+            # 未完成的模型输出不是资料判断；只保留实际观察和可恢复会话。
+            payload = {}
+            errors = errors or ["AGENT_INCOMPLETE"]
+            captures, handoff = deliver_captures(
+                records, [], event_count=len(source.get("tool_timeline") or []),
+            )
+            valid_payload, requires_web = False, None
+            _save(attempt_root / "validation.json", {
+                "status": "AGENT_FAILED", "failure_kind": "AGENT_FAILURE", "errors": errors,
+                "error_detail": str(getattr(result, "final_text", "") or "")[:2000],
+            })
+            break
         try:
             captures, handoff = deliver_captures(
                 records, payload.get("excluded_events", []),
@@ -225,14 +245,8 @@ def _complete_search_environment(
         except ValueError as exc:
             errors.append(str(exc))
         valid_payload = not errors and payload.get("status") in {"READY", "BLOCKED"}
-        read_calls = [event.get("arguments", {}) for event in session.tool_events
-                      if event.get("name") == "read_evidence" and event.get("ok")]
         read_ids = {item["evidence_ref_id"] for item in inline_returns} | {
             call.get("id") for call in read_calls}
-        evidence_access = {
-            "inline_returns": inline_returns, "inline_observations": inline_observations,
-            "read_calls": read_calls,
-        }
         requires_web = payload.get("requires_live_web")
         if type(requires_web) is not bool or not str(payload.get("retrieval_reason") or "").strip():
             valid_payload = False
@@ -263,8 +277,7 @@ def _complete_search_environment(
             [errors, sorted(ref for ref in read_ids if ref), _search_recovery_state(network)],
             sort_keys=True, ensure_ascii=False,
         )
-        if (not result.completed or result.errors
-                or payload.get("status") not in {"READY", "BLOCKED"}
+        if (payload.get("status") not in {"READY", "BLOCKED"}
                 or (valid_payload and (payload.get("status") == "BLOCKED"
                                        or payload.get("missing_inputs")))
                 or state in seen):
@@ -291,7 +304,7 @@ def _complete_search_environment(
             "author_evidence_access 区分已内联原文和实际读取调用；search_evidence 预览不计全文读取。"
             "未返回调用不是证据，排除须有依据；不得通过删掉原要求或补写答案消除缺口。",
         }, ensure_ascii=False)
-    if not result.completed or payload.get("status") != "READY" or payload.get("missing_inputs"):
+    if not agent_failure and (payload.get("status") != "READY" or payload.get("missing_inputs")):
         errors.append("检索上下文补全尚未完成")
     environment = {
         "schema_version": SEARCH_ENVIRONMENT_SCHEMA, "status": "BLOCKED" if errors else "READY",
@@ -311,6 +324,9 @@ def _complete_search_environment(
         "source_mode": "captured_references_with_live_web" if network.pages else "captured_references",
         "historical_web_equivalence": False,
     }
+    if agent_failure:
+        environment.update(failure_kind="AGENT_FAILURE",
+                           error_detail=str(getattr(result, "final_text", "") or "")[:2000])
     _save(output_root / "environment.json", environment)
     return environment
 
@@ -770,6 +786,10 @@ def run_search_task(
         if errors:
             outcome.update(status="BLOCKED", stopped_at="search_completion",
                            environment_review="NOT_READY", missing_inputs=environment["missing_inputs"])
+            if environment.get("failure_kind") == "AGENT_FAILURE":
+                outcome.update(failure_kind="AGENT_FAILURE", environment_review="REVIEW_INCOMPLETE",
+                               error_detail=environment["error_detail"])
+                break
             author = environment.get("author_result", {})
             if (
                 not author.get("completed") or author.get("errors")

@@ -1,6 +1,7 @@
 """补全阻塞须复核原始恢复路径，不能被重复失败查询或评审文字驱动空转。"""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -161,7 +162,12 @@ def test_agent_failure_does_not_trigger_semantic_recovery(tmp_path, monkeypatch)
     assert roles == ["search_completion"]
     assert reviews == []
     assert result["status"] == "BLOCKED"
-    assert "UPSTREAM_TRANSPORT_ERROR" in result["errors"]
+    assert result["failure_kind"] == "AGENT_FAILURE"
+    assert result["environment_review"] == "REVIEW_INCOMPLETE"
+    assert result["errors"] == ["UPSTREAM_TRANSPORT_ERROR"]
+    assert result["missing_inputs"] == []
+    environment = json.loads((tmp_path / "environment.json").read_text())
+    assert environment["missing_inputs"] == [] and environment["requirement_coverage"] == []
 
 
 def test_unrecoverable_review_keeps_blocked_state_and_evidence(tmp_path, monkeypatch):
@@ -312,8 +318,77 @@ def test_blocked_reference_format_can_be_fixed_without_erasing_real_gap(
         source=source, task=task, agent=SimpleNamespace(run=run), output_root=tmp_path,
     )
     assert len(sessions) == turns and bool(reviews) is reviewed
-    assert result["status"] == "BLOCKED" and result["missing_inputs"] == missing
+    assert result["status"] == "BLOCKED"
+    assert result["missing_inputs"] == ([] if failed else missing)
     first = json.loads((tmp_path / "completion/validation.json").read_text())
-    assert first["status"] == "INVALID"
+    assert first["status"] == ("AGENT_FAILED" if failed else "INVALID")
+    if failed:
+        assert result["failure_kind"] == "AGENT_FAILURE"
+        assert result["errors"] == ["MODEL_CONNECTION_ERROR"]
     if not repair:
         assert "SEARCH_COMPLETION_NO_PROGRESS" in result["errors"]
+
+
+@pytest.mark.parametrize("completed,errors,expected", [
+    (False, ["MODEL_RATE_LIMIT"], ["MODEL_RATE_LIMIT"]),
+    (True, ["MODEL_RATE_LIMIT"], ["MODEL_RATE_LIMIT"]),
+    (False, [], ["AGENT_INCOMPLETE"]),
+])
+def test_completion_agent_failure_preserves_material_without_semantic_gaps(
+    tmp_path, monkeypatch, completed, errors, expected,
+):
+    from traceforge.reconstruction import search_environment as module
+
+    raw = {"messages": [
+        {"role": "user", "content": "说明注册流程"},
+        {"role": "tool", "tool_call_id": "read-1", "content": "原始注册入口"},
+    ]}
+    source = {"line_sha256": "fixed-line", "raw_session": raw, "tool_timeline": [{
+        "name": "read", "call_id": "read-1", "tool_message_index": 1,
+        "result_text": "原始注册入口",
+    }]}
+    task = {"task_id": "registration", "task_instruction": "说明注册流程",
+            "source_task": {"message_indices": [0], "user_texts": ["说明注册流程"]},
+            "acceptance_obligations": [{"id": "guide", "text": "提供注册操作指导"}]}
+    monkeypatch.setattr(module.SearchTools, "_fetch", lambda _, url: {
+        "url": url, "success": True, "text": "已读官方注册说明", "raw_sha256": "guide-hash",
+    })
+    monkeypatch.setattr(
+        module, "export_search_task",
+        lambda *args, **kwargs: pytest.fail("失败作者不能导出 Harbor"),
+    )
+    roles = []
+
+    def run(*, role, instruction, session, output_root):
+        roles.append(role.name)
+        assert role.name == "search_completion"
+        session.web_open_handler("https://example.org/guide")
+        session.conversation.messages.append({"role": "user", "content": instruction})
+        return SimpleNamespace(
+            completed=completed, errors=errors, payload=None, final_text="上游请求未完成",
+        )
+
+    result = module.run_search_task(
+        source=source, task=task, agent=SimpleNamespace(run=run), output_root=tmp_path,
+    )
+    assert roles == ["search_completion"]
+    assert result["status"] == "BLOCKED"
+    assert result["failure_kind"] == "AGENT_FAILURE"
+    assert result["environment_review"] == "REVIEW_INCOMPLETE"
+    assert result["errors"] == expected
+    assert result["researcher_rounds"] == [] and result["rollouts"] == []
+    environment = json.loads((tmp_path / "environment.json").read_text())
+    assert environment["errors"] == expected
+    assert environment["missing_inputs"] == []
+    assert environment["requirement_coverage"] == []
+    assert environment["captures"][0]["result_text"] == "原始注册入口"
+    assert environment["live_references"][0]["text"] == "已读官方注册说明"
+    assert environment["author_evidence_access"]["inline_returns"] == [
+        {"evidence_ref_id": "captured:0", "tool_message_index": 1},
+    ]
+    validation = json.loads((tmp_path / "completion/validation.json").read_text())
+    assert validation["status"] == "AGENT_FAILED"
+    assert validation["errors"] == expected
+    checkpoint = json.loads(Path(result["researcher_checkpoint"]).read_text())
+    assert "conversation.json" in checkpoint["files"]
+    assert "web/calls.jsonl" in checkpoint["files"]

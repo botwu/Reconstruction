@@ -412,7 +412,7 @@ def execute_batch(
                     "tasks": [
                         {key: task[key] for key in (
                             "task_id", "status", "acceptance", "stopped_at", "errors",
-                            "environment_review", "harbor_task", "missing_inputs",
+                            "environment_review", "harbor_task", "missing_inputs", "failure_kind",
                         ) if key in task}
                         for task in (result_manifest or {}).get("tasks", [])
                     ],
