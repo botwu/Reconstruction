@@ -1307,3 +1307,55 @@ def test_non_file_named_output_is_separate_from_initial_inputs() -> None:
     assert file_obligation_ids(task) == []
     task["environment_bindings"][0].pop("output_paths")
     assert workspace_task_context(task)["output_paths"] == []
+
+
+@pytest.mark.parametrize("root", ["/work/repo", "C:/work/repo"])
+@pytest.mark.parametrize("url", [
+    "https://example.test/project",
+    "HTTPS://example.test/docs/stable/?version=2#Intro",
+    "https://example.test/work/repo/src/main.py?file=C:/work/repo/src/main.py#part",
+])
+def test_file_aliases_preserve_complete_web_addresses(root: str, url: str) -> None:
+    """同一请求中的网址保持原样，真实文件坐标仍转换。"""
+    from traceforge.reconstruction.environment_bindings import collect_binding_path_aliases
+
+    original_path = root + "/src/main.py"
+    source = {"tool_timeline": [{
+        "call_id": "read", "name": "read_file",
+        "arguments": {"path": original_path, "cwd": root},
+        "result_text": "print(1)\n",
+    }]}
+    request = f"参考 [资料]({url})，检查 '{original_path}'。"
+    records = [{"id": "user:1", "text": request}]
+    aliases = collect_binding_path_aliases(source, records)
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "NON_FILE",
+            "required_paths": [original_path], "initial_required_paths": [original_path],
+            "output_paths": [], "observable": request,
+        }]},
+        [{"id": "o1", "text": "依据资料检查文件", "evidence_ref_ids": ["user:1"]}],
+        ["src/main.py"], user_records=records, path_aliases=aliases,
+    )
+    assert errors == []
+    assert bindings[0]["initial_required_paths"] == ["src/main.py"]
+    assert bindings[0]["observable"] == f"参考 [资料]({url})，检查 'src/main.py'。"
+    assert aliases == collect_binding_path_aliases(
+        source, [{"id": "user:1", "text": f"检查 '{original_path}'。"}],
+    )
+
+
+def test_tool_url_is_not_a_file_alias() -> None:
+    """工具的 path 字段也不能把网址变成文件坐标。"""
+    from traceforge.reconstruction.environment_bindings import collect_binding_path_aliases
+
+    source = {"tool_timeline": [
+        {"call_id": "file", "name": "read_file",
+         "arguments": {"path": "/work/repo/src/main.py", "cwd": "/work/repo"},
+         "result_text": "print(1)\n"},
+        {"call_id": "web", "name": "open",
+         "arguments": {"path": "https://example.test/docs/index.md"},
+         "result_text": "页面正文"},
+    ]}
+    aliases = collect_binding_path_aliases(source)
+    assert aliases == collect_binding_path_aliases({"tool_timeline": source["tool_timeline"][:1]})

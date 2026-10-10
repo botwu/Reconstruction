@@ -36,6 +36,7 @@ _EXAMPLE_CONTEXT = re.compile(r"(?i)(?:\b(?:example|shape|schema)\s*[:：]\s*$|(
 _INLINE_EXAMPLE = re.compile(r"(?i)(?:\be\.g\.|\bfor example\b|例如|比如|示例[:：])[^\n;；。]*")
 _LISTING_TOOLS = frozenset({"ls", "list_dir", "glob", "find", "fd", "tree", "rg", "grep"})
 _ABSOLUTE_PATH = re.compile(r"(?<![\w./])(?:[A-Za-z]:/|/)[^\s`\"'<>,]+")
+_URI = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s`\"'<>]+")
 _STUB_MARKERS = ("body unobserved", "observed name", "unobserved body")
 
 
@@ -44,7 +45,7 @@ def normalize_binding_path(raw: str) -> str | None:
     # Models often copy a path from a prose list with a trailing semicolon or
     # comma. Remove only punctuation outside the path; keep filename dots.
     text = text.rstrip(";,")
-    if not text:
+    if not text or _URI.match(text):
         return None
     directory = text.endswith("/")
     path = _safe_relpath(text.rstrip("/"))
@@ -69,7 +70,7 @@ def _filename_tokens(text: str) -> set[str]:
 
 
 def _request_path_text(text: str) -> str:
-    """仅清理路径提取视图中的格式示例和结束标签，原始记录不变。"""
+    """路径提取视图排除网址、格式示例和结束标签，原始记录不变。"""
     def mask_example(match: re.Match[str]) -> str:
         prefix = text[:match.start()].rstrip().rsplit("\n", 1)[-1]
         tag = match.group(2).strip().lower()
@@ -78,7 +79,7 @@ def _request_path_text(text: str) -> str:
         return match.group(0)
 
     without_examples = _INLINE_EXAMPLE.sub("", _FENCED_BLOCK.sub(mask_example, text or ""))
-    return _CLOSING_TAG.sub(" ", without_examples)
+    return _URI.sub(" ", _CLOSING_TAG.sub(" ", without_examples))
 
 
 def collect_binding_path_aliases(
@@ -93,7 +94,7 @@ def collect_binding_path_aliases(
     canonical_paths = {op["path"] for op in normalize_file_ops(timeline) if op.get("path")}
 
     def add(raw: str, canonical: str | None) -> None:
-        if not canonical:
+        if not canonical or _URI.match(raw.replace("\\", "/")):
             return
         for alias in (raw.replace("\\", "/"), normalize_binding_path(raw)):
             if alias:
@@ -146,10 +147,13 @@ def _replace_binding_paths(text: str, aliases: dict[str, str]) -> str:
         return text
     replacements = dict(aliases)
     replacements.update({path.replace("/", "\\"): target for path, target in aliases.items()})
-    pattern = re.compile(r"(?<![A-Za-z0-9_./\\-])(?:" + "|".join(
+    # 先整体保留网址，避免其中的路径或查询参数被文件别名替换。
+    pattern = re.compile(r"(?P<uri>" + _URI.pattern + r")|(?<![A-Za-z0-9_./\\-])(?:" + "|".join(
         re.escape(path) for path in sorted(replacements, key=len, reverse=True)
     ) + r")(?![A-Za-z0-9_/\\-]|\.[A-Za-z0-9_])")
-    return pattern.sub(lambda match: replacements[match.group(0)], text)
+    return pattern.sub(
+        lambda match: match.group(0) if match.group("uri") else replacements[match.group(0)], text
+    )
 
 
 def _canonical_binding_path(raw: str, aliases: dict[str, str]) -> str | None:
