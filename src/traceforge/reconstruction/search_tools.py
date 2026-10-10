@@ -16,18 +16,41 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from datetime import UTC, datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
 
-def _public_url(url: str) -> None:
+def _public_url(
+    url: str, resolve: Callable[[str], list[str]] | None = None,
+) -> None:
     parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username:
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+            or parsed.username is not None):
         raise ValueError("来源必须为公开 HTTP(S) 地址")
-    addresses = socket.getaddrinfo(parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM)
-    if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
+    try:
+        literal = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        if not literal.is_global:
+            raise ValueError("来源不能指向本机或私有网络")
+        return
+    try:
+        addresses = [item[4][0] for item in socket.getaddrinfo(
+            parsed.hostname, parsed.port or 443, type=socket.SOCK_STREAM,
+        )]
+    except OSError:
+        if resolve is None:
+            raise
+        addresses = []
+    if addresses and all(ipaddress.ip_address(value).is_global for value in addresses):
+        return
+    if resolve is not None:
+        addresses = resolve(parsed.hostname.encode("idna").decode("ascii"))
+    if not addresses or any(not ipaddress.ip_address(value).is_global for value in addresses):
         raise ValueError("来源不能指向本机或私有网络")
 
 
@@ -49,12 +72,16 @@ def _wire_url(url: str) -> str:
 class PublicSourceRedirect(urllib.request.HTTPRedirectHandler):
     """逐跳检查公开来源，避免重定向绕过原地址检查。"""
 
+    def __init__(self, validate: Callable[[str], None] | None = None) -> None:
+        super().__init__()
+        self._validate = validate
+
     def redirect_request(
         self, req: urllib.request.Request, fp: Any, code: int,
         msg: str, headers: Any, newurl: str,
     ) -> urllib.request.Request | None:
         newurl = _wire_url(newurl)
-        _public_url(newurl)
+        (self._validate or _public_url)(newurl)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -234,9 +261,59 @@ class SearchTools:
             if parsed.username is not None and parsed.password is not None:
                 credentials = urllib.parse.unquote(parsed.username + ":" + parsed.password)
                 self._proxy_secrets.add(base64.b64encode(credentials.encode()).decode())
-            self._proxy_opener = urllib.request.build_opener(urllib.request.ProxyHandler(
-                {"http": self._proxy, "https": self._proxy},
+            self._proxy_opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({"http": self._proxy, "https": self._proxy}),
+                PublicSourceRedirect(),
+            )
+
+    def _check_public_url(self, url: str) -> None:
+        if self._proxy and not urllib.request.proxy_bypass(urllib.parse.urlsplit(url).netloc):
+            _public_url(url, resolve=self._resolve_public_dns)
+        else:
+            _public_url(url)
+
+    def _resolve_public_dns(self, hostname: str) -> list[str]:
+        """宿主解析异常时，经既有代理核对两类地址；失败不放行。"""
+        if urllib.request.proxy_bypass("dns.google"):
+            raise ValueError("公网 DNS 验证须经已配置代理，dns.google 不能被 NO_PROXY 绕过")
+        addresses = []
+        for kind, record_type in (("A", 1), ("AAAA", 28)):
+            query = urllib.parse.urlencode({"name": hostname, "type": kind})
+            data, digest = self._response(urllib.request.Request(
+                "https://dns.google/resolve?" + query,
+                headers={"Accept": "application/dns-json"},
             ))
+            context = f"公网 DNS {hostname} {kind}，回执 {digest}.raw"
+            if (not isinstance(data, dict) or type(data.get("Status")) is not int
+                    or data["Status"] != 0 or data.get("TC") is not False):
+                raise ValueError(f"{context}：查询失败或响应不完整")
+            questions = data.get("Question")
+            if (not isinstance(questions, list) or len(questions) != 1
+                    or not isinstance(questions[0], dict)
+                    or str(questions[0].get("name", "")).rstrip(".").lower()
+                    != hostname.rstrip(".").lower()
+                    or questions[0].get("type") != record_type):
+                raise ValueError(f"{context}：响应不属于当前查询")
+            answers = data.get("Answer", [])
+            if not isinstance(answers, list):
+                raise ValueError(f"{context}：地址记录格式无效")
+            for answer in answers:
+                if not isinstance(answer, dict) or type(answer.get("type")) is not int:
+                    raise ValueError(f"{context}：地址记录格式无效")
+                if answer["type"] not in {1, 28}:
+                    continue
+                try:
+                    if not isinstance(answer.get("data"), str):
+                        raise ValueError
+                    address = ipaddress.ip_address(answer["data"])
+                except ValueError:
+                    raise ValueError(f"{context}：地址记录不是有效 IP") from None
+                if address.version != (4 if answer["type"] == 1 else 6) or not address.is_global:
+                    raise ValueError(f"{context}：包含非公网或类型不符的地址")
+                addresses.append(str(address))
+        if not addresses:
+            raise ValueError(f"公网 DNS {hostname} 未返回任何公网地址")
+        return addresses
 
     def _error_detail(self, value: str) -> str:
         """只清除错误诊断中的部署凭据；原始来源内容保持不变。"""
@@ -298,7 +375,7 @@ class SearchTools:
         return self._record("web_search", value)
 
     def _fetch(self, url: str) -> dict[str, Any]:
-        _public_url(url)
+        self._check_public_url(url)
         document = self._fetch_document(url)
         if document is not None:
             return document
@@ -313,7 +390,7 @@ class SearchTools:
         # 网页文本提取会压平源码；内容 API 的编码可保留原字节并校验 Git 对象。
         api_url = (f"https://api.github.com/repos/{owner}/{repo}/contents/"
                    + "/".join(file_parts) + "?ref=" + urllib.parse.quote(urllib.parse.unquote(ref), safe=""))
-        _public_url(api_url)
+        self._check_public_url(api_url)
         page = self._fetch_page(api_url)
         data = json.loads(page["text"])
         if not isinstance(data, dict) or data.get("type") != "file" or data.get("encoding") != "base64":
@@ -330,7 +407,7 @@ class SearchTools:
         # 单次原站请求按实际响应区分 PDF 与静态 HTML；其他内容仍由既定读取服务处理。
         pdf_expected = urllib.parse.urlsplit(url).path.lower().endswith(".pdf")
         request = urllib.request.Request(_wire_url(url), headers={"User-Agent": "TraceForge/0.3"})
-        handlers: list[urllib.request.BaseHandler] = [PublicSourceRedirect()]
+        handlers: list[urllib.request.BaseHandler] = [PublicSourceRedirect(self._check_public_url)]
         if self._proxy:
             handlers.append(urllib.request.ProxyHandler(
                 {"http": self._proxy, "https": self._proxy},

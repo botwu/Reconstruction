@@ -17,7 +17,7 @@ search 包含本地代码、文档检索。补全 agent 根据交付后仍未覆
 
 公开查询使用 Serper；已知网址先按一次真实 HTTP 响应识别 PDF 或静态 HTML。HTML 保留原始字节、编码、最终网址、题名及真实链接，包含页面声明的 PDF 地址；不执行脚本，也不将摘要宣称为全文。分页和恢复复用并核对同一原始响应。其他或无可读静态文字的页面才交给配置的读取服务，默认 Jina Reader。PDF 支持无后缀地址及重定向；下载原文件后用 `pypdf[fonts]` 读取文本层；这项依赖已纳入 `pyproject.toml` 和锁文件。GitHub 源码仍经内容 API 核对原字节和 Git blob，不能用 HTML 抽取替代。凭据从环境变量 `SERPER_API_KEY`、`JINA_API_KEY` 或私有 `~/.config/traceforge/search.json` 的同义小写字段加载。可用 `TRACEFORGE_SEARCH_CONFIG` 指定私有配置位置；网络无法访问 Jina 时，可明确设置 `fetch_provider: "serper"`（或环境变量 `TRACEFORGE_FETCH_PROVIDER`）使用同一 Serper 账户的网页读取接口。实际 provider 会记录在每条返回中，不静默切换。
 
-宿主机需要外部代理时，在私有配置中设置 `proxy`，或通过 `TRACEFORGE_SEARCH_PROXY` 指定 HTTP(S) 代理；仅该搜索实例的服务请求和 HTML/PDF 读取使用代理，不修改全局网络环境，也不改变模型或 AGS 控制请求的路由。未配置时保持既有网络行为。来源地址和重定向仍须通过本机 DNS 与公开地址校验；此宿主配置不会自动传入原生 Harbor/AGS 求解沙箱。代理配置使用权限为 0600 的私有文件，不打包进 Harbor 初态或提交 Git。
+宿主机需要外部代理时，在私有配置中设置 `proxy`，或通过 `TRACEFORGE_SEARCH_PROXY` 指定 HTTP(S) 代理；仅该搜索实例的服务请求和 HTML/PDF 读取使用代理，不修改全局网络环境，也不改变模型或 AGS 控制请求的路由。未配置时保持既有网络行为。来源地址和重定向仍须通过公开地址校验。宿主 DNS 失败或返回非公网地址时，只有目标确实走已配置代理才经同一代理调用 [Google DoH](https://developers.google.com/speed/public-dns/docs/doh/json) 核对 A/AAAA；响应须对应原查询、完整且全部地址为公网。私网 IP 字面量、解析失败和 NO_PROXY 绕过不会因此放行。DNS 原始回执独立保存，不计作检索资料或联网成功证明。此宿主配置不会自动传入原生 Harbor/AGS 求解沙箱。代理配置使用权限为 0600 的私有文件，不打包进 Harbor 初态或提交 Git。
 
 PDF 返回保留原文件 SHA256、物理页码、提取器版本、空文本页和提取范围。文本层可读不表示图片、图表、公式已经核实；扫描件或无文本层的文件默认明确返回缺口，不生成替代正文。Harbor 包固定与作者相同的 PDF 库版本，在镜像构建阶段安装。
 
