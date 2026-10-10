@@ -2,9 +2,9 @@
 
 更新：2026-10-10。目标是最大限度利用完整原始 session，恢复忠实的任务及可解的初始环境，交付标准 Harbor 包，再用真实求解检查环境是否足够。执行完成、环境充分和答案正确分别记录。
 
-**当前修复版进度：**76ab278 的 R04:6172、R04:5446 真实意图复验均通过独立语义核查；原 20 条的新冷批 batch-run04 已于 10 月 10 日 17:32（上海）启动，先串行处理 search 10 条，再根据实际产物进入 terminal。整批尚未完成，质量确认前不扩量或加并发。
+**当前修复版进度：**76ab278 的原 20 条新冷批 batch-run04 已于 10 月 10 日 17:32（上海）启动。search 已处理 1/10，正在执行 R01:94；terminal 尚未启动。R01:38 从完整原文开始，用时 38 分 46 秒完成解析、任务恢复、资料补全、Harbor 导出、两次原生求解与自动反馈；29 次实际 Claude 请求均成功，2 个沙箱均已回收。自动后审为 COMPLETE、四项义务均归为 SOLVER_ERROR，未要求返修初态；两份答卷保持 NOT_ASSESSED / SFT=false。独立材料核查已确认交付完整，首份答卷已确认核验范围夸大和具体模型误归因，第二份及自动后审的独立内容核对仍在继续。整批尚未完成，质量确认前不扩量或加并发。
 
-**首批 20 条已处理结束，但没有通过本批次端到端验证的任务，不能扩大到 100 条。**10 月 10 日 04:20:46（上海）控制端结束为 COMPLETED_WITH_ERRORS。此前基准成功不代表这批已通过。
+**旧版 3959547 的首批 20 条已处理结束，当时没有任务通过端到端验证，不能据此扩大到 100 条。**10 月 10 日 04:20:46（上海）控制端结束为 COMPLETED_WITH_ERRORS。此前基准成功不代表这批已通过。
 
 ## 20 条真实试批
 
@@ -114,6 +114,10 @@ domain 由调用方指定。search 恢复证据语料、历史与检索能力；
 
 AGS 的 node-python-hermes 模板另做真实核验：移除全部代理变量，使用冻结源码直接查询和抓取均成功，沙箱已回收。因此当前原生 rollout 保持直连，不向沙箱传入宿主代理。探针前两次分别因回执字段使用错误、上传后文件属主不匹配而未形成有效结果，原失败与清理证据均保留；修正一次性探针后成功。这些是服务链路验证，没有新增 session 重建或模型请求。
 
+本次新冷批 R01:38 的第二轮 solver 实际完成六次公开查询，均成功；两轮均未执行网页打开。另用本次同一个 Harbor 任务在 AGS 中以普通 user 做了一次独立 `open` 验证，实际返回 8,000 字符正文，Serper 回执成功，原任务文件前后哈希一致；该探针没有模型请求，新增的一个沙箱已回收。此结果只证明当前包的读取能力，不算 solver 已读过该网页。
+
+本次新冷批的 R01:38 又实际调用了单页 OCR，发现启动时清理旧环境变量后，独立搜索配置遗漏了已有的 OCR 解释器路径。已用该次下载的同一 PDF 第 2 页在既有 `/usr/bin/python3` 中完成本地验证：9.65 秒、92 个带坐标块，原 PDF 哈希不变，没有新增模型、网络或 AGS 调用。已将 `ocr_python` 持久写入宿主私有搜索配置；正在运行的 batch-run04 冻结配置和材料不变，不能把额外 OCR 结果算成该次 solver 已收到的资料。Harbor 仍只交付补全阶段取得的 OCR 材料，没有向 solver 承诺动态 OCR；是否构成必要缺口依据原任务及实际资料判断，不增加统一 OCR 门禁。
+
 读取服务已显式选用 Serper，本次没有复测 Jina，不将旧 Jina 失败视为当前阻塞。terminal 当前样本的执行不依赖这些检索服务。首批每个 domain 的 10 条已经处理但未通过，先修复并复验，不扩大到约 100 条；保持 workers=1，质量确认前不增加并发。
 
 自建 Harbor/AGS 已随仓库交付；使用既有云模板只需运行时、配置和访问权限，无须重建模板。OCR 安装仅在新机器需要处理新的扫描 PDF 时验证，不作为本轮 terminal 阻塞。本地 AgenticFoundry 保持只读参考。
@@ -136,6 +140,7 @@ AGS 的 node-python-hermes 模板另做真实核验：移除全部代理变量�
 | pilot-20261010/recovery/terminal6172-intent-recheck-run02 | 3a6c841 真实模型输出及 semantic-audit、input-handoff-audit；定位原轨迹未主动交付，未进入补全 |
 | pilot-20261010/recovery/terminal6172-intent-recheck-run03、terminal5446-intent-recheck-run01 | 76ab278 两条真实意图输出、完整输入核验及独立语义审计，未将阶段通过冒充端到端完成 |
 | pilot-20261010/recovery/handoff-runtime-audit.json | 四阶段实际交接与压缩保护；1216 正文保存在 captured:19.arguments，区分导航说明问题与信息丢失 |
+| pilot-20261010/recovery/batch04-search38-ocr-local-check、batch04-search38-native-open-probe | 新冷批所见 OCR 配置遗漏的本地实证，以及同一新 Harbor 包的普通用户真实网页读取与单沙箱回收；均不冒充 solver 行为 |
 | pilot-20261010/batch-run04 | 76ab278 的原 20 条新冷批；正式 CLI、唯一控制 PID、逐 session 产物与退出记录，先 search 后 terminal |
 | pilot-20261010/recovery/intent-binding-replay-audit、intent-binding-replay-new、intent-binding-replay-v2 | 同一 56 份真实原输出的旧版、第一版及第二版比较；第二版验证回答依赖交接及完整索引，原证据不覆盖，没有新增模型或 AGS 调用 |
 | pilot-20261010/batch-run02 | d61681e 新冷批冻结与私有配置；因绑定污染标记 BLOCKED_SOURCE_REVISION，禁止启动 |
