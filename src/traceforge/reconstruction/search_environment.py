@@ -860,13 +860,8 @@ def run_search_task(
             source=source, task=task, session=session, network=network, output_root=output_root))
         rounds.append({"output_root": str(round_root), "review": review})
         outcome["researcher_rounds"] = rounds
-        outcome["environment_review"] = (
-            "REVIEW_INCOMPLETE" if review.get("failure_kind") in {
-                "AGENT_FAILURE", "TRACE_UNAVAILABLE"} else review["decision"])
+        outcome.update(search_review_outcome(review))
         if review["decision"] != "REPAIR":
-            if review["decision"] == "BLOCKED":
-                outcome.update(status="BLOCKED", stopped_at="researcher_review",
-                               errors=review.get("errors", ["研究者发现尚未恢复的必要输入"]))
             break
         instruction = json.dumps({
             "rollout_feedback": review,
@@ -977,3 +972,51 @@ def run_search_reconstruction(
                  "intent_status": intent["status"], "tasks": results,
                  "acceptance": "NOT_ASSESSED"})
     return path
+
+
+def search_review_outcome(review: dict[str, Any]) -> dict[str, Any]:
+    """后审故障、资料返修和完成共享同一分类，不因重试提升评分状态。"""
+    incomplete = review.get("failure_kind") in {"AGENT_FAILURE", "TRACE_UNAVAILABLE"}
+    errors = (review.get("errors") or ["研究者发现尚未恢复的必要输入"]
+              if review["decision"] == "BLOCKED" else [])
+    return {
+        "status": "BLOCKED" if errors else (
+            "REVIEW" if review["decision"] == "REPAIR" else "ROLLOUT_COMPLETED"),
+        "stopped_at": "researcher_review" if errors or review["decision"] == "REPAIR" else None,
+        "errors": errors,
+        "environment_review": "REVIEW_INCOMPLETE" if incomplete else review["decision"],
+        "acceptance": "NOT_ASSESSED", "sft_eligible": False,
+    }
+
+
+def retry_search_rollout_review(
+    *, source: dict[str, Any], task: dict[str, Any], environment: dict[str, Any],
+    checkpoint: Path, native_trials: list[dict[str, Any]], agent: AgentRuntime,
+    output_root: Path,
+) -> dict[str, Any]:
+    """恢复已认证的原资料和会话，只复核既有实跑；不进入补全或 solver。"""
+    network = SearchTools(output_root / "web")
+    conversation = _restore_search_checkpoint(
+        checkpoint, source=source, task=task, network=network)
+    session = AgentSession(
+        conversation=conversation, evidence=captured_evidence(source),
+        session_context=json.dumps(source["raw_session"], ensure_ascii=False),
+        web_search_handler=network.search, web_open_handler=network.open,
+        view_image_handler=network.view_image,
+    )
+    review = _review_search_rollouts(
+        task=task, environment=environment, agent=agent, session=session,
+        output_root=output_root, native_trials=native_trials, network=network,
+    )
+    return {**search_review_outcome(review), "researcher_rounds": [
+        {"output_root": str(output_root), "review": review}],
+        "researcher_checkpoint": str(save_search_checkpoint(
+            source=source, task=task, session=session, network=network, output_root=output_root))}
+
+
+def validate_search_review_checkpoint(
+    *, source: dict[str, Any], task: dict[str, Any], checkpoint: Path, output_root: Path,
+) -> None:
+    """仅离线恢复并认证检索快照，不创建 agent 或访问网络。"""
+    network = SearchTools(output_root / "web")
+    _restore_search_checkpoint(checkpoint, source=source, task=task, network=network)

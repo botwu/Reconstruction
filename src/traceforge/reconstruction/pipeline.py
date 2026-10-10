@@ -51,7 +51,10 @@ from traceforge.reconstruction.task_fit import (
     fit_task_environment,
     generate_task_variant,
 )
-from traceforge.reconstruction.terminal_rollout_review import build_terminal_rollout_evidence
+from traceforge.reconstruction.terminal_rollout_review import (
+    build_terminal_rollout_evidence,
+    terminal_review_outcome,
+)
 from traceforge.reconstruction.terminal_universe_environment import select_sufficient_candidate
 from traceforge.reconstruction.verification import (
     VerificationConfig,
@@ -1039,27 +1042,18 @@ def _run_task_loop(
         diagnosis = _environment_feedback(judge, environment)
         row["diagnosis_path"] = str(diagnosis_root / "sufficiency.json")
         if unassessed_review:
-            review = {**(judge.get("rollout_review") or {}),
-                      "sufficiency_path": row["diagnosis_path"],
-                      "initial_environment_label": judge.get("label")}
-            result["rollout_review"] = review
+            result.update(terminal_review_outcome(
+                judge, environment, diagnosis_root / "sufficiency.json"))
+            review = result["rollout_review"]
             _write_stage_json(task_root, "rollout-review.json", review)
             if review.get("status") != "COMPLETE":
-                result.update(status="REVIEW", stopped_at="rollout_review",
-                              errors=review.get("errors") or ["ROLLOUT_REVIEW_INCOMPLETE"])
                 row["stop_reason"] = "ROLLOUT_REVIEW_INCOMPLETE"
                 break
             gaps = [item for item in review["requirements"]
                     if item["status"] == "ENVIRONMENT_GAP"]
             if not gaps:
-                if judge.get("status") != "READY" or environment_execution_blockers(environment):
-                    result.update(status="REVIEW", stopped_at="rollout_review",
-                                  errors=["INITIAL_ENVIRONMENT_REVIEW_UNRESOLVED",
-                                          *judge.get("errors", [])])
                 row["stop_reason"] = "NO_CONFIRMED_INITIAL_ENVIRONMENT_GAP"
                 break
-            result.update(status="REVIEW", stopped_at="rollout_review",
-                          errors=["ROLLOUT_ENVIRONMENT_GAP"])
             # 后审可以运行终态；初态返修必须由不持有终态代码的新会话再次确认。
             diagnosis_root = diagnosis_root / "initial-confirmation"
             judge = run_workspace_sufficiency(

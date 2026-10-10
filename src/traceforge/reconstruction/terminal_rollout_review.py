@@ -102,3 +102,27 @@ def build_terminal_rollout_evidence(native_trials: list[dict[str, Any]]) -> dict
         })
     return {"schema_version": "traceforge.terminal-rollout-evidence.v1",
             "trials": reviews, "evidence_refs": references}
+
+
+def terminal_review_outcome(
+    judge: dict[str, Any], environment: dict[str, Any], sufficiency_path: Path,
+) -> dict[str, Any]:
+    """正常管线和后审重试使用同一判定；实跑完成不等于答案已评分。"""
+    from traceforge.reconstruction.task_fit import environment_execution_blockers
+
+    review = {**(judge.get("rollout_review") or {}),
+              "sufficiency_path": str(sufficiency_path),
+              "initial_environment_label": judge.get("label")}
+    errors = []
+    if review.get("status") != "COMPLETE":
+        errors = review.get("errors") or ["ROLLOUT_REVIEW_INCOMPLETE"]
+    elif any(item["status"] == "ENVIRONMENT_GAP" for item in review["requirements"]):
+        errors = ["ROLLOUT_ENVIRONMENT_GAP"]
+    elif judge.get("status") != "READY" or environment_execution_blockers(environment):
+        errors = ["INITIAL_ENVIRONMENT_REVIEW_UNRESOLVED", *judge.get("errors", [])]
+    return {
+        "status": "REVIEW" if errors else "ROLLOUT_COMPLETED",
+        "stopped_at": "rollout_review" if errors else None,
+        "errors": errors, "rollout_review": review,
+        "acceptance": "NOT_ASSESSED", "sft_eligible": False,
+    }

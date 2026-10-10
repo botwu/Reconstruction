@@ -216,6 +216,20 @@ def _parser() -> argparse.ArgumentParser:
     raw_run.add_argument("--verifier-rounds", type=int, default=None,
                          help="可选正整数轮数预算；默认持续返修至通过、无进展或执行阻塞")
 
+
+    retry_review = reconstruct_commands.add_parser(
+        "retry-review", help="只重试已完成 native 任务的后审，原运行保持不变")
+    retry_review.add_argument("--from-manifest", type=Path, required=True)
+    retry_review.add_argument("--task-id", required=True)
+    retry_review.add_argument("--output", type=Path, required=True)
+    retry_review.add_argument(
+        "--check-only", action="store_true", help="仅离线认证输入，不调用模型或 AGS")
+    retry_review.add_argument("--config", type=Path)
+    retry_review.add_argument("--hermes-home", type=Path)
+    retry_review.add_argument(
+        "--harbor-root", type=Path,
+        default=Path(__file__).resolve().parents[2] / "integrations/harbor_ags")
+
     requery = commands.add_parser("requery", help="Terminal-Universe C.2/C.3/C.4 任务扩展")
     requery_commands = requery.add_subparsers(dest="requery_command", required=True)
     single_ws = requery_commands.add_parser(
@@ -426,6 +440,38 @@ def main(argv: Sequence[str] | None = None) -> int:
                 and result.get("execution_completed") is True and not acceptance["errors"])
         ) if acceptance is not None else result["quality_gate"]["ok"]
         return 0 if passed else 2
+
+    if arguments.command == "reconstruct" and arguments.reconstruct_command == "retry-review":
+        from traceforge.reconstruction.review_retry import prepare_review_retry, run_review_retry
+
+        try:
+            prepared = prepare_review_retry(
+                manifest_path=arguments.from_manifest, task_id=arguments.task_id,
+                output_root=arguments.output)
+            if arguments.check_only:
+                print(json.dumps({"status": "READY", "task_id": arguments.task_id,
+                                  "native_trials": len(prepared["native_trials"]),
+                                  "model_calls": 0, "ags_calls": 0}))
+                return 0
+            if arguments.config is None:
+                raise ValueError("实际后审需要 --config；仅认证使用 --check-only")
+            os.environ["HERMES_REDACT_SECRETS"] = "false"
+            role = resolve_role_matrix(arguments.config)["reconstruction"]
+            agent = build_hermes_runtime(
+                config_path=arguments.config, channel=role.channel,
+                model_name=role.model, hermes_home=arguments.hermes_home)
+            factory = (build_ags_runtime_factory(
+                harbor_root=arguments.harbor_root, output_root=arguments.output,
+                config_path=arguments.config) if prepared["domain"] == "terminal" else None)
+            result_path = run_review_retry(prepared, agent=agent, runtime_factory=factory)
+            result = json.loads(result_path.read_text())
+            print(result_path)
+            return 0 if result["status"] == "ROLLOUT_COMPLETED" else 2
+        except (ValueError, OSError, KeyError, TypeError, HarborResultError, HarborRolloutError,
+                HermesUnavailableError, SandboxUnavailableError) as exc:
+            print(f"后审重试失败：{exc}", file=sys.stderr)
+            return 2
+
     if arguments.command == "reconstruct" and arguments.reconstruct_command == "raw-run":
         try:
             os.environ["HERMES_REDACT_SECRETS"] = "false"
