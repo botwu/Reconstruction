@@ -1,6 +1,6 @@
 # 当前状态
 
-更新：2026-10-11；阶段回执核对至上海时间 04:37，交付索引快照为 04:27。本文只保留当前结论和限制，历次过程见 Git 与原私有产物。
+更新：2026-10-11；阶段回执核对至上海时间 04:38，交付索引快照为 04:27。本文只保留当前结论和限制，历次过程见 Git 与原私有产物。
 
 ## 目标与两类流程
 
@@ -63,9 +63,9 @@ R01:1216 已结束本次 11 项任务的处理：141 条消息、4 个工具定�
 旧冻结代码另把两任务的四处 https URL 误当文件路径改写。11 份真实模型输出的离线重放已验证修复；活动旧批不热更新，不能据此称其旧产物已修好。
 
 R01:655 的 v26 真实意图已去除否定句中的旧答案泄漏，原六部分、九维度等要求保留。作者补全仍有局部材料缺口判断，独立补全复核 8 次均因 eastus2 TPM 无成功回复；终态 REVIEW_INCOMPLETE、进程和客户端已关闭，0 native/AGS，不能确认作者 BLOCKED 理由成立。
-655 保留真实 15 条消息的作者 checkpoint；run07 续接已离线准备，仍沿用原 v26 task，不重跑意图。是否补齐资料、限流是否解除，要等真实接续。
+655 保留真实 15 条消息的作者 checkpoint；run10 续接已离线准备，仍沿用原 v26 task，不重跑意图。是否补齐资料、限流是否解除，要等真实接续。
 
-terminal9 **尚未启动**：R04:364、1090、1816、2542、3268、3994、4720、5446、6172。未用准备已绑定现有 run09 源码，保持 offset=1、limit=9、workers=1、每 task 两次原生、无 resume，输出独立。
+terminal9 **已于上海时间 04:37 启动**：R04:364、1090、1816、2542、3268、3994、4720、5446、6172，当前处理第一条。采用 run10/8747b6f 冻结代码，保持 offset=1、limit=9、workers=1、每 task 两次原生、无 resume，输出独立；尚不能计为完成。
 5446/6172 已有真实意图复验，不等于这九条已完成重建或求解。search5 已自然退出并记账 5/5 条（3 COMPLETED、2 BLOCKED）；20 个原生 job 的 40 个 AGS 均有终止回执，旧冻结源码与原始行哈希不变。
 
 R01:1403 的 3 项均完成双原生、正式后审与独立核查；54 次 solver 请求完整，6 个 AGS 已关闭。后两项创作任务仅需历史文本，没有强加搜索或图片产出。第三项交付完整三集及制作卡，但少量尾部节奏/试播建议未交付，未确认因此产生的必要缺口。
@@ -80,7 +80,7 @@ R01:1590 已核 66 条原消息、4 个工具定义、29 次调用（28 次返�
 - **URL 保全：**已提交并推送 `e83f4de`，run06 据此冻结。网址不参与文件路径提取/替换；大小写、查询、fragment、尾斜杠与相连中文原样保留。7 项 RED→GREEN、74 项绑定检查及真实 11 输出重放通过。
 - **调用参数隔离依据：**原校验只允许从工具返回引用隔离依据，忽略查询、标题及补丁参数中的答案线索。现允许逐字引用原参数的字符串值，仍拒绝解析意见或虚构内容；补全/复核同步检查参数与返回，不按时间删除所有未来观察。3 项 RED→GREEN、153 项相关测试及 1216 六条真实参数引用重放通过，完整候选表和其余交付不变；模型自主取舍仍待真实复验。
 - **有界网页返回：**web_open 正文、链接表和其余元数据分别按字符分页，原完整缓存/来源保留；作者工具及原生 CLI 使用同一协议，旧回执仍严格验证，不同分区的成功读取计入恢复进度。相关测试 198 项通过；选定 OCR 页兼容修正经 74 项定向检查，读取进度经 34 项模块检查。成功取得更多正文也算进展，只增 limit 而返回相同内容不算。真实第八项三条返回经过同一 Hermes 函数均完整，两份指南正文、1,015/976 条链接及元数据逐页还原一致，CLI 新进程续读成功、零网络且旧原件不变。这是实际数据回放，不是新模型或双原生通过。
-- **误导说明返修：**在现有后审和反馈入口明确：经原件核实、会误导必要材料使用的错误交付/访问说明属于环境问题；正文已有也应修正说明。仅 solver 漏读、推断错误和一般措辞瑕疵不能扩大成新环境义务。代码已推送至 c26ccc4。真实第八项独立后审已结束：8 次 TPM 失败、没有成功语义回复；没有据此启动作者返修。完整 SOURCE 和双 trial 保留，下一次采用无损链接去重后重试；真实反馈及新双原生闭环仍待验证。
+- **误导说明返修：**在现有后审和反馈入口明确：经原件核实、会误导必要材料使用的错误交付/访问说明属于环境问题；正文已有也应修正说明。仅 solver 漏读、推断错误和一般措辞瑕疵不能扩大成新环境义务。代码已推送至 c26ccc4。真实第八项独立后审已结束：8 次 TPM 失败、没有成功语义回复；没有据此启动作者返修。随后 run02 保留完整 SOURCE、双 trial 并采用链接去重，单次请求又被服务端明确拒绝为输入超过上下文窗口（MODEL_API_FAILED），0 成功回复；不是 TPM。Hermes 配置 1M、粗估 839,637 不代表服务端实际 token 数，未取得 provider usage。原文保护生效、压缩计数 0；真实反馈及新双原生闭环仍待验证。
 - **补全复核无损去重：**仅等值重复的工具返回改为原消息引用，完整 SOURCE/实际交付不变。655 未过滤原请求 SHA 命中，1,648,046→866,401 UTF-8 字节，20 条返回可还原；47.43% 是字节减少，不是 token 降幅或 TPM 已解决。
 - **正式 `reconstruct retry-review`：**仅针对后审失败，在新目录认证并复核完整 native；不重建、不重跑 solver，REPAIR 不暗中返修。1216 第九项已真实运行正式 CLI：3 次成功 Astra 请求，完整 141 消息/4 工具及原 21/22 消息轨迹逐值一致，环境 COMPLETE；原件未改，0 新 solver/AGS。旧 COMPLETE 不属于此入口的失败重试范围。
 - **任务合同返修与链接表去重：**已提交 aeed2ab / 8747b6f。合同问题返回上游意图，最低材料判断不默认索取全部私有附件。复核请求仅将 URL、原始哈希及完整表均相同的重复 links 转为请求内引用，保留全部正文和实际求解轨迹；两个复核入口相关 109 项检查通过。真实第八项请求中 23 份重复表展开后整请求逐值相等，4,271,864→3,387,123 字节，减少 20.71%；这不是截断，也不证明 TPM 已解除。
@@ -105,7 +105,7 @@ R01:1590 已核 66 条原消息、4 个工具定义、29 次调用（28 次返�
 ## 模型、服务与运行范围
 
 现冻结解析/重建/复核使用 `gpt-6-astra/azure/sfa`，配置上下文 1M；原生 solver 使用 `claude-opus-4-8/awsb_L/sfa`，每 task 两 trial。全局单一模型/AGS运行窗口、workers=1，新准备不抢占在跑 search。
-Serper 搜索/抓取已真实成功，不能从单次 credits 推断账户余额；宿主按私有搜索配置走用户代理，AGS 已验证直连。TPM 是实际服务失败，不能据此断言资料缺失，也未承诺限流消失。
+Serper 搜索/抓取已真实成功，不能从单次 credits 推断账户余额；宿主按私有搜索配置走用户代理，AGS 已验证直连。TPM 是实际服务失败，不能据此断言资料缺失，也未承诺限流消失。Astra 模型目录只声明 OpenAI 端点，未披露上下文上限；配置的 1M 不作为实际可接收容量的证明。
 正式读取选 Serper。Jina 对费率 JPEG 虽 HTTP 成功却没有可用表格正文；原图已通过 Astra/Claude 原生视觉实际进入请求并核过表头和首行，不能外推全表正确。整图 OCR 出现金额误读，裁切结果也须保留来源与范围。
 宿主 OCR 配置漏项已补；这不等于 solver 获得动态 OCR。Harbor 交付实际取得的材料，必要性逐任务判断，不加统一 OCR/整仓构建/GUI 门槛。既有 AGS 模板可用，不为本轮 terminal 强制重建模板。
 只修改远端 TraceRconstruction；AgenticFoundry 保持只读参考。原始 R01/R04 按授权经 Git LFS 发布，其余私有配置、完整捕获和运行产物不入 Git。
@@ -119,11 +119,11 @@ Serper 搜索/抓取已真实成功，不能从单次 credits 推断账户余额
 | `recovery/delivery-index-current.json` | 10 个来源中的 20 task / 40 trial；含采用的后审与续接关系，不等于所有 session 通过 |
 | `recovery/remaining16-run03/audits/` | 842 闭环、1029 四任务反证/边界、1216 解析与逐模块独立审核；含 URL 真实重放 |
 | `recovery/web-open-section-real-replay/result-final/audit.json` | 真实工具截断复现、完整分区还原及 native CLI 续读，旧原件哈希不变 |
-| `recovery/search1216-task8-fresh-review-module-run01-prepared/`、`recovery/quality-recovery-freeze-run09/` | c26ccc4 的已完成旧任务后审对照准备；无预设判定、无新作者或 solver 调用 |
+| `recovery/search1216-task8-fresh-review-module-run01/`、`recovery/search1216-task8-fresh-review-module-run02/` | 两次真实后审服务失败：先 TPM 后 context overflow；无语义结论、无新作者或 solver |
 | `recovery/remaining16-run03/search5/runs/` | 已结束 search 冻结批的 source、意图、环境、Harbor、原生与正式终态 |
 | `recovery/search1029-task1-fresh-review-module-run02/` | 真实后审发现旧合同问题；独立对照记录其过度索取私有原件的判断 |
-| `recovery/search655-v26-complete-run01/`、`recovery/search655-v26-checkpoint-resume-run07-prepared/` | 655 原限流与真实 checkpoint、新代码接续准备 |
-| `recovery/quality-recovery-freeze-run09/`、`recovery/remaining16-run09/terminal9-control/` | c26ccc4 冻结及 terminal9 离线准备；不代表已获运行成功 |
+| `recovery/search655-v26-complete-run01/`、`recovery/search655-v26-checkpoint-resume-run10-prepared/` | 655 原限流与真实 checkpoint、新代码接续准备 |
+| `recovery/quality-recovery-freeze-run10/`、`recovery/remaining16-run10/terminal9-control/` | 8747b6f 冻结及 terminal9 真实启动记录，批次尚在运行 |
 | `recovery/remaining16-run02/terminal2179/`、`recovery/terminal2179-independent-review-retry-run01/` | 2179 原冷跑、双原生、限流及仅后审接续 |
 | `recovery/search281-logistics-v25-complete-run01/`、`recovery/search281-whatsapp-v25-resume-run01/` | 用户授权边界下的最终交付和原生后审 |
 | `recovery/search468-postreview-recovery-run02/`、`batch-run04/audits/` | 完整 trial 交接接续与独立内容核查 |
