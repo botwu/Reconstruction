@@ -505,3 +505,19 @@ def test_recovery_counts_new_successful_sections_but_not_repeats(success, text):
         network.calls.append(dict(network.calls[-1]))
         assert _search_recovery_state(network) == states[-1]
     assert len(set(states)) == (3 if success and text else 1)
+
+
+def test_recovery_counts_more_read_text_but_not_larger_limit_alone():
+    from traceforge.reconstruction.search_environment import _search_recovery_state
+
+    call = {
+        "tool": "web_open", "url": "https://example.org/paper", "section": "text",
+        "offset": 0, "success": True, "raw_sha256": "fixed", "limit": 3, "text": "abc",
+    }
+    network = SimpleNamespace(calls=[call], pages={})
+    before = _search_recovery_state(network)
+    network.calls.append({**call, "limit": 5, "text": "abcde"})
+    after = _search_recovery_state(network)
+    assert before != after
+    network.calls.append({**call, "limit": 8000, "text": "abcde"})
+    assert _search_recovery_state(network) == after

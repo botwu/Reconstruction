@@ -646,7 +646,7 @@ def _search_recovery_state(network: SearchTools) -> str:
         json.dumps({key: call[key] for key in (
             "tool", "query", "url", "ocr_page", "success",
             *(("raw_sha256",) if call.get("success") else ()),
-            *(("offset", "section") if call.get("success") and call.get("text") else ()),
+            *(("offset", "section", "text") if call.get("success") and call.get("text") else ()),
         ) if key in call}, sort_keys=True, ensure_ascii=False)
         for call in network.calls
     }
