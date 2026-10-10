@@ -342,7 +342,7 @@ def test_stub_observable_does_not_satisfy_file_gate() -> None:
 
 
 def test_intent_role_and_prompt_name_the_anchor() -> None:
-    assert INTENT_PROMPT_VERSION == "intent-recovery-agent-v25-conditional-input"
+    assert INTENT_PROMPT_VERSION == "intent-recovery-agent-v26-answer-boundary"
     assert "original user query is the anchor" in INTENT_ROLE.identity
     assert "deepen" in INTENT_ROLE.identity
     assert "Research, forum lookup, production publish" in INTENT_ROLE.identity

@@ -22,7 +22,7 @@ from traceforge.reconstruction.session_source import indexed_session
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v25-conditional-input"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v26-answer-boundary"
 
 
 class IntentRecoveryError(RuntimeError):
