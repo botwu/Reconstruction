@@ -897,6 +897,13 @@ def write_agent_trace(
     return path
 
 
+def _tool_result_text(result: str | dict[str, Any]) -> str:
+    """保留旧文字哈希；原生图像回执按完整结构固定哈希。"""
+    return result if isinstance(result, str) else json.dumps(
+        result, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    )
+
+
 def load_tool_results(
     output_root: str | Path, tool_events: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -928,9 +935,10 @@ def load_tool_results(
                 or any(key not in event or key not in record for key in keys)):
             raise ValueError(f"工具完整回执缺少执行绑定字段：{path}，第 {index} 条")
         result = record.get("result")
-        if not isinstance(result, str):
+        if not isinstance(result, (str, dict)):
             raise ValueError(f"工具完整回执没有原始正文：{path}，第 {index} 条")
-        if hashlib.sha256(result.encode("utf-8")).hexdigest() != record["result_sha256"]:
+        digest = hashlib.sha256(_tool_result_text(result).encode("utf-8")).hexdigest()
+        if digest != record["result_sha256"]:
             raise ValueError(f"工具完整回执正文哈希不匹配：{path}，第 {index} 条")
         if any(event[key] != record[key] for key in keys):
             raise ValueError(
@@ -985,7 +993,7 @@ def _scoped_hermes_dispatch(agent: Any, *, role: AgentRole) -> Iterator[None]:
         task_id: str | None = None,
         tool_call_id: str | None = None,
         **kwargs: Any,
-    ) -> str:
+    ) -> str | dict[str, Any]:
         caller_session_id = kwargs.get("session_id")
         if owner_session_id and caller_session_id and caller_session_id != owner_session_id:
             return "error: HERMES_SESSION_MISMATCH"
@@ -1009,10 +1017,10 @@ def _scoped_hermes_dispatch(agent: Any, *, role: AgentRole) -> Iterator[None]:
             module.handle_function_call = previous
 
 
-def is_fatal_tool_result(function_name: str, result: str) -> bool:
+def is_fatal_tool_result(function_name: str, result: str | dict[str, Any]) -> bool:
     """角色越权仍终止；写入前的内容校验失败允许纠正，最终候选继续完整校验。"""
 
-    if not result.startswith("error:"):
+    if not isinstance(result, str) or not result.startswith("error:"):
         return False
     return (
         "cannot write files" in result
@@ -1056,7 +1064,7 @@ def _bind_agent_tools(
         pre_tool_block_checked: bool = False,
         skip_tool_request_middleware: bool = False,
         tool_request_middleware_trace: list[dict[str, Any]] | None = None,
-    ) -> str:
+    ) -> str | dict[str, Any]:
         if function_name not in allowed:
             message = f"error: tool is not enabled for role {role.name}: {function_name}"
             session.policy_errors.append("TOOL_NOT_ALLOWED:" + function_name)
@@ -1064,16 +1072,28 @@ def _bind_agent_tools(
         with session.lock:
             record({"status": "STARTED", "name": function_name,
                     "tool_call_id": tool_call_id, "arguments": function_args})
-            result = execute_tool(function_name, function_args, session)
+            supports_vision = getattr(_agent, "_model_supports_vision", None)
+            if function_name == "view_image" and (
+                not callable(supports_vision) or not supports_vision()
+            ):
+                result = "error: 当前模型未启用原生视觉，未读取原图"
+            else:
+                result = execute_tool(function_name, function_args, session)
+            if isinstance(result, dict):
+                prepare = getattr(_agent, "_tool_result_content_for_active_model", None)
+                if not callable(prepare) or prepare(function_name, result) != result["content"]:
+                    result = "error: 当前模型或供应商不能接收工具原图，未以文字摘要替代"
             # 普通工具只保留预览；pytest 历史会被测试重写清空，必须在私有轨迹中
             # 保留完整结果及执行时源码。当前验收仍只读取 session.pytest_runs。
             event = {
                 "name": function_name,
                 "tool_call_id": tool_call_id,
-                "ok": not result.startswith("error:"),
+                "ok": not (isinstance(result, str) and result.startswith("error:")),
                 "arguments": copy.deepcopy(function_args),
-                "result_sha256": hashlib.sha256(result.encode("utf-8")).hexdigest(),
-                "result_preview": result[:512],
+                "result_sha256": hashlib.sha256(
+                    _tool_result_text(result).encode("utf-8")).hexdigest(),
+                "result_preview": (result if isinstance(result, str)
+                                   else str(result.get("text_summary") or ""))[:512],
             }
             if function_name == "run_pytest":
                 source = session.test_outputs_py

@@ -34,7 +34,9 @@ from traceforge.reconstruction.verification import run_native_unassessed_rollout
 if TYPE_CHECKING:
     from traceforge.reconstruction.verification import VerificationConfig
 
-_SEARCH_TOOLS = ("list_evidence", "search_evidence", "read_evidence", "web_search", "web_open")
+_SEARCH_TOOLS = (
+    "list_evidence", "search_evidence", "read_evidence", "web_search", "web_open", "view_image",
+)
 SEARCH_COMPLETION_ROLE = AgentRole(
     name="search_completion",
     identity=(
@@ -93,6 +95,9 @@ SEARCH_COMPLETION_ROLE = AgentRole(
         "不能仅因服务故障降低确需在线的能力要求，也不能把原摘要冒充新增正文。"
         "补充的公开源码以实际打开的 URL 引用并随 live_references 交付。"
         "确需为 solver 保留公网研究能力时，实际验证查询和来源读取；核对所需章节，访问成功不等于正文完整。"
+        "网页中的图片链接也是原始资料线索；web_open 可保存原始 JPEG/PNG，"
+        "再用 view_image(url) 直接读取已取得图片的像素。图片元数据不等于图片正文，"
+        "表格需核对行列、币种和生效日期；不能把 OCR 高置信度当作数值已验证。"
         "乱码、正文漏字、仅目录或摘要不能当作已读全文；PDF 可用 web_open 的 ocr_page 显式识别单页，"
         "需本地 OCR 能力已配置；保留坐标、置信度及页图，公式和双栏顺序未核实，不能宣称精确恢复。"
         "沿 DOI、期刊网页和公开版本继续取证，"
@@ -615,7 +620,8 @@ def save_search_checkpoint(
         encoding="utf-8",
     )
     network_root = getattr(network, "root", output_root / "completion/web")
-    for path in [*network_root.glob("*.raw"), *network_root.glob("*.pdf"), *network_root.glob("*.png")]:
+    for path in [*network_root.glob("*.raw"), *network_root.glob("*.pdf"),
+                 *network_root.glob("*.png"), *network_root.glob("*.jpeg")]:
         shutil.copyfile(path, web / path.name)
     manifest = {
         "schema_version": "traceforge.search-checkpoint.v1",
@@ -721,6 +727,7 @@ def run_search_task(
         conversation=conversation, evidence=records,
         session_context=json.dumps(source["raw_session"], ensure_ascii=False),
         web_search_handler=network.search, web_open_handler=network.open,
+        view_image_handler=network.view_image,
     )
     events = []
     for i, event in enumerate(source.get("tool_timeline") or []):
@@ -900,7 +907,7 @@ def run_search_rollouts(
         web = SearchTools(trial_root / "web")
         solver_session = AgentSession(
             evidence=copy.deepcopy(evidence), web_search_handler=web.search,
-            web_open_handler=web.open,
+            web_open_handler=web.open, view_image_handler=web.view_image,
         )
         solver_instruction = task["task_instruction"] + "\n\n" + json.dumps({
             "original_user_texts": task.get("source_task", {}).get("user_texts", []),

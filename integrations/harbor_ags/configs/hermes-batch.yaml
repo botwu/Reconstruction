@@ -18,7 +18,7 @@ agents:
       workspace: /home/user/workspace
       max_iterations: 30
       capture_timeout_sec: 900
-      toolsets: file,terminal
+      toolsets: file,terminal,vision
       input_profile: traceforge-task-bundle-v1
 
 environment:

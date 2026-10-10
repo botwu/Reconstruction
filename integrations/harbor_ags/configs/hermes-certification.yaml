@@ -17,7 +17,7 @@ agents:
       hermes_source_dir: /home/user/.hermes/hermes-agent
       workspace: /home/user/workspace
       max_iterations: 30
-      toolsets: file,terminal
+      toolsets: file,terminal,vision
       input_profile: traceforge-task-bundle-v1
 
 environment:

@@ -3,7 +3,7 @@ Your workspace root is: /home/user/workspace
 The task's public workspace snapshot is already materialized there.
 Resolve relative task paths from /home/user/workspace; keep all workspace edits inside it.
 Persistent task artifacts must be written under: /logs/artifacts/traceforge/
-Hermes runtime toolsets enabled for this run: file, terminal.
+Hermes runtime toolsets enabled for this run: file, terminal, vision.
 Verifier tests, reference solutions, hidden truth, and control files are not visible 
 to the Agent. Use tools to inspect the public workspace and re-read required 
 deliverables before finishing.

@@ -17,7 +17,9 @@ search 包含本地代码、文档检索。补全 agent 根据交付后仍未覆
 
 公开查询使用 Serper；已知网址先按一次真实 HTTP 响应识别 PDF 或静态 HTML。HTML 保留原始字节、编码、最终网址、题名及真实链接，包含页面声明的 PDF 地址；不执行脚本，也不将摘要宣称为全文。分页和恢复复用并核对同一原始响应。其他或无可读静态文字的页面才交给配置的读取服务，默认 Jina Reader。PDF 支持无后缀地址及重定向；下载原文件后用 `pypdf[fonts]` 读取文本层；这项依赖已纳入 `pyproject.toml` 和锁文件。GitHub 源码仍经内容 API 核对原字节和 Git blob，不能用 HTML 抽取替代。凭据从环境变量 `SERPER_API_KEY`、`JINA_API_KEY` 或私有 `~/.config/traceforge/search.json` 的同义小写字段加载。可用 `TRACEFORGE_SEARCH_CONFIG` 指定私有配置位置；网络无法访问 Jina 时，可明确设置 `fetch_provider: "serper"`（或环境变量 `TRACEFORGE_FETCH_PROVIDER`）使用同一 Serper 账户的网页读取接口。实际 provider 会记录在每条返回中，不静默切换。
 
-Serper 网页读取显式请求 Markdown，优先保留响应中的链接、图片引用和表格；未返回 Markdown 时使用纯文本并记录正文格式。分页与恢复按原始响应的对应字段逐值校验，旧快照仍按原格式读取。图片链接仅是来源线索，不表示已读取像素或核实图中数字。
+Serper 网页读取显式请求 Markdown，优先保留响应中的链接、图片引用和表格；未返回 Markdown 时使用纯文本并记录正文格式。分页与恢复按原始响应的对应字段逐值校验，旧快照仍按原格式读取。图片链接仅是来源线索，不表示已读取像素或核实图中数字。 已知 JPEG/PNG 图片可继续用 `web_open` 保存原始字节、来源和 SHA256，再由 `view_image(url)` 向当前模型提供同一图片的原生内容块。工具仅支持已经取得且哈希一致的原件；不生成 OCR 替代文本，不把元数据当作识图结果。单张图片的 base64 data URL 超过工具的 4 MiB 上限时明确返回限制，原件仍保留，不静默缩图。当前模型与供应商须实际支持工具图像输入；本地检查通过不能代替模型请求与输出的核对。
+
+自定义模型别名可能不在 Hermes 的视觉能力表中。确认该通道能接收原生图像后，在本次运行的私有 `HERMES_HOME/config.yaml` 中显式设置 `model.supports_vision: true` 和 `agent.image_input_mode: native`，并把该配置与运行一起冻结。此处 `HERMES_HOME` 是状态配置目录；命令中的 `--hermes-home` 仍须显式指向锁定的 Hermes **源码**目录。不要只在模型连接的 channel 配置中添加这些字段，那里不会传给 Hermes。原生 Harbor/AGS 还须单独核对模板内的 Hermes 版本与实际图像请求，宿主配置不能证明求解沙箱具备同样能力。
 
 宿主机需要外部代理时，在私有配置中设置 `proxy`，或通过 `TRACEFORGE_SEARCH_PROXY` 指定 HTTP(S) 代理；仅该搜索实例的服务请求和 HTML/PDF 读取使用代理，不修改全局网络环境，也不改变模型或 AGS 控制请求的路由。未配置时保持既有网络行为。来源地址和重定向仍须通过公开地址校验。宿主 DNS 失败或返回非公网地址时，只有目标确实走已配置代理才经同一代理调用 [Google DoH](https://developers.google.com/speed/public-dns/docs/doh/json) 核对 A/AAAA；响应须对应原查询、完整且全部地址为公网。私网 IP 字面量、解析失败和 NO_PROXY 绕过不会因此放行。DNS 原始回执独立保存，不计作检索资料或联网成功证明。此宿主配置不会自动传入原生 Harbor/AGS 求解沙箱。代理配置使用权限为 0600 的私有文件，不打包进 Harbor 初态或提交 Git。
 

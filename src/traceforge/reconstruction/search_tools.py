@@ -173,14 +173,58 @@ def _validate_html_page(page: dict[str, Any], root: Path) -> None:
         raise ValueError("HTML 缓存正文、链接或提取信息与原始抓取不一致")
 
 
-def _verified_pdf_asset(root: Path, digest: Any, suffix: str) -> Path:
-    """原 PDF 与 OCR 派生物使用同一哈希校验，不能按文件名冒认原件。"""
+def _verified_asset(
+    root: Path, digest: Any, suffix: str, *, source_kind: str = "PDF/OCR",
+) -> Path:
+    """核对已保存来源字节，不能仅按文件名冒认原件。"""
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-        raise ValueError("PDF/OCR 来源哈希格式无效")
+        raise ValueError(f"{source_kind} 来源哈希格式无效")
     path = root / (digest + suffix)
     if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-        raise ValueError(f"PDF/OCR 来源缺失或哈希不匹配：{path.name}")
+        raise ValueError(f"{source_kind} 来源缺失或哈希不匹配：{path.name}")
     return path
+
+
+_IMAGE_SUFFIXES = {"image/jpeg": ".jpeg", "image/png": ".png"}
+
+
+def _image_metadata(raw: bytes, mime_type: str) -> dict[str, Any]:
+    if not 0 < len(raw) <= 32_000_000:
+        raise ValueError("图片超过 32 MB 或原字节为空，未采用不完整下载")
+    valid = (
+        mime_type == "image/jpeg" and raw.startswith(b"\xff\xd8\xff")
+        and raw.endswith(b"\xff\xd9")
+    ) or (
+        mime_type == "image/png" and raw.startswith(b"\x89PNG\r\n\x1a\n")
+        and raw.endswith(b"\x00\x00\x00\x00IEND\xaeB\x60\x82")
+    )
+    if not valid:
+        raise ValueError("图片 MIME、原文件魔数或结束标记不匹配")
+    return {
+        "provider": "direct_image", "content_kind": "source_image",
+        "mime_type": mime_type, "source_bytes": len(raw), "extraction_scope": "image_bytes",
+        "text": "已保存原图字节；尚未读取像素，请用 view_image 查看，不能把此元数据当作图中内容。",
+        "limitations": ["仅保存原图与来源；未做 OCR、视觉识别或内容核验。"],
+    }
+
+
+def image_assets(page: dict[str, Any], root: Path | None) -> list[Path]:
+    """核对原图与图片元数据；缓存恢复、查看和 Harbor 交付共用。"""
+    if page.get("provider") != "direct_image" and page.get("content_kind") != "source_image":
+        return []
+    if root is None:
+        raise ValueError("图片交付缺少原件目录")
+    suffix = _IMAGE_SUFFIXES.get(page.get("mime_type"))
+    if suffix is None:
+        raise ValueError("图片 MIME 必须为 image/jpeg 或 image/png")
+    path = _verified_asset(root, page.get("raw_sha256"), suffix, source_kind="图片")
+    expected = _image_metadata(path.read_bytes(), page["mime_type"])
+    if (page.get("success") is not True or type(page.get("source_bytes")) is not int
+            or any(page.get(key) != value for key, value in expected.items())
+            or any(not isinstance(page.get(key), str) or not page[key]
+                   for key in ("url", "resolved_url"))):
+        raise ValueError("图片元数据与原件不一致")
+    return [path]
 
 
 def pdf_assets(page: dict[str, Any], root: Path | None) -> list[Path]:
@@ -189,7 +233,7 @@ def pdf_assets(page: dict[str, Any], root: Path | None) -> list[Path]:
         return []
     if root is None:
         raise ValueError("PDF/OCR 交付缺少原 PDF、页图和识别原始返回所在目录")
-    pdf = _verified_pdf_asset(root, page.get("raw_sha256"), ".pdf")
+    pdf = _verified_asset(root, page.get("raw_sha256"), ".pdf")
     assets = {pdf}
     for number, item in (page.get("ocr_pages") or {}).items():
         if (not isinstance(item, dict) or item.get("schema_version") != "traceforge.pdf-ocr-page.v1"
@@ -199,7 +243,7 @@ def pdf_assets(page: dict[str, Any], root: Path | None) -> list[Path]:
             raise ValueError("OCR 页面与原 PDF 的绑定不匹配")
         paths = [pdf]
         for field, suffix in (("image_sha256", ".png"), ("ocr_raw_sha256", ".ocr.raw")):
-            paths.append(_verified_pdf_asset(root, item.get(field), suffix))
+            paths.append(_verified_asset(root, item.get(field), suffix))
         if json.loads(paths[-1].read_bytes()) != {
                 key: value for key, value in item.items() if key != "ocr_raw_sha256"}:
             raise ValueError("OCR 文本块与实际识别原始返回不一致")
@@ -404,8 +448,10 @@ class SearchTools:
                 "git_blob_sha1": blob, "source_ref": urllib.parse.unquote(ref)}
 
     def _fetch_document(self, url: str) -> dict[str, Any] | None:
-        # 单次原站请求按实际响应区分 PDF 与静态 HTML；其他内容仍由既定读取服务处理。
-        pdf_expected = urllib.parse.urlsplit(url).path.lower().endswith(".pdf")
+        # 单次原站请求保留文档或图片原件，不把图片交给文本抽取器。
+        source_path = urllib.parse.urlsplit(url).path.lower()
+        pdf_expected = source_path.endswith(".pdf")
+        image_expected = source_path.endswith((".jpeg", ".jpg", ".png"))
         request = urllib.request.Request(_wire_url(url), headers={"User-Agent": "TraceForge/0.3"})
         handlers: list[urllib.request.BaseHandler] = [PublicSourceRedirect(self._check_public_url)]
         if self._proxy:
@@ -417,6 +463,22 @@ class SearchTools:
             with opener.open(request, timeout=90 if pdf_expected else 20) as response:
                 prefix = response.read(5)
                 content_type = response.headers.get("Content-Type", "")
+                mime_type = content_type.split(";", 1)[0].strip().lower()
+                image_expected = (image_expected or mime_type in _IMAGE_SUFFIXES
+                                  or prefix.startswith((b"\xff\xd8\xff", b"\x89PNG")))
+                if image_expected:
+                    raw = prefix + response.read(32_000_001 - len(prefix))
+                    metadata = _image_metadata(raw, mime_type)
+                    length = response.headers.get("Content-Length")
+                    if length is not None and int(length) != len(raw):
+                        raise ValueError("图片下载字节数与 Content-Length 不一致")
+                    digest = hashlib.sha256(raw).hexdigest()
+                    (self.root / (digest + _IMAGE_SUFFIXES[mime_type])).write_bytes(raw)
+                    return {
+                        **metadata, "success": True, "url": url,
+                        "resolved_url": response.geturl(), "raw_sha256": digest,
+                        "source_mode": "live_page", "retrieved_at": datetime.now(UTC).isoformat(),
+                    }
                 pdf_expected = pdf_expected or "application/pdf" in content_type.lower()
                 if prefix != b"%PDF-":
                     if pdf_expected:
@@ -453,7 +515,7 @@ class SearchTools:
                 raw = prefix + response.read(32_000_001 - len(prefix))
                 resolved_url = response.geturl()
         except OSError:
-            if pdf_expected:
+            if pdf_expected or image_expected:
                 raise
             return None
         if len(raw) > 32_000_000:
@@ -526,7 +588,7 @@ class SearchTools:
             return
         if not self._ocr_python:
             raise ValueError("OCR 未配置：需要 TRACEFORGE_OCR_PYTHON 或 search.json 的 ocr_python")
-        pdf = _verified_pdf_asset(self.root, page.get("raw_sha256"), ".pdf")
+        pdf = _verified_asset(self.root, page.get("raw_sha256"), ".pdf")
         env = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         result = subprocess.run(
@@ -553,6 +615,7 @@ class SearchTools:
             page = self.pages[url]
             if cache_hit and page.get("provider") == "direct_html":
                 _validate_html_page(page, self.root)
+            image_assets(page, self.root)
             if ocr_page is not None:
                 self._ocr(page, ocr_page)
             name = hashlib.sha256(url.encode()).hexdigest() + ".json"
@@ -571,6 +634,36 @@ class SearchTools:
                      **({"ocr_page": ocr_page} if ocr_page is not None else {}),
                      "error": f"{type(exc).__name__}: {self._error_detail(str(exc))}"}
         return self._record("web_open", {**value, "cache_hit": cache_hit})
+
+    def view_image(self, url: str) -> dict[str, Any] | str:
+        """仅把已打开并校验的原图送给主模型，不调用辅助模型或新增网络记录。"""
+        try:
+            page = self.pages.get(url)
+            if page is None:
+                raise ValueError("先用 web_open 打开图片来源")
+            assets = image_assets(page, self.root)
+            if not assets:
+                raise ValueError("已打开的来源不是 JPEG/PNG 原图")
+            data_url = (
+                f"data:{page['mime_type']};base64,"
+                + base64.b64encode(assets[0].read_bytes()).decode("ascii")
+            )
+            if len(data_url) > 4 * 1024 * 1024:
+                raise ValueError("图片超过原生视觉嵌入的 4 MiB 限制；原件保留，未缩放或替换像素")
+            metadata = {key: page[key] for key in (
+                "url", "resolved_url", "raw_sha256", "mime_type", "source_bytes",
+                "retrieved_at", "extraction_scope", "limitations",
+            )}
+            text = json.dumps(metadata, ensure_ascii=False)
+            return {
+                "_multimodal": True, "text_summary": text,
+                "content": [{"type": "text", "text": text},
+                            {"type": "image_url", "image_url": {"url": data_url}}],
+                "meta": {"source_url": url, **{key: page[key] for key in
+                         ("raw_sha256", "mime_type", "source_bytes")}},
+            }
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            return f"error: 原图查看失败：{self._error_detail(str(exc))}"
 
     def restore(
         self, root: Path, *, origin: str,
@@ -592,7 +685,8 @@ class SearchTools:
                         raise ValueError(f"检查点检索文件哈希不匹配：{name}")
             calls = [json.loads(line) for line in (root / "calls.jsonl").read_text().splitlines()]
             pages = {}
-            raw_files = [*root.glob("*.raw"), *root.glob("*.pdf"), *root.glob("*.png")]
+            raw_files = [*root.glob("*.raw"), *root.glob("*.pdf"),
+                         *root.glob("*.png"), *root.glob("*.jpeg")]
             for path in raw_files:
                 if hashlib.sha256(path.read_bytes()).hexdigest() != path.name.split(".")[0]:
                     raise ValueError(f"原始抓取哈希不匹配：{path}")
@@ -627,6 +721,9 @@ class SearchTools:
                 raw_path = root / f"{digest}.raw"
                 if page.get("provider") == "direct_pdf":
                     raw_path = root / f"{digest}.pdf"
+                images = image_assets(page, root)
+                if images:
+                    raw_path = images[0]
                 if not raw_path.is_file():
                     raise ValueError(f"检索原始抓取缺失：{raw_path}")
                 if page.get("provider") == "direct_html":
@@ -649,6 +746,9 @@ class SearchTools:
                 fields = ("raw_sha256", "text", "metadata", "jsonld", "content_kind", "source_ref")
                 if page.get("provider") == "direct_html":
                     fields += ("title", "links", "encoding", "resolved_url")
+                if images:
+                    fields += ("provider", "mime_type", "source_bytes", "resolved_url",
+                               "extraction_scope", "limitations")
                 if existing and (
                     any(existing.get(key) != page.get(key) for key in fields)
                     or existing.get("body_format", "text") != page.get("body_format", "text")
@@ -664,7 +764,8 @@ class SearchTools:
                 if not call.get("success"):
                     continue
                 digest = call.get("raw_sha256")
-                if not any(path.name == f"{digest}.raw" or path.name == f"{digest}.pdf"
+                if not any(path.name in {f"{digest}{suffix}" for suffix in
+                                         (".raw", ".pdf", ".jpeg", ".png")}
                            for path in raw_files):
                     raise ValueError(f"检索调用原始抓取缺失：{origin}，{digest}")
                 if call["tool"] == "web_search":
@@ -681,6 +782,11 @@ class SearchTools:
                                   "extraction_scope", "limitations")
                         if any(call.get(key) != page.get(key) for key in fields):
                             raise ValueError(f"HTML 工具回执与原始页面来源不一致：{origin}")
+                    if page is not None and page.get("provider") == "direct_image":
+                        fields = ("raw_sha256", "resolved_url", "provider", "content_kind",
+                                  "mime_type", "source_bytes", "extraction_scope", "limitations")
+                        if any(call.get(key) != page.get(key) for key in fields):
+                            raise ValueError(f"图片工具回执与原件来源不一致：{origin}")
                     if (page is not None and page.get("provider") == "serper"
                             and call.get("body_format", "text") != page.get("body_format", "text")):
                         raise ValueError(f"Serper 工具回执与缓存正文格式不一致：{origin}")

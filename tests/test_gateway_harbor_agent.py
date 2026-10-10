@@ -215,3 +215,101 @@ def test_native_run_preserves_text_and_capture_credentials_on_both_exits(
                  "ANTHROPIC_BASE_URL", "TOKENHUB_KEY", "TOKENHUB_BASE_URL", "OPENAI_API_KEY"):
         assert f"-u {name}" in execution["command"]
         assert name not in execution["env"]
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_native_vision_uses_private_hermes_home_and_restores_outer_state(
+    tmp_path, monkeypatch, fails,
+):
+    class NativeAgent:
+        pass
+
+    old_home = tmp_path / "existing-home"
+    old_home.mkdir()
+    (old_home / "config.yaml").write_text("model: {supports_vision: false}\n")
+    monkeypatch.setenv("HERMES_HOME", str(old_home))
+    monkeypatch.setenv("HERMES_TOOLSETS", "file,terminal,vision")
+    module = SimpleNamespace(AIAgent=NativeAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", module)
+    def native():
+        return True
+
+    vision = SimpleNamespace(_should_use_native_vision_fast_path=native)
+    monkeypatch.setitem(sys.modules, "tools.vision_tools", vision)
+    observed = []
+
+    def run_path(*args, **kwargs):
+        import os
+
+        import yaml
+
+        home = Path(os.environ["HERMES_HOME"])
+        observed.append(home)
+        assert home != old_home
+        config = yaml.safe_load((home / "config.yaml").read_text())
+        assert config["model"]["supports_vision"] is True
+        assert config["agent"]["image_input_mode"] == "native"
+        if fails:
+            raise RuntimeError("actual runner failed")
+
+    monkeypatch.setattr(gateway_harness.runpy, "run_path", run_path)
+    if fails:
+        with pytest.raises(RuntimeError, match="actual runner failed"):
+            gateway_harness.main()
+    else:
+        gateway_harness.main()
+    import os
+
+    assert os.environ["HERMES_HOME"] == str(old_home)
+    assert (old_home / "config.yaml").read_text() == "model: {supports_vision: false}\n"
+    assert observed and not observed[0].exists()
+    assert module.AIAgent is NativeAgent
+    assert vision._should_use_native_vision_fast_path is native
+
+
+def test_native_configs_offer_vision_and_match_exact_input_appendix():
+    import yaml
+
+    native = pytest.importorskip("harbor_ags.input_contract")
+    configs = Path(__file__).resolve().parents[1] / "integrations/harbor_ags/configs"
+    for name in ("hermes-batch.yaml", "hermes-certification.yaml"):
+        config = yaml.safe_load((configs / name).read_text())
+        kwargs = config["agents"][0]["kwargs"]
+        assert "vision" in kwargs["toolsets"].split(",")
+        assert native.render_runtime_appendix(
+            workspace_root=kwargs["workspace"], toolsets=kwargs["toolsets"],
+        ) == (configs / "runtime-appendix.md").read_text()
+
+
+@pytest.mark.parametrize("native_route", [True, False, "error"])
+def test_native_vision_shared_dispatch_never_calls_auxiliary(monkeypatch, native_route):
+    from concurrent.futures import ThreadPoolExecutor
+
+    calls = []
+
+    def original_native():
+        if native_route == "error":
+            raise RuntimeError("读取原生能力失败")
+        return native_route
+
+    module = SimpleNamespace(_should_use_native_vision_fast_path=original_native)
+    monkeypatch.setitem(sys.modules, "tools.vision_tools", module)
+    monkeypatch.setenv("HERMES_TOOLSETS", "file,terminal,vision")
+
+    # 原版公共 handler 的分支结构；顺序与并发都直接调用模块，不经过 Agent 方法。
+    def dispatch():
+        if module._should_use_native_vision_fast_path():
+            calls.append("native")
+            return "原图"
+        calls.append("auxiliary")
+        return "辅助摘要"
+
+    with gateway_harness._native_vision_home(), ThreadPoolExecutor(max_workers=1) as pool:
+        for run in (dispatch, lambda: pool.submit(dispatch).result()):
+            if native_route is True:
+                assert run() == "原图"
+            else:
+                with pytest.raises(RuntimeError):
+                    run()
+    assert calls == (["native", "native"] if native_route is True else [])
+    assert module._should_use_native_vision_fast_path is original_native

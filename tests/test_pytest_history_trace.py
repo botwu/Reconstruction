@@ -84,7 +84,7 @@ def _run_versions(tmp_path, monkeypatch, *, run_b=True, valid_a=False):
     assert [event["arguments"]["content"] for event in writes] == [SOURCE_A, SOURCE_B]
     candidate = SimpleNamespace(
         test_outputs_py=SOURCE_B, missing_capability_tests=["test_missing"],
-        protective_tests=["test_protective"],
+        protective_tests=["test_protective"], file_semantic_checks=[],
     )
     return session, history, candidate, returned
 

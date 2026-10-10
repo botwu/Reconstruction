@@ -45,6 +45,7 @@ class AgentSession:
     required_paths: set[str] = field(default_factory=set)
     web_search_handler: Any = None
     web_open_handler: Any = None
+    view_image_handler: Callable[[str], str | dict[str, Any]] | None = None
     candidate_check_handler: Callable[..., dict[str, Any]] | None = None
     dependency_bundle: Path | None = None
     repair_feedback: dict[str, Any] | None = None
@@ -267,6 +268,12 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
             {"query": text},
             ["query"],
         ),
+        "view_image": (
+            "查看已由 web_open 保存并校验的 JPEG/PNG 原图，不重新联网。"
+            "直接向当前支持视觉的模型提供原像素；来源说明不等于已读图。",
+            {"url": text},
+            ["url"],
+        ),
         "web_open": (
             "读取公开来源正文；offset/limit 分页。PDF 文本层不可读时可显式传 ocr_page"
             "（从 1 开始）识别单页；返回带坐标/置信度的原检测序列，公式和双栏顺序未经核实。"
@@ -352,7 +359,9 @@ def tool_schemas(names: tuple[str, ...]) -> list[dict[str, Any]]:
     ]
 
 
-def execute_tool(name: str, arguments: Any, session: AgentSession) -> str:
+def execute_tool(
+    name: str, arguments: Any, session: AgentSession,
+) -> str | dict[str, Any]:
     args = arguments if isinstance(arguments, dict) else {}
     if name == "list_user_texts":
         return _dump(
@@ -456,6 +465,24 @@ def execute_tool(name: str, arguments: Any, session: AgentSession) -> str:
             limit=args.get("limit", MAX_TOOL_RESULT_CHARS),
             **({"ocr_page": args["ocr_page"]} if "ocr_page" in args else {}),
         ))
+    if name == "view_image":
+        if not callable(session.view_image_handler):
+            return "error: 原图读取后端未配置"
+        result = session.view_image_handler(str(args.get("url") or ""))
+        if isinstance(result, str) and result.startswith("error:"):
+            return result
+        if (not isinstance(result, dict) or result.get("_multimodal") is not True
+                or not isinstance(result.get("content"), list)
+                or not any(
+                    isinstance(part, dict) and part.get("type") == "image_url"
+                    and isinstance(part.get("image_url"), dict)
+                    and str(part["image_url"].get("url") or "").startswith(
+                        ("data:image/jpeg;base64,", "data:image/png;base64,")
+                    )
+                    for part in result["content"]
+                )):
+            return "error: 原图后端未返回原生图像内容"
+        return result
     if name == "write_test":
         return _write_test(session, args)
     if name == "run_pytest":

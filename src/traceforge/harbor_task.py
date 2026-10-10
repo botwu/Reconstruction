@@ -284,7 +284,7 @@ def _copy_search_runtime(environment: Path, lock: dict[str, Any]) -> None:
 
 
 def _write_search_sources(
-    public: Path, environment: dict[str, Any], pdf_paths: dict[str, str],
+    public: Path, environment: dict[str, Any], asset_paths: dict[str, str],
 ) -> None:
     """按来源拆分可读正文视图；规范证据文件保留原字节用于完整对账。"""
     (public / "sources").mkdir()
@@ -302,8 +302,13 @@ def _write_search_sources(
                    ("evidence_ref_id", "url", "query", "title", "content_kind") if key in original},
             }
             digest = record.get("raw_sha256")
-            if collection == "live_references" and isinstance(digest, str) and digest in pdf_paths:
-                entry.update(pdf_path=pdf_paths[digest], pdf_sha256=digest)
+            if (collection == "live_references" and isinstance(digest, str)
+                    and digest in asset_paths):
+                if record.get("provider") == "direct_image":
+                    entry.update(image_path=asset_paths[digest], image_sha256=digest,
+                                 mime_type=record["mime_type"])
+                elif record.get("provider") == "direct_pdf":
+                    entry.update(pdf_path=asset_paths[digest], pdf_sha256=digest)
             if record.get("ocr_pages"):
                 entry["ocr_pages"] = [
                     {"page": item["page_number"], "record_key": f"ocr_pages.{number}",
@@ -354,13 +359,13 @@ def export_search_task(
             or environment.get("missing_inputs")
             or not isinstance(instruction, str) or not instruction.strip()):
         raise ValueError("只有任务和必要上下文完整的检索初态才能导出 Harbor")
-    from traceforge.reconstruction.search_tools import pdf_assets
+    from traceforge.reconstruction.search_tools import image_assets, pdf_assets
 
     assets: set[Path] = set()
     for page in environment.get("live_references", []):
         assets.update(pdf_assets(page, evidence_root))
-    pdf_paths = {asset.stem: f"source-assets/{asset.name}" for asset in assets
-                 if asset.suffix == ".pdf"}
+        assets.update(image_assets(page, evidence_root))
+    asset_paths = {asset.stem: f"source-assets/{asset.name}" for asset in assets}
     tool_source = Path(__file__).parent / "reconstruction/search_tools.py"
     requires_web = environment.get("requires_live_web", True)
     dependency_lock = json.loads(
@@ -369,7 +374,7 @@ def export_search_task(
     pdf_dependencies = [f"{item['name']}=={item['version']}"
                         for item in dependency_lock.get("wheels", [])]
     digest = hashlib.sha256(json.dumps({
-        "search_delivery_version": 16, "pdf_dependencies": pdf_dependencies,
+        "search_delivery_version": 17, "pdf_dependencies": pdf_dependencies,
         "dependency_sources": dependency_lock,
         "container_version": CONTAINER_VERSION, "environment": environment,
         "search_tool_sha256": hashlib.sha256(tool_source.read_bytes()).hexdigest(),
@@ -385,7 +390,7 @@ def export_search_task(
             "captures": environment.get("captures", []),
             "live_references": environment.get("live_references", []),
         })
-        _write_search_sources(public, environment, pdf_paths)
+        _write_search_sources(public, environment, asset_paths)
         if assets:
             (public / "source-assets").mkdir()
             for asset in sorted(assets):
@@ -418,11 +423,18 @@ def export_search_task(
             "文件路径和行号来自原始观察；公开上游版本与原仓库分开引用，未捕获不等于不存在。"
             "按原任务要求给出最终回答，Harbor 会保存执行轨迹。\n"
         )
-        if pdf_paths:
+        if any(asset.suffix == ".pdf" for asset in assets):
             instruction += (
                 "\n索引的 pdf_path 指向已抓取的原 PDF，pdf_sha256 绑定原件字节；"
                 "文本层和 OCR 是辅助视图，图表、公式和排版应核对原件。"
                 "交付原文件不代表已经完成视觉核对。\n"
+            )
+        if any(page.get("provider") == "direct_image"
+               for page in environment.get("live_references", [])):
+            instruction += (
+                "\n索引的 image_path 是取得的原始图片，image_sha256 绑定原件字节。"
+                "使用 vision_analyze 读取该本地图片；链接、图片元数据和历史转述不是像素内容。"
+                "数字、列标题和生效日期须对照原图及其来源页面；不清楚之处明确保留不确定性。\n"
             )
         if any(page.get("ocr_pages") for page in environment.get("live_references", [])):
             instruction += (

@@ -136,7 +136,8 @@
     "项目description改为中文",
     "原连接层独立uv.lock由项目、连接层和固定Hermes统一解析的runtime-requirements.txt取代",
     "四份正式运行配置回收pytest.stdout、pytest.stderr与junit.xml，供绑定后的文件语义审查读取",
-    "原生Hermes导入前关闭文本脱敏，避免非秘密源码变量改写会话；保留capture凭据隔离与严格轨迹认证"
+    "原生Hermes导入前关闭文本脱敏，避免非秘密源码变量改写会话；保留capture凭据隔离与严格轨迹认证",
+    "正式 Hermes 配置启用 vision 工具；网关使用私有临时 HERMES_HOME 固定原生图像模式，能力未知时拒绝工具调用，不进入辅助视觉模型"
   ],
   "excluded": [
     ".venv",
