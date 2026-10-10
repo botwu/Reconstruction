@@ -285,3 +285,60 @@ def test_non_file_obligation_does_not_require_fake_evidence(tmp_path: Path) -> N
     assert "TASK_FIT_UNKNOWN:obl-1" in fit["errors"]
     assert "TASK_FIT_UNKNOWN:obl-2" in fit["errors"]
     assert {item["status"] for item in fit["requirements"]} == {"UNKNOWN"}
+
+
+def test_non_file_with_initial_inputs_requires_fit_evidence(tmp_path: Path) -> None:
+    (tmp_path / "source.txt").write_text("原始资料", encoding="utf-8")
+    environment = _probed_environment(tmp_path)
+    raw_task = _task(required="source.txt")
+    raw_task["environment_bindings"][0]["verifier_kind"] = "NON_FILE"
+    task = build_task_contract(task=raw_task)
+    payload = {
+        "decision": "READY_ORIGINAL",
+        "requirements": [{
+            "obligation_id": "obl-1", "status": "SATISFIED", "reason": "资料可用于回答",
+            "evidence_paths": [], "probe_ids": [],
+        }],
+    }
+    fit = fit_task_environment(environment=environment, task=task, agent_fit=payload)
+    assert "TASK_FIT_EVIDENCE_REQUIRED:obl-1" in fit["errors"]
+    payload["requirements"][0]["evidence_paths"] = ["source.txt"]
+    fit = fit_task_environment(environment=environment, task=task, agent_fit=payload)
+    assert fit["decision"] == "READY_ORIGINAL", fit["errors"]
+
+
+@pytest.mark.parametrize("kind", ["FILE", "NON_FILE"])
+def test_variant_checks_initial_inputs_but_does_not_require_future_output(
+    tmp_path: Path, kind: str,
+) -> None:
+    (tmp_path / "source.txt").write_text("可用资料", encoding="utf-8")
+    environment = _probed_environment(tmp_path)
+    raw_task = _task(required="source.txt")
+    binding = raw_task["environment_bindings"][0]
+    binding.update({
+        "verifier_kind": kind, "required_paths": ["source.txt", "report.md"],
+        "initial_required_paths": ["source.txt"], "output_paths": ["report.md"],
+    })
+    task = build_task_contract(task=raw_task)
+    fit = fit_task_environment(environment=environment, task=task) | {
+        "decision": "INCOMPATIBLE", "status": "INCOMPATIBLE", "variant_eligible": True,
+    }
+    fit["requirements"][0]["status"] = "UNSATISFIED"
+    proposal = {
+        "task_instruction": "依据可用资料生成 report.md",
+        "changed_requirements": [{
+            "obligation_id": "obl-1", "transformation": "SCOPE_REDUCTION",
+            "text": "依据可用资料生成 report.md", "reason": "原目标资料仅有部分可用",
+            "environment_binding": binding.copy(),
+        }],
+    }
+    variant = build_task_variant(
+        parent_task=task, environment=environment, fit=fit, proposal=proposal,
+    )
+    assert variant["status"] == "PROPOSED"
+    proposal["changed_requirements"][0]["environment_binding"].update({
+        "required_paths": ["missing.txt", "report.md"],
+        "initial_required_paths": ["missing.txt"],
+    })
+    with pytest.raises(Exception, match="未指向补全环境"):
+        build_task_variant(parent_task=task, environment=environment, fit=fit, proposal=proposal)

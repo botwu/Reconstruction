@@ -70,11 +70,15 @@ def _record(raw_line: str) -> dict[str, object]:
     return raw_source(raw_line)
 
 
-def _agent(*, intent_ok: bool = True, completion: dict | None = None, sufficiency: dict | None = None):
+def _agent(
+    *, intent_ok: bool = True, completion: dict | None = None,
+    sufficiency: dict | None = None, intent_bindings: list[dict] | None = None,
+):
     return build_hermes_runtime(
         model_name="claude-opus-4-6",
         factory=FakeHermesFactory(
-            intent_ok=intent_ok, completion=completion, sufficiency=sufficiency
+            intent_ok=intent_ok, intent_bindings=intent_bindings,
+            completion=completion, sufficiency=sufficiency
         ),
         base_url="https://tokenhub.example/v1",
         api_key="sk-test",
@@ -376,7 +380,11 @@ def test_reconstruction_non_file_task_stops_at_completion(tmp_path: Path) -> Non
     raw_line = json.dumps(payload, ensure_ascii=False)
     manifest = run_reconstruction(
         source=_record(raw_line),
-        agent=_agent(),
+        agent=_agent(intent_bindings=[{
+            "obligation_id": "obl-001", "verifier_kind": "NON_FILE",
+            "required_paths": [], "initial_required_paths": [], "output_paths": [],
+            "observable": "回答解释所给日志",
+        }]),
         output_root=tmp_path / "run",
         verification_config=VerificationConfig(
             harbor_root=tmp_path / "harbor",
@@ -423,7 +431,11 @@ def test_thin_tree_runs_intent_and_completion(tmp_path: Path) -> None:
     raw_line = json.dumps(payload, ensure_ascii=False)
     manifest = run_reconstruction(
         source=_record(raw_line),
-        agent=_sandboxed_agent(tmp_path),
+        agent=_sandboxed_agent(tmp_path, intent_bindings=[{
+            "obligation_id": "obl-001", "verifier_kind": "FILE",
+            "required_paths": ["build.bat"], "initial_required_paths": ["build.bat"],
+            "output_paths": [], "observable": "脚本内容已审阅",
+        }]),
         output_root=tmp_path / "run",
     )
     result = json.loads(manifest.read_text(encoding="utf-8"))

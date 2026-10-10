@@ -56,7 +56,7 @@ def _payload() -> dict[str, Any]:
             {"role": "assistant", "tool_calls": [{"id": "c1", "function": {
                 "name": "read_file", "arguments": {"path": "foo.py"}}}]},
             {"role": "tool", "tool_call_id": "c1", "content": "first observation"},
-            {"role": "user", "content": "另外做一个完全不同的任务：重构 bar 服务"},
+            {"role": "user", "content": "另外做一个完全不同的任务：重构 bar.py 服务"},
             {"role": "assistant", "tool_calls": [{"id": "c2", "function": {
                 "name": "browse_web", "arguments": {"url": "https://example.com"}}}]},
             {"role": "tool", "tool_call_id": "c2", "content": "late unselected context"},
@@ -101,13 +101,18 @@ def test_intent_keeps_selected_clarifications_and_drops_unselected_span(tmp_path
                     "evidence_ref_ids": ["user:0"],
                 }
             ],
+            "environment_bindings": [{
+                "obligation_id": "obl-001", "verifier_kind": "FILE",
+                "required_paths": ["foo.py"], "initial_required_paths": ["foo.py"],
+                "output_paths": [], "observable": "入口按用户要求工作",
+            }],
             "success_criteria": ["入口工作"],
         }
     )
     result = run_intent_recovery(source=source, agent=runtime, output_root=tmp_path)
     assert result["status"] == "READY"
     assert "不要联网，保留原有接口" in runtime.instruction
-    assert "重构 bar 服务" not in runtime.instruction
+    assert "重构 bar.py 服务" not in runtime.instruction
     # Tool names are session-level context; unselected tool result bodies stay hidden.
     assert "browse_web" in runtime.instruction
     assert "late unselected context" not in runtime.instruction
@@ -123,11 +128,17 @@ def test_intent_does_not_merge_other_selected_spans(tmp_path: Path) -> None:
         def run(self, *, role, instruction, session, output_root):
             tag = json.loads(next(line.split("=", 1)[1] for line in instruction.splitlines() if line.startswith("TASK_TAG=")))
             records = json.loads(next(line.split("=", 1)[1] for line in instruction.splitlines() if line.startswith("TASK_USER_MESSAGES=")))
+            path = "foo.py" if tag["task_id"] == source["tasks"][0]["task_id"] else "bar.py"
             payload = {
                 "task_id": tag["task_id"],
                 "task_instruction": "；".join(item["text"] for item in records),
                 "core_objective": "按用户要求完成当前任务",
                 "acceptance_obligations": [{"id": "obl-001", "text": "用户要求有明确交付", "evidence_ref_ids": [item["id"] for item in records]},],
+                "environment_bindings": [{
+                    "obligation_id": "obl-001", "verifier_kind": "FILE",
+                    "required_paths": [path], "initial_required_paths": [path],
+                    "output_paths": [], "observable": "指定源码按当前任务要求修改",
+                }],
                 "success_criteria": ["用户要求有明确交付"],
             }
             self.payload = payload
@@ -138,7 +149,7 @@ def test_intent_does_not_merge_other_selected_spans(tmp_path: Path) -> None:
     assert result["status"] == "READY"
     assert len(result["tasks"]) == 2
     assert {item["task"]["task_id"] for item in result["tasks"]} == {task["task_id"] for task in source["tasks"]}
-    assert "重构 bar 服务" in runtime.instruction
+    assert "重构 bar.py 服务" in runtime.instruction
     missing_span = ResultRuntime(
         {
             "task_id": "wrong-task-id",
@@ -151,6 +162,11 @@ def test_intent_does_not_merge_other_selected_spans(tmp_path: Path) -> None:
                     "evidence_ref_ids": ["user:0"],
                 }
             ],
+            "environment_bindings": [{
+                "obligation_id": "obl-001", "verifier_kind": "FILE",
+                "required_paths": ["foo.py"], "initial_required_paths": ["foo.py"],
+                "output_paths": [], "observable": "入口按用户要求工作",
+            }],
             "success_criteria": ["入口工作"],
         }
     )

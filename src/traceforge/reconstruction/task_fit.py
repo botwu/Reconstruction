@@ -316,7 +316,7 @@ def fit_task_environment(
             ),
             {},
         )
-        if binding.get("verifier_kind") != "NON_FILE" and not (paths or refs):
+        if _initial_binding_paths(binding) and not (paths or refs):
             errors.append(f"TASK_FIT_EVIDENCE_REQUIRED:{oid}")
             continue
         if any(not _path_present(p, environment["workspace_hashes"]) for p in paths):
@@ -417,8 +417,8 @@ def build_task_variant(
             or not isinstance(paths, list)
             or not isinstance(binding.get("observable"), str) or not binding["observable"].strip()
             or (binding.get("verifier_kind") == "FILE" and not paths)
-            or (binding.get("verifier_kind") == "NON_FILE" and paths)
-            or any(not _path_present(p, environment["workspace_hashes"]) for p in paths)
+            or any(not _path_present(p, environment["workspace_hashes"])
+                   for p in _initial_binding_paths(binding))
         ):
             raise TaskFitError("变体验收绑定未指向补全环境或改变了验收类型")
         by_id[oid]["text"] = change["text"]

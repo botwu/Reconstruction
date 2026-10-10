@@ -15,7 +15,6 @@ from traceforge.reconstruction.intent_recovery import (
     INTENT_PROMPT_VERSION,
     _gate,
     _prompt,
-    deepen_requires_file,
 )
 
 
@@ -51,41 +50,6 @@ def _l49_timeline() -> list[dict]:
             "result_text": "module.exports = {}\n",
         },
     ]
-
-
-def test_deepen_file_gate_distinguishes_explicit_read_only_review() -> None:
-    paths = ["src/parser.py"]
-    assert deepen_requires_file(
-        "只读代码评审 src/parser.py，不修改任何文件",
-        paths,
-        domain_route="terminal",
-    ) is False
-    assert deepen_requires_file(
-        "read-only code review; do not modify source/tests",
-        paths,
-        domain_route="terminal",
-    ) is False
-    assert deepen_requires_file(
-        "审查并修复 src/parser.py 的边界错误",
-        paths,
-        domain_route="terminal",
-    ) is True
-    assert deepen_requires_file(
-        "review the parser and add a regression test",
-        paths,
-        domain_route="terminal",
-    ) is True
-
-
-def test_deepen_requires_file_on_read_code_or_code_file_route() -> None:
-    paths = ["Injector.cpp"]
-    assert deepen_requires_file("完全读取并了解注入器代码", paths) is True
-    assert deepen_requires_file("在2026年這套注入器還可以使用嗎，完全讀取代碼", paths) is True
-    assert deepen_requires_file("看看 Injector.cpp 还能不能用", paths) is True
-    assert deepen_requires_file("补采本周数据并发布生产", paths, domain_route="code_file") is True
-    assert deepen_requires_file("解释一下这段日志为什么超时", []) is False
-    assert deepen_requires_file("解释一下这段日志为什么超时", paths) is False
-    assert deepen_requires_file("重构 bar 服务", paths, domain_route="") is False
 
 
 def test_l22_deepen_keeps_user_cite_and_file() -> None:
@@ -129,7 +93,7 @@ def test_l22_deepen_keeps_user_cite_and_file() -> None:
         {"user:1"},
         allowed_paths=allowed,
         user_blob="在2026年這套注入器還可以使用嗎，完全讀取代碼，也可上網查看論壇",
-        file_binding_paths=bindable,
+
     )
     assert status == "READY", errors
     assert errors == []
@@ -139,7 +103,7 @@ def test_l22_deepen_keeps_user_cite_and_file() -> None:
     assert "在2026年這套注入器還可以使用嗎" in gated["task_instruction"]
 
 
-def test_l22_all_non_file_with_tree_is_blocked() -> None:
+def test_all_non_file_with_observed_files_keeps_model_classification() -> None:
     source = {"tool_timeline": _l22_timeline()}
     allowed = collect_allowed_paths(source, [{"id": "user:1", "text": "完全读取并了解注入器代码"}])
     payload = {
@@ -168,10 +132,10 @@ def test_l22_all_non_file_with_tree_is_blocked() -> None:
         {"user:1"},
         allowed_paths=allowed,
         user_blob="完全读取并了解注入器代码",
-        file_binding_paths=collect_file_binding_paths(source),
+
     )
-    assert status == "REVIEW"
-    assert "FILE_OBLIGATION_REQUIRED" in errors
+    assert status == "READY", errors
+    assert errors == []
 
 
 def test_l49_publish_is_context_file_scripts_ready() -> None:
@@ -218,7 +182,7 @@ def test_l49_publish_is_context_file_scripts_ready() -> None:
         {"user:99"},
         allowed_paths=allowed,
         user_blob=user,
-        file_binding_paths=collect_file_binding_paths(source),
+
     )
     assert status == "READY", errors
     assert file_obligation_ids(gated) == ["obl-002"]
@@ -253,7 +217,7 @@ def test_empty_tree_chat_may_stay_non_file() -> None:
         {"user:0"},
         allowed_paths=[],
         user_blob="解释一下这段日志为什么超时",
-        file_binding_paths=[],
+
     )
     assert status == "READY", errors
     assert gated["environment_bindings"][0]["verifier_kind"] == "NON_FILE"
@@ -300,7 +264,7 @@ def test_wrong_task_id_and_missing_user_cite_still_review() -> None:
         {"user:1"},
         allowed_paths=allowed,
         user_blob="读 Injector.cpp",
-        file_binding_paths=collect_file_binding_paths(source),
+
     )
     assert status == "REVIEW"
     assert "TASK_ID_MISMATCH" in errors
@@ -334,7 +298,7 @@ def test_bar_service_on_shared_session_tree_stays_non_file() -> None:
         {"user:4"},
         allowed_paths=["foo.py"],
         user_blob="重构 bar 服务",
-        file_binding_paths=["foo.py"],
+
     )
     assert status == "READY", errors
     assert gated["environment_bindings"][0]["verifier_kind"] == "NON_FILE"
@@ -370,15 +334,14 @@ def test_stub_observable_does_not_satisfy_file_gate() -> None:
         {"user:1"},
         allowed_paths=allowed,
         user_blob="完全读取并了解注入器代码",
-        file_binding_paths=collect_file_binding_paths(source),
+
     )
     assert status == "REVIEW"
-    assert "FILE_OBLIGATION_REQUIRED" in errors
     assert any(item.startswith("BINDING_TASK_OUTCOME_REQUIRED") for item in errors)
 
 
 def test_intent_role_and_prompt_name_the_anchor() -> None:
-    assert INTENT_PROMPT_VERSION == "intent-recovery-agent-v21-input-necessity"
+    assert INTENT_PROMPT_VERSION == "intent-recovery-agent-v22-explicit-bindings"
     assert "original user query is the anchor" in INTENT_ROLE.identity
     assert "deepen" in INTENT_ROLE.identity
     assert "Research, forum lookup, production publish" in INTENT_ROLE.identity
@@ -399,7 +362,7 @@ def test_intent_role_and_prompt_name_the_anchor() -> None:
     ], ensure_ascii=False) in text
     assert "FILE_BINDING_PATHS" in text
     assert "Research, forum lookup, production publish" in text
-    assert "at least one FILE obligation is required" in text
+    assert "at least one FILE obligation is required" not in text
     assert "do not invent a project" in text.lower() or "When FILE_BINDING_PATHS is empty" in text
 
 
@@ -429,9 +392,44 @@ def test_explicit_bindings_missing_obligation_are_reviewed_not_inferred() -> Non
         {"user:1"},
         allowed_paths=allowed,
         user_blob="修复 Injector.cpp",
-        file_binding_paths=collect_file_binding_paths(source),
+
     )
     assert status == "REVIEW"
     assert "BINDING_REQUIRED:obl-001" in errors
     assert [item["obligation_id"] for item in gated["environment_bindings"]] == ["obl-002"]
     assert "obl-001" not in file_obligation_ids(gated)
+
+
+def test_non_file_source_analysis_is_not_forced_to_file() -> None:
+    user = "请根据 Config.java 解释多项配置示例，不要求写入仓库。"
+    payload = {
+        "task_id": "analysis",
+        "task_instruction": user,
+        "core_objective": user,
+        "acceptance_obligations": [{
+            "id": "obl-001", "text": user, "evidence_ref_ids": ["user:1"],
+        }],
+        "environment_bindings": [{
+            "obligation_id": "obl-001", "verifier_kind": "NON_FILE",
+            "required_paths": ["Config.java"], "initial_required_paths": ["Config.java"],
+            "output_paths": [], "observable": "解释须符合源码并给出可用的配置示例",
+        }],
+    }
+    status, errors, result = _gate(
+        payload, {"task_id": "analysis", "domain_route": "terminal"}, {"user:1"},
+        allowed_paths=["Config.java"], user_blob=user,
+    )
+    assert status == "READY", errors
+    assert result["environment_bindings"][0]["verifier_kind"] == "NON_FILE"
+    assert file_required_paths(result) == ["Config.java"]
+    assert file_obligation_ids(result) == []
+
+
+def test_prompt_keeps_complete_path_indices_without_forcing_dependencies() -> None:
+    paths = [f"src/file-{index:03}.py" for index in range(120)]
+    prompt = _prompt({}, {"task_id": "index"}, [], paths, paths)
+    fields = dict(line.split("=", 1) for line in prompt.splitlines()
+                  if line.startswith(("ALLOWED_OBSERVED_PATHS=", "FILE_BINDING_PATHS=")))
+    assert json.loads(fields["ALLOWED_OBSERVED_PATHS"]) == paths
+    assert json.loads(fields["FILE_BINDING_PATHS"]) == paths
+    assert "at least one FILE obligation is required" not in prompt

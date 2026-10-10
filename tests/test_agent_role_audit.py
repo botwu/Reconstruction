@@ -145,6 +145,11 @@ def test_intent_does_not_merge_two_eligible_tasks(tmp_path: Path) -> None:
         "acceptance_obligations": [
             {"id": "obl-001", "text": "看到原文", "evidence_ref_ids": ["user:0"]}
         ],
+        "environment_bindings": [{
+            "obligation_id": "obl-001", "verifier_kind": "FILE",
+            "required_paths": ["foo.py"], "initial_required_paths": ["foo.py"],
+            "output_paths": [], "observable": "入口函数原文已提取",
+        }],
         "success_criteria": ["看到原文"],
     }
     runtime = RecordingRuntime(first, role=INTENT_ROLE)

@@ -221,7 +221,7 @@ def inspect_workspace_integrity(
         "issues": issues,
         "limitations": [
             "只使用宿主 Python 的语法；目标解释器版本不同必须由 Sufficiency 依据任务解释。",
-            "只检查 FILE 绑定、改动前回放观测的 Python 源码和可静态定位的本地导入；不执行代码。",
+            "只检查必要初态绑定、改动前回放观测的 Python 源码和可静态定位的本地导入；不执行代码。",
             "未验证动态导入、外部依赖、缺失导出符号或行为正确性；无诊断不代表环境完整。",
         ],
     }

@@ -73,7 +73,7 @@ def test_partial_initial_source_reaches_intent_binding_without_claiming_complete
         }]},
         [{"id": "o1", "text": REQUEST, "evidence_ref_ids": ["user:0"]}],
         fields["ALLOWED_OBSERVED_PATHS"], user_blob=REQUEST,
-        file_binding_paths=fields["FILE_BINDING_PATHS"],
+
     )
     assert errors == []
     assert bindings[0]["initial_required_paths"] == ["src/parser.py"]

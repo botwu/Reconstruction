@@ -162,12 +162,12 @@ def test_staging_user_texts_aligns_filename_with_id(tmp_path: Path) -> None:
 
 
 def test_intent_session_and_gate_share_user_129(tmp_path: Path) -> None:
-    source = _padded_source(user_index=129, text="请修复 parser 第 40 行")
+    source = _padded_source(user_index=129, text="请修复 parser.py 第 40 行")
     task = source["tasks"][0]
     runtime = _CaptureRuntime(
         {
             "task_id": task["task_id"],
-            "task_instruction": "请修复 parser 第 40 行",
+            "task_instruction": "请修复 parser.py 第 40 行",
             "core_objective": "修复 parser",
             "acceptance_obligations": [
                 {
@@ -176,6 +176,11 @@ def test_intent_session_and_gate_share_user_129(tmp_path: Path) -> None:
                     "evidence_ref_ids": ["user:129"],
                 }
             ],
+            "environment_bindings": [{
+                "obligation_id": "obl-001", "verifier_kind": "FILE",
+                "required_paths": ["parser.py"], "initial_required_paths": ["parser.py"],
+                "output_paths": [], "observable": "parser.py 中指定缺陷已修复",
+            }],
             "success_criteria": ["修复 parser"],
         }
     )
@@ -347,6 +352,11 @@ def test_intent_preserves_contract_and_original_review_gate(tmp_path: Path) -> N
         "core_objective": "审查变更",
         "acceptance_obligations": [{
             "id": "obl-001", "text": "提供审查结论", "evidence_ref_ids": ["user:2"],
+        }],
+        "environment_bindings": [{
+            "obligation_id": "obl-001", "verifier_kind": "NON_FILE",
+            "required_paths": [], "initial_required_paths": [], "output_paths": [],
+            "observable": "审查结论按原合同返回",
         }],
         "mandatory_constraints": ["只读，不执行 Git 命令。"],
     })

@@ -43,11 +43,13 @@ class FakeHermesAgent:
         self,
         *,
         intent_ok: bool = True,
+        intent_bindings: list[dict] | None = None,
         completion: dict | None = None,
         sufficiency: dict | None = None,
         **kwargs: Any,
     ) -> None:
         self.intent_ok = intent_ok
+        self.intent_bindings = intent_bindings
         self.completion = completion
         self.sufficiency = sufficiency
         self.kwargs = kwargs
@@ -95,6 +97,13 @@ class FakeHermesAgent:
                     if self.intent_ok
                     else []
                 ),
+                "environment_bindings": (
+                    self.intent_bindings if self.intent_bindings is not None else [{
+                    "obligation_id": "obl-001", "verifier_kind": "FILE",
+                    "required_paths": ["foo.py"], "initial_required_paths": ["foo.py"],
+                    "output_paths": [], "observable": "入口函数原文已提取",
+                    }]
+                ) if self.intent_ok else [],
                 "success_criteria": ([requested] if self.intent_ok else []),
                 "specified_output_format": None,
                 "has_examples": False,
@@ -198,10 +207,12 @@ class FakeHermesFactory:
         self,
         *,
         intent_ok: bool = True,
+        intent_bindings: list[dict] | None = None,
         completion: dict | None = None,
         sufficiency: dict | None = None,
     ) -> None:
         self.intent_ok = intent_ok
+        self.intent_bindings = intent_bindings
         self.completion = completion
         self.sufficiency = sufficiency
         self.last_kwargs: dict[str, Any] = {}
@@ -211,6 +222,7 @@ class FakeHermesFactory:
         self.last_kwargs = kwargs
         self.last_agent = FakeHermesAgent(
             intent_ok=self.intent_ok,
+            intent_bindings=self.intent_bindings,
             completion=self.completion,
             sufficiency=self.sufficiency,
             **kwargs,

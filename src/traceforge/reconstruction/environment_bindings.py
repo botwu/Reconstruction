@@ -36,18 +36,6 @@ _EXAMPLE_CONTEXT = re.compile(r"(?i)(?:\b(?:example|shape|schema)\s*[:：]\s*$|(
 _INLINE_EXAMPLE = re.compile(r"(?i)(?:\be\.g\.|\bfor example\b|例如|比如|示例[:：])[^\n;；。]*")
 _LISTING_TOOLS = frozenset({"ls", "list_dir", "glob", "find", "fd", "tree", "rg", "grep"})
 _ABSOLUTE_PATH = re.compile(r"(?<![\w./])(?:[A-Za-z]:/|/)[^\s`\"'<>,]+")
-_READ_CODE = re.compile(
-    r"(?i)(读|讀|看懂|完全读|完全讀|read|inspect|understand).{0,24}(代码|代碼|code|codebase|注入|injector|项目|工程)"
-)
-_SOURCE_SUFFIXES = frozenset(
-    {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".java", ".c", ".cc", ".cpp", ".h", ".hpp"}
-)
-_OUTPUT_ACTION = re.compile(
-    r"(?i)(\u65b0\u589e|\u65b0\u5efa|\u521b\u5efa|\u751f\u6210|\u5199\u5165|\u5199\u51fa|\u4fdd\u5b58|\u8f93\u51fa|\u4ea7\u51fa|\badd\b|\bcreate\b|\bgenerate\b|\bwrite\b|\bsave\b|\boutput\b|\bproduce\b)"
-)
-_INPUT_ACTION = re.compile(
-    r"(?i)(\u4fee\u6539|\u66f4\u65b0|\u4fee\u590d|\u7f16\u8f91|\u53d8\u66f4|\bmodify\b|\bupdate\b|\bfix\b|\bedit\b|\bchange\b)"
-)
 _STUB_MARKERS = ("body unobserved", "observed name", "unobserved body")
 
 
@@ -158,15 +146,23 @@ def _replace_binding_paths(text: str, aliases: dict[str, str]) -> str:
         return text
     replacements = dict(aliases)
     replacements.update({path.replace("/", "\\"): target for path, target in aliases.items()})
-    pattern = re.compile(r"(?<![\w./\\-])(?:" + "|".join(
+    pattern = re.compile(r"(?<![A-Za-z0-9_./\\-])(?:" + "|".join(
         re.escape(path) for path in sorted(replacements, key=len, reverse=True)
-    ) + r")(?![\w/\\-]|\.[\w])")
+    ) + r")(?![A-Za-z0-9_/\\-]|\.[A-Za-z0-9_])")
     return pattern.sub(lambda match: replacements[match.group(0)], text)
 
 
 def _canonical_binding_path(raw: str, aliases: dict[str, str]) -> str | None:
-    normalized = normalize_binding_path(raw)
-    return aliases.get(normalized, normalized) if normalized else None
+    text = raw.replace("\\", "/").strip().rstrip(";,")
+    if re.match(r"(?:[A-Za-z]:/|/)", text):
+        # 绝对坐标只能用原轨迹建立的完整别名，不能静默剥掉未知用户目录。
+        mapped = aliases.get(text)
+    else:
+        normalized = normalize_binding_path(text)
+        mapped = aliases.get(normalized, normalized) if normalized else None
+    if mapped is None:
+        return None
+    return mapped.rstrip("/") + "/" if text.endswith("/") else mapped
 
 
 def _listing_paths(item: dict[str, Any]) -> set[str]:
@@ -297,93 +293,11 @@ def path_is_allowed(path: str, allowed: set[str] | list[str]) -> bool:
     return False
 
 
-def mentioned_allowed_paths(text: str, allowed: list[str] | set[str]) -> list[str]:
-    tokens = _filename_tokens(_request_path_text(text or ""))
-    ordered: list[str] = []
-    for path in sorted(allowed):
-        if path in tokens:
-            if path not in ordered:
-                ordered.append(path)
-    return ordered
-
-
-def _source_allowed(allowed: list[str]) -> list[str]:
-    return [
-        path
-        for path in allowed
-        if not path.endswith("/") and PurePosixPath(path).suffix.lower() in _SOURCE_SUFFIXES
-    ]
-
-
-def _explicit_output_paths(text: str, allowed_paths: list[str]) -> set[str]:
-    """Return paths explicitly described as new/final outputs.
-
-    Unknown or merely mentioned paths remain initial inputs by default. This
-    conservative rule prevents a missing source file from being silently
-    reclassified as a generated output.
-    """
-    outputs: set[str] = set()
-    # Classify within a sentence/clause. A large character window causes a
-    # source input in "modify src/a.py and add tests/test_a.py" to inherit the
-    # action for the later output. Output status is a semantic property of the
-    # user request, not of a nearby filename anywhere in the paragraph.
-    clauses = re.split(r"[\n\u3002\uFF1B;,\uFF0C]", _request_path_text(text or ""))
-    for clause in clauses:
-        paths = mentioned_allowed_paths(clause, allowed_paths)
-        actions = sorted(
-            [*[(m.start(), m.end(), True) for m in _OUTPUT_ACTION.finditer(clause)],
-             *[(m.start(), m.end(), False) for m in _INPUT_ACTION.finditer(clause)]],
-            key=lambda item: item[0],
-        )
-        if not paths or not actions:
-            continue
-        for path in paths:
-            match = re.search(re.escape(path), clause)
-            if match is None:
-                continue
-            prior = [item for item in actions if item[1] <= match.start()]
-            # An output action must govern the path immediately before it.
-            # This keeps "update src/a.py and generate report.md" split into
-            # an initial input and a post-task output.
-            if prior and prior[-1][2] and match.start() - prior[-1][1] <= 48:
-                outputs.add(path)
-    return outputs
-
-
-def derive_binding(
-    obligation: dict[str, Any],
-    allowed_paths: list[str],
-    user_blob: str = "",
-    *,
-    file_binding_paths: list[str] | None = None,
-) -> dict[str, Any]:
-    """Derive initial inputs and explicit final outputs from user evidence."""
-    oid = str(obligation.get("id") or "")
-    text = user_blob or ""
-    mentioned = mentioned_allowed_paths(text, allowed_paths)
-    if not mentioned and _READ_CODE.search(text):
-        # A generic code-review request needs observed source context. When
-        # replay is available, listing-only names are excluded here.
-        candidates = _source_allowed(allowed_paths)
-        if file_binding_paths is not None:
-            candidates = [path for path in candidates if path_is_allowed(path, file_binding_paths)]
-        mentioned = candidates[:12]
-        mentioned.extend(
-            path for path in allowed_paths
-            if path.endswith("/") and (file_binding_paths is None or path_is_allowed(path, file_binding_paths))
-            and path not in mentioned
-        )
-    explicit_outputs = _explicit_output_paths(text, allowed_paths)
-    initial = [path for path in mentioned if path not in explicit_outputs]
-    outputs = [path for path in mentioned if path in explicit_outputs]
-    return {
-        "obligation_id": oid,
-        "required_paths": [*initial, *outputs],
-        "initial_required_paths": initial,
-        "output_paths": outputs,
-        "observable": str(obligation.get("text") or ""),
-        "verifier_kind": FILE if mentioned else NON_FILE,
-    }
+def _path_has_source(path: str, text: str) -> bool:
+    """按完整字面路径核对来源，不受文件名语言或扩展名限制。"""
+    literal = re.escape(path.rstrip("/")) + (r"/?" if path.endswith("/") else "")
+    pattern = r"(?<![A-Za-z0-9_./\\-])" + literal + r"(?![A-Za-z0-9_/\\-]|\.[A-Za-z0-9_])"
+    return re.search(pattern, text.replace("\\", "/")) is not None
 
 
 def _normalize_one_binding(
@@ -391,7 +305,6 @@ def _normalize_one_binding(
     *,
     known_ids: set[str],
     allowed_paths: list[str],
-    file_binding_paths: list[str] | None = None,
     context_text: str = "",
     path_aliases: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
@@ -404,50 +317,54 @@ def _normalize_one_binding(
     kind = str(item.get("verifier_kind") or "").strip().upper()
     if kind not in VERIFIER_KINDS:
         return None, [f"BINDING_VERIFIER_KIND_INVALID:{oid}"]
-    raw_paths = item.get("required_paths") or []
-    raw_outputs = item.get("output_paths") or []
-    if (
-        not isinstance(raw_paths, list)
-        or any(not isinstance(path, str) for path in raw_paths)
-        or not isinstance(raw_outputs, list)
-        or any(not isinstance(path, str) for path in raw_outputs)
-    ):
-        return None, [f"BINDING_PATHS_INVALID:{oid}"]
-    declared_outputs: set[str] = set()
-    all_paths: list[str] = []
-    hinted_outputs = _explicit_output_paths(context_text, allowed_paths)
-    for raw in [*raw_paths, *raw_outputs]:
-        path = _canonical_binding_path(raw, path_aliases or {})
-        if path is None:
-            errors.append(f"BINDING_PATH_UNSAFE:{oid}:{raw}")
-            continue
-        if not path_is_allowed(path, allowed_paths):
-            errors.append(f"BINDING_PATH_NOT_ALLOWED:{oid}:{path}")
-            continue
-        if raw in raw_outputs and path not in hinted_outputs:
+
+    # 模型决定路径的作用；这里只规范坐标和集合，不从上下文猜测依赖。
+    fields: dict[str, list[str]] = {}
+    for key in ("required_paths", "initial_required_paths", "output_paths"):
+        raw_paths = item.get(key, [])
+        if not isinstance(raw_paths, list) or any(not isinstance(path, str) for path in raw_paths):
+            return None, [f"BINDING_PATHS_INVALID:{oid}"]
+        paths: list[str] = []
+        for raw in raw_paths:
+            path = _canonical_binding_path(raw, path_aliases or {})
+            if path is None:
+                errors.append(f"BINDING_PATH_UNSAFE:{oid}:{raw}")
+            elif (
+                not path_is_allowed(path, allowed_paths)
+                and not _path_has_source(path, context_text)
+            ):
+                errors.append(f"BINDING_PATH_NOT_ALLOWED:{oid}:{path}")
+            elif path not in paths:
+                paths.append(path)
+        fields[key] = paths
+
+    outputs = fields["output_paths"]
+    initial = fields["initial_required_paths"]
+    if "initial_required_paths" not in item:
+        initial = [path for path in fields["required_paths"] if path not in outputs]
+    all_paths = fields["required_paths"]
+    if "required_paths" not in item:
+        all_paths = list(dict.fromkeys([*initial, *outputs]))
+    if set(all_paths) != set(initial) | set(outputs):
+        errors.append(f"BINDING_PATH_UNION_MISMATCH:{oid}")
+    for path in initial:
+        if path in outputs:
+            errors.append(f"BINDING_PATH_ROLE_CONFLICT:{oid}:{path}")
+
+    # 仅核对产物位置的原始来源；目录也合法，不要求沿用历史助手的文件名。
+    for path in outputs:
+        if not _path_has_source(path, context_text):
             errors.append(f"BINDING_OUTPUT_PATH_NOT_EXPLICIT:{oid}:{path}")
-        # 显式绑定描述任务所需文件，不宣称 Replay 已有正文。
-        # 缺失正文交给补全和实际路径检查，不能删除绑定再从报错文本猜测替代项。
-        if path not in all_paths:
-            all_paths.append(path)
-        if raw in raw_outputs and path in hinted_outputs:
-            declared_outputs.add(path)
-    outputs = [path for path in all_paths if path in declared_outputs or path in hinted_outputs]
-    initial = [path for path in all_paths if path not in set(outputs)]
-    observable = item.get("observable")
-    if observable is None:
-        observable = ""
+
+    observable = item.get("observable", "")
     if not isinstance(observable, str):
         errors.append(f"BINDING_OBSERVABLE_INVALID:{oid}")
         observable = ""
     observable = _replace_binding_paths(observable, path_aliases or {})
     if kind == FILE and (not observable.strip() or observable.strip().lower() == "replayed excerpts still present"):
         errors.append(f"BINDING_TASK_OUTCOME_REQUIRED:{oid}")
-    if kind == FILE and not all_paths and file_binding_paths is None:
+    if kind == FILE and not all_paths:
         errors.append(f"BINDING_FILE_PATHS_REQUIRED:{oid}")
-    if kind == NON_FILE and all_paths:
-        # NON_FILE obligations are intentionally pathless.
-        all_paths, initial, outputs = [], [], []
     return (
         {
             "obligation_id": oid,
@@ -457,7 +374,7 @@ def _normalize_one_binding(
             "observable": observable,
             "verifier_kind": kind,
         },
-        errors,
+        list(dict.fromkeys(errors)),
     )
 
 
@@ -468,10 +385,10 @@ def normalize_environment_bindings(
     *,
     user_blob: str = "",
     user_records: list[dict[str, Any]] | None = None,
+    system_records: list[dict[str, Any]] | None = None,
     path_aliases: dict[str, str] | None = None,
-    file_binding_paths: list[str] | None = None,
-    require_complete: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str]]:
+    """校验模型显式合同；缺失或冲突交回模型，不补造绑定。"""
     errors: list[str] = []
     known_ids = {str(item.get("id")) for item in obligations if isinstance(item, dict) and item.get("id")}
     obligations_by_id = {str(item.get("id")): item for item in obligations if isinstance(item, dict)}
@@ -479,18 +396,18 @@ def normalize_environment_bindings(
                      for item in user_records or [] if isinstance(item, dict)}
 
     def binding_context(obligation: dict[str, Any]) -> str:
-        # 有原始记录时只使用该义务引用的消息，不能把相邻平台说明变成任务输入。
+        # 来源校验只读取该义务引用的用户消息，不能借用其他任务或助手命名。
         if user_records is not None:
             text = "\n".join(records_by_id[ref] for ref in obligation.get("evidence_ref_ids") or []
                              if ref in records_by_id)
         else:
             text = user_blob
-        return _binding_context_text(text, path_aliases or {})
-    raw = payload.get("environment_bindings")
+        text = "\n".join([text, *[str(row.get("text") or "") for row in system_records or []]])
+        return _replace_binding_paths(text, path_aliases or {})
+
+    raw = payload.get("environment_bindings", [])
     by_id: dict[str, dict[str, Any]] = {}
-    if raw is None or raw == []:
-        raw = []
-    elif not isinstance(raw, list):
+    if not isinstance(raw, list):
         errors.append("ENVIRONMENT_BINDINGS_NOT_ARRAY")
         raw = []
     for item in raw:
@@ -501,7 +418,6 @@ def normalize_environment_bindings(
             item,
             known_ids=known_ids,
             allowed_paths=allowed_paths,
-            file_binding_paths=file_binding_paths,
             context_text=binding_context(obligations_by_id.get(str(item.get("obligation_id") or item.get("id")), {})),
             path_aliases=path_aliases,
         )
@@ -518,39 +434,10 @@ def normalize_environment_bindings(
         if not isinstance(obligation, dict) or not obligation.get("id"):
             continue
         oid = str(obligation["id"])
-        context_text = binding_context(obligation)
         if oid in by_id:
-            current = by_id[oid]
-            if current.get("verifier_kind") == FILE:
-                derived = derive_binding(
-                    obligation, allowed_paths, context_text, file_binding_paths=file_binding_paths
-                )
-                if not current["required_paths"]:
-                    for key in ("required_paths", "initial_required_paths", "output_paths"):
-                        current[key] = derived[key]
-                    if not current["required_paths"]:
-                        errors.append(f"BINDING_FILE_PATHS_REQUIRED:{oid}")
-                # 模型漏列新产物不能使原文明示输出消失；保留原 observable。
-                for path in derived["output_paths"]:
-                    if path not in current["output_paths"]:
-                        current["output_paths"].append(path)
-                    if path not in current["required_paths"]:
-                        current["required_paths"].append(path)
-                current["initial_required_paths"] = [
-                    path for path in current["initial_required_paths"]
-                    if path not in current["output_paths"]
-                ]
-            result.append(current)
-        elif require_complete:
-            # 模型显式返回 binding 列表时，它就是完整协议声明；
-            # 不得从共享上下文推导遗漏的 FILE/NON_FILE 类型。
-            errors.append(f"BINDING_REQUIRED:{oid}")
+            result.append(by_id[oid])
         else:
-            result.append(
-                derive_binding(
-                    obligation, allowed_paths, context_text, file_binding_paths=file_binding_paths
-                )
-            )
+            errors.append(f"BINDING_REQUIRED:{oid}")
     return result, errors
 
 
@@ -604,10 +491,9 @@ def environment_bindings(task: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 
 def file_required_paths(task: dict[str, Any] | None) -> list[str]:
+    """所需初态文件，不依赖义务的验收类型。"""
     paths: list[str] = []
     for binding in environment_bindings(task):
-        if binding.get("verifier_kind") != FILE:
-            continue
         initial = binding.get("initial_required_paths")
         candidates = initial if isinstance(initial, list) else binding.get("required_paths") or []
         for path in candidates:
@@ -617,14 +503,14 @@ def file_required_paths(task: dict[str, Any] | None) -> list[str]:
 
 
 def file_output_paths(task: dict[str, Any] | None) -> list[str]:
-    """Return FILE paths expected after execution, including new outputs."""
+    """任务明确声明的新增产物；回答验收类型不限制其输出位置。"""
     paths: list[str] = []
     for binding in environment_bindings(task):
-        if binding.get("verifier_kind") != FILE:
-            continue
         candidates = binding.get("output_paths")
         if not isinstance(candidates, list):
-            candidates = binding.get("required_paths") or []
+            candidates = (
+                binding.get("required_paths") or [] if binding.get("verifier_kind") == FILE else []
+            )
         for path in candidates:
             if isinstance(path, str) and path and path not in paths:
                 paths.append(path)
@@ -748,7 +634,6 @@ __all__ = [
     "collect_allowed_paths",
     "collect_binding_path_aliases",
     "collect_file_binding_paths",
-    "derive_binding",
     "observed_body_paths",
     "environment_bindings",
     "expand_tree_paths",

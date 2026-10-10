@@ -22,6 +22,7 @@ from traceforge.reconstruction.environment_bindings import (
     normalize_environment_bindings,
     path_is_allowed,
     workspace_is_stub_ensemble,
+    workspace_task_context,
 )
 from traceforge.reconstruction.intent_recovery import _gate
 from traceforge.reconstruction.terminal_universe_environment import validate_completion_candidate
@@ -197,7 +198,7 @@ def test_explicit_file_bindings_preserve_observed_names_without_bodies() -> None
         {"user:0"},
         allowed_paths=allowed,
         user_blob="读注入器",
-        file_binding_paths=bindable,
+
     )
     assert status == "READY"
     assert errors == []
@@ -360,7 +361,7 @@ def test_stub_ensemble_is_not_project_specific(tmp_path: Path) -> None:
     assert workspace_is_stub_ensemble(workspace) is False
 
 
-def test_non_file_paths_are_stripped_without_review() -> None:
+def test_non_file_paths_preserve_required_inputs(tmp_path: Path) -> None:
     allowed = collect_allowed_paths(
         {"tool_timeline": _timeline()},
         [{"id": "user:0", "text": "读注入器并评估 2026；我修了一点你看看"}],
@@ -392,10 +393,18 @@ def test_non_file_paths_are_stripped_without_review() -> None:
         allowed_paths=allowed,
         user_blob="读注入器并评估 2026；我修了一点你看看",
     )
-    assert status == "READY", errors
+    assert status == "READY"
     assert errors == []
     assert gated["environment_bindings"][0]["verifier_kind"] == "NON_FILE"
-    assert gated["environment_bindings"][0]["required_paths"] == []
+    assert gated["environment_bindings"][0]["required_paths"] == ["Injector.cpp", "Loader.cpp"]
+
+    assert file_obligation_ids(gated) == []
+    assert non_file_obligation_ids(gated) == ["obl-003"]
+    assert file_required_paths(gated) == ["Injector.cpp", "Loader.cpp"]
+    assert workspace_task_context(gated)["initial_required_paths"] == ["Injector.cpp", "Loader.cpp"]
+    assert missing_binding_paths(tmp_path, gated) == ["Injector.cpp", "Loader.cpp"]
+    (tmp_path / "Injector.cpp").write_text("int inject();\n", encoding="utf-8")
+    assert missing_binding_paths(tmp_path, gated) == ["Loader.cpp"]
 
 
 def test_non_file_coverage_is_not_required() -> None:
@@ -680,7 +689,9 @@ def test_output_file_binding_does_not_require_initial_workspace() -> None:
         "environment_bindings": [
             {
                 "obligation_id": "o1",
-                "required_paths": [],
+                "required_paths": [".pi-subagents/report.md"],
+                "initial_required_paths": [],
+                "output_paths": [".pi-subagents/report.md"],
                 "observable": "报告文件生成并包含审查结论",
                 "verifier_kind": "FILE",
             }
@@ -691,7 +702,6 @@ def test_output_file_binding_does_not_require_initial_workspace() -> None:
         obligations,
         [".pi-subagents/report.md"],
         user_blob="写入 .pi-subagents/report.md",
-        file_binding_paths=[],
     )
     assert errors == []
     assert bindings[0]["required_paths"] == [".pi-subagents/report.md"]
@@ -702,16 +712,18 @@ def test_output_file_binding_does_not_require_initial_workspace() -> None:
 
 
 def test_missing_initial_input_is_not_reclassified_as_output() -> None:
-    from traceforge.reconstruction.environment_bindings import derive_binding
-
-    binding = derive_binding(
-        {"id": "o1", "text": "修复 missing.py"},
-        ["missing.py"],
-        "修复 missing.py",
-        file_binding_paths=[],
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "FILE",
+            "required_paths": ["missing.py"], "initial_required_paths": ["missing.py"],
+            "output_paths": [], "observable": "缺失的必要源码已修复",
+        }]},
+        [{"id": "o1", "text": "修复 missing.py"}], ["missing.py"],
+        user_blob="修复 missing.py",
     )
-    assert binding["initial_required_paths"] == ["missing.py"]
-    assert binding["output_paths"] == []
+    assert errors == []
+    assert bindings[0]["initial_required_paths"] == ["missing.py"]
+    assert bindings[0]["output_paths"] == []
 
 
 def test_mixed_required_and_explicit_output_paths_are_preserved() -> None:
@@ -728,7 +740,6 @@ def test_mixed_required_and_explicit_output_paths_are_preserved() -> None:
     bindings, errors = normalize_environment_bindings(
         payload, obligations, ["src/foo.py", "report.md"],
         user_blob="更新 src/foo.py 并生成 report.md",
-        file_binding_paths=["src/foo.py"],
     )
     assert errors == []
     assert bindings[0]["required_paths"] == ["src/foo.py", "report.md"]
@@ -764,9 +775,14 @@ def test_review_contract_examples_are_not_workspace_evidence() -> None:
                     "evidence_ref_ids": ["user:2"]}]
     bindings, errors = normalize_environment_bindings(
         {"environment_bindings": [{"obligation_id": "review", "verifier_kind": "FILE",
-                                    "required_paths": [], "observable": "报告提供准确的审查发现"}]},
+                                    "required_paths": [
+                                        "brief.md", "src/core.rs", "reports/review.md",
+                                    ],
+                                    "initial_required_paths": ["brief.md", "src/core.rs"],
+                                    "output_paths": ["reports/review.md"],
+                                    "observable": "报告提供准确的审查发现"}]},
         obligations, allowed, user_blob="\n".join(row["text"] for row in records),
-        user_records=records, file_binding_paths=["src/core.rs", "src/"],
+        user_records=records,
     )
     assert errors == []
     assert set(bindings[0]["initial_required_paths"]) == {"brief.md", "src/core.rs"}
@@ -779,10 +795,16 @@ def test_real_directories_are_kept_without_promoting_parent_prefixes() -> None:
     request = "Inspect `src/` and assets/. Create reports/result.md."
     allowed = collect_allowed_paths({}, [{"id": "user:0", "text": request}])
     assert {"src/", "assets/", "reports/result.md"} <= set(allowed)
-    from traceforge.reconstruction.environment_bindings import derive_binding
-
-    binding = derive_binding({"id": "o1", "text": request}, allowed, request,
-                             file_binding_paths=[])
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "FILE",
+            "required_paths": ["src/", "assets/", "reports/result.md"],
+            "initial_required_paths": ["src/", "assets/"],
+            "output_paths": ["reports/result.md"], "observable": "报告覆盖指定目录",
+        }]}, [{"id": "o1", "text": request}], allowed, user_blob=request,
+    )
+    assert errors == []
+    binding = bindings[0]
     assert set(binding["initial_required_paths"]) == {"src/", "assets/"}
     assert binding["output_paths"] == ["reports/result.md"]
     assert "reports/" not in binding["required_paths"]
@@ -795,8 +817,10 @@ def test_new_test_file_is_an_output_while_explicit_missing_input_stays_input() -
     bindings, errors = normalize_environment_bindings(
         {"environment_bindings": [{"obligation_id": "o1", "verifier_kind": "FILE",
                                     "required_paths": ["src/parser.py", "tests/test_parser.py"],
+                                    "initial_required_paths": ["src/parser.py"],
+                                    "output_paths": ["tests/test_parser.py"],
                                     "observable": "解析器修复且新测试覆盖回归"}]},
-        obligations, allowed, user_blob=request, file_binding_paths=[],
+        obligations, allowed, user_blob=request,
     )
     assert errors == []
     assert bindings[0]["initial_required_paths"] == ["src/parser.py"]
@@ -854,7 +878,6 @@ def test_host_and_user_relative_paths_share_replay_coordinates() -> None:
                                     "required_paths": host_paths, "output_paths": [host_paths[-1]],
                                     "observable": "报告准确描述审查结论"}]},
         obligations, allowed, user_records=records, path_aliases=aliases,
-        file_binding_paths=collect_file_binding_paths(source),
     )
     assert errors == []
     assert set(bindings[0]["initial_required_paths"]) == {
@@ -885,7 +908,7 @@ def test_path_mapping_preserves_non_path_escape_sequences() -> None:
                                     "required_paths": ["src/parser.py"],
                                     "observable": observable}]},
         [{"id": "o1", "text": "修复 src/parser.py"}], ["repo/src/parser.py"],
-        user_blob="修复 src/parser.py", file_binding_paths=["repo/src/parser.py"],
+        user_blob="修复 src/parser.py",
         path_aliases={"src/parser.py": "repo/src/parser.py"},
     )
     assert errors == []
@@ -907,9 +930,10 @@ def test_explicit_absolute_missing_input_survives_without_replay_root() -> None:
     allowed = collect_allowed_paths({}, [{"id": "user:1", "text": request}])
     bindings, errors = normalize_environment_bindings(
         {"environment_bindings": [{"obligation_id": "o1", "verifier_kind": "FILE",
-                                   "required_paths": [], "observable": "输入已审查"}]},
+                                   "required_paths": ["work/app/missing.md"],
+                                   "observable": "输入已审查"}]},
         [{"id": "o1", "text": "审查缺失输入", "evidence_ref_ids": ["user:1"]}],
-        allowed, user_records=[{"id": "user:1", "text": request}], file_binding_paths=[],
+        allowed, user_records=[{"id": "user:1", "text": request}],
     )
     assert errors == []
     assert bindings[0]["initial_required_paths"] == ["work/app/missing.md"]
@@ -935,14 +959,17 @@ def test_existing_replay_coordinate_is_not_prefixed_again() -> None:
     assert "app/app/reports/review.md" not in allowed
 
 
-def test_partial_binding_recovers_explicit_output_without_losing_observable() -> None:
+def test_explicit_binding_keeps_output_and_observable() -> None:
     request = "Read missing.py. Write reports/review.md."
     allowed = collect_allowed_paths({}, [{"id": "user:1", "text": request}])
     bindings, errors = normalize_environment_bindings(
         {"environment_bindings": [{"obligation_id": "o1", "verifier_kind": "FILE",
-                                   "required_paths": ["missing.py"], "observable": "报告包含逐行证据"}]},
+                                   "required_paths": ["missing.py", "reports/review.md"],
+                                   "initial_required_paths": ["missing.py"],
+                                   "output_paths": ["reports/review.md"],
+                                   "observable": "报告包含逐行证据"}]},
         [{"id": "o1", "text": "审查后报告", "evidence_ref_ids": ["user:1"]}],
-        allowed, user_records=[{"id": "user:1", "text": request}], file_binding_paths=[],
+        allowed, user_records=[{"id": "user:1", "text": request}],
     )
     assert errors == []
     assert bindings[0]["initial_required_paths"] == ["missing.py"]
@@ -954,14 +981,14 @@ def test_undeclared_output_is_reported_instead_of_becoming_input() -> None:
     request = "Read src/input.py."
     bindings, errors = normalize_environment_bindings(
         {"environment_bindings": [{"obligation_id": "o1", "verifier_kind": "FILE",
-                                   "required_paths": ["src/input.py"], "output_paths": ["src/input.py"],
+                                   "required_paths": ["src/input.py", "history/report.md"],
+                                   "output_paths": ["history/report.md"],
                                    "observable": "输入已审查"}]},
         [{"id": "o1", "text": "审查", "evidence_ref_ids": ["user:1"]}],
-        ["src/input.py"], user_records=[{"id": "user:1", "text": request}],
-        file_binding_paths=["src/input.py"],
+        ["src/input.py", "history/report.md"], user_records=[{"id": "user:1", "text": request}],
     )
-    assert "BINDING_OUTPUT_PATH_NOT_EXPLICIT:o1:src/input.py" in errors
-    assert bindings[0]["output_paths"] == []
+    assert "BINDING_OUTPUT_PATH_NOT_EXPLICIT:o1:history/report.md" in errors
+    assert bindings[0]["output_paths"] == ["history/report.md"]
 
 
 def test_harness_closing_tags_are_not_path_aliases_and_real_root_remains() -> None:
@@ -1016,7 +1043,7 @@ def test_explicit_binding_survives_missing_replay_body_and_error_log_tokens() ->
     status, errors, task = _gate(
         payload, {"task_id": "render-task"}, {"user:0"}, allowed_paths=allowed,
         user_blob=request, user_records=records,
-        file_binding_paths=collect_file_binding_paths(source, replay_files=replay_paths),
+
     )
     assert status == "READY", errors
     assert file_required_paths(task) == paths
@@ -1026,3 +1053,257 @@ def test_explicit_binding_survives_missing_replay_body_and_error_log_tokens() ->
     )
     assert not valid
     assert set(missing) == {f"BINDING_PATH_MISSING:{path}" for path in paths}
+
+
+def test_explicit_directory_output_is_not_expanded_from_repository_guidance() -> None:
+    """真实计划目录失败的最小复现，不包含私人源码。"""
+    request = (
+        "在 `.claude/plans/` 下创建计划文件，文件名由实现者选择。\n"
+        "后端开发说明：新增配置写入 backend/dna.xml。"
+    )
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "plan", "verifier_kind": "FILE",
+            "required_paths": [".claude/plans/"], "initial_required_paths": [],
+            "output_paths": [".claude/plans/"], "observable": "计划文件包含步骤和进度",
+        }]},
+        [{"id": "plan", "text": "创建任务计划", "evidence_ref_ids": ["user:1"]}],
+        [".claude/plans/", "backend/dna.xml"],
+        user_records=[{"id": "user:1", "text": request}],
+    )
+    assert errors == []
+    assert bindings[0]["required_paths"] == [".claude/plans/"]
+    assert bindings[0]["initial_required_paths"] == []
+    assert bindings[0]["output_paths"] == [".claude/plans/"]
+
+
+def test_empty_file_binding_is_not_filled_from_cited_repository_guidance() -> None:
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "plan", "verifier_kind": "FILE",
+            "required_paths": [], "initial_required_paths": [], "output_paths": [],
+            "observable": "计划文件存在；具体文件名由实现者选择",
+        }]},
+        [{"id": "plan", "text": "创建任务计划", "evidence_ref_ids": ["user:1"]}],
+        [".claude/plans/", "backend/dna.xml"],
+        user_records=[{"id": "user:1", "text":
+                       "在 .claude/plans/ 下创建计划。新增配置写入 backend/dna.xml。"}],
+    )
+    assert errors == ["BINDING_FILE_PATHS_REQUIRED:plan"]
+    assert bindings[0]["required_paths"] == []
+    assert bindings[0]["output_paths"] == []
+
+
+def test_declared_initial_input_is_not_changed_by_nearby_output_verb() -> None:
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "read", "verifier_kind": "FILE",
+            "required_paths": ["src/input.py"], "initial_required_paths": ["src/input.py"],
+            "output_paths": [], "observable": "说明准确覆盖原代码行为",
+        }]},
+        [{"id": "read", "text": "解释代码", "evidence_ref_ids": ["user:1"]}],
+        ["src/input.py"],
+        user_records=[{"id": "user:1", "text": "生成关于 src/input.py 的行为说明。"}],
+    )
+    assert errors == []
+    assert bindings[0]["initial_required_paths"] == ["src/input.py"]
+    assert bindings[0]["output_paths"] == []
+
+
+@pytest.mark.parametrize(("initial", "required", "error"), [
+    (["report.md"], ["report.md"], "BINDING_PATH_ROLE_CONFLICT:report:report.md"),
+    (["src/input.py"], ["report.md"], "BINDING_PATH_UNION_MISMATCH:report"),
+])
+def test_explicit_path_roles_must_be_consistent(initial, required, error) -> None:
+    _, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "report", "verifier_kind": "FILE",
+            "required_paths": required, "initial_required_paths": initial,
+            "output_paths": ["report.md"], "observable": "报告正确",
+        }]},
+        [{"id": "report", "text": "报告结果", "evidence_ref_ids": ["user:1"]}],
+        ["src/input.py", "report.md"],
+        user_records=[{"id": "user:1", "text": "读取 src/input.py，在 report.md 中写报告。"}],
+    )
+    assert error in errors
+
+
+def test_missing_binding_is_not_inferred_from_request_paths() -> None:
+    bindings, errors = normalize_environment_bindings(
+        {}, [{"id": "read", "text": "读取 src/input.py", "evidence_ref_ids": ["user:1"]}],
+        ["src/input.py"], user_records=[{"id": "user:1", "text": "读取 src/input.py"}],
+    )
+    assert bindings == []
+    assert errors == ["BINDING_REQUIRED:read"]
+
+
+def test_historical_assistant_filename_cannot_become_required_output() -> None:
+    _, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "plan", "verifier_kind": "FILE",
+            "required_paths": [".claude/plans/old-choice.md"], "initial_required_paths": [],
+            "output_paths": [".claude/plans/old-choice.md"], "observable": "计划已更新",
+        }]},
+        [{"id": "plan", "text": "创建计划", "evidence_ref_ids": ["user:1"]}],
+        [".claude/plans/", ".claude/plans/old-choice.md"],
+        user_records=[{"id": "user:1", "text": "在 .claude/plans/ 下创建计划，文件名自行选择。"}],
+    )
+    assert "BINDING_OUTPUT_PATH_NOT_EXPLICIT:plan:.claude/plans/old-choice.md" in errors
+
+
+@pytest.mark.parametrize(("path", "user_text"), [
+    ("审计报告.md", "请将结论写入'审计报告.md'。"),
+    ("Dockerfile", "创建 Dockerfile"),
+    ("final report.md", "输出到 'final report.md'。"),
+    ("report.md", "请保存为report.md。"),
+    ("docs/", "在 docs 中创建报告，文件名自行选择。"),
+    ("report.md", "强制格式如下：report.md"),
+])
+def test_explicit_source_paths_do_not_depend_on_filename_extraction(path, user_text) -> None:
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "FILE",
+            "required_paths": [path], "initial_required_paths": [], "output_paths": [path],
+            "observable": "产物包含用户要求的结果",
+        }]},
+        [{"id": "o1", "text": "输出结果", "evidence_ref_ids": ["user:1"]}],
+        [], user_records=[{"id": "user:1", "text": user_text}],
+    )
+    assert errors == []
+    assert bindings[0]["output_paths"] == [path]
+
+
+@pytest.mark.parametrize("user_text", [
+    "写入 src/report.md", "写入 report.md.bak", "写入 oldreport.md",
+    "写入 report.md/child.txt", "写入 /report.md", "写入 C:/report.md",
+])
+def test_output_source_rejects_basename_and_path_substrings(user_text) -> None:
+    _, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "FILE",
+            "required_paths": ["report.md"], "initial_required_paths": [],
+            "output_paths": ["report.md"], "observable": "报告已生成",
+        }]},
+        [{"id": "o1", "text": "输出报告", "evidence_ref_ids": ["user:1"]}],
+        ["report.md"], user_records=[{"id": "user:1", "text": user_text}],
+    )
+    assert "BINDING_OUTPUT_PATH_NOT_EXPLICIT:o1:report.md" in errors
+
+
+@pytest.mark.parametrize("path", [
+    "/home/unobserved/report.md", "/Users/unobserved/report.md", "../report.md",
+])
+def test_model_path_cannot_invent_absolute_coordinates(path) -> None:
+    _, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "FILE",
+            "required_paths": [path], "initial_required_paths": [], "output_paths": [path],
+            "observable": "报告已生成",
+        }]},
+        [{"id": "o1", "text": "输出报告", "evidence_ref_ids": ["user:1"]}],
+        ["report.md"], user_records=[{"id": "user:1", "text": "Write report.md"}],
+    )
+    assert f"BINDING_PATH_UNSAFE:o1:{path}" in errors
+
+
+@pytest.mark.parametrize("source_role", ["system", "developer"])
+def test_original_system_output_reaches_formal_intent_gate(tmp_path, source_role) -> None:
+    from traceforge.reconstruction.agents.runtime import AgentResult
+    from traceforge.reconstruction.intent_recovery import run_intent_recovery
+
+    class IntentFixture:
+        backend = "fixture"
+        model_name = "fixture"
+
+        def run(self, *, role, instruction, session, output_root):
+            assert "C:/work/repo/reports/result.md" in instruction
+            return AgentResult(
+                role=role.name, backend=self.backend, completed=True, payload={
+                    "task_id": "t1", "task_instruction": "完成代码审查，按原系统约定保存报告",
+                    "core_objective": "审查代码并输出报告",
+                    "acceptance_obligations": [{
+                        "id": "review", "text": "审查代码", "evidence_ref_ids": ["user:1"],
+                    }],
+                    "environment_bindings": [{
+                        "obligation_id": "review", "verifier_kind": "FILE",
+                        "required_paths": ["src/core.py", "reports/result.md"],
+                        "initial_required_paths": ["src/core.py"],
+                        "output_paths": ["reports/result.md"], "observable": "报告覆盖代码问题",
+                    }],
+                },
+            )
+
+    result = run_intent_recovery(
+        source={
+            "tasks": [{"task_id": "t1", "message_indices": [1]}],
+            "raw_session": {"messages": [
+                {"role": source_role, "content": "审查报告必须写入 C:/work/repo/reports/result.md"},
+                {"role": "user", "content": "审查 src/core.py"},
+                {"role": "assistant", "content": "我选择 reports/history.md 作为报告名"},
+            ]},
+            "tool_timeline": [{
+                "name": "read_file", "arguments": {
+                    "path": "C:/work/repo/src/core.py", "cwd": "C:/work/repo",
+                }, "result_text": "print(1)\n",
+            }],
+        },
+        agent=IntentFixture(), output_root=tmp_path,
+    )
+    assert result["status"] == "READY", result["errors"]
+    assert result["task"]["environment_bindings"][0]["output_paths"] == ["reports/result.md"]
+    assert result["task"]["acceptance_obligations"][0]["evidence_ref_ids"] == ["user:1"]
+
+
+def test_absolute_directory_alias_keeps_directory_marker() -> None:
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "FILE",
+            "required_paths": ["/repo/docs/"], "initial_required_paths": [],
+            "output_paths": ["/repo/docs/"], "observable": "目录包含要求的报告",
+        }]},
+        [{"id": "o1", "text": "创建报告", "evidence_ref_ids": ["user:1"]}],
+        ["docs"], user_records=[{"id": "user:1", "text": "在 /repo/docs/ 下创建报告"}],
+        path_aliases={"/repo/docs/": "docs"},
+    )
+    assert errors == []
+    assert bindings[0]["required_paths"] == ["docs/"]
+    assert bindings[0]["output_paths"] == ["docs/"]
+
+
+def test_known_absolute_alias_survives_adjacent_chinese_prose() -> None:
+    bindings, errors = normalize_environment_bindings(
+        {"environment_bindings": [{
+            "obligation_id": "o1", "verifier_kind": "FILE",
+            "required_paths": ["report.md"], "initial_required_paths": [],
+            "output_paths": ["report.md"], "observable": "报告正确",
+        }]},
+        [{"id": "o1", "text": "输出报告", "evidence_ref_ids": ["user:1"]}],
+        ["report.md"], user_records=[{"id": "user:1", "text": "请保存为/repo/report.md。"}],
+        path_aliases={"/repo/report.md": "report.md"},
+    )
+    assert errors == []
+    assert bindings[0]["output_paths"] == ["report.md"]
+
+
+def test_non_file_named_output_is_separate_from_initial_inputs() -> None:
+    task = {
+        "acceptance_obligations": [{"id": "obl-001", "text": "依据 source.txt 写 report.md"}],
+        "environment_bindings": [{
+            "obligation_id": "obl-001", "verifier_kind": "NON_FILE",
+            "required_paths": ["source.txt", "report.md"],
+            "initial_required_paths": ["source.txt"], "output_paths": ["report.md"],
+            "observable": "报告忠实引用资料并回答原问题",
+        }],
+    }
+    bindings, errors = normalize_environment_bindings(
+        task, task["acceptance_obligations"], allowed_paths=["source.txt"],
+        user_blob="依据 source.txt 写 report.md",
+    )
+    assert errors == []
+    task["environment_bindings"] = bindings
+    context = workspace_task_context(task)
+    assert context["initial_required_paths"] == ["source.txt"]
+    assert context["output_paths"] == ["report.md"]
+    assert file_obligation_ids(task) == []
+    task["environment_bindings"][0].pop("output_paths")
+    assert workspace_task_context(task)["output_paths"] == []

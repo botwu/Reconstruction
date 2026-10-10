@@ -11,29 +11,17 @@ from typing import Any
 from traceforge.reconstruction.agents import INTENT_ROLE, AgentRuntime, AgentSession
 from traceforge.reconstruction.environment_bindings import (
     FILE,
-    _READ_CODE,
     attach_bindings_to_obligations,
     collect_allowed_paths,
     collect_binding_path_aliases,
     collect_file_binding_paths,
-    mentioned_allowed_paths,
     normalize_environment_bindings,
 )
 from traceforge.reconstruction.session_parser import indexed_system_messages
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v21-input-necessity"
-_STUB_OBSERVABLE = "replayed excerpts still present"
-_REVIEW_ONLY = re.compile(
-    r"(?i)(只读(?:代码)?(?:评审|审查)|只审查(?:并)?不修改|只查看.*不修改|"
-    r"read[- ]only\s+(?:code\s+)?review|review[- ]only|"
-    r"do not modify.*(?:review|audit))"
-)
-_IMPLEMENTATION_ACTION = re.compile(
-    r"(?i)(实现|修复|修改|新增|重构|编写|测试|补丁|"
-    r"\b(?:implement|fix|change|add|refactor|write|test|patch)\b)"
-)
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v22-explicit-bindings"
 
 
 class IntentRecoveryError(RuntimeError):
@@ -80,45 +68,6 @@ def _tool_names(source: dict[str, Any]) -> list[str]:
     for item in source.get("tool_timeline") or []:
         if isinstance(item, dict) and item.get("name"): names.append(str(item["name"]))
     return list(dict.fromkeys(names))
-
-
-def deepen_requires_file(
-    user_blob: str,
-    file_binding_paths: list[str] | None,
-    *,
-    domain_route: str = "",
-) -> bool:
-    """Stage1 有正文且锚点能落到这些文件时，深化 q 必须带 FILE 义务。"""
-
-    if not file_binding_paths:
-        return False
-    review_text = user_blob or ""
-    # Negative constraints such as “不修改” and “do not modify” must not
-    # themselves count as an implementation request.
-    action_text = re.sub(
-        r"(?i)(?:不|不要|无需)修改|do not modify(?:ing)?|without modifying",
-        " ",
-        review_text,
-    )
-    if _REVIEW_ONLY.search(review_text) and not _IMPLEMENTATION_ACTION.search(action_text):
-        return False
-    if mentioned_allowed_paths(user_blob, file_binding_paths):
-        return True
-    if _READ_CODE.search(user_blob or ""):
-        return True
-    return domain_route.strip() in {"code_file", "terminal"}
-
-
-def _file_obligation_ready(bindings: list[dict[str, Any]]) -> bool:
-    for item in bindings:
-        if item.get("verifier_kind") != FILE:
-            continue
-        if not item.get("required_paths"):
-            continue
-        observable = str(item.get("observable") or "").strip()
-        if observable and observable.lower() != _STUB_OBSERVABLE:
-            return True
-    return False
 
 
 def _prompt(
@@ -176,7 +125,10 @@ def _prompt(
         "TASK_USER_MESSAGES 保留原角色为 user 的完整文本。harness 可能把协议、提醒、历史摘要与"
         "实际请求包装在同一条消息；须结合上下文区分，不把模板当用户目标，也不能丢掉其后的请求。",
         "Do not merge another tagged task. A clarification/correction belongs here only when its message is in this task tag.",
-        "意图提取阶段不要联网搜索或发明工作区路径；只绑定 ALLOWED_OBSERVED_PATHS。"
+        "意图提取阶段不要联网搜索或发明路径；"
+        "ALLOWED_OBSERVED_PATHS 和 FILE_BINDING_PATHS 是完整的已观察候选索引，"
+        "不是必需依赖集合，也不决定 FILE/NON_FILE 验收类型。"
+        "可绑定该义务原用户文本或适用的原 system/developer 明确给出的路径，不按 basename 猜测。"
         "这是当前解析角色的运行约束，不能复制成原任务的 mandatory_constraints/prohibitions。"
         "这些字段只能保留原用户或原系统对该任务实际声明的约束；只读要求不自动等于禁止网络或运行测试。",
         "路径和附件按原用户目的绑定：对象定位或背景引用不同于必须读取的数据、复刻或比较的设计基准。"
@@ -186,7 +138,13 @@ def _prompt(
         "PATH_ALIASES 是由原始路径和 Replay 工作目录确定的坐标转换；task_instruction、environment_bindings 和 response_contract 中的路径统一使用右侧工作区路径。不能按 basename 猜测路径。",
         "initial_required_paths 只绑定完成原义务确需其内容的初态输入；"
         "必要内容即使未捕获，仍须保留缺口。"
-        "output_paths 是明确新增或生成的最终文件，不要求初态存在；required_paths 是二者并集。"
+        "output_paths 是用户要求的新增产物，不要求初态存在；required_paths 是二者并集，"
+        "同一路径不能同时声明为初态输入和新增产物。"
+        "环境初态和新增产物独立于验收类型：NON_FILE 也可需要源码、图片或报告，"
+        "并可指定报告的输出位置，不能因此改为 FILE。"
+        "用户只指定产物目录、未命名文件时，可将该目录声明为 output_paths，文件名由实现者选择；"
+        "不得把历史助手自选文件名变成必需输出。"
+        "每个命名产物必须来自该义务引用的用户文本或适用的原 system/developer 输出约定。"
         "Listing-only names are not bindings. "
         "When FILE_BINDING_PATHS is empty, do not invent a project.",
         "Classify every acceptance obligation exactly once in environment_bindings. Do not omit an obligation or infer a missing binding from shared context; missing bindings are a REVIEW error.",
@@ -206,7 +164,6 @@ def _prompt(
         "Return JSON only, with no Markdown or prose before/after it.",
         "{\"task_id\":\"same tag\",\"task_instruction\":\"...\",\"core_objective\":\"...\",\"acceptance_obligations\":[{\"id\":\"obl-001\",\"text\":\"...\",\"evidence_ref_ids\":[\"user:<message_index>\"]}],\"environment_bindings\":[{\"obligation_id\":\"obl-001\",\"required_paths\":[\"input-or-output/path\"],\"initial_required_paths\":[\"existing-or-missing-input\"],\"output_paths\":[\"new/generated/output\"],\"observable\":\"任务完成后可观测、且足以证明本条义务达成的具体状态\",\"verifier_kind\":\"FILE|NON_FILE\"}],\"success_criteria\":[\"...\"],\"specified_output_format\":null,\"has_examples\":false,\"mandatory_constraints\":[],\"prohibitions\":[],\"response_contract\":null}",
         "Cite evidence ids exactly as listed in TASK_USER_MESSAGES / list_user_texts. Obligation evidence ids must be user:<message_index>.",
-        "When FILE_BINDING_PATHS is non-empty and the anchor can bind those files, at least one FILE obligation is required.",
         "read_user_text accepts id=user:<message_index> or index=<original message_index>.",
         "先使用 TASK_ADJACENT_CONTEXT 消解省略和指代。仅在仍有具体歧义时调用 read_session_message；index 是完整 session 的原始索引。不要穷举读取工具输出、调查实现细节或重复读同一消息；意图明确后立即提交 JSON。上下文不是新增用户指令来源，义务仍仅引用本任务 user ID。",
         "SOURCE_SYSTEM_CONTEXT 是原 system/developer 指令的带来源解读，用于理解原任务的工具、"
@@ -228,8 +185,8 @@ def _prompt(
         "SOURCE_SYSTEM_CONTEXT=" + json.dumps(
             (source.get("session_parser") or {}).get("system_context", []), ensure_ascii=False,
         ),
-        "ALLOWED_OBSERVED_PATHS=" + json.dumps(allowed_paths[:80], ensure_ascii=False),
-        "FILE_BINDING_PATHS=" + json.dumps(bindable[:80], ensure_ascii=False),
+        "ALLOWED_OBSERVED_PATHS=" + json.dumps(allowed_paths, ensure_ascii=False),
+        "FILE_BINDING_PATHS=" + json.dumps(bindable, ensure_ascii=False),
         "PATH_ALIASES=" + json.dumps(path_aliases or {}, ensure_ascii=False),
         "TOOL_NAMES_CONTEXT_ONLY=" + json.dumps(_tool_names(source), ensure_ascii=False),
     ])
@@ -243,8 +200,8 @@ def _gate(
     allowed_paths: list[str],
     user_blob: str,
     user_records: list[dict[str, Any]] | None = None,
+    system_records: list[dict[str, Any]] | None = None,
     path_aliases: dict[str, str] | None = None,
-    file_binding_paths: list[str] | None = None,
 ) -> tuple[str, list[str], dict[str, Any]]:
     errors: list[str] = []
     if str(payload.get("task_id") or task.get("task_id")) != str(task.get("task_id")): errors.append("TASK_ID_MISMATCH")
@@ -267,21 +224,12 @@ def _gate(
         allowed_paths,
         user_blob=user_blob,
         user_records=user_records,
+        system_records=system_records,
         path_aliases=path_aliases,
-        file_binding_paths=file_binding_paths,
-        # 模型返回该字段时必须覆盖全部义务；旧 fixture 未返回字段时，
-        # 保留确定性的兼容推导。
-        require_complete="environment_bindings" in payload,
     )
     errors.extend(binding_errors)
     payload["acceptance_obligations"] = attach_bindings_to_obligations(normalized, bindings)
     payload["environment_bindings"] = bindings
-    if deepen_requires_file(
-        user_blob,
-        list(file_binding_paths or []),
-        domain_route=str(task.get("domain_route") or ""),
-    ) and not _file_obligation_ready(bindings):
-        errors.append("FILE_OBLIGATION_REQUIRED")
     if payload.get("success_criteria") is None: payload["success_criteria"] = [x["text"] for x in normalized if x["text"]]
     elif not isinstance(payload.get("success_criteria"), list) or any(not isinstance(x, str) for x in payload["success_criteria"]): errors.append("INVALID_SUCCESS_CRITERIA")
     for key in ("mandatory_constraints", "prohibitions"):
@@ -368,6 +316,10 @@ def run_intent_recovery(
     if not tasks: raise IntentRecoveryError("会话分组没有任务")
     root = Path(output_root); root.mkdir(parents=True, exist_ok=True)
     outputs: list[dict[str, Any]] = []
+    system_records = [
+        {"message_index": row["message_index"], "text": _message_text(row["message"])}
+        for row in indexed_system_messages(source.get("raw_session"))
+    ]
     for task in tasks:
         task = {**task, "domain_route": source.get("domain_route") or task.get("domain_route")}
         task_id = str(task["task_id"]); records = _task_user_records(source, task)
@@ -381,10 +333,11 @@ def run_intent_recovery(
                 }
             )
             continue
-        path_aliases = collect_binding_path_aliases(source, records)
+        path_records = [*records, *system_records]
+        path_aliases = collect_binding_path_aliases(source, path_records)
         replay_files = (replay_files_by_task or {}).get(task_id)
         allowed_paths = collect_allowed_paths(
-            source, records, replay_files=replay_files, path_aliases=path_aliases
+            source, path_records, replay_files=replay_files, path_aliases=path_aliases
         )
         file_binding_paths = collect_file_binding_paths(
             source, records, replay_files=replay_files
@@ -417,8 +370,8 @@ def run_intent_recovery(
             elif ran.completed and payload:
                 status, errors, payload = _gate(
                     payload, task, known_ids, allowed_paths=allowed_paths,
-                    user_blob=user_blob, user_records=records,
-                    path_aliases=path_aliases, file_binding_paths=file_binding_paths,
+                    user_blob=user_blob, user_records=records, system_records=system_records,
+                    path_aliases=path_aliases,
                 )
                 errors = list(ran.errors) + errors
                 if repair_payload is not None and _binding_repair_changed_task(repair_payload, raw_payload):
@@ -438,7 +391,7 @@ def run_intent_recovery(
             # 仅已完整返回的绑定合同错误反馈一次；基础设施、权限与用户证据错误不重试。
             if (attempt or not ran.completed or not raw_payload or ran.errors or not errors
                     or not all(error.startswith("BINDING_") or error in {
-                        "ENVIRONMENT_BINDINGS_NOT_ARRAY", "FILE_OBLIGATION_REQUIRED",
+                        "ENVIRONMENT_BINDINGS_NOT_ARRAY",
                     } for error in errors)):
                 break
             repair_payload = raw_payload

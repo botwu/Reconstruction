@@ -23,6 +23,7 @@ class _IntentAgent:
     def run(self, *, role, instruction, session, output_root):
         task_id = "t1" if "t1" in instruction else "t2"
         index = "0" if task_id == "t1" else "2"
+        path = "foo.py" if task_id == "t1" else "bar.py"
         payload = {
             "task_id": task_id,
             "task_instruction": f"完成 {task_id}",
@@ -30,6 +31,11 @@ class _IntentAgent:
             "acceptance_obligations": [
                 {"id": "o1", "text": "完成任务", "evidence_ref_ids": [f"user:{index}"]}
             ],
+            "environment_bindings": [{
+                "obligation_id": "o1", "verifier_kind": "FILE",
+                "required_paths": [path], "initial_required_paths": [path],
+                "output_paths": [], "observable": "所选源码已读取并分析",
+            }],
             "success_criteria": ["完成任务"],
             "mandatory_constraints": [],
             "prohibitions": [],

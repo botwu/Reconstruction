@@ -31,7 +31,7 @@ def test_workspace_context_preserves_user_goal_and_path_lifecycle(kind):
     assert context["acceptance_obligations"] == [{
         "id": "obl-1", "text": "识别带日期的表头", "evidence_ref_ids": ["user:25"],
     }]
-    assert context["initial_required_paths"] == (["excel.py"] if kind == "FILE" else [])
-    assert context["output_paths"] == (["report.md"] if kind == "FILE" else [])
+    assert context["initial_required_paths"] == ["excel.py"]
+    assert context["output_paths"] == ["report.md"]
     assert "environment_bindings" not in context
     assert task == before
