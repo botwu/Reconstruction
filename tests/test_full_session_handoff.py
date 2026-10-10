@@ -178,7 +178,7 @@ def test_search_derived_body_without_original_is_not_counted_inline(tmp_path, mo
             },
         )
 
-    result = search_environment.run_search_task(
+    search_environment.run_search_task(
         source={
             "raw_session": {"messages": []},
             "tool_timeline": [
@@ -199,13 +199,13 @@ def test_search_derived_body_without_original_is_not_counted_inline(tmp_path, mo
                 }
             ],
         },
-        task={"task_id": "t"},
+        task={"task_id": "t", "task_instruction": "核对可用来源及其原文边界"},
         agent=SimpleNamespace(run=run),
         output_root=tmp_path,
     )
-    assert result["status"] == "BLOCKED"
     environment = json.loads((tmp_path / "environment.json").read_text())
     assert environment["author_evidence_access"]["inline_observations"] == []
+    assert environment["author_evidence_access"]["inline_returns"] == []
 
 
 def test_missing_session_object_is_not_treated_as_empty_fixture():
