@@ -2,16 +2,20 @@
 
 import hashlib
 import json
+import shutil
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from test_terminal_rollout_review import _evidence
+from test_unassessed_terminal_rollout import _bind_delivery
 
 from traceforge.cli import _parser
 from traceforge.harbor_ags.results import read_native_trial
 from traceforge.reconstruction import review_retry
 from traceforge.reconstruction.agents.session import workspace_tree_hash
+from traceforge.reconstruction.python_runtime import freeze_wheels, validate_python_runtime
 from traceforge.reconstruction.session_source import indexed_session
 from traceforge.reconstruction.task_fit import build_task_contract
 from traceforge.reconstruction.terminal_rollout_review import build_terminal_rollout_evidence
@@ -41,11 +45,35 @@ def _write(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False))
 
 
-def _fixture(tmp_path, monkeypatch):
+def _freeze_runtime(root, requirements, content="原依赖"):
+    (root / "wheels").mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(root / "wheels/example-1-py3-none-any.whl", "w") as archive:
+        archive.writestr("example-1.dist-info/METADATA", "Name: example\nVersion: 1\n")
+        archive.writestr("example/__init__.py", content)
+    freeze_wheels(root, requirements)
+
+
+def _fixture(tmp_path, monkeypatch, *, with_runtime=False):
     old = tmp_path / "old"
     old.mkdir()
-    native, trial_root, _, _ = _evidence(old, monkeypatch)
+    native, trial_root, full, _ = _evidence(old, monkeypatch)
     harbor = Path(native["receipt"]["input_task"])
+    if with_runtime:
+        requirements = harbor / "workspace/requirements.txt"
+        requirements.write_text("example>=1\n")
+        full["task_input"]["workspace"]["files"].append(
+            {
+                "path": "requirements.txt",
+                "sha256": hashlib.sha256(requirements.read_bytes()).hexdigest(),
+            }
+        )
+        _write(trial_root / "agent/trajectory.full.json", full)
+        _write(trial_root / "agent/task-input.json", full["task_input"])
+        candidate_root = old / "completion/candidate"
+        shutil.copytree(harbor / "workspace", candidate_root / "workspace")
+        _freeze_runtime(candidate_root / "python_runtime", requirements)
+        shutil.copytree(candidate_root / "python_runtime", harbor / "environment/python_runtime")
+        _bind_delivery(harbor)
     config_path = trial_root / "config.json"
     config = json.loads(config_path.read_text())
     config["task"] = {"path": str(harbor)}
@@ -147,7 +175,7 @@ def _fixture(tmp_path, monkeypatch):
             },
         },
     )
-    workspace = harbor / "workspace"
+    workspace = old / "completion/candidate/workspace" if with_runtime else harbor / "workspace"
     _write(
         old / "downstream_environment_review/sufficiency.json",
         {
@@ -469,3 +497,64 @@ def test_retry_preserves_original_initial_state_blocker(tmp_path, monkeypatch):
     assert result["status"] == "REVIEW"
     assert result["errors"][0] == "INITIAL_ENVIRONMENT_REVIEW_UNRESOLVED"
     assert result["acceptance"] == "NOT_ASSESSED"
+
+
+def test_refrozen_candidate_runtime_cannot_replace_native_dependencies(tmp_path, monkeypatch):
+    manifest, trial, output = _fixture(tmp_path, monkeypatch, with_runtime=True)
+    harbor = Path(json.loads((trial / "config.json").read_text())["task"]["path"])
+    bundle = manifest.parent / "completion/candidate/python_runtime"
+    requirements = harbor / "workspace/requirements.txt"
+    _freeze_runtime(bundle, requirements, content="另一份同版本但内容不同的有效依赖")
+    validate_python_runtime(bundle, requirements)
+    with pytest.raises(ValueError, match=r"依赖包.*原生"):
+        review_retry.prepare_review_retry(
+            manifest_path=manifest, task_id="task-1", output_root=output
+        )
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("missing", ["candidate", "native"])
+def test_runtime_presence_must_match_native_slot(tmp_path, monkeypatch, missing):
+    manifest, trial, output = _fixture(tmp_path, monkeypatch, with_runtime=True)
+    harbor = Path(json.loads((trial / "config.json").read_text())["task"]["path"])
+    bundle = (
+        manifest.parent / "completion/candidate/python_runtime"
+        if missing == "candidate" else harbor / "environment/python_runtime"
+    )
+    shutil.rmtree(bundle)
+    with pytest.raises(ValueError, match="原生"):
+        review_retry.prepare_review_retry(
+            manifest_path=manifest, task_id="task-1", output_root=output
+        )
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("changed", ["candidate", "native"])
+def test_all_runtime_files_are_bound_before_review(tmp_path, monkeypatch, changed):
+    manifest, trial, output = _fixture(tmp_path, monkeypatch, with_runtime=True)
+    harbor = Path(json.loads((trial / "config.json").read_text())["task"]["path"])
+    prepared = review_retry.prepare_review_retry(
+        manifest_path=manifest, task_id="task-1", output_root=output
+    )
+    bundles = {
+        "candidate": manifest.parent / "completion/candidate/python_runtime",
+        "native": harbor / "environment/python_runtime",
+    }
+    for bundle in bundles.values():
+        for path in bundle.rglob("*"):
+            if path.is_file():
+                assert (
+                    prepared["input_hashes"][str(path)]
+                    == hashlib.sha256(path.read_bytes()).hexdigest()
+                )
+    _freeze_runtime(bundles[changed], harbor / "workspace/requirements.txt", content="准备后替换")
+    monkeypatch.setattr(
+        review_retry, "run_workspace_sufficiency", lambda **kw: pytest.fail("不得调用模型")
+    )
+    with pytest.raises(ValueError, match="启动前输入改变"):
+        review_retry.run_review_retry(
+            prepared,
+            agent=SimpleNamespace(model_name="test"),
+            runtime_factory=lambda: pytest.fail("不得创建 AGS"),
+        )
+    assert not output.exists()

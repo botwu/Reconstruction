@@ -145,6 +145,7 @@ def prepare_review_retry(
         raise ValueError(f"原生 job 或清理认证失败：{verified['quality_gate']['reasons']}")
     current_trials = {row["trial_name"]: row["native_trial"] for row in verified["trials"]}
     native = []
+    slots = []
     seen = set()
     for row in trials:
         trial_root = _inside(Path(row["result_path"]).parent, root)
@@ -183,6 +184,7 @@ def prepare_review_retry(
         if not instruction_path.read_text().startswith(expected_instruction):
             raise ValueError("后审任务说明与实际 native 输入不一致")
         native.append(current)
+        slots.append(slot)
     data = dict(
         root=root,
         manifest_path=manifest_path.absolute(),
@@ -217,10 +219,27 @@ def prepare_review_retry(
             )
         ):
             raise ValueError("候选初态与原后审或 native 初态不一致")
-        bundle = workspace.parent / "python_runtime"
-        if bundle.exists():
-            _inside(bundle, root)
-            validate_python_runtime(bundle, workspace / "requirements.txt")
+        bundle = _inside(workspace.parent / "python_runtime", root)
+        has_runtime = bundle.exists()
+        runtime_manifest = None
+        for runtime_path in (bundle, *(slot / "environment/python_runtime" for slot in slots)):
+            runtime_path = _inside(runtime_path, root)
+            if runtime_path.exists() != has_runtime:
+                raise ValueError("候选依赖包与原生输入槽位的有无不一致")
+            if not has_runtime:
+                continue
+            current_manifest = validate_python_runtime(runtime_path, workspace / "requirements.txt")
+            if runtime_manifest is not None and current_manifest != runtime_manifest:
+                raise ValueError("候选依赖包与原生输入槽位的冻结内容不一致")
+            runtime_manifest = current_manifest
+            if _read(runtime_path / "manifest.json", root, hashes) != current_manifest:
+                raise ValueError("依赖包认证期间发生变化")
+            hashes.update(
+                {
+                    str(_inside(runtime_path / item["file"], root)): item["sha256"]
+                    for item in current_manifest["files"]
+                }
+            )
         hashes.update({str(workspace / name): digest for name, digest in inventory.items()})
         data.update(
             workspace=workspace,
@@ -232,7 +251,7 @@ def prepare_review_retry(
                 files=[SimpleNamespace(**row) for row in replay["files"]],
                 partial_evidence=replay["partial_evidence"],
             ),
-            python_runtime=bundle if bundle.exists() else None,
+            python_runtime=bundle if has_runtime else None,
         )
     else:
         environment = _read(previous["environment_path"], root, hashes)
