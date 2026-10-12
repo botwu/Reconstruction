@@ -640,6 +640,10 @@ def test_postreview_feedback_resumes_author_without_review_history(
         if len(authors) > 1:
             assert authors[-1] is authors[0]
             assert inputs[-1]["rollout_feedback"]["decision"] == "REPAIR"
+            assert inputs[-1]["rollout_feedback"]["requirements"] == [{
+                "obligation_id": "remaining", "status": "ENVIRONMENT_GAP",
+                "repair": "恢复原始进度",
+            }]
             assert all(
                 m["content"] != "独立 reviewer 推理" for m in authors[-1].conversation.messages
             )

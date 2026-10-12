@@ -38,6 +38,11 @@ from traceforge.reconstruction.verification import run_native_unassessed_rollout
 if TYPE_CHECKING:
     from traceforge.reconstruction.verification import VerificationConfig
 
+_REPAIR_FIELD_INSTRUCTION = (
+    "repair须独立包含必要材料的定位与恢复动作，不依赖reason中的说明；"
+    "只修任务输入、工具或访问及交付范围说明，不写待求结论、标准答案或答卷批改。"
+    "原完整reason保留供审计；作者只会收到环境恢复动作。"
+)
 _SEARCH_TOOLS = (
     "list_evidence", "search_evidence", "read_evidence", "web_search", "web_open", "view_image",
 )
@@ -204,6 +209,7 @@ SEARCH_REVIEW_ROLE = replace(
         "无合同问题时该字段可省略或为 null；必需输入无法恢复或验证不足返回 BLOCKED；"
         "环境足够时 COMPLETE；若对应回答有错，条目仍须标 SOLVER_ERROR 并引用具体错误。"
         "COMPLETE 不会更正已有回答，也不表示回答验收通过；不能用补写答案修理环境。"
+        + _REPAIR_FIELD_INSTRUCTION
     ),
 )
 
@@ -539,6 +545,12 @@ def _run_search_review(
         elif (decision == "COMPLETE" and any(item["status"] in {"ENVIRONMENT_GAP", "NOT_EXERCISED"}
                                              for item in checks)):
             errors.append("存在 ENVIRONMENT_GAP 或 NOT_EXERCISED 时不能返回 COMPLETE")
+        if valid and decision == "REPAIR" and issue is None and any(
+            item["status"] == "ENVIRONMENT_GAP"
+            and (not isinstance(item.get("repair"), str) or not item["repair"].strip())
+            for item in checks
+        ):
+            errors.append("可恢复缺口须在 repair 中引用原文线索和具体后续动作")
         if completion:
             if decision not in {"REPAIR", "BLOCKED"}:
                 errors.append("补全复核只能返回 REPAIR 或 BLOCKED，不能代替作者通过环境门禁")
@@ -550,12 +562,6 @@ def _run_search_review(
                 for item in checks
             ):
                 errors.append("REPAIR 须引用具体证据，提出恢复必要输入或纠正停止依据的动作")
-            if valid and decision == "REPAIR" and any(
-                item["status"] == "ENVIRONMENT_GAP"
-                and (not isinstance(item.get("repair"), str) or not item["repair"].strip())
-                for item in checks
-            ):
-                errors.append("可恢复缺口须在 repair 中引用原文线索和具体后续动作")
         _save(attempt_root / "validation.json", {
             "status": "INVALID" if errors else "VALID",
             "errors": errors,
@@ -688,6 +694,7 @@ def _review_search_completion(
             "每个原义务恰好一项，多个事实合写 reason；合同问题不硬配旧义务ID。"
             "无合同问题时，REPAIR 至少包含一个有具体 repair 的 ENVIRONMENT_GAP 或 SUPPORTED；"
             "全部原义务必须逐项覆盖，某项已有输入不能代替其他缺口。"
+            + _REPAIR_FIELD_INSTRUCTION
         ),
     )
     reviewer = AgentSession(
@@ -805,6 +812,23 @@ def _restore_search_checkpoint(
         raise ValueError(f"研究员检查点恢复失败：{checkpoint}（{exc}）") from exc
 
 
+def _author_recovery_feedback(review: dict[str, Any] | None) -> dict[str, Any]:
+    """后审解释可能混有答卷批改；作者仅接收独立的输入恢复动作。"""
+    if not review or "requirements" not in review:
+        return copy.deepcopy(review or {})
+    if review.get("task_contract_issue"):
+        raise ValueError("任务合同问题须先回到意图恢复，不能交给环境作者修补")
+    return {
+        "decision": review["decision"],
+        "requirements": [
+            {key: item[key] for key in ("obligation_id", "status", "repair")}
+            for item in review["requirements"]
+            if item.get("status") in {"ENVIRONMENT_GAP", "SUPPORTED"}
+            and isinstance(item.get("repair"), str) and item["repair"].strip()
+        ],
+    }
+
+
 def run_search_task(
     *, source: dict[str, Any], task: dict[str, Any], agent: AgentRuntime,
     output_root: Path, rollout_agent: AgentRuntime | None = None,
@@ -814,6 +838,7 @@ def run_search_task(
     checkpoint_path: Path | None = None,
 ) -> dict[str, Any]:
     """检查点只恢复研究员会话和真实来源，随后重新进入同一任务的环境补全。"""
+    feedback = _author_recovery_feedback(initial_feedback)
     original_session = indexed_session(source["raw_session"])
     messages = source["raw_session"].get("messages", [])
     records = captured_evidence(source)
@@ -879,7 +904,7 @@ def run_search_task(
             "不能写任务结论或建议；limitations 只说明访问与版本边界。"
         ),
         "task": task, "task_last_user_message_index": last_user,
-        "reconstruction_feedback": initial_feedback or {},
+        "reconstruction_feedback": feedback,
         "SOURCE_SESSION": original_session,
         "SOURCE_SYSTEM_CONTEXT": source.get("session_parser", {}).get("system_context", []),
         "available_reference_event_indices": [item["event_index"] for item in records],
@@ -891,7 +916,7 @@ def run_search_task(
         instruction = json.dumps({
             "current_stage_instruction": "继续同一原任务的环境补全；完整原轨迹已在恢复会话中，"
             "使用已恢复真实缓存，历史成功不证明当前在线可用。不重新回答原任务。",
-            "task": task, "reconstruction_feedback": initial_feedback or {},
+            "task": task, "reconstruction_feedback": feedback,
             "restored_reference_catalog": [
                 {"url": url, "title": page.get("title"), "content_kind": page.get("content_kind"),
                  "retrieved_at": page.get("retrieved_at"), "total_chars": len(page["text"]),
@@ -947,7 +972,7 @@ def run_search_task(
             if review["decision"] != "REPAIR":
                 break
             instruction = json.dumps({
-                "completion_feedback": review,
+                "completion_feedback": _author_recovery_feedback(review),
                 "instruction": "继续同一原任务补全，依据复核恢复确有必要的资料，或重新核对停止依据。"
                 "保留原要求、已有材料和真实失败记录；未尝试不等于可访问，已有输入充分也不强制新增访问。"
                 "按实际材料逐项判断输入供给，提交完整补全 JSON；不得套用通过状态或写入待求答案。",
@@ -992,7 +1017,7 @@ def run_search_task(
         if review["decision"] != "REPAIR" or review.get("task_contract_issue"):
             break
         instruction = json.dumps({
-            "rollout_feedback": review,
+            "rollout_feedback": _author_recovery_feedback(review),
             "instruction": "继续同一重建任务，依据真实轨迹修正经核对的任务说明、材料或工具问题，"
             "提交完整补全 JSON。保留所有仍有用的材料和历史方案；不得预写答案或修改原用户要求。"
             "仅 solver 推理错误不构成修改环境的依据。"
