@@ -152,6 +152,10 @@ def test_prompt_uses_workspace_relative_root_and_allowed_task_refs(tmp_path: Pat
     assert '"classification_evidence_ref_ids"' in runtime.instruction
     assert 'TASK_EVIDENCE_REF_IDS:\n["user:scope"]' in runtime.instruction
     assert "user:forged" not in runtime.instruction
+    assert "实现功能的任务需要实际加载相关源码与依赖" not in runtime.instruction
+    assert "先根据原用户义务、实际源码和约定验证范围判断" in runtime.instruction
+    assert "任务确实需要时，实际加载相关源码与依赖" in runtime.instruction
+    assert "未运行生产构建不等于免除必要的局部执行检查" in runtime.instruction
 
 
 def test_classification_preserves_refs_without_aliasing_model_payload() -> None:

@@ -99,6 +99,10 @@ class ReconstructionTests(unittest.TestCase):
         role = adapter.agent.run.call_args.kwargs["role"]
         self.assertIn("read_probe_output", role.tools)
         self.assertIn("restore_dependency_source", role.tools)
+        instruction = adapter.agent.run.call_args.kwargs["instruction"]
+        self.assertIn("先核对失败探针对应的原用户义务和必要操作", instruction)
+        self.assertIn("保留旧失败并执行适当检查", instruction)
+        self.assertIn("任务所需的采集缺口仍须恢复", instruction)
 
     def test_snapshot_checks_latest_write_without_mutating_seed(self) -> None:
         session = AgentSession(replay_files={"src/a.py": "seed"}, writes=[
@@ -338,6 +342,9 @@ class ReconstructionTests(unittest.TestCase):
                         self.assertEqual(session.conversation.messages[0]["content"], "已读取并加载源码")
                         self.assertIn("dependency", kwargs["instruction"])
                         self.assertIn("reset", kwargs["instruction"])
+                        self.assertIn("先核对失败探针对应的原用户义务和必要操作", kwargs["instruction"])
+                        self.assertIn("任务确实需要模块加载时", kwargs["instruction"])
+                        self.assertNotIn("源码 load 检查输出", kwargs["instruction"])
                         if case in {"complete", "failed_load"}:
                             session.environment_probes.extend([
                                 {"purpose": purpose, "status": "PASS"} for purpose in ("load", "dependency", "reset")
