@@ -23,6 +23,20 @@ class AgentRole:
     max_output_tokens: int | None = None
 
 
+PARTIAL_RECONSTRUCTION_POLICY = (
+    "\n局部重建约定：默认恢复完整原任务，先充分利用轨迹并尝试恢复必要材料。"
+    "已核实仍有材料缺口时，可以提出保持原工作类型、能独立完成的局部任务；"
+    "不能仅因尚未读取就缩小目标，也不能把实现或修复改成报告。"
+    "局部任务的 task_instruction 必须明确标注“局部重建”，保留原始目标，"
+    "固定本次对象、段落或功能边界、输入及交付要求，并列出未覆盖部分和原因。"
+    "不能写成“任选有资料的部分继续做”，不能让 solver 自行决定任务范围。"
+    "本次范围内的必要材料和执行条件仍须足够，不能靠声明局部来豁免依赖。"
+    "各项义务、路径绑定、成功标准须与固定范围一致；完成局部不代表原任务全部完成。"
+    "补全与复核只能提出带具体证据的范围建议，须通过合同返修固定，不能自行删改既有义务。"
+    "原始用户请求与全部轨迹继续保留；未覆盖部分不冒充已恢复，也不作为局部任务已完成的证明。\n"
+)
+
+
 TERMINAL_TASK_START_RESPONSIBILITIES = (
     "\nTerminal 任务初态的共同职责：\n"
     "任务所需能力由原用户目标决定；初态输入和拟修改文件列表不等于环境依赖的全部范围。\n"
@@ -60,8 +74,8 @@ INTENT_ROLE = AgentRole(
         "Preserve the original request's main goal and intent type. Grounded deepening "
         "may add context, but never replace an implementation, repair, or review request "
         "with a plan or report unless the user asked for one. "
-        "If the observed tree is incomplete, retain the user's acceptance obligations; "
-        "the Completion and sufficiency gates decide whether the environment is adequate. "
+        "By default, retain the original acceptance obligations. "
+        "Completion and sufficiency decide whether the environment is adequate. "
         "Research, forum lookup, production publish remain user obligations "
         "when explicitly requested; do not discard them as context. "
         "task_instruction must still include the original user request. Every acceptance "
@@ -72,8 +86,8 @@ INTENT_ROLE = AgentRole(
         "不能冒充原始工具观察、已读附件或已验证事实。"
         "这些输入已覆盖原目标所需的信息时，可以保留来源限制完成比较、分析或建议，"
         "不能仅因原载体未取回而禁止完成。条件性分析的完成不等于原件真实性已核验。"
-        "来源置信度与任务完整性分开：不能因材料不足缩小本次范围，"
-        "或把本次必需确定、交付的内容推迟给后续执行者核对。"
+        "来源置信度与任务完整性分开：缩小范围须遵守局部重建约定，"
+        "不能把本次范围内必需确定、交付的内容推迟给后续执行者核对。"
         "目录和摘要只提供实际包含的信息；原目标需要完整历史范围或当前进度时，"
         "保留相应义务，不能用条件性模板、待填清单或免责声明替代缺失内容。"
         "原任务明确要求识图、视觉比较或核验原件时，保留对应载体要求；"
@@ -102,7 +116,7 @@ INTENT_ROLE = AgentRole(
         "SOURCE_SESSION 直接提供完整原始消息和工具定义；结合前后轨迹、配对调用与返回"
         "识别任务对象和必要初态。历史方案可作恢复证据，不能变成新增用户义务或预置答案。"
         "目标以选定用户消息为边界；需要复查时可按原索引读取消息或分页查看原文。"
-    ),
+    ) + PARTIAL_RECONSTRUCTION_POLICY,
     toolsets=("traceforge_proxy",),
     tools=(
         "list_user_texts",

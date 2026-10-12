@@ -22,7 +22,7 @@ from traceforge.reconstruction.session_source import indexed_session
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v29-delivery-scope"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v30-bounded-partial"
 
 
 class IntentRecoveryError(RuntimeError):
@@ -107,7 +107,7 @@ def _prompt(
     return "\n".join([
         "The original user query is the anchor. task_instruction and core_objective must preserve its main goal and intent type.",
         "Use observed files to ground the same task, but never replace an implementation, repair, or review request with a plan or report unless the user explicitly asked for one.",
-        "If the observed environment is incomplete, retain the original acceptance obligations; Completion may enrich the workspace and later sufficiency/verifier gates may return REVIEW.",
+        "初次意图恢复保留完整原目标；先由补全恢复材料，再依据真实缺口按局部重建约定返修合同。",
         "Research, forum lookup, production publish remain user obligations "
         "when explicitly requested; do not discard them as context.",
         "Do not invent a different product goal or a nearby unrelated coding task. Keep the same task_id.",
@@ -176,7 +176,8 @@ def _prompt(
             "调用次数或仅仅读取文件判定，也不为纳入而添加原本无关的检索。",
             "纯翻译、改写、小说创作、闲聊和单纯安排计划不在本批 search 交付范围；"
             "已有上下文改写成建议不自动算检索。范围只判断交付类型，不判断难度、材料可恢复性、"
-            "原会话成败或答卷质量。保留原目标和全部义务，不删原任务，不为材料不足缩题或改域。",
+            "原会话成败或答卷质量。范围判断以原目标为准，不为纳入而改域；"
+            "材料缺口只按局部重建约定处理，不能冒充原任务完整恢复。",
             '同时返回 delivery_scope={"status":"IN_SCOPE|OUT_OF_SCOPE|NEEDS_REVIEW",'
             '"reason":"结合原目标及相关检索证据说明依据",'
             '"evidence_ref_ids":["user:<message_index>"]}。'
@@ -404,9 +405,10 @@ def run_intent_recovery(
             instruction += (
                 "\n重新依据同一原用户目标和完整 SOURCE_SESSION 恢复任务。"
                 "以下旧合同及后审诊断只是待核意见，不是新用户要求，不是标准答案；先对照原文确认矛盾。"
-                "保留原目标、任务边界与真实约束，不能因材料不足缩目标或推迟当次义务。"
+                "保留原目标记录与真实约束；依据已核实缺口形成局部任务时，遵守局部重建约定。"
+                "必须固定本次范围并显式标记，不把本次必需交付推迟给后续执行者。"
                 "可重新拆分、补回或合并派生义务，不必沿用旧义务编号、数量或顺序；"
-                "每项仍须引用本任务原用户证据。原任务本来正确时应保持，不为满足诊断强改。"
+                "每项仍须引用本任务原用户证据。原合同正确且可完整恢复时保持，不能为通过而改题。"
                 "\nTASK_CONTRACT_FEEDBACK=" + json.dumps(correction_feedback, ensure_ascii=False)
             )
         task_root = root / "tasks" / task_id; task_root.mkdir(parents=True, exist_ok=True)

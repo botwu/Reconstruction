@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from traceforge.harbor_task import export_search_task
 from traceforge.reconstruction.agents import AgentRuntime, AgentSession
-from traceforge.reconstruction.agents.roles import AgentRole
+from traceforge.reconstruction.agents.roles import PARTIAL_RECONSTRUCTION_POLICY, AgentRole
 from traceforge.reconstruction.agents.runtime import load_tool_results
 from traceforge.reconstruction.agents.session import AgentConversation
 from traceforge.reconstruction.intent_recovery import (
@@ -42,7 +42,7 @@ _REPAIR_FIELD_INSTRUCTION = (
     "repair须独立包含必要材料的定位与恢复动作，不依赖reason中的说明；"
     "只修任务输入、工具或访问及交付范围说明，不写待求结论、标准答案或答卷批改。"
     "原完整reason保留供审计；作者只会收到环境恢复动作。"
-)
+) + PARTIAL_RECONSTRUCTION_POLICY
 _SEARCH_TOOLS = (
     "list_evidence", "search_evidence", "read_evidence", "web_search", "web_open", "view_image",
 )
@@ -62,12 +62,15 @@ SEARCH_COMPLETION_ROLE = AgentRole(
         "结合原任务前后关系区分答案线索与仍有用的原始观察，不按时间一刀切。"
         "旧检索、摘要和已被新来源补充的资料仍保留为线索。不能因为未读、重叠、较长、"
         "报错或看似次要就删除：它们可能保留调用链、版本边界、失败原因或关键尾部。"
-        "混合返回中含必要输入和答案时先明确缺口，不把整段答案交付或声称输入已完整。"
+        "混合返回中含必要输入和本任务答案时，用 context_references 的逐字 quote 单独保留"
+        "任务前已存在的旧稿、历史约束等必要输入，再隔离混合记录中的本任务答案。"
+        "返回时间晚不表示其载有的历史材料形成于任务之后，不能因载体是工具返回就丢弃已定位旧稿。"
         "context_references 恢复本任务必要的历史输入，注明其支持的 used_by_user_message_index。"
         "system/developer 来源必须早于本任务第一条用户消息；"
         "以 source_task.message_indices 的最早索引为任务起点。"
-        "任务开始后的助手消息可以包含已丢失载体的输入记述：只用逐字 quote 分别摘取必要内容，"
-        "保留其历史助手来源和未核原件的限制，不声称已看过图片、文件或核实原始数字。"
+        "任务开始后的助手消息或工具返回可以携带必要历史输入：只用逐字 quote 分别摘取必要内容，"
+        "保留原始消息角色和来源限制；历史助手记述仍未核原件，"
+        "历史工具摘录也不表示附件或会话已完整恢复，不声称已核实未见的图片、文件或数字。"
         "同一消息可提供多段独立摘录，避开夹杂的待求结论；不直接交付整份历史答案。"
         "原 system/developer 中的用户偏好或必要历史输入，用逐字 quote 摘录；"
         "不整份交付旧 harness 的工具协议，也不把来源 role 升为当前指令优先级。"
@@ -132,7 +135,7 @@ SEARCH_COMPLETION_ROLE = AgentRole(
         "context_references: [{message_index: 整数, used_by_user_message_index: 整数, quote: 可选逐字摘录}], "
         "requirement_coverage: [{obligation_id: 原要求id, evidence_ref_ids: [来源], reason: 说明文本或文本数组}], "
         "limitations: [真实输入限制], missing_inputs: [必需输入缺口]}。"
-    ),
+    ) + PARTIAL_RECONSTRUCTION_POLICY,
     toolsets=("traceforge_proxy",),
     tools=(*_SEARCH_TOOLS, "read_session_message", "read_session_context"),
     max_iterations=60, result_schema=SEARCH_ENVIRONMENT_SCHEMA,
@@ -190,8 +193,10 @@ SEARCH_REVIEW_ROLE = replace(
         "solver 自身漏读或误推断才归 SOLVER_ERROR；"
         "一般措辞瑕疵不扩大为额外验收义务。"
         "核对已交付调用的参数、查询和标题是否透露本题旧选择或结论，不能只查返回正文。"
-        "对 context_messages 的历史助手摘录逐项核对：是否只是必要输入记述、是否保留未核原件的来源标注，"
-        "是否混入旧排名、推荐、推导结果或无原始依据的假设。"
+        "对 context_messages 的历史助手记述或工具摘录逐项核对："
+        "材料是否是本任务前已存在的必要输入，是否保留其原始来源和未核原件的限制，"
+        "是否混入本任务待求结论或无原始依据的假设。"
+        "隔离混合返回中的本任务答案时，核对已定位的旧稿等必要输入是否通过逐字摘录保留。"
         "可追溯只证明原轨迹说过，不证明内容属实。"
         "有条件分析与已核原件结论必须区分；原目标确需视觉或原件核验时，文字转述仍不能替代。"
         "复核 excluded_events 的 quote 是否真是任务答案或解题后状态；分类名存在不代表语义正确，"
@@ -202,9 +207,9 @@ SEARCH_REVIEW_ROLE = replace(
         "status: SUPPORTED|ENVIRONMENT_GAP|SOLVER_ERROR|NOT_EXERCISED, "
         "reason: 原要求与实际读取/回答的具体证据, repair: 需要恢复的来源或空字符串}], "
         "task_contract_issue: null 或 {source_message_indices: [本任务原用户消息索引], "
-        "reason: 派生合同与原请求的具体矛盾, repair: 依据原文应纠正的方向}}。"
+        "reason: 合同矛盾或局部重建的具体证据, repair: 固定范围与需纠正的方向}}。"
         "每个原义务恰好一项，同一义务多个事实合写 reason；合同问题独立报告，不硬配旧义务ID。"
-        "合同漏项、缩目标或无依据加码用 task_contract_issue 并 REPAIR，不能 COMPLETE；"
+        "合同漏项、未标明的缩目标或无依据加码用 task_contract_issue 并 REPAIR，不能 COMPLETE；"
         "正确合同下的材料、工具及交付说明缺口仍归 ENVIRONMENT_GAP，可恢复时返回 REPAIR。"
         "无合同问题时该字段可省略或为 null；必需输入无法恢复或验证不足返回 BLOCKED；"
         "环境足够时 COMPLETE；若对应回答有错，条目仍须标 SOLVER_ERROR 并引用具体错误。"
@@ -690,7 +695,7 @@ def _review_search_completion(
             "[{obligation_id: 原义务id, status: SUPPORTED|ENVIRONMENT_GAP|NOT_EXERCISED, "
             "reason: 原文与实际返回依据, repair: 后续恢复动作或空字符串}], "
             "task_contract_issue: null 或 {source_message_indices: [本任务原用户消息索引], "
-            "reason: 合同与原请求的矛盾, repair: 原文支持的修正方向}}。"
+            "reason: 合同矛盾或局部重建的具体证据, repair: 固定范围与需纠正的方向}}。"
             "每个原义务恰好一项，多个事实合写 reason；合同问题不硬配旧义务ID。"
             "无合同问题时，REPAIR 至少包含一个有具体 repair 的 ENVIRONMENT_GAP 或 SUPPORTED；"
             "全部原义务必须逐项覆盖，某项已有输入不能代替其他缺口。"

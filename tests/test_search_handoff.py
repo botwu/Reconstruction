@@ -829,13 +829,14 @@ def test_later_assistant_quotes_keep_source_level_in_solver_input(tmp_path, sour
     {"message_index": 2, "used_by_user_message_index": 3, "quote": "处理费每票 2 元"},
     {"message_index": 9, "used_by_user_message_index": 1, "quote": "处理费每票 2 元"},
 ])
-def test_later_assistant_context_requires_exact_quote_and_task_user(reference):
+@pytest.mark.parametrize("source_role", ["assistant", "tool"])
+def test_later_context_requires_exact_quote_and_task_user(reference, source_role):
     from traceforge.reconstruction.search_handoff import restore_context
 
     messages = [
         {"role": "system", "content": "旧会话约定"},
         {"role": "user", "content": "比较物流报价"},
-        {"role": "assistant", "content": "处理费每票 2 元；历史结论选 A"},
+        {"role": source_role, "content": "处理费每票 2 元；历史结论选 A"},
         {"role": "user", "content": "新的无关问题"},
     ]
     with pytest.raises(ValueError):
@@ -853,3 +854,44 @@ def test_later_assistant_duplicate_quote_is_rejected():
     with pytest.raises(ValueError):
         restore_context(messages, {"source_task": {"message_indices": [0]}},
                         [reference, reference])
+
+
+def test_mixed_tool_history_retains_old_draft_without_current_answer(tmp_path):
+    from traceforge.harbor_task import export_search_task
+    from traceforge.reconstruction.search_handoff import (
+        SEARCH_ENVIRONMENT_SCHEMA,
+        deliver_captures,
+        restore_context,
+    )
+
+    prior = "前一轮输入草稿：事件甲由角色乙完成。"
+    answer = "本次校对答案：事件甲应属于角色丙。"
+    returned = prior + "\n" + answer
+    messages = [
+        {"role": "user", "content": "重新核对之前的草稿。"},
+        {"role": "assistant", "content": "取回历史稿件。"},
+        {"role": "tool", "content": returned},
+    ]
+    task = {"task_id": "history-review", "task_instruction": messages[0]["content"],
+            "source_task": {"message_indices": [0]}}
+    captures, _ = deliver_captures(
+        [{"event_index": 0, "result_text": returned}],
+        [{"event_index": 0, "kind": "task_answer", "quote": answer,
+          "reason": "混合返回含本任务答案；旧稿通过逐字上下文摘录单独交付"}],
+        event_count=1,
+    )
+    context = restore_context(messages, task, [
+        {"message_index": 2, "used_by_user_message_index": 0, "quote": prior},
+    ])
+    assert captures == []
+    assert context[0]["role"] == "tool"
+    assert context[0]["content"] == prior
+    assert "工具返回" in context[0]["source_note"]
+    harbor = export_search_task({
+        "schema_version": SEARCH_ENVIRONMENT_SCHEMA, "status": "READY", "task": task,
+        "captures": captures, "context_messages": context, "requires_live_web": False,
+    }, tmp_path)
+    instruction = (harbor / "instruction.md").read_text()
+    assert prior in instruction
+    assert answer not in instruction
+    assert messages[2]["content"] == returned

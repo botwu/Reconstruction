@@ -87,21 +87,23 @@ def restore_context(
         user = ref.get("used_by_user_message_index") if isinstance(ref, dict) else None
         if (type(index) is not int or type(user) is not int or user not in task_users
                 or not 0 <= index < len(messages)
-                or messages[index].get("role") not in {"system", "developer", "user", "assistant"}
-                or (index > user and messages[index].get("role") != "assistant")):
+                or messages[index].get("role") not in {
+                    "system", "developer", "user", "assistant", "tool"
+                }
+                or (index > user and messages[index].get("role") not in {"assistant", "tool"})):
             raise ValueError(
                 f"历史引用 message_index={index} → used_by_user_message_index={user} 无效。"
-                f"本任务用户索引为 {sorted(task_users)}；较晚的助手来源须逐字摘录输入事实，"
+                f"本任务用户索引为 {sorted(task_users)}；较晚的助手或工具来源须逐字摘录输入材料，"
                 "不能把之后的答案或结论倒置为该问题的输入。"
             )
         role = messages[index]["role"]
-        later_assistant = role == "assistant" and index >= min(task_users)
+        later_observation = role in {"assistant", "tool"} and index >= min(task_users)
         if role != "user" and index >= min(task_users) and not (
-            later_assistant and "quote" in ref
+            later_observation and "quote" in ref
         ):
             raise ValueError(
                 f"message:{index} 属于本任务开始后的非用户消息，不能整份交付为任务初态。"
-                "仅助手记述的必要输入事实或观察可用逐字 quote 摘录，"
+                "仅助手记述或工具返回中的必要输入材料可用逐字 quote 摘录，"
                 "不包括本任务答案、分析结论、排名或无依据假设。"
             )
         if role in {"system", "developer"} and "quote" not in ref:
@@ -121,10 +123,13 @@ def restore_context(
             raise ValueError(f"历史引用 message:{index} → user:{user} 的摘录重复")
         restored_message = {"message_index": index, "used_by_user_message_index": user,
                             "role": original["role"], "content": content}
-        if later_assistant:
+        if later_observation:
             restored_message["source_note"] = (
                 "历史助手记述，未与原始载体核对；仅作有条件分析输入，"
                 "不表示原件内容已验证或本任务结论成立。"
+                if role == "assistant" else
+                "历史工具返回中的逐字摘录；保留原始来源层级，"
+                "不表示原件已完整取回或本任务结论成立。"
             )
         restored.append(restored_message)
         seen.add(key)
