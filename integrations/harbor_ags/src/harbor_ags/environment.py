@@ -535,6 +535,30 @@ class AGSPrebuiltEnvironment(BaseEnvironment):
                 reason=reason,
                 error_type=type(exc).__name__,
             )
+            if isinstance(exc, Exception):
+                from e2b.exceptions import NotFoundException
+
+                # AGS 对已停止实例的 DELETE 返回 400；仅 GET 明确 404 才确认清理。
+                try:
+                    await self._call_sync(
+                        sandbox.get_info, request_timeout=self._request_timeout_sec
+                    )
+                except NotFoundException:
+                    self._terminal_ids.add(sandbox_id)
+                    await self._record(
+                        "kill_not_found",
+                        sandbox_id=sandbox_id,
+                        reason=reason,
+                        confirmation="get_info_404",
+                    )
+                    return
+                except Exception as lookup_exc:
+                    await self._record(
+                        "cleanup_check_failed",
+                        sandbox_id=sandbox_id,
+                        reason=reason,
+                        error_type=type(lookup_exc).__name__,
+                    )
             raise SandboxCleanupError(f"AGS sandbox {sandbox_id or '<unknown>'} 销毁失败") from exc
 
         # False 的 SDK 语义是“目标不存在”，同样确认不再运行。
