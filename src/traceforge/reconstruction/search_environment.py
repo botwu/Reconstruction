@@ -980,6 +980,7 @@ def run_search_task(
             continue
         state = json.dumps({key: environment[key] for key in (
             "task", "captures", "context_messages", "live_references", "tools", "limitations",
+            "requirement_coverage",
         )}, sort_keys=True, ensure_ascii=False)
         if state in seen_environments:
             outcome.update(status="BLOCKED", stopped_at="researcher_feedback",

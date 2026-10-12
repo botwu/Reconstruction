@@ -230,6 +230,81 @@ def test_actual_rollout_gap_returns_to_same_researcher_and_stops_without_change(
         assert outcome["errors"] == ["SEARCH_RECONSTRUCTION_NO_PROGRESS"]
 
 
+@pytest.mark.parametrize("repair", ["location", "source", "audit_only"])
+def test_coverage_repair_reaches_next_review_but_read_logs_do_not(tmp_path, repair):
+    completions, reviews, solver_inputs = [], [], []
+    task = {"task_id": "coverage", "task_instruction": "解释 B 的输入和输出",
+            "acceptance_obligations": [{"id": "inspect", "text": "解释 B 的输入和输出"}]}
+    source = {"raw_session": {"messages": []}, "tool_timeline": [
+        {"name": "Read", "result_text": "A 的原始资料"},
+        {"name": "Read", "result_text": "B 的原始资料"},
+    ]}
+
+    def author(**kwargs):
+        if kwargs["role"].name == "search_review":
+            prompt = json.loads(kwargs["instruction"])
+            environment = prompt["environment"]
+            reviews.append(environment)
+            row = environment["requirement_coverage"][0]
+            correct = (row["evidence_ref_ids"] == ["captured:1"]
+                       and row["reason"] == "B 见 captured:1")
+            assert len(environment["captures"]) == 2
+            return SimpleNamespace(completed=True, errors=[], payload={
+                "decision": "COMPLETE" if correct else "REPAIR",
+                "requirements": [{
+                    "obligation_id": "inspect",
+                    "status": "SUPPORTED" if correct else "ENVIRONMENT_GAP",
+                    "reason": "正文齐全，核对覆盖表的资料定位",
+                    "repair": "" if correct else "B 应定位到 captured:1",
+                }],
+            })
+        completions.append(kwargs)
+        if len(completions) > 1:
+            assert (json.loads(kwargs["instruction"])
+                    ["rollout_feedback"]["requirements"][0]["repair"])
+        kwargs["session"].tool_events.extend(
+            {"name": "read_evidence", "arguments": {"id": f"captured:{i}"}, "ok": True}
+            for i in range(2))
+        corrected = len(completions) > 1 and repair != "audit_only"
+        return SimpleNamespace(completed=True, errors=[], payload={
+            "status": "READY", "requires_live_web": False, "retrieval_reason": "已提供完整原始资料",
+            "excluded_events": [], "context_references": [], "missing_inputs": [],
+            "requirement_coverage": [{
+                "obligation_id": "inspect",
+                "evidence_ref_ids": [
+                    "captured:1" if repair != "source" or corrected else "captured:0"],
+                "reason": ("B 见 captured:1" if repair == "source" or corrected
+                           else "B 见 captured:0"),
+            }],
+        })
+
+    def solve(**kwargs):
+        solver_inputs.append(kwargs["session"].evidence)
+        return SimpleNamespace(completed=True, errors=[], turns=[], final_text="已根据资料作答")
+
+    result = run_search_task(
+        source=source, task=task, agent=SimpleNamespace(run=author), output_root=tmp_path,
+        rollout_agent=SimpleNamespace(run=solve, model_name="fixture"), rollout_trials=1,
+    )
+    first = json.loads((tmp_path / "environment.json").read_text())
+    second = json.loads((tmp_path / "revisions/0001/environment.json").read_text())
+    assert len(completions) == 2
+    assert first["author_evidence_access"] != second["author_evidence_access"]
+    for key in ("task", "captures", "context_messages", "live_references", "tools", "limitations"):
+        assert first[key] == second[key]
+    if repair == "audit_only":
+        assert first["requirement_coverage"] == second["requirement_coverage"]
+        assert result["errors"] == ["SEARCH_RECONSTRUCTION_NO_PROGRESS"]
+        assert len(solver_inputs) == len(reviews) == 1
+    else:
+        assert first["requirement_coverage"] != second["requirement_coverage"]
+        assert result["status"] == "ROLLOUT_COMPLETED"
+        assert result["environment_review"] == "COMPLETE"
+        assert len(solver_inputs) == len(reviews) == 2
+        assert solver_inputs[0] == solver_inputs[1]
+        assert reviews[1]["requirement_coverage"] == second["requirement_coverage"]
+
+
 @pytest.mark.parametrize("version", ["v2", "v3"])
 def test_old_environment_cannot_bypass_source_boundary_by_resuming(tmp_path, version):
     from traceforge.reconstruction.search_environment import run_search_rollouts
