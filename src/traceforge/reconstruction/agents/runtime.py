@@ -1039,6 +1039,8 @@ def _bind_agent_tools(
     并发 worker 调用实例 ``_invoke_tool``；顺序执行器使用模块 dispatcher，
     由 ``_scoped_hermes_dispatch`` 转入同一代理。两条路径共享权限和审计。
     """
+    from traceforge.reconstruction.agents.sandbox import SandboxOperationError
+
     allowed = frozenset(role.tools)
     schemas = tool_schemas(role.tools)
     agent.tools = schemas
@@ -1072,13 +1074,24 @@ def _bind_agent_tools(
         with session.lock:
             record({"status": "STARTED", "name": function_name,
                     "tool_call_id": tool_call_id, "arguments": function_args})
+            failure: dict[str, str] = {}
             supports_vision = getattr(_agent, "_model_supports_vision", None)
             if function_name == "view_image" and (
                 not callable(supports_vision) or not supports_vision()
             ):
                 result = "error: 当前模型未启用原生视觉，未读取原图"
             else:
-                result = execute_tool(function_name, function_args, session)
+                try:
+                    result = execute_tool(function_name, function_args, session)
+                except SandboxOperationError as exc:
+                    cause = exc.__cause__ or exc
+                    failure = {"type": type(cause).__name__, "message": str(cause)}
+                    code = f"INFRA_ERROR_SANDBOX_EXEC:{function_name}:{exc}"
+                    session.policy_errors.append(code)
+                    result = (
+                        f"error: {code}；当前重建沙箱调用失败，未取得命令结果。"
+                        "不能据此判断原始文件缺失、加密或权限异常；本轮业务判断未完成。"
+                    )
             if isinstance(result, dict):
                 prepare = getattr(_agent, "_tool_result_content_for_active_model", None)
                 if not callable(prepare) or prepare(function_name, result) != result["content"]:
@@ -1095,6 +1108,8 @@ def _bind_agent_tools(
                 "result_preview": (result if isinstance(result, str)
                                    else str(result.get("text_summary") or ""))[:512],
             }
+            if failure:
+                event["infrastructure_error"] = failure
             if function_name == "run_pytest":
                 source = session.test_outputs_py
                 event.update({

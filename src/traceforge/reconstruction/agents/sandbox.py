@@ -48,10 +48,17 @@ def run_coro(coro: Any) -> Any:
         loop.close()
 
 
+class SandboxOperationError(RuntimeError):
+    """当前沙箱调用未取得命令结果，不能据此判断原始文件或业务行为。"""
+
+
 def _exec(binding: SandboxBinding, command: str, *, user: str = "user", timeout: int = 30) -> Any:
-    return run_coro(
-        binding.runtime.exec(command, cwd="/", timeout_sec=timeout, user=user)
-    )
+    try:
+        return run_coro(
+            binding.runtime.exec(command, cwd="/", timeout_sec=timeout, user=user)
+        )
+    except Exception as exc:
+        raise SandboxOperationError(type(exc).__name__) from exc
 
 
 def _stdout(result: Any) -> str:

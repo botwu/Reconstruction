@@ -33,6 +33,7 @@ from traceforge.reconstruction.environment_bindings import (
     workspace_task_context,
 )
 from traceforge.reconstruction.environment_probe import environment_probe_summary
+from traceforge.reconstruction.reconstructability import assess_reconstructability
 from traceforge.reconstruction.session_parser import indexed_system_messages
 from traceforge.reconstruction.terminal_universe_environment import (
     ReplayResult,
@@ -1040,6 +1041,12 @@ def _run_completion(
     if not ready:
         errors.extend(candidate_gate_errors)
     errors = list(dict.fromkeys(str(item) for item in errors if str(item)))
+    assessment = assess_reconstructability({"errors": errors})
+    infrastructure_failed = assessment["status"] == "INFRA_ERROR"
+    if infrastructure_failed:
+        # 沙箱/模型故障后的业务建议仅作诊断，不能变成需用户补料的结论。
+        errors = [error for error in errors if ":MODEL_DECISION_" not in error]
+        assessment["errors"] = errors
     result = {
         "schema_version": COMPLETION_SCHEMA,
         "prompt_version": COMPLETION_PROMPT_VERSION,
@@ -1056,6 +1063,10 @@ def _run_completion(
             "backend": ran.backend,
             "turns": len(ran.turns),
             "completed": ran.completed,
+            "model_completed": ran.turns[-1].get("completed") if ran.turns else None,
+            "sandbox_cleanup_confirmed": (
+                session.sandbox_stopped if session.sandbox_started else None
+            ),
             "skipped": skip_reason is not None,
             "skip_reason": skip_reason,
         },
@@ -1070,6 +1081,10 @@ def _run_completion(
         },
         "candidates": records,
     }
+    if infrastructure_failed:
+        result["reconstructability"] = assessment
+        result["diagnostics"]["unassessed_open_questions"] = result["open_questions"]
+        result["open_questions"] = []
     (root / "completion.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
