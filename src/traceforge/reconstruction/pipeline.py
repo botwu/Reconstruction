@@ -1121,7 +1121,6 @@ def _run_task_loop(
             row["diagnosis_path"] = str(diagnosis_root / "sufficiency.json")
             review["initial_confirmation_path"] = row["diagnosis_path"]
             _write_stage_json(task_root, "rollout-review.json", review)
-            feedback.update(rollout_review=review, **review_input)
         if (judge.get("label") != "INSUFFICIENT"
                 or environment.get("status") in {"INFRA_ERROR", "PIPELINE_ERROR", ENVIRONMENT_UNRECONSTRUCTABLE}
                 or any(p.get("status") == "INFRA_ERROR" for p in diagnosis["failed_probes"])
@@ -1143,7 +1142,9 @@ def _run_task_loop(
             key: value for key, value in (completion_feedback or {}).items()
             if key == "baseline_observations"
         }
-        completion_feedback = {**diagnosis, "downstream_failure": feedback, **preserved}
+        completion_feedback = {**diagnosis, **preserved}
+        if not unassessed_review:
+            completion_feedback["downstream_failure"] = feedback
         _write_stage_json(diagnosis_root, "repair_feedback.json", completion_feedback)
         _write_stage_json(root / "tasks" / str(task["task_id"]), "task_repair_audit.json", {"attempts": audit})
     audit[-1]["status"] = result["status"]

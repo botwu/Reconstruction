@@ -164,8 +164,8 @@ def test_confirmed_gap_reuses_original_author_and_preserves_attempt(loop_case):
     assert retry["agent"] is case.author and retry["task"] is case.task
     feedback = retry["completion_feedback"]
     assert feedback["failed_probes"][0]["status"] == "FAIL"
-    assert feedback["downstream_failure"]["stage"] == "rollout"
-    assert feedback["downstream_failure"]["rollout_evidence"] == case.evidence
+    assert "downstream_failure" not in feedback
+    assert json.loads((case.root / "tasks/original/rollout-evidence.json").read_text()) == case.evidence
     confirmation = case.reviewer.call_args_list[1].kwargs
     assert confirmation["workspace_root"] == case.candidate["workspace"]
     assert "rollout_evidence" not in confirmation
@@ -325,3 +325,44 @@ def test_resume_rejects_unrelated_or_unproven_native_result(resumed_case, failur
         case.run(initial_result=case.initial)
     case.runner.assert_not_called()
     case.reviewer.assert_not_called()
+
+
+def test_confirmed_initial_gap_reaches_actual_author_prompt_without_solver_output(loop_case):
+    from traceforge.reconstruction.agents import AgentSession, COMPLETION_REPLAYED_ROLE
+    from traceforge.reconstruction.agents.runtime import AgentResult
+
+    case = loop_case
+    case.evidence["trials"][0].update(answer="SOLVER_ANSWER_DO_NOT_COPY",
+                                    final_artifacts={"main.py": "SOLVER_FINAL_IMPLEMENTATION"})
+    final_judge = _judge("ENVIRONMENT_GAP", gap_confirmed=True)
+    final_judge["rollout_review"]["requirements"][0]["reason"] = "SOLVER_GRADING_DO_NOT_COPY"
+    initial_judge = _judge("ENVIRONMENT_GAP", gap_confirmed=True)
+    initial_judge["reason"] = "INITIAL_GAP_FROM_ORIGINAL_SOURCE"
+    initial_judge["environment_probes"][0].update(
+        probe_id="initial-confirmed", python_code="import required_original_module",
+        executions=[{"stderr": "ORIGINAL_IMPORT_ERROR", "exit_code": 1}],
+    )
+    case.reviewer.side_effect = [final_judge, initial_judge, _judge("SUPPORTED")]
+    case.run(completion_feedback={"baseline_observations": {"observed": "ORIGINAL_BASELINE"}})
+    feedback = case.runner.call_args.kwargs["completion_feedback"]
+    native = Mock(model_name="offline", backend="test")
+    native.run.return_value = AgentResult(role="completion", backend="test", completed=True, payload={})
+    case.author.agent = native
+    author_root = case.root / "captured-author"
+    case.author.run(role=COMPLETION_REPLAYED_ROLE, instruction="", output_root=author_root,
+                    session=AgentSession(workspace=Path(case.candidate["workspace"]),
+                                         repair_feedback=feedback))
+    instruction = native.run.call_args.kwargs["instruction"]
+    rendered = (author_root / "task/instruction.md").read_text()
+    for text in (instruction, rendered):
+        assert "INITIAL_GAP_FROM_ORIGINAL_SOURCE" in text
+        assert "import required_original_module" in text and "ORIGINAL_IMPORT_ERROR" in text
+        assert "ORIGINAL_BASELINE" in text
+        assert "SOLVER_ANSWER_DO_NOT_COPY" not in text
+        assert "SOLVER_FINAL_IMPLEMENTATION" not in text
+        assert "SOLVER_GRADING_DO_NOT_COPY" not in text
+        assert "downstream_failure" not in text
+    saved = (case.root / "tasks/original/rollout-evidence.json").read_text()
+    assert "SOLVER_ANSWER_DO_NOT_COPY" in saved and "SOLVER_FINAL_IMPLEMENTATION" in saved
+    assert "SOLVER_GRADING_DO_NOT_COPY" in (
+        case.root / "tasks/original/rollout-review.json").read_text()
