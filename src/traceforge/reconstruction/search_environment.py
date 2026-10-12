@@ -7,7 +7,6 @@ import hashlib
 import json
 import shutil
 import tempfile
-from collections import Counter
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -33,7 +32,6 @@ from traceforge.reconstruction.session_source import (
     indexed_session,
     message_text,
     source_session_message_indices,
-    tool_timeline,
 )
 from traceforge.reconstruction.verification import run_native_unassessed_rollouts
 
@@ -173,9 +171,7 @@ SEARCH_REVIEW_ROLE = replace(
         "list_evidence 为空不等于完整 SOURCE_SESSION 没有上下文；带来源的历史摘录可作输入，"
         "但不冒充已核原件。BLOCKED 须指出完成原目标所缺的最低不可替代信息。"
         "派生 task 及 environment 的 status、requirement_coverage、limitations 都是待核声明，"
-        "不能先接受其中的条件性规划边界。captures 仅省去与 SOURCE_SESSION "
-        "原消息完全相同的 result_text/result_blocks，"
-        "可按 tool_message_index 或 read_evidence 核对。"
+        "不能先接受其中的条件性规划边界。可按 tool_message_index 或 read_evidence 核对原记录。"
         "requirement_coverage 只是作者的来源声明，可读和可追溯不等于实际利用或内容充分。"
         "只有 trials 中的调用才是 solver 的实际读取，不能把作者或本次复核的读取算给 solver。"
         "read_evidence_calls.source 按该次 solver 输入映射来源；仅成功调用算实际读取，分页不一定覆盖整份材料。"
@@ -476,10 +472,8 @@ def _review_search_rollouts(
             "不能再返回补全阶段的 status=READY、excluded_events 或 requirement_coverage。"
         ),
         "SOURCE_SESSION": indexed_session(source["raw_session"]),
-        "environment": _review_environment(source, environment), "trials": trials,
-        "actual_web_calls": _review_web_calls(
-            network.calls, environment.get("live_references", []),
-        ) if network is not None else [],
+        "environment": environment, "trials": trials,
+        "actual_web_calls": network.calls if network is not None else [],
     }
     return _run_search_review(
         source=source, request=request, task=task, agent=agent, session=reviewer,
@@ -494,13 +488,7 @@ def _run_search_review(
     session: AgentSession, role: AgentRole, output_root: Path, completion: bool = False,
 ) -> dict[str, Any]:
     """两阶段共用复核契约；补全停止审查不能冒充未发生的解题验收。"""
-    if any("links_ref" in call for call in request.get("actual_web_calls", [])):
-        request = {**request, "web_call_representation": (
-            "actual_web_calls.links_ref.path 指向本请求中"
-            " URL、raw_sha256 与完整链接表均相同的来源。"
-            "展开该引用即为原调用的完整 links，不代表原调用省略过链接；"
-            "这只是请求去重，正文、分页及 trials 的实际工具返回保持原样。"
-        )}
+    request = _review_request(request)
     expected = {item["id"] for item in task.get("acceptance_obligations", [])}
     seen_errors: set[tuple[str, ...]] = set()
     while True:
@@ -591,64 +579,76 @@ def _run_search_review(
 
 
 
-def _review_environment(
-    source: dict[str, Any], environment: dict[str, Any],
-) -> dict[str, Any]:
-    """仅在复核请求副本中省去与原消息逐值相同的返回正文。"""
-    originals: dict[int, list[dict[str, Any]]] = {}
-    for record in tool_timeline(source["raw_session"]["messages"], []):
-        index = record.get("tool_message_index")
-        if type(index) is int:
-            originals.setdefault(index, []).append(record)
-    projected = copy.deepcopy(environment)
-    captures = projected.get("captures", [])
-    counts = Counter(capture["tool_message_index"] for capture in captures
-                     if type(capture.get("tool_message_index")) is int)
-    fields = ("call_id", "assistant_message_index", "tool_message_index",
-              "result_text", "result_blocks")
-    for capture in captures:
-        index = capture.get("tool_message_index")
-        if type(index) is not int or counts[index] != 1:
-            continue
-        matches = originals.get(index, [])
-        if len(matches) == 1 and all(
-            key in capture and key in matches[0] and capture[key] == matches[0][key]
-            for key in fields
-        ):
-            capture.pop("result_text")
-            capture.pop("result_blocks")
-    return projected
+def _review_request(request: dict[str, Any]) -> dict[str, Any]:
+    """完整保留原文锚点，仅用显式引用共享派生记录中逐字相同的大值。"""
+    if "request_references" in request:
+        return request
 
+    def serialized(value: Any) -> bytes:
+        return json.dumps(value, ensure_ascii=False).encode("utf-8")
 
-def _review_web_calls(
-    calls: list[dict[str, Any]], live_references: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """同版完整链接表仅存一次；引用展开后必须等于原调用记录。"""
-    pages: dict[tuple[str, str], list[int]] = {}
-    for index, page in enumerate(live_references):
-        url, digest = page.get("url"), page.get("raw_sha256")
-        if url and digest:
-            pages.setdefault((url, digest), []).append(index)
-    projected = copy.deepcopy(calls)
-    for call in projected:
-        matches = pages.get((call.get("url"), call.get("raw_sha256")), [])
-        if len(matches) != 1 or "links_ref" in call:
-            continue
-        index = matches[0]
-        links = call.get("links")
-        if not isinstance(links, list) or not links or links != live_references[index].get("links"):
-            continue
-        reference = {
-            "path": f"/environment/live_references/{index}/links",
-            "raw_sha256": call["raw_sha256"],
-        }
-        if len(json.dumps(links, ensure_ascii=False)) <= len(
-            json.dumps(reference, ensure_ascii=False),
-        ):
-            continue
-        call.pop("links")
-        call["links_ref"] = reference
-    return projected
+    def child_path(path: str, key: str | int) -> str:
+        return path + "/" + str(key).replace("~", "~0").replace("/", "~1")
+
+    anchors = {}
+    if "SOURCE_SESSION" in request:
+        anchors["/SOURCE_SESSION"] = request["SOURCE_SESSION"]
+    environment = request.get("environment", {})
+    if "live_references" in environment:
+        anchors["/environment/live_references"] = environment["live_references"]
+    for index, trial in enumerate(request.get("trials", [])):
+        if "trajectory" in trial:
+            anchors[f"/trials/{index}/trajectory"] = trial["trajectory"]
+
+    originals: dict[bytes, str] = {}
+
+    def index_anchor(value: Any, path: str) -> None:
+        originals.setdefault(serialized(value), path)
+        if isinstance(value, dict):
+            for key, item in value.items():
+                index_anchor(item, child_path(path, key))
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                index_anchor(item, child_path(path, index))
+
+    for path, value in anchors.items():
+        index_anchor(value, path)
+    paths: dict[str, str] = {}
+
+    def project(value: Any, path: str) -> Any:
+        if path in anchors:
+            return copy.deepcopy(value)
+        # 锚点及其父级不能被引用取代；所有引用直接指向未改动的原文。
+        if not any(anchor.startswith(path + "/") for anchor in anchors):
+            original = serialized(value)
+            source = originals.get(original)
+            if source is not None:
+                reference = {"request_ref": source}
+                overhead = len(serialized(reference)) + len(serialized({path: source})) + 2
+                if len(original) > overhead:
+                    paths[path] = source
+                    return reference
+        if isinstance(value, dict):
+            return {key: project(item, child_path(path, key)) for key, item in value.items()}
+        if isinstance(value, list):
+            return [project(item, child_path(path, index)) for index, item in enumerate(value)]
+        return value
+
+    projected = project(request, "")
+    if not paths:
+        return request
+    projected["request_references"] = {
+        "description": (
+            "paths 将本请求中生成的引用位置映射到完整原文的 JSON Pointer；"
+            "只在这些已登记位置把 request_ref 替换为目标值，其他同形字段是原始资料。"
+            "转义 ~1 表示 /、~0 表示 ~，数组段为索引。展开后与原请求逐字相同，"
+            "不是摘要、截断或新增读取。SOURCE_SESSION、environment.live_references 和"
+            "每次 trial.trajectory 均保持完整；只共享相同字节不等于同一来源、版本或已读状态，"
+            "仍须按每条记录的元数据和实际调用判断。"
+        ),
+        "paths": paths,
+    }
+    return projected if len(serialized(projected)) < len(serialized(request)) else request
 
 
 def _review_search_completion(
@@ -663,8 +663,8 @@ def _review_search_completion(
             "你独立复核检索环境补全的停止依据，不回答原任务，也不替作者继续联网。"
             "本阶段尚无 rollout，不推断 solver 行为或答案质量。原作者的 BLOCKED 是待核声明。"
             "SOURCE_SESSION 是完整原轨迹；environment 保留已有材料、缺口和覆盖说明，"
-            "captures 仅省去与原消息完全相同的 result_text/result_blocks；按 tool_message_index 查 "
-            "SOURCE_SESSION 原消息，或用 read_evidence 读取完整记录。引用可读取不等于已核实内容。"
+            "按 tool_message_index 查 SOURCE_SESSION 原消息，或用 read_evidence 读取完整记录。"
+            "引用可读取不等于已核实内容。"
             "actual_web_calls 是实际成功及失败返回。按原用户义务检查缺口是否必需，"
             "以及相关原始 URL、已读页面的正文链接、参考文献是否仍有未尝试的恢复路径。"
             "不能把查询服务故障等同于已知来源不可取得，也不能把未尝试声明为可访问或足够。"
@@ -697,10 +697,8 @@ def _review_search_completion(
     return _run_search_review(
         request={
             "review_stage": "completion", "SOURCE_SESSION": indexed_session(source["raw_session"]),
-            "environment": _review_environment(source, environment),
-            "actual_web_calls": _review_web_calls(
-                network.calls, environment.get("live_references", []),
-            ),
+            "environment": environment,
+            "actual_web_calls": network.calls,
         },
         source=source, task=task, agent=agent, session=reviewer, role=role,
         output_root=output_root, completion=True,

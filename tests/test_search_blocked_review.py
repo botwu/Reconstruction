@@ -447,15 +447,13 @@ def review_projection(tmp_path, *, change=None):
     return original, observed
 
 
-def test_review_projection_omits_only_exact_duplicate_returns(tmp_path):
+def test_review_keeps_small_capture_and_full_evidence_access(tmp_path):
     from traceforge.reconstruction.agents.session import execute_tool
 
     original, observed = review_projection(tmp_path)
     projected = observed["request"]["environment"]
     capture = projected["captures"][0]
-    assert "result_text" not in capture and "result_blocks" not in capture
-    assert {key: value for key, value in original["captures"][0].items()
-            if key not in {"result_text", "result_blocks"}} == capture
+    assert capture == original["captures"][0]
     assert projected["evidence_handoff"] == original["evidence_handoff"]
     assert len(projected["captures"]) == 1
     full = json.loads(execute_tool(
