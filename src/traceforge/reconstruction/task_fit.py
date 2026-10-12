@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from traceforge.reconstruction.agents import SUFFICIENCY_ROLE, AgentRuntime, AgentSession
-from traceforge.reconstruction.agents.session import safe_relpath, workspace_tree_hash
+from traceforge.reconstruction.agents.session import (
+    WORKSPACE_REMOTE_PREFIXES,
+    safe_relpath,
+    workspace_tree_hash,
+)
 from traceforge.reconstruction.environment_bindings import environment_bindings
 from traceforge.reconstruction.reconstructability import assess_reconstructability
 
@@ -51,9 +55,17 @@ def write_contract(root: Path, name: str, value: dict[str, Any]) -> Path:
 
 
 def _path_present(path: str, files: dict[str, str]) -> bool:
-    if not isinstance(path, str) or safe_relpath(path) is None:
+    if not isinstance(path, str):
         return False
-    value = path.rstrip("/")
+    # 后审看到的是固定沙箱根；其余绝对路径和越界路径仍由安全检查拒绝。
+    for root in WORKSPACE_REMOTE_PREFIXES:
+        prefix = root.rstrip("/") + "/"
+        if path.startswith(prefix):
+            path = path[len(prefix):]
+            break
+    value = safe_relpath(path)
+    if value is None:
+        return False
     return value in files or any(item.startswith(value + "/") for item in files)
 
 

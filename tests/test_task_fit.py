@@ -342,3 +342,45 @@ def test_variant_checks_initial_inputs_but_does_not_require_future_output(
     })
     with pytest.raises(Exception, match="未指向补全环境"):
         build_task_variant(parent_task=task, environment=environment, fit=fit, proposal=proposal)
+
+
+@pytest.mark.parametrize(
+    ("evidence_path", "accepted"),
+    [
+        ("src/main.py", True),
+        ("/home/user/workspace/src/main.py", True),
+        ("/home/user/workspace/src/", True),
+        ("/home/user/workspace/missing.py", False),
+        ("/other/workspace/src/main.py", False),
+        ("/home/user/workspace-other/src/main.py", False),
+        ("/home/user/workspace/../src/main.py", False),
+        ("/home/user/workspace/src/../src/main.py", False),
+        ("/home/user/workspace//etc/passwd", False),
+        ("../src/main.py", False),
+        ("/tmp/hermes_scratch/src/main.py", False),
+        (None, False),
+    ],
+)
+def test_fit_accepts_only_known_workspace_evidence_paths(
+    tmp_path: Path, evidence_path: str | None, accepted: bool,
+) -> None:
+    """真实后审使用沙箱绝对路径；只接受已知根内且实际存在的证据。"""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/main.py").write_text("print(1)\n", encoding="utf-8")
+    environment = _probed_environment(tmp_path)
+    task = build_task_contract(task=_task(required="src/main.py"))
+    payload = {
+        "decision": "READY_ORIGINAL",
+        "requirements": [{
+            "obligation_id": "obl-1", "status": "SATISFIED", "reason": "已读取入口源码",
+            "evidence_paths": [evidence_path], "probe_ids": [],
+        }],
+    }
+    fit = fit_task_environment(environment=environment, task=task, agent_fit=payload)
+    if accepted:
+        assert fit["decision"] == "READY_ORIGINAL", fit["errors"]
+        assert fit["errors"] == []
+    else:
+        assert fit["decision"] == "REVIEW_TASK_FIT"
+        assert "TASK_FIT_PATH_UNKNOWN:obl-1" in fit["errors"]
+    assert payload["requirements"][0]["evidence_paths"] == [evidence_path]
