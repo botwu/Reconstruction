@@ -504,3 +504,144 @@ def test_session_batch_preserves_agent_failure_kind(tmp_path, monkeypatch):
     task = result_row(output)["tasks"][0]
     assert task["failure_kind"] == "AGENT_FAILURE"
     assert task["errors"] == ["MODEL_RATE_LIMIT"]
+
+
+def test_batch_scope_summary_separates_exclusion_review_and_failures(tmp_path, monkeypatch):
+    manifest, config = inventory(tmp_path)
+    scope = {"status": "OUT_OF_SCOPE", "reason": "原任务要求写代码",
+             "evidence_ref_ids": ["user:0"]}
+    excluded = {"task_id": "outside", "status": "BLOCKED", "stopped_at": "intent",
+                "errors": ["DELIVERY_SCOPE_OUT_OF_SCOPE"], "delivery_scope": scope}
+    pending = {**excluded, "task_id": "pending",
+               "errors": ["DELIVERY_SCOPE_NEEDS_REVIEW"],
+               "delivery_scope": {**scope, "status": "NEEDS_REVIEW"}}
+    tasks = [excluded, pending,
+             {"task_id": "done", "status": "ROLLOUT_COMPLETED",
+              "acceptance": "NOT_ASSESSED"},
+             {**excluded, "task_id": "extra-error",
+              "errors": ["DELIVERY_SCOPE_OUT_OF_SCOPE", "MODEL_RATE_LIMIT"]},
+             {**excluded, "task_id": "bad-ref",
+              "delivery_scope": {**scope, "evidence_ref_ids": ["user:1"]}},
+             {"task_id": "infra", "status": "BLOCKED", "errors": ["MODEL_RATE_LIMIT"]}]
+
+    def run(command, **kwargs):
+        root = Path(command[command.index("--output") + 1])
+        (root / "reconstruction_source.json").write_text(json.dumps({
+            "raw_session": {"messages": [{"role": "user"}, {"role": "assistant"}]},
+            "tasks": [{"task_id": task["task_id"], "message_indices": [0]} for task in tasks],
+        }))
+        (root / "manifest.json").write_text(json.dumps({
+            "status": "BLOCKED", "acceptance": "NOT_ASSESSED", "tasks": tasks,
+        }))
+        return 2
+
+    monkeypatch.setattr(batch, "run_batch_process", run)
+    report = batch.execute_batch(manifest_path=manifest, output_root=tmp_path / "batch",
+                                 config=config, domain="search", repo_root=_REPO)
+    assert report["task_outcome_counts"] == {
+        "COMPLETED": 1, "OUT_OF_SCOPE": 1, "NEEDS_REVIEW": 1,
+        "RECONSTRUCTION_OR_EXECUTION_ISSUE": 3,
+    }
+    result = report["session_results"][0]
+    assert result["task_outcome_counts"] == report["task_outcome_counts"]
+    assert result["tasks"] == tasks
+    assert result["status"] == "BLOCKED"
+    assert result["acceptance"] == "NOT_ASSESSED"
+    assert report["status"] == "COMPLETED_WITH_ERRORS"
+
+
+@pytest.mark.parametrize("damage", [
+    None, "mixed", "extra_error", "needs_review", "other_task_ref", "empty_reason",
+    "wrong_exit", "missing_task", "wrong_hash", "changed_input",
+])
+def test_resume_accounts_for_scope_terminal_without_restarting(tmp_path, monkeypatch, damage):
+    """用真实本地子进程验证排除终态补记；不发模型或 AGS 请求。"""
+    manifest, config = inventory(tmp_path)
+    raw = tmp_path / "source.jsonl"
+    raw_session = {"messages": [{"role": "user", "content": "写代码"},
+                                {"role": "assistant", "content": "历史答复"},
+                                {"role": "user", "content": "另一任务"}]}
+    raw.write_text(json.dumps(raw_session) + "\n")
+    sessions = Path(json.loads(manifest.read_text())["sessions"])
+    row = json.loads(sessions.read_text())
+    row.update(input=str(raw), line_sha256=hashlib.sha256(raw.read_bytes()).hexdigest())
+    sessions.write_text(json.dumps(row) + "\n")
+    scope = {"status": "OUT_OF_SCOPE", "reason": "原任务要求写代码",
+             "evidence_ref_ids": ["user:0"]}
+    excluded = {"task_id": "outside", "status": "BLOCKED", "stopped_at": "intent",
+                "errors": ["DELIVERY_SCOPE_OUT_OF_SCOPE"], "delivery_scope": scope}
+    tasks = [excluded]
+    if damage == "mixed":
+        tasks.append({"task_id": "done", "status": "ROLLOUT_COMPLETED",
+                      "acceptance": "NOT_ASSESSED"})
+    source = {"line_sha256": row["line_sha256"], "line_number": 1, "input_domain": "search",
+              "selected_task_ids": [task["task_id"] for task in tasks], "raw_session": raw_session,
+              "tasks": [{"task_id": task["task_id"], "message_indices": [0]} for task in tasks]}
+    final = {"schema_version": "traceforge.search-reconstruction.v1", "status": "BLOCKED",
+             "domain_route": "retrieval", "source_sha256": row["line_sha256"],
+             "acceptance": "NOT_ASSESSED", "tasks": tasks}
+    if damage == "extra_error":
+        excluded["errors"].append("MODEL_RATE_LIMIT")
+    elif damage == "needs_review":
+        scope["status"] = "NEEDS_REVIEW"
+        excluded["errors"] = ["DELIVERY_SCOPE_NEEDS_REVIEW"]
+    elif damage == "other_task_ref":
+        scope["evidence_ref_ids"] = ["user:2"]
+    elif damage == "empty_reason":
+        scope["reason"] = ""
+    elif damage == "missing_task":
+        source["selected_task_ids"].append("missing")
+    elif damage == "wrong_hash":
+        final["source_sha256"] = "b" * 64
+    counter = tmp_path / "launch-count"
+    repo = tmp_path / "counted-repo"
+    package = repo / "src/traceforge"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "cli.py").write_text(
+        "import json, sys\nfrom pathlib import Path\ndef main():\n"
+        f"    counter = Path({str(counter)!r})\n"
+        "    counter.write_text(str(int(counter.read_text()) + 1 if counter.exists() else 1))\n"
+        "    root = Path(sys.argv[sys.argv.index('--output') + 1])\n"
+        f"    (root / 'reconstruction_source.json').write_text({json.dumps(source)!r})\n"
+        f"    (root / 'manifest.json').write_text({json.dumps(final)!r})\n"
+        f"    return {0 if damage == 'wrong_exit' else 2}\n"
+    )
+    real_run = batch.run_batch_process
+
+    def interrupt_after_exit(command, **kwargs):
+        code = real_run(command, **kwargs)
+        if counter.read_text() == "1":
+            raise OSError("controller interrupted after scope child exit")
+        return code
+
+    monkeypatch.setattr(batch, "run_batch_process", interrupt_after_exit)
+    output = tmp_path / "batch"
+    options = dict(manifest_path=manifest, output_root=output, config=config,
+                   domain="search", repo_root=repo, disable_verification=True)
+    with pytest.raises(OSError, match="after scope child exit"):
+        batch.execute_batch(**options)
+    run_root = output / "runs/r04-one"
+    original = (run_root / "manifest.json").read_bytes()
+    assert json.loads((run_root / "batch_process.json").read_text())["status"] == "EXITED"
+    if damage == "changed_input":
+        raw.write_text('{"messages": []}\n')
+    report = batch.execute_batch(**options, resume=True)
+    recovered = damage in {None, "mixed"}
+    assert counter.read_text() == ("1" if recovered else "2")
+    result = report["session_results"][0]
+    assert ("recovered_at" in result) == recovered
+    assert ("/retries/" not in result["manifest"]) == recovered
+    assert result["exit_code"] == (0 if damage == "wrong_exit" else 2)
+    assert result["status"] == "BLOCKED"
+    assert result["acceptance"] == "NOT_ASSESSED"
+    assert report["status"] == "COMPLETED_WITH_ERRORS"
+    assert (run_root / "manifest.json").read_bytes() == original
+    if recovered:
+        assert report["task_outcome_counts"]["OUT_OF_SCOPE"] == 1
+        assert report["task_outcome_counts"]["COMPLETED"] == int(damage == "mixed")
+    if damage == "needs_review":
+        assert report["task_outcome_counts"]["NEEDS_REVIEW"] == 1
+        assert report["task_outcome_counts"]["COMPLETED"] == 0
+    batch.execute_batch(**options, resume=True)
+    assert counter.read_text() == ("1" if recovered else "2")

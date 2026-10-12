@@ -143,13 +143,67 @@ def _code_sha256(repo: Path) -> str:
     return hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
 
 
+
+def _delivery_scope_status(task: dict[str, Any], source: dict[str, Any]) -> str | None:
+    """仅把完整、锚定本任务用户原文且没有其他错误的范围结论单独记账。"""
+    scope = task.get("delivery_scope")
+    if (not isinstance(scope, dict)
+            or set(scope) != {"status", "reason", "evidence_ref_ids"}):
+        return None
+    status, reason, refs = (scope.get(key) for key in ("status", "reason", "evidence_ref_ids"))
+    if (not isinstance(status, str) or status not in {"IN_SCOPE", "OUT_OF_SCOPE", "NEEDS_REVIEW"}
+            or not isinstance(reason, str) or not reason.strip()
+            or not isinstance(refs, list) or not refs
+            or not all(isinstance(ref, str) for ref in refs)):
+        return None
+    if (status != "IN_SCOPE" and (task.get("status") != "BLOCKED"
+                                 or task.get("stopped_at") != "intent"
+                                 or task.get("errors") != [f"DELIVERY_SCOPE_{status}"])):
+        return None
+    source_tasks, raw = source.get("tasks"), source.get("raw_session")
+    if not isinstance(source_tasks, list) or not isinstance(raw, dict):
+        return None
+    anchors = [item for item in source_tasks
+               if isinstance(item, dict) and item.get("task_id") == task.get("task_id")]
+    messages = raw.get("messages")
+    if (len(anchors) != 1 or not isinstance(messages, list)
+            or not isinstance(anchors[0].get("message_indices"), list)):
+        return None
+    known = {f"user:{index}" for index in anchors[0].get("message_indices", [])
+             if type(index) is int and 0 <= index < len(messages)
+             and isinstance(messages[index], dict) and messages[index].get("role") == "user"}
+    return status if set(refs).issubset(known) else None
+
+
+def _task_outcome_counts(
+    tasks: list[dict[str, Any]], *, source: dict[str, Any] | None = None, exit_code: int | None = 0,
+) -> dict[str, int]:
+    """COMPLETED 仅表示当前配置的处理终态，不代表答案通过或可训练。"""
+    counts = dict.fromkeys(("COMPLETED", "OUT_OF_SCOPE", "NEEDS_REVIEW",
+                           "RECONSTRUCTION_OR_EXECUTION_ISSUE"), 0)
+    for task in tasks:
+        scope = _delivery_scope_status(task, source or {})
+        delivery = task.get("delivery_scope")
+        completed = (exit_code in {0, 2}
+                     and task.get("status") in {
+                         "READY", "READY_VARIANT", "ENVIRONMENT_READY", "ROLLOUT_COMPLETED",
+                     } and not task.get("errors")
+                     and (delivery is None or scope == "IN_SCOPE"))
+        if scope in {"OUT_OF_SCOPE", "NEEDS_REVIEW"} and exit_code == 2:
+            outcome = scope
+        else:
+            outcome = "COMPLETED" if completed else "RECONSTRUCTION_OR_EXECUTION_ISSUE"
+        counts[outcome] += 1
+    return counts
+
 def _completed_attempt_matches(
     root: Path, row: dict[str, Any], domain: str, process: dict[str, Any],
     *, disable_verification: bool = False,
 ) -> bool:
-    """只补记明确成功且仍绑定当前原始行的完整终态，不恢复中间阶段。"""
+    """只补记绑定原始行的成功或严格范围排除终态，不恢复中间阶段。"""
     if (process.get("status") != "EXITED" or type(process.get("exit_code")) is not int
-            or process["exit_code"] != 0):
+            or process["exit_code"] not in {0, 2}
+            or (process["exit_code"] == 2 and domain != "search")):
         return False
     try:
         source = _read_json(root / "reconstruction_source.json")
@@ -159,9 +213,11 @@ def _completed_attempt_matches(
                 or source.get("line_number") != row["line_number"]
                 or source.get("input_domain") != domain):
             return False
+        scope_terminal = domain == "search" and process["exit_code"] == 2
         if domain == "search":
             if (final.get("schema_version") != "traceforge.search-reconstruction.v1"
-                    or final.get("status") != "COMPLETED"
+                    or final.get("status") != ("BLOCKED" if scope_terminal else "COMPLETED")
+                    or final.get("errors")
                     or final.get("domain_route") != "retrieval"
                     or final.get("source_sha256") != row["line_sha256"]):
                 return False
@@ -181,14 +237,28 @@ def _completed_attempt_matches(
         tasks, selected = final.get("tasks"), source.get("selected_task_ids")
         if (not isinstance(tasks, list) or not tasks or not isinstance(selected, list)
                 or not all(isinstance(item, str) and item for item in selected)
-                or any(not isinstance(task, dict) or task.get("status") not in ready
-                       or task.get("errors") or not isinstance(task.get("task_id"), str)
+                or any(not isinstance(task, dict) or not isinstance(task.get("task_id"), str)
                        for task in tasks)):
             return False
         ids = [task["task_id"] for task in tasks]
         if len(ids) != len(set(ids)) or len(ids) != len(selected) or set(ids) != set(selected):
             return False
-        load_raw_line(row["input"], line_number=row["line_number"], line_sha256=row["line_sha256"])
+        raw = load_raw_line(row["input"], line_number=row["line_number"],
+                            line_sha256=row["line_sha256"])
+        # 排除补记额外核对真实原文角色，不能只信派生 source 中的用户标签。
+        scope_source = {**source, "raw_session": json.loads(raw)}
+        excluded = 0
+        for task in tasks:
+            scope = _delivery_scope_status(task, scope_source)
+            if scope_terminal and scope == "OUT_OF_SCOPE":
+                excluded += 1
+                continue
+            delivery = task.get("delivery_scope")
+            if (task.get("status") not in ready or task.get("errors")
+                    or (delivery is not None and scope != "IN_SCOPE")):
+                return False
+        if scope_terminal and not excluded:
+            return False
     except (OSError, ValueError):
         return False
     return True
@@ -269,8 +339,15 @@ def execute_batch(
 
         def save_progress(status: str, active_run: str | None = None) -> dict[str, Any]:
             counts: dict[str, int] = {}
+            task_counts = _task_outcome_counts([])
             for item in results:
                 counts[item["status"]] = counts.get(item["status"], 0) + 1
+                outcomes = item.get("task_outcome_counts")
+                if outcomes is None:
+                    outcomes = _task_outcome_counts(item.get("tasks", []),
+                                                    exit_code=item.get("exit_code"))
+                for key in task_counts:
+                    task_counts[key] += outcomes.get(key, 0)
             report = {
                 "schema_version": BATCH_SCHEMA, "domain": domain, "status": status,
                 "created_at": created_at,
@@ -278,6 +355,7 @@ def execute_batch(
                 "inventory_manifest": str(manifest_file), "coverage_complete": True,
                 "offset": offset, "limit": limit, "selected_sessions": len(selected),
                 "completed_sessions": len(results), "status_counts": counts,
+                "task_outcome_counts": task_counts,
                 "results": str(result_file), "output_root": str(root),
                 "run_contract": contract, "session_results": results, "active_run": active_run,
             }
@@ -354,7 +432,7 @@ def execute_batch(
                     os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
                 )
                 started = None if recovered else datetime.now(UTC).isoformat()
-                return_code = 0 if recovered else run_batch_process(
+                return_code = process["exit_code"] if recovered else run_batch_process(
                     command,
                     cwd=repo,
                     env=env,
@@ -366,10 +444,14 @@ def execute_batch(
                     "manifest.json" if domain == "search" else "reconstruction_manifest.json"
                 )
                 receipt_errors = []
+                scope_source = {}
                 receipt_path = manifest_file_run
                 try:
                     if manifest_file_run.is_file():
                         result_manifest = _read_json(manifest_file_run)
+                        if any(task.get("delivery_scope") for task in
+                               result_manifest.get("tasks", [])):
+                            scope_source = _read_json(run_root / "reconstruction_source.json")
                         status = str(result_manifest.get("status") or "UNKNOWN")
                         stage_receipt = str(manifest_file_run)
                     else:
@@ -413,10 +495,16 @@ def execute_batch(
                         {key: task[key] for key in (
                             "task_id", "status", "acceptance", "stopped_at", "errors",
                             "environment_review", "harbor_task", "missing_inputs", "failure_kind",
+                            "delivery_scope",
                         ) if key in task}
                         for task in (result_manifest or {}).get("tasks", [])
                     ],
                 }
+                result["task_outcome_counts"] = _task_outcome_counts(
+                    result["tasks"], source=scope_source,
+                    exit_code=(return_code if not receipt_errors
+                               and not (result_manifest or {}).get("errors") else None),
+                )
                 if recovered:
                     result["recovered_at"] = datetime.now(UTC).isoformat()
                 result_stream.write(json.dumps(result, ensure_ascii=False) + "\n")
