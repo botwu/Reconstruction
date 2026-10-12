@@ -850,7 +850,14 @@ class SearchTools:
                             or call.get("total_chars") != len(page["text"])
                             or call.get("text") != page["text"][offset:offset + len(call["text"])]):
                         raise ValueError(f"检索实际分页与缓存正文不一致：{origin}")
-            for url, page in pages.items():
+            # 首次成功读取决定资料编号；不依赖目录顺序，也不丢弃缺少调用的合法页。
+            ordered_pages = {
+                call["url"]: pages[call["url"]] for call in calls
+                if call.get("tool") == "web_open" and call.get("success")
+                and call.get("url") in pages
+            }
+            ordered_pages.update(pages)
+            for url, page in ordered_pages.items():
                 restored = dict(page)
                 provenance = [
                     *(self.pages.get(url, {}).get("cache_provenance") or []),

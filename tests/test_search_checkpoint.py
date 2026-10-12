@@ -56,6 +56,42 @@ def test_restored_cache_preserves_unread_body_jsonld_and_actual_range(tmp_path, 
     assert resumed.ready() is False
 
 
+@pytest.mark.parametrize("orphan_page", [False, True])
+def test_checkpoint_restores_reference_order_from_calls(tmp_path, monkeypatch, orphan_page):
+    original, _, _ = recorded_network(tmp_path / "old", monkeypatch)
+    original.open("https://example.org/second")
+    original.open("https://example.org/paper", offset=0, limit=3)
+    original.open("https://example.org/third")
+    if orphan_page:
+        original.open("https://example.org/unlogged")
+        original.calls.pop()
+        (original.root / "calls.jsonl").write_text(
+            "".join(json.dumps(call, ensure_ascii=False) + "\n" for call in original.calls)
+        )
+    # AFS 目录遍历顺序不是资料编号；强制使用与抓取相反的文件顺序。
+    positions = {hashlib.sha256(url.encode()).hexdigest() + ".json": i
+                 for i, url in enumerate(original.pages)}
+    glob = Path.glob
+
+    def reversed_pages(path, pattern):
+        result = list(glob(path, pattern))
+        if path == original.root and pattern == "*.json":
+            result.sort(key=lambda item: positions[item.name], reverse=True)
+        return iter(result)
+
+    monkeypatch.setattr(Path, "glob", reversed_pages)
+    files = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+             for path in original.root.iterdir() if path.is_file()}
+    resumed = SearchTools(tmp_path / "new")
+    resumed.restore(original.root, origin="author:checkpoint", checkpoint_files=files)
+    assert list(resumed.pages) == list(original.pages)
+    assert {url: page["text"] for url, page in resumed.pages.items()} == {
+        url: page["text"] for url, page in original.pages.items()
+    }
+    resumed.restore(original.root, origin="author:checkpoint-again", checkpoint_files=files)
+    assert list(resumed.pages) == list(original.pages)
+
+
 @pytest.mark.parametrize("damage", ["raw", "body", "unbound", "result_hash"])
 def test_invalid_restored_source_is_not_silently_accepted(tmp_path, monkeypatch, damage):
     original, events, digest = recorded_network(tmp_path / "old", monkeypatch)
