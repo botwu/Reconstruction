@@ -110,6 +110,32 @@ def test_reset_ignores_allocated_directory_names_but_not_file_contents(
     assert result["environment_unchanged"] is True
 
 
+@pytest.mark.parametrize("different_binary", [False, True])
+def test_reset_disables_runtime_cache_but_still_compares_binary_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, different_binary: bool,
+) -> None:
+    # R04:1816 的 Node 编译缓存随临时路径变化；任务二进制仍必须逐字比较。
+    monkeypatch.setenv("NODE_DISABLE_COMPILE_CACHE", "0")
+    session, _ = _session(tmp_path)
+    result = run_environment_probe(
+        session,
+        python_code=(
+            "import os\nfrom pathlib import Path\n"
+            "assert os.environ['NODE_DISABLE_COMPILE_CACHE'] == '1'\n"
+            "root = Path(os.environ['TRACEFORGE_PROBE_SCRATCH'])\n"
+            f"payload = str(root).encode() if {different_binary!r} else b'stable'\n"
+            "(root / 'output.bin').write_bytes(b'\\x00\\xff' + payload)\n"
+            "print('business check passed')\n"
+        ),
+        purpose="reset",
+    )
+    assert [item["exit_code"] for item in result["executions"]] == [0, 0]
+    assert result["status"] == ("FAIL" if different_binary else "PASS")
+    assert result["reset_reproducible"] is (not different_binary)
+    assert "output.bin" in result["executions"][0]["scratch_hashes"]
+    assert result["environment_unchanged"] is True
+
+
 def test_task_conflict_records_repeatable_nonzero_failure(tmp_path: Path) -> None:
     session, _ = _session(tmp_path)
     result = run_environment_probe(

@@ -45,6 +45,8 @@ for index in range(repetitions):
     with tempfile.TemporaryDirectory(prefix="traceforge-env-probe-") as scratch:
         env = dict(os.environ)
         env["PYTHONDONTWRITEBYTECODE"] = "1"
+        # Node 编译缓存含临时路径，不属于任务状态；关闭生成，不放宽快照比较。
+        env["NODE_DISABLE_COMPILE_CACHE"] = "1"
         env["TRACEFORGE_WORKSPACE"] = str(workspace)
         env["TRACEFORGE_PROBE_SCRATCH"] = scratch
         env["TMPDIR"] = scratch
