@@ -432,15 +432,21 @@ def execute_tool(
             if str(item.get("evidence_ref_id")) == ref:
                 if args.get("path"):
                     parsed = item.get("session_parse") or {}
-                    observations = [op for op in [*parsed.get("file_ops", []),
-                                                   *parsed.get("reference_file_ops", [])]
-                                    if op.get("kind") == "read"
-                                    and args["path"] in {op.get("path"), op.get("source_path")}]
+                    initial = _initial_file_observations(
+                        item, workspace_relpath(session, str(args["path"])),
+                    )
+                    observations = [
+                        op if group == "file_ops" and op in initial
+                        else {**op, "reference_only": True}
+                        for group in ("file_ops", "reference_file_ops")
+                        for op in parsed.get(group, [])
+                        if op.get("kind") == "read"
+                        and args["path"] in {op.get("path"), op.get("source_path")}
+                    ]
                     if not observations:
                         return "error: no parsed file observation for this path; read the full record"
                     return _window(_dump({"evidence_ref_id": ref,
-                                          "initial_state_eligible": item.get(
-                                              "initial_state_eligible", True),
+                                          "initial_state_eligible": bool(initial),
                                           "observations": observations}), args)
                 return _window(_dump(item), args)
         return "error: unknown evidence_ref_id"
@@ -624,6 +630,14 @@ def _write_candidate_edit(session: AgentSession, args: dict[str, Any], content: 
                                                      "reason": reason}]})
 
 
+def _initial_file_observations(item: dict[str, Any], path: str | None) -> list[dict[str, Any]]:
+    """读取与恢复共用初态资格；正文连续性和冲突仍由恢复工具校验。"""
+    if path is None or item.get("initial_state_eligible") is False:
+        return []
+    return [op for op in (item.get("session_parse") or {}).get("file_ops", [])
+            if op.get("kind") == "read" and op.get("path") == path]
+
+
 def _restore_observed_file(session: AgentSession, args: dict[str, Any]) -> str:
     refs = args.get("evidence_ref_ids")
     if not isinstance(refs, list) or not refs or any(not isinstance(ref, str) for ref in refs):
@@ -632,11 +646,24 @@ def _restore_observed_file(session: AgentSession, args: dict[str, Any]) -> str:
     evidence = {str(item.get("evidence_ref_id")): item for item in session.evidence}
     lines: dict[int, str] = {}
     for ref in refs:
-        if evidence.get(ref, {}).get("initial_state_eligible") is False:
-            return f"error: 参考观察不能直接物化为初态：{ref}:{path}"
-        observations = [op for op in (evidence.get(ref, {}).get("session_parse") or {}).get("file_ops", [])
-                        if op.get("kind") == "read" and op.get("path") == path]
+        item = evidence.get(ref, {})
+        observations = _initial_file_observations(item, path)
         if not observations:
+            parsed = item.get("session_parse") or {}
+            references = [op for group in ("file_ops", "reference_file_ops")
+                          for op in parsed.get(group, [])
+                          if path is not None and op.get("kind") == "read"
+                          and op.get("path") == path]
+            if references:
+                blockers = []
+                for op in references:
+                    for row in op.get("initial_state_blockers", []):
+                        if row.get("path") in {None, path} and row not in blockers:
+                            blockers.append(row)
+                return ("error: 参考观察不能直接物化为初态；"
+                        "可用 read_evidence 按 id 和 path 读取历史正文："
+                        + _dump({"evidence_ref_id": ref, "path": path,
+                                 "initial_state_blockers": blockers}))
             return f"error: 没有可用的初态文件观察：{ref}:{path}"
         for observation in observations:
             numbers, contents = observation.get("line_numbers"), observation.get("line_contents")

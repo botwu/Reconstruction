@@ -1,5 +1,10 @@
 """选定来源的拼接和当前候选编辑必须保留原始证据并拒绝冲突。"""
 
+import copy
+import json
+
+import pytest
+
 from traceforge.reconstruction.agents.session import AgentSession, execute_tool
 from traceforge.reconstruction.capture_repair import capture_repair_error
 
@@ -124,3 +129,65 @@ def test_rejected_overwrite_can_be_corrected_without_discarding_result(tmp_path)
     assert state.tool_events[0]["ok"] is False
     assert state.writes[-1]["content"] == 'title="正确"\n'
     assert state.replay_files["source.py"] == original
+
+
+@pytest.mark.parametrize(("group", "event_eligible", "reason"), [
+    ("reference_file_ops", True, "stale_prior_observation"),
+    ("reference_file_ops", True, None),
+    ("file_ops", False, "read_after_unparsed_mutation"),
+])
+def test_historical_file_read_matches_restore_eligibility(
+    tmp_path, group, event_eligible, reason,
+):
+    state = session(tmp_path)
+    record = state.evidence[0]
+    observation = record["session_parse"]["file_ops"].pop()
+    if reason:
+        observation["initial_state_blockers"] = [
+            {"reason": reason, "path": "source.py", "source_event_id": "first"},
+            {"reason": "unrelated_reason", "path": "other.py", "source_event_id": "other"},
+        ]
+    record["initial_state_eligible"] = event_eligible
+    record["session_parse"][group] = [observation]
+    if group == "reference_file_ops":
+        record["session_parse"]["file_ops"] = [
+            {"kind": "read", "path": "other.py", "partial": False, "content": "x = 1\n"},
+        ]
+    original = copy.deepcopy(state.evidence)
+
+    visible = json.loads(execute_tool(
+        "read_evidence", {"id": "first", "path": "source.py"}, state,
+    ))
+    assert visible["initial_state_eligible"] is False
+    assert visible["observations"] == [{**observation, "reference_only": True}]
+    rejected = execute_tool("restore_observed_file", {
+        "path": "source.py", "evidence_ref_ids": ["first"],
+    }, state)
+    assert rejected.startswith("error:")
+    assert "read_evidence" in rejected and "first" in rejected and "source.py" in rejected
+    assert "unrelated_reason" not in rejected
+    if reason:
+        assert reason in rejected
+    else:
+        assert "stale_prior_observation" not in rejected
+    assert not state.writes and not (tmp_path / "source.py").exists()
+    assert state.evidence == original
+
+
+def test_current_observation_restores_without_using_historical_content(tmp_path):
+    state = session(tmp_path)
+    state.evidence[0]["session_parse"]["reference_file_ops"] = [{
+        "kind": "read", "path": "source.py", "partial": False,
+        "content": "不可用于恢复的历史版本\n",
+    }]
+    visible = json.loads(execute_tool(
+        "read_evidence", {"id": "first", "path": "source.py"}, state,
+    ))
+    assert visible["initial_state_eligible"] is True
+    assert "reference_only" not in visible["observations"][0]
+    assert visible["observations"][1]["reference_only"] is True
+    restored = execute_tool("restore_observed_file", {
+        "path": "source.py", "evidence_ref_ids": ["first"],
+    }, state)
+    assert not restored.startswith("error:"), restored
+    assert (tmp_path / "source.py").read_text() == 'title="正确"\nvalue=1\n'
