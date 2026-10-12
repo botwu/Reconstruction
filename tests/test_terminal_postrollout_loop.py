@@ -93,12 +93,13 @@ def loop_case(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(pipeline, "build_environment_contract", environment)
 
-    def run():
+    def run(**resume):
         return pipeline._run_task_loop(
             task=task, source=source, root=case.root, agent=case.author,
             verification_model=None,
-            verification_config=SimpleNamespace(disable_verification=True),
-            replay=SimpleNamespace(files=[]), support={}, task_source=source,
+            verification_config=SimpleNamespace(
+                disable_verification=True, execute_rollout=True, rollout_trials=2),
+            replay=SimpleNamespace(files=[]), support={}, task_source=source, **resume,
         )
 
     case.run = run
@@ -255,3 +256,72 @@ def test_variant_review_uses_actual_executed_task_without_rewriting_original(loo
     assert case.task == original
     assert result["executed_task"] is executed
     assert result["acceptance"] == "NOT_ASSESSED"
+
+
+@pytest.fixture
+def resumed_case(loop_case, monkeypatch):
+    case = loop_case
+    initial = case.runner(root=case.root)
+    case.runner.reset_mock()
+    task_root = case.root / "tasks" / case.task["task_id"]
+    receipt = task_root / "native-rollout.json"
+    plan = task_root / "native-rollout/plans/current"
+    receipt.write_text(json.dumps({"plan": str(plan), "errors": [],
+                                   "execution": {"status": "COMPLETED"}}))
+    initial.update(task_id=case.task["task_id"], source_task=case.task,
+                   rollout_backend="native_harbor", rollout_record=str(receipt))
+    case.native = Mock(return_value={
+        "execution_completed": True, "quality_gate": {"ok": True},
+        "acceptance": {"status": "NOT_ASSESSED", "errors": []},
+        "trials": [{"native_trial": {"trial": name, "completed": True}}
+                   for name in ("trial-1", "trial-2")],
+    })
+    monkeypatch.setattr(pipeline, "read_rollout_acceptance", case.native, raising=False)
+    monkeypatch.setattr(pipeline, "build_terminal_rollout_evidence", lambda trials: case.evidence)
+    case.initial, case.receipt = initial, receipt
+    return case
+
+
+def test_resume_native_result_skips_completed_reconstruction_and_reviews(resumed_case):
+    case = resumed_case
+    before = copy.deepcopy(case.initial)
+    result = case.run(initial_result=case.initial)
+    case.runner.assert_not_called()
+    case.native.assert_called_once()
+    assert case.reviewer.call_count == 1
+    assert result["status"] == "ROLLOUT_COMPLETED"
+    assert result["acceptance"] == "NOT_ASSESSED" and result["sft_eligible"] is False
+    assert case.initial == before
+
+
+def test_resumed_native_gap_rejoins_existing_initial_confirmation_and_repair(resumed_case):
+    case = resumed_case
+    case.reviewer.side_effect = [
+        _judge("ENVIRONMENT_GAP", gap_confirmed=True),
+        _judge("ENVIRONMENT_GAP", gap_confirmed=True), _judge("SUPPORTED"),
+    ]
+    result = case.run(initial_result=case.initial)
+    assert result["status"] == "ROLLOUT_COMPLETED"
+    assert case.runner.call_count == 1 and case.reviewer.call_count == 3
+    retry = case.runner.call_args.kwargs
+    assert retry["root"] == case.root / "attempts/001"
+    assert retry["completion_seed"] == case.candidate
+    assert retry["agent"] is case.author and retry["task"] is case.task
+    assert result["task_repair_audit"][0]["action"] == "REPAIR_INITIAL_ENVIRONMENT"
+
+
+@pytest.mark.parametrize("failure", ["task", "incomplete", "missing_receipt", "native_rejected"])
+def test_resume_rejects_unrelated_or_unproven_native_result(resumed_case, failure):
+    case = resumed_case
+    if failure == "task":
+        case.initial["source_task"] = {**case.task, "core_objective": "different task"}
+    elif failure == "incomplete":
+        case.initial["status"] = "ROLLOUT_INCOMPLETE"
+    elif failure == "missing_receipt":
+        case.receipt.unlink()
+    else:
+        case.native.return_value["acceptance"]["errors"] = ["NATIVE_TRACE_INCOMPLETE"]
+    with pytest.raises(pipeline.ReconstructionError, match="恢复"):
+        case.run(initial_result=case.initial)
+    case.runner.assert_not_called()
+    case.reviewer.assert_not_called()

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from traceforge.curation.sft import write_reconstruction_sft_curation
+from traceforge.harbor_ags.acceptance import read_rollout_acceptance
 from traceforge.harbor_ags.results import HarborResultError
 from traceforge.harbor_task import export_terminal_task
 from traceforge.reconstruction.agents import AgentRuntime, SandboxedAgentRuntime
@@ -942,6 +943,45 @@ def run_prepared_task(
     return result
 
 
+def _resume_native_result(
+    *, result: dict[str, Any], task: dict[str, Any], root: Path,
+    config: VerificationConfig | None,
+) -> dict[str, Any]:
+    """只恢复同任务已完成的真实原生执行，重新读取完整轨迹而非信任状态字典。"""
+    try:
+        if (config is None or not config.disable_verification or not config.execute_rollout
+                or result.get("task_id") != task.get("task_id")
+                or result.get("source_task") != task or result.get("executed_task") != task
+                or result.get("status") != "ROLLOUT_COMPLETED"
+                or result.get("rollout_backend") != "native_harbor"
+                or result.get("acceptance") != "NOT_ASSESSED"
+                or result.get("sft_eligible") is not False):
+            raise ValueError("任务身份或未评分执行状态不一致")
+        task_root = (root / "tasks" / str(task["task_id"])).resolve()
+        receipt = Path(result["rollout_record"]).resolve()
+        if receipt != task_root / "native-rollout.json":
+            raise ValueError("原生执行收据不属于恢复任务")
+        native = json.loads(receipt.read_text())
+        plan = Path(native["plan"]).resolve()
+        if (not plan.is_relative_to(task_root) or native.get("errors")
+                or native.get("execution", {}).get("status") != "COMPLETED"):
+            raise ValueError("原生执行未完成")
+        actual = read_rollout_acceptance(plan)
+        trials = [item["native_trial"] for item in actual.get("trials", [])]
+        if (actual.get("execution_completed") is not True
+                or actual.get("quality_gate", {}).get("ok") is not True
+                or actual.get("acceptance", {}).get("status") != "NOT_ASSESSED"
+                or actual["acceptance"].get("errors")
+                or len(trials) != config.rollout_trials or len(trials) < 2
+                or any(item.get("completed") is not True for item in trials)):
+            raise ValueError("真实轨迹不完整或未通过执行校验")
+        evidence = build_terminal_rollout_evidence(trials)
+    except (KeyError, TypeError, ValueError, OSError, HarborResultError) as exc:
+        raise ReconstructionError(f"恢复原生结果失败：{exc}") from exc
+    _write_stage_json(task_root, "rollout-evidence.json", evidence)
+    return {**copy.deepcopy(result), "rollout_evidence_path": str(task_root / "rollout-evidence.json")}
+
+
 def _run_task_loop(
     *, task: dict[str, Any], root: Path, source: dict[str, Any], agent: AgentRuntime,
     verification_model: ChatModel | None, verification_config: VerificationConfig | None,
@@ -951,13 +991,18 @@ def _run_task_loop(
     max_environment_repair_rounds: int | None = None,
     completion_seed: dict[str, Any] | None = None,
     completion_feedback: dict[str, Any] | None = None,
+    initial_result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """下游失败先独立复查初态，只把实证重建缺口返回原作者。"""
+    if initial_result is not None:
+        initial_result = _resume_native_result(
+            result=initial_result, task=task, root=root, config=verification_config,
+        )
     audit: list[dict[str, Any]] = []
     seen: set[str] = set()
     for attempt in count():
         attempt_root = root if attempt == 0 else root / "attempts" / f"{attempt:03d}"
-        result = _task_result(
+        result = initial_result if attempt == 0 and initial_result is not None else _task_result(
             task=task, root=attempt_root, source=source, agent=agent,
             verification_model=verification_model, verification_config=verification_config,
             verifier_agent=verifier_agent, replay=replay if attempt == 0 else None,
