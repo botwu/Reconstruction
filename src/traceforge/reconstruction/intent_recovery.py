@@ -22,7 +22,7 @@ from traceforge.reconstruction.session_source import indexed_session
 from traceforge.task_instruction import grounded_response_contract, render_task_instruction
 
 INTENT_SCHEMA = "traceforge.intent-recovery.v3"
-INTENT_PROMPT_VERSION = "intent-recovery-agent-v28-contract-repair"
+INTENT_PROMPT_VERSION = "intent-recovery-agent-v29-delivery-scope"
 
 
 class IntentRecoveryError(RuntimeError):
@@ -168,6 +168,20 @@ def _prompt(
         '必须返回 response_contract 字段；原用户要求包含下列已支持响应结构时，声明完整检查，否则返回 null 并保留原义务未验证。契约为 response_contract={"schema_version":"traceforge.response-contract.v1","checks":[...]}。仅为纯输出结构或摘要一致性义务声明检查：{"kind":"acceptance_report","obligation_id":"...","criterion_ids":["..."],"required_fields":{"字段名":"类型"}} 或 {"kind":"basic_summary","obligation_id":"...","verdicts":["..."],"finding_levels":["..."],"report_path":"...","match_report":true}。所有字段、义务 ID、枚举和路径必须来自该义务引用的原用户要求；不得把事实正确性或行为已完成声明成格式检查。不认识的响应要求保留未验证。同一义务包含摘要和 acceptance-report 时，在 checks 中使用相同 obligation_id 分别列出 basic_summary 与 acceptance_report；该义务的检查必须全部通过，不能只声明其中一项。',
         "Return JSON only, with no Markdown or prose before/after it.",
         "{\"task_id\":\"same tag\",\"task_instruction\":\"...\",\"core_objective\":\"...\",\"acceptance_obligations\":[{\"id\":\"obl-001\",\"text\":\"...\",\"evidence_ref_ids\":[\"user:<message_index>\"]}],\"environment_bindings\":[{\"obligation_id\":\"obl-001\",\"required_paths\":[\"input-or-output/path\"],\"initial_required_paths\":[\"existing-or-missing-input\"],\"output_paths\":[\"new/generated/output\"],\"observable\":\"任务完成后可观测、且足以证明本条义务达成的具体状态\",\"verifier_kind\":\"FILE|NON_FILE\"}],\"success_criteria\":[\"...\"],\"specified_output_format\":null,\"has_examples\":false,\"mandatory_constraints\":[],\"prohibitions\":[],\"response_contract\":null}",
+        *([
+            "本批 search 交付范围：网页、文档或代码检索，事实核对，"
+            "以及有资料依据的比较、研究与综合。"
+            "有相关检索支撑的科学分析也纳入；本地资料检索无需强行联网。"
+            "结合原用户目标和完整轨迹判断检索是否实际服务该目标，不按 harness、工具字面名称、"
+            "调用次数或仅仅读取文件判定，也不为纳入而添加原本无关的检索。",
+            "纯翻译、改写、小说创作、闲聊和单纯安排计划不在本批 search 交付范围；"
+            "已有上下文改写成建议不自动算检索。范围只判断交付类型，不判断难度、材料可恢复性、"
+            "原会话成败或答卷质量。保留原目标和全部义务，不删原任务，不为材料不足缩题或改域。",
+            '同时返回 delivery_scope={"status":"IN_SCOPE|OUT_OF_SCOPE|NEEDS_REVIEW",'
+            '"reason":"结合原目标及相关检索证据说明依据",'
+            '"evidence_ref_ids":["user:<message_index>"]}。'
+            "引用当前任务的原始用户锚点；无法确认范围时用 NEEDS_REVIEW，不能默认纳入。",
+        ] if task.get("domain_route") == "retrieval" else []),
         "Cite evidence ids exactly as listed in TASK_USER_MESSAGES / list_user_texts. Obligation evidence ids must be user:<message_index>.",
         "read_user_text accepts id=user:<message_index> or index=<original message_index>.",
         "SOURCE_SESSION 直接提供完整原轨迹：session_fields 保留工具定义等顶层字段，"
@@ -247,6 +261,22 @@ def _gate(
     for key in ("mandatory_constraints", "prohibitions"):
         if payload.get(key) is None: payload[key] = []
         elif not isinstance(payload.get(key), list) or any(not isinstance(x, str) for x in payload[key]): errors.append("INVALID_" + key.upper())
+    if task.get("domain_route") == "retrieval":
+        scope = payload.get("delivery_scope")
+        if scope is None:
+            errors.append("DELIVERY_SCOPE_REQUIRED")
+        elif (not isinstance(scope, dict)
+              or set(scope) != {"status", "reason", "evidence_ref_ids"}
+              or not isinstance(scope.get("status"), str)
+              or scope["status"] not in {"IN_SCOPE", "OUT_OF_SCOPE", "NEEDS_REVIEW"}
+              or not isinstance(scope.get("reason"), str) or not scope["reason"].strip()
+              or not isinstance(scope.get("evidence_ref_ids"), list)
+              or not scope["evidence_ref_ids"]
+              or any(not isinstance(ref, str) or not re.fullmatch(r"user:\d+", ref)
+                     or ref not in known_ids for ref in scope["evidence_ref_ids"])):
+            errors.append("DELIVERY_SCOPE_INVALID")
+        elif scope["status"] != "IN_SCOPE":
+            errors.append("DELIVERY_SCOPE_" + scope["status"])
     return ("READY" if not errors else "REVIEW"), errors, payload
 
 
@@ -449,6 +479,8 @@ def run_intent_recovery(
                 "PREVIOUS_RESULT=" + json.dumps(raw_payload, ensure_ascii=False),
             ])
         result_task = {"task_id": task_id, "source_task": task, "task_instruction": payload.get("task_instruction", ""), "core_objective": payload.get("core_objective", ""), "acceptance_obligations": payload.get("acceptance_obligations", []), "environment_bindings": payload.get("environment_bindings", []), "success_criteria": payload.get("success_criteria", []), "specified_output_format": payload.get("specified_output_format"), "has_examples": bool(payload.get("has_examples")), "mandatory_constraints": payload.get("mandatory_constraints", []), "prohibitions": payload.get("prohibitions", []), "evidence_refs": {"message_indices": [x["message_index"] for x in records if isinstance(x.get("message_index"), int)]}}
+        if task.get("domain_route") == "retrieval" and "delivery_scope" in payload:
+            result_task["delivery_scope"] = copy.deepcopy(payload["delivery_scope"])
         if isinstance(payload.get("response_contract"), dict):
             result_task["response_contract"] = payload["response_contract"]
         if path_aliases:

@@ -1098,7 +1098,7 @@ def _task_contract_state(task: dict[str, Any]) -> str:
     """规范化义务已附带文件绑定；只改编号或顺序不算修复进展。"""
     value = {key: item for key, item in task.items() if key not in {
         "task_id", "source_task", "evidence_refs", "environment_path_aliases",
-        "environment_bindings",
+        "environment_bindings", "delivery_scope",
     }}
     obligations = {
         row["id"]: json.dumps({key: item for key, item in row.items() if key != "id"},
@@ -1150,6 +1150,8 @@ def run_search_reconstruction(
                         rollout_max_iterations=rollout_max_iterations,
                         verification_config=verification_config,
                     )
+            if "delivery_scope" in (item.get("task") or {}):
+                result["delivery_scope"] = copy.deepcopy(item["task"]["delivery_scope"])
             result = {**result, "intent_path": str(intent_path), "result_path": str(result_path)}
             attempts.append({"intent_path": str(intent_path), "result_path": str(result_path)})
             issue = result.get("task_contract_issue")

@@ -24,7 +24,7 @@ def source():
                 "task_id": "plan",
                 "span_ids": ["span-one"],
                 "message_indices": [1],
-                "user_texts": ["一次性列出已确定的全部后续任务"],
+                "user_texts": ["检索项目资料，核对已确定的全部后续任务"],
             }
         ],
         "selected_task_ids": ["plan"],
@@ -33,7 +33,7 @@ def source():
             "tools": [{"name": "lookup", "schema": {"all": "fields"}}],
             "messages": [
                 {"role": "system", "content": "之前一阶段已完成，二阶段还有两项。"},
-                {"role": "user", "content": "一次性列出已确定的全部后续任务"},
+                {"role": "user", "content": "检索项目资料，核对已确定的全部后续任务"},
                 {"role": "assistant", "content": "原轨迹的回答，仅作历史材料"},
                 {"role": "user", "content": "另一个任务，不能作为当前义务锚点"},
             ],
@@ -52,6 +52,10 @@ def payload(*, corrected=False, renumber=False):
         "task_id": "plan",
         "task_instruction": texts[0],
         "core_objective": texts[0],
+        "delivery_scope": {
+            "status": "IN_SCOPE", "reason": "检索项目资料并核对既定任务和阶段依据",
+            "evidence_ref_ids": ["user:1"],
+        },
         "acceptance_obligations": [
             {"id": oid, "text": text, "evidence_ref_ids": ["user:1"]}
             for oid, text in zip(ids, texts, strict=True)
@@ -322,7 +326,7 @@ def test_intent_rejects_foreign_or_unbounded_correction_before_model(tmp_path, c
 def test_response_contract_renumbering_preserves_actual_obligation_mapping(tmp_path):
     raw = source()
     text = (
-        "一次性列出已确定的全部后续任务。响应格式如下：\n"
+        "检索项目资料，核对已确定的全部后续任务。响应格式如下：\n"
         "\x60\x60\x60acceptance-report\n"
         '{"criteriaSatisfied":[{"id":"complete","status":"done","evidence":"说明"}]}'
         "\n\x60\x60\x60"
@@ -357,3 +361,6 @@ def test_response_contract_renumbering_preserves_actual_obligation_mapping(tmp_p
     assert module._task_contract_state(normalized[0]) == module._task_contract_state(normalized[1])
     assert module._task_contract_state(normalized[0]) != module._task_contract_state(normalized[2])
     assert normalized == before
+    reworded = copy.deepcopy(normalized[0])
+    reworded["delivery_scope"]["reason"] = "重新表述同一检索范围，不改变用户目标"
+    assert module._task_contract_state(normalized[0]) == module._task_contract_state(reworded)
