@@ -979,7 +979,9 @@ def _resume_native_result(
     except (KeyError, TypeError, ValueError, OSError, HarborResultError) as exc:
         raise ReconstructionError(f"恢复原生结果失败：{exc}") from exc
     _write_stage_json(task_root, "rollout-evidence.json", evidence)
-    return {**copy.deepcopy(result), "rollout_evidence_path": str(task_root / "rollout-evidence.json")}
+    return {
+        **copy.deepcopy(result), "rollout_evidence_path": str(task_root / "rollout-evidence.json"),
+    }
 
 
 def _run_task_loop(

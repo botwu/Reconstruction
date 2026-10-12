@@ -165,7 +165,9 @@ def test_confirmed_gap_reuses_original_author_and_preserves_attempt(loop_case):
     feedback = retry["completion_feedback"]
     assert feedback["failed_probes"][0]["status"] == "FAIL"
     assert "downstream_failure" not in feedback
-    assert json.loads((case.root / "tasks/original/rollout-evidence.json").read_text()) == case.evidence
+    assert json.loads(
+        (case.root / "tasks/original/rollout-evidence.json").read_text(),
+    ) == case.evidence
     confirmation = case.reviewer.call_args_list[1].kwargs
     assert confirmation["workspace_root"] == case.candidate["workspace"]
     assert "rollout_evidence" not in confirmation
@@ -328,7 +330,7 @@ def test_resume_rejects_unrelated_or_unproven_native_result(resumed_case, failur
 
 
 def test_confirmed_initial_gap_reaches_actual_author_prompt_without_solver_output(loop_case):
-    from traceforge.reconstruction.agents import AgentSession, COMPLETION_REPLAYED_ROLE
+    from traceforge.reconstruction.agents import COMPLETION_REPLAYED_ROLE, AgentSession
     from traceforge.reconstruction.agents.runtime import AgentResult
 
     case = loop_case
@@ -346,7 +348,9 @@ def test_confirmed_initial_gap_reaches_actual_author_prompt_without_solver_outpu
     case.run(completion_feedback={"baseline_observations": {"observed": "ORIGINAL_BASELINE"}})
     feedback = case.runner.call_args.kwargs["completion_feedback"]
     native = Mock(model_name="offline", backend="test")
-    native.run.return_value = AgentResult(role="completion", backend="test", completed=True, payload={})
+    native.run.return_value = AgentResult(
+        role="completion", backend="test", completed=True, payload={},
+    )
     case.author.agent = native
     author_root = case.root / "captured-author"
     case.author.run(role=COMPLETION_REPLAYED_ROLE, instruction="", output_root=author_root,
