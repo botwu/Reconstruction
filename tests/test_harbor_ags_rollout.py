@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import subprocess
 import tomllib
 from pathlib import Path
@@ -572,3 +573,49 @@ def test_rollout_rejects_changed_or_missing_pinned_runtime(
     with pytest.raises(HarborRolloutError, match="Harbor runtime changed after plan creation"):
         execute_rollout_plan(output)
     assert (output / "run_receipt.json").read_bytes() == receipt_before
+
+
+@pytest.mark.parametrize(("returncode", "status"), [(0, "COMPLETED"), (7, "FAILED")])
+def test_execute_rollout_disables_telemetry_without_losing_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int, status: str,
+) -> None:
+    harbor = _harbor_root(tmp_path / "harbor")
+    executable = harbor / ".venv/bin/harbor"
+    executable.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$HARBOR_TELEMETRY\" \"$TRACEFORGE_ENV_PROBE\" "
+        "\"$AGS_API_KEY\" \"$TOKENHUB_KEY\" \"$HTTP_PROXY\" \"$PYTHONPATH\" \"$PATH\"\n"
+        f"exit {returncode}\n"
+    )
+    monkeypatch.setenv("HARBOR_TELEMETRY", "1")
+    monkeypatch.setenv("TRACEFORGE_ENV_PROBE", "preserved")
+    monkeypatch.setenv("AGS_API_KEY", "ags-test-value")
+    monkeypatch.setenv("TOKENHUB_KEY", "model-test-value")
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setenv("PYTHONPATH", "/tmp/traceforge-preserved")
+    output = build_rollout_plan(
+        HarborRolloutConfig(
+            task_dir=_bundle(tmp_path / "task"),
+            harbor_root=harbor,
+            output_root=tmp_path / "plans",
+            jobs_root=tmp_path / "jobs",
+        )
+    )
+
+    result = execute_rollout_plan(output)
+    observed = result["stdout"].splitlines()
+    assert observed[:5] == [
+        "0", "preserved", "ags-test-value", "model-test-value", "http://proxy.invalid:3128",
+    ]
+    assert observed[5].split(os.pathsep) == [
+        str(Path(__file__).resolve().parents[1] / "src"),
+        str(harbor / "src"),
+        "/tmp/traceforge-preserved",
+    ]
+    assert observed[6] == os.environ["PATH"]
+    assert os.environ["HARBOR_TELEMETRY"] == "1"
+    assert result["status"] == status
+    assert result["returncode"] == returncode
+    receipt = json.loads((output / "run_receipt.json").read_text())
+    assert receipt["status"] == status
+    assert receipt["returncode"] == returncode

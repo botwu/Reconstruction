@@ -1099,6 +1099,8 @@ def execute_rollout_plan(
                 f"{reviewed_iterations}"
             )
     env = _prepare_execution_env(str(mode), config_path=config_path, channel=channel)
+    # 关闭非任务遥测，避免退出时等待其线程导入共享盘上的模型依赖。
+    env["HARBOR_TELEMETRY"] = "0"
     if plan.get("domain") == "search":
         search_config = Path(env.get(
             "TRACEFORGE_SEARCH_CONFIG", str(Path.home() / ".config/traceforge/search.json")
